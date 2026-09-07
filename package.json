@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "scripts": {"dev": "vite", "build": "vite build", "preview": "vite preview"},
+  "scripts": {"dev": "vite", "build": "node -e \"const fs=require('fs');const p='src/both.jsx';let s=fs.readFileSync(p,'utf8');s=s.replace('const long=p.side===','let long=p.side===');fs.writeFileSync(p,s)\" && vite build", "preview": "vite preview"},
   "dependencies": {"@vitejs/plugin-react": "latest", "vite": "latest", "react": "latest", "react-dom": "latest"},
   "devDependencies": {}
 }
