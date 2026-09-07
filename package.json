@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "node scripts/fix-candles.mjs && vite build",
+    "build": "node scripts/fix-candles.mjs && node scripts/risk-guards.mjs && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
