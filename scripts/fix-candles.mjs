@@ -36,5 +36,11 @@ const replacement = `async function candles(symbol,res,count){
 `;
 
 s=s.slice(0,start)+replacement+s.slice(end);
+
+// Never leave a coin stuck at the old pending state. Failed candle batches
+// become an explicit retry state and the next 15s scan gets another chance.
+s=s.replaceAll('Candle analysis pending','Loading candle data…');
+s=s.replace('if(k<0||!ds[k])return row;',"if(k<0)return row;if(!ds[k])return{...row,momentum:{...row.momentum,reason:'Candle unavailable · next scan'},scalp:{...row.scalp,reason:'Candle unavailable · next scan'}};");
+
 fs.writeFileSync(path,s);
-console.log('Candle loader patched successfully');
+console.log('Candle loader + non-stuck fallback patched successfully');
