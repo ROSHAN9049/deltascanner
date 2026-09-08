@@ -57,12 +57,10 @@ if(statsPos>=0&&!s.includes('HISTORY_LIMIT_10')){
   s=s.slice(0,statsPos)+trim+s.slice(statsPos);
 }
 
-// The visible combined Trade History/analytics must also never exceed 10 rows.
-// This is deliberately applied after sorting so the newest 10 trades are shown.
+// Cap the visible combined Trade History to the newest 10 rows.
 const allTradesRe=/const allTrades=useMemo\(\(\)=>\[(\.\.\.mt\.map\(x=>\(\{\.\.\.x,engine:'MOMENTUM'\}\)\)),(\.\.\.st\.map\(x=>\(\{\.\.\.x,engine:'SCALPING'\}\))\)\]\.sort\(\(x,y\)=>new Date\(y\.closedAt\|\|y\.openedAt\)-new Date\(x\.closedAt\|\|x\.openedAt\),\[mt,st\]\);/;
 if(allTradesRe.test(s)){
-  s=s.replace(allTradesRe,"const allTrades=useMemo(()=>[$1,$2].sort((x,y)=>new Date(y.closedAt||y.openedAt)-new Date(x.closedAt||x.openedAt)).slice(0,10),[mt,st]);
-");
+  s=s.replace(allTradesRe,(m,a,b)=>`const allTrades=useMemo(()=>[${a},${b}].sort((x,y)=>new Date(y.closedAt||y.openedAt)-new Date(x.closedAt||x.openedAt)).slice(0,10),[mt,st]);`);
 }
 
 fs.writeFileSync(path,s);
