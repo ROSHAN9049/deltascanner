@@ -3,28 +3,27 @@ import fs from 'node:fs';
 const path = 'src/both.jsx';
 let s = fs.readFileSync(path, 'utf8');
 
-// This build step must be idempotent: never keep patching an already-patched
-// source file. The previous version could leave a partial autoOpen effect in
-// both.jsx, which caused Vite "Unexpected token" errors on subsequent builds.
+// Build-time patch must be idempotent. First remove the exact malformed
+// trailing fragment produced by the older opportunity-engine patch.
+const brokenTail = /;autoOpen\('scalp',sp,setSp\)\},\[rows,paper,capital,risk,mt\.length,st\.length(?:,lossBlocks)?\]\);/g;
+if (brokenTail.test(s)) {
+  s = s.replace(brokenTail, ';');
+  fs.writeFileSync(path, s);
+  console.log('Removed malformed trailing autoOpen fragment');
+}
+
+// Never rewrite an already-patched source file.
 const marker = 'const CONTINUOUS_OPPORTUNITY_V1=';
 if (s.includes(marker)) {
   console.log('Opportunity engine already present; no source rewrite needed');
   process.exit(0);
 }
 
-// Remove any known broken trailing fragment from older generated builds.
-s = s.replace(/;autoOpen\('scalp',sp,setSp\}\},\[rows,paper,capital,risk,mt\.length,st\.length(?:,lossBlocks)?\]\);/g, ';');
-s = s.replace(/;autoOpen\('scalp',sp,setSp\}\),\[rows,paper,capital,risk,mt\.length,st\.length(?:,lossBlocks)?\]\);/g, ';');
-
 const constant = "const CONTINUOUS_OPPORTUNITY_V1={candidateCandles:100,maxOpen:3,minEdge:1.35,scanMs:15000};";
-
-// Inject the marker next to the API constants.
 const apiNeedle = "const API='https://api.india.delta.exchange/v2/tickers?contract_types=perpetual_futures',CANDLE='https://api.india.delta.exchange/v2/history/candles',START=10000;";
 if (!s.includes(apiNeedle)) throw new Error('Delta API constants not found');
 s = s.replace(apiNeedle, apiNeedle + '\n' + constant);
 
-// Give the opportunity engine a larger candidate universe without touching
-// the existing scanner signal calculations.
 s = s.replace(
   ".sort((a,b)=>Math.abs(b.change)-Math.abs(a.change)).slice(0,50);",
   ".sort((a,b)=>Math.abs(b.change)-Math.abs(a.change)).slice(0,100);"
@@ -33,12 +32,12 @@ s = s.replace(
 const start = s.indexOf('function autoOpen(engine,list,setList){');
 if (start < 0) throw new Error('autoOpen function not found');
 
-// Find the complete legacy autoOpen effect by balancing braces/parens rather
-// than searching for the first semicolon inside its callback.
 const effect = s.indexOf("useEffect(()=>{autoOpen('momentum',mp,setMp);autoOpen('scalp',sp,setSp)}", start);
 if (effect < 0) throw new Error('legacy autoOpen effect not found');
 
-const openParen = s.indexOf('useEffect(', effect) + 'useEffect('.length;
+// Find the complete useEffect by balancing parentheses. This avoids stopping
+// at a semicolon inside the callback.
+const openParen = effect + 'useEffect('.length;
 let depth = 0;
 let end = -1;
 for (let i = openParen; i < s.length; i++) {
