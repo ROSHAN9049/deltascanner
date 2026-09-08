@@ -5,29 +5,27 @@ let s=fs.readFileSync(path,'utf8');
 
 const constant="const CONTINUOUS_OPPORTUNITY_V1={candidateCandles:100,maxOpen:3,minEdge:1.35,scanMs:15000};";
 
-// Repair a previously generated malformed opportunity effect before any further patching.
-if(s.includes('openBestOpportunity')&&!s.includes('CONTINUOUS_OPPORTUNITY_V1')){
-  s=s.replace("const API='https://api.india.delta.exchange/v2/tickers?contract_types=perpetual_futures',CANDLE='https://api.india.delta.exchange/v2/history/candles',START=10000;", "$&\n"+constant);
-}
-const dangling=";autoOpen('scalp',sp,setSp)},[rows,paper,capital,risk,mt.length,st.length,lossBlocks]);";
-if(s.includes(dangling)){
-  s=s.replace(dangling,';');
+// Clean up the malformed trailing autoOpen effect left by the previous patch.
+const malformedEffect=/;autoOpen\('scalp',sp,setSp\)\},\[rows,paper,capital,risk,mt\.length,st\.length(?:,lossBlocks)?\]\);/g;
+if(s.match(malformedEffect)){
+  s=s.replace(malformedEffect,';');
   fs.writeFileSync(path,s);
-  console.log('Repaired malformed opportunity effect');
+  console.log('Removed malformed trailing autoOpen effect');
+}
+
+if(s.includes('CONTINUOUS_OPPORTUNITY_V1')){
+  console.log('Opportunity engine already patched');
   process.exit(0);
 }
 
-if(s.includes('CONTINUOUS_OPPORTUNITY_V1')){console.log('Opportunity engine already patched');process.exit(0)}
+s=s.replace("const API='https://api.india.delta.exchange/v2/tickers?contract_types=perpetual_futures',CANDLE='https://api.india.delta.exchange/v2/history/candles',START=10000;", "const API='https://api.india.delta.exchange/v2/tickers?contract_types=perpetual_futures',CANDLE='https://api.india.delta.exchange/v2/history/candles',START=10000;\n"+constant);
 
-s=s.replace("const API='https://api.india.delta.exchange/v2/tickers?contract_types=perpetual_futures',CANDLE='https://api.india.delta.exchange/v2/history/candles',START=10000;", "const API='https://api.india.delta.exchange/v2/tickers?contract_types=perpetual_futures',CANDLE='https://api.india.delta.exchange/v2/history/candles',START=10000;\n"+constant)
-
-s=s.replace(".sort((a,b)=>Math.abs(b.change)-Math.abs(a.change)).slice(0,50);", ".sort((a,b)=>Math.abs(b.change)-Math.abs(a.change)).slice(0,100);")
+s=s.replace(".sort((a,b)=>Math.abs(b.change)-Math.abs(a.change)).slice(0,50);", ".sort((a,b)=>Math.abs(b.change)-Math.abs(a.change)).slice(0,100);");
 
 const start=s.indexOf('function autoOpen(engine,list,setList){');
 if(start<0)throw new Error('autoOpen function not found');
 const effect=s.indexOf("useEffect(()=>{autoOpen('momentum',mp,setMp);autoOpen('scalp',sp,setSp)}",start);
 if(effect<0)throw new Error('autoOpen effect not found');
-// Replace the complete useEffect statement, not the first semicolon inside its body.
 const end=s.indexOf(');',effect)+2;
 if(end<=effect+1)throw new Error('autoOpen effect terminator not found');
 
