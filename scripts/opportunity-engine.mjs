@@ -2,9 +2,24 @@ import fs from 'node:fs';
 
 const path='src/both.jsx';
 let s=fs.readFileSync(path,'utf8');
+
+const constant="const CONTINUOUS_OPPORTUNITY_V1={candidateCandles:100,maxOpen:3,minEdge:1.35,scanMs:15000};";
+
+// Repair a previously generated malformed opportunity effect before any further patching.
+if(s.includes('openBestOpportunity')&&!s.includes('CONTINUOUS_OPPORTUNITY_V1')){
+  s=s.replace("const API='https://api.india.delta.exchange/v2/tickers?contract_types=perpetual_futures',CANDLE='https://api.india.delta.exchange/v2/history/candles',START=10000;", "$&\n"+constant);
+}
+const dangling=";autoOpen('scalp',sp,setSp)},[rows,paper,capital,risk,mt.length,st.length,lossBlocks]);";
+if(s.includes(dangling)){
+  s=s.replace(dangling,';');
+  fs.writeFileSync(path,s);
+  console.log('Repaired malformed opportunity effect');
+  process.exit(0);
+}
+
 if(s.includes('CONTINUOUS_OPPORTUNITY_V1')){console.log('Opportunity engine already patched');process.exit(0)}
 
-s=s.replace("const API='https://api.india.delta.exchange/v2/tickers?contract_types=perpetual_futures',CANDLE='https://api.india.delta.exchange/v2/history/candles',START=10000;", "const API='https://api.india.delta.exchange/v2/tickers?contract_types=perpetual_futures',CANDLE='https://api.india.delta.exchange/v2/history/candles',START=10000;\nconst CONTINUOUS_OPPORTUNITY_V1={candidateCandles:100,maxOpen:3,minEdge:1.35,scanMs:15000};")
+s=s.replace("const API='https://api.india.delta.exchange/v2/tickers?contract_types=perpetual_futures',CANDLE='https://api.india.delta.exchange/v2/history/candles',START=10000;", "const API='https://api.india.delta.exchange/v2/tickers?contract_types=perpetual_futures',CANDLE='https://api.india.delta.exchange/v2/history/candles',START=10000;\n"+constant)
 
 s=s.replace(".sort((a,b)=>Math.abs(b.change)-Math.abs(a.change)).slice(0,50);", ".sort((a,b)=>Math.abs(b.change)-Math.abs(a.change)).slice(0,100);")
 
