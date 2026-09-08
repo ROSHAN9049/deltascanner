@@ -7,14 +7,7 @@ const marker='CONTINUOUS_OPPORTUNITY_V4';
 const start=s.indexOf('function autoOpen(');
 const end=s.indexOf('const stats=',start);
 
-if(start<0||end<0||end<=start){
-  if(s.includes(marker)){
-    console.log('Continuous opportunity engine V4 already present; source unchanged');
-    process.exit(0);
-  }
-  throw new Error('autoOpen section boundaries not found; source was not modified');
-}
-
+if(start>=0&&end>start){
 const replacement=`const ${marker}={maxOpen:10};
 function openBestOpportunity(){
   if(!paper)return;
@@ -50,7 +43,19 @@ function openBestOpportunity(){
 }
 useEffect(()=>{openBestOpportunity()},[rows,paper,capital,risk,mp.length,sp.length,mt.length,st.length]);
 `;
+  s=s.slice(0,start)+replacement+s.slice(end);
+}
 
-s=s.slice(0,start)+replacement+s.slice(end);
+// Keep only the latest 10 closed trades in each engine history.
+s=s.replace(/\[\.\.\.closed,\.\.\.t\]\.slice\(0,100\)/g,'[...closed,...t].slice(0,10)');
+
+// Trim older persisted history on startup so existing data is immediately limited to 10.
+const statsMarker='const stats=';
+const statsPos=s.indexOf(statsMarker);
+if(statsPos>=0&&!s.includes('HISTORY_LIMIT_10')){
+  const trim=`const HISTORY_LIMIT_10=10;useEffect(()=>{if(mt.length>HISTORY_LIMIT_10)setMt(x=>x.slice(0,HISTORY_LIMIT_10));if(st.length>HISTORY_LIMIT_10)setSt(x=>x.slice(0,HISTORY_LIMIT_10))},[mt.length,st.length]);\n`;
+  s=s.slice(0,statsPos)+trim+s.slice(statsPos);
+}
+
 fs.writeFileSync(path,s);
-console.log('Continuous opportunity engine V4 patched safely: max 10 open paper trades');
+console.log('Momentum and Scalping history limited to latest 10 trades');
