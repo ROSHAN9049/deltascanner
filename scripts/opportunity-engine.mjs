@@ -3,20 +3,23 @@ import fs from 'node:fs';
 const path='src/both.jsx';
 let s=fs.readFileSync(path,'utf8');
 
-if(s.includes('CONTINUOUS_OPPORTUNITY_V3')){
-  console.log('Continuous opportunity engine V3 already present; source unchanged');
-  process.exit(0);
-}
-
+const marker='CONTINUOUS_OPPORTUNITY_V4';
 const start=s.indexOf('function autoOpen(');
 const end=s.indexOf('const stats=',start);
-if(start<0||end<0||end<=start)throw new Error('autoOpen section boundaries not found; source was not modified');
 
-const replacement=`const CONTINUOUS_OPPORTUNITY_V3={maxOpen:3};
+if(start<0||end<0||end<=start){
+  if(s.includes(marker)){
+    console.log('Continuous opportunity engine V4 already present; source unchanged');
+    process.exit(0);
+  }
+  throw new Error('autoOpen section boundaries not found; source was not modified');
+}
+
+const replacement=`const ${marker}={maxOpen:10};
 function openBestOpportunity(){
   if(!paper)return;
   const open=mp.concat(sp),openSymbols=new Set(open.map(p=>p.symbol));
-  if(open.length>=CONTINUOUS_OPPORTUNITY_V3.maxOpen)return;
+  if(open.length>=${marker}.maxOpen)return;
   const now=Date.now(),candidates=[];
   rows.forEach(r=>{
     for(const engine of ['momentum','scalp']){
@@ -35,7 +38,7 @@ function openBestOpportunity(){
   if(!best)return;
   const{r,engine,cfg,sig,key,entry}=best,setList=engine==='momentum'?setMp:setSp;
   setList(p=>{
-    if(p.length>=cfg.max||p.some(x=>x.symbol===r.symbol)||mp.concat(sp).some(x=>x.symbol===r.symbol))return p;
+    if(p.length>=cfg.max||p.some(x=>x.symbol===r.symbol)||mp.concat(sp).some(x=>x.symbol===r.symbol)||mp.concat(sp).length>=${marker}.maxOpen)return p;
     const sl=sig.signal==='BUY'?entry*(1-cfg.sl):entry*(1+cfg.sl),riskAmt=Math.abs(entry-sl);
     if(riskAmt<=0)return p;
     const tp1=sig.signal==='BUY'?entry+riskAmt:entry-riskAmt,finalTp=sig.signal==='BUY'?entry+cfg.tp*riskAmt:entry-cfg.tp*riskAmt;
@@ -50,4 +53,4 @@ useEffect(()=>{openBestOpportunity()},[rows,paper,capital,risk,mp.length,sp.leng
 
 s=s.slice(0,start)+replacement+s.slice(end);
 fs.writeFileSync(path,s);
-console.log('Continuous opportunity engine V3 patched safely');
+console.log('Continuous opportunity engine V4 patched safely: max 10 open paper trades');
