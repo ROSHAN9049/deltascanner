@@ -49,7 +49,7 @@ useEffect(()=>{openBestOpportunity()},[rows,paper,capital,risk,mp.length,sp.leng
 // Keep only the latest 10 closed trades in each engine history.
 s=s.replace(/\[\.\.\.closed,\.\.\.t\]\.slice\(0,100\)/g,'[...closed,...t].slice(0,10)');
 
-// Trim older persisted history on startup so existing data is immediately limited to 10.
+// Trim persisted histories immediately and keep them capped.
 const statsMarker='const stats=';
 const statsPos=s.indexOf(statsMarker);
 if(statsPos>=0&&!s.includes('HISTORY_LIMIT_10')){
@@ -57,5 +57,13 @@ if(statsPos>=0&&!s.includes('HISTORY_LIMIT_10')){
   s=s.slice(0,statsPos)+trim+s.slice(statsPos);
 }
 
+// The visible combined Trade History/analytics must also never exceed 10 rows.
+// This is deliberately applied after sorting so the newest 10 trades are shown.
+const allTradesRe=/const allTrades=useMemo\(\(\)=>\[(\.\.\.mt\.map\(x=>\(\{\.\.\.x,engine:'MOMENTUM'\}\)\)),(\.\.\.st\.map\(x=>\(\{\.\.\.x,engine:'SCALPING'\}\))\)\]\.sort\(\(x,y\)=>new Date\(y\.closedAt\|\|y\.openedAt\)-new Date\(x\.closedAt\|\|x\.openedAt\),\[mt,st\]\);/;
+if(allTradesRe.test(s)){
+  s=s.replace(allTradesRe,"const allTrades=useMemo(()=>[$1,$2].sort((x,y)=>new Date(y.closedAt||y.openedAt)-new Date(x.closedAt||x.openedAt)).slice(0,10),[mt,st]);
+");
+}
+
 fs.writeFileSync(path,s);
-console.log('Momentum and Scalping history limited to latest 10 trades');
+console.log('Momentum/Scalping histories capped at 10; combined visible history capped at latest 10');
