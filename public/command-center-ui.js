@@ -16,8 +16,10 @@
           const txt=span?span.textContent:'';
           const m=txt.match(/Realised\s+(₹[-\d.]+)\s+·\s+Unrealised\s+(₹[-\d.]+)/i);
           const realised=m?m[1]:'₹0.00', unreal=m?m[2]:'₹0.00';
-          const net=existing[2].querySelector('strong')?.textContent||'₹0.00';
-          existing[2].insertAdjacentHTML('beforeend',`<div class="kpi-breakdown"><div><span>REALIZED</span><b>${realised}</b></div><div><span>UNREALIZED</span><b>${unreal}</b></div><div><span>FEES</span><b>₹0.00</b></div><div><span>NET PNL</span><b>${net}</b></div></div>`);
+          const toNum=s=>Number(String(s).replace(/[^0-9.-]/g,''))||0;
+          const net=(toNum(realised)+toNum(unreal)).toFixed(2);
+          const netText=net.startsWith('-')?`-₹${Math.abs(Number(net)).toFixed(2)}`:`₹${net}`;
+          existing[2].insertAdjacentHTML('beforeend',`<div class="kpi-breakdown"><div><span>REALIZED</span><b>${realised}</b></div><div><span>UNREALIZED</span><b>${unreal}</b></div><div><span>FEES</span><b>₹0.00</b></div><div><span>NET PNL</span><b>${netText}</b></div></div>`);
         }
       }
       if(existing[3]) existing[3].classList.add('kpi-stats');
