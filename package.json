@@ -1,18 +1,26 @@
 {
-  "name": "delta-scanner",
+  "name": "dealdost-delta-india-scanner",
   "private": true,
-  "version": "1.0.0",
+  "version": "2.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
+    "build": "node --check worker/index.mjs && node --check worker/delta-adapter.mjs && vite build",
+    "check": "tsc --noEmit",
+    "lint": "eslint . --max-warnings=0"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
-    "vite": "latest",
     "react": "latest",
-    "react-dom": "latest"
+    "react-dom": "latest",
+    "vite": "latest",
+    "ws": "latest"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "eslint": "latest",
+    "typescript": "latest"
+  }
 }
