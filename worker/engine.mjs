@@ -205,7 +205,7 @@ export class DeltaEngine {
     return { reasons: [...new Set(reasons)], size };
   }
 
-  async analyseUniverse(account, settings) {
+  async analyseUniverse(account, settings, openPositions, trades) {
     const btc = this.btcSymbol();
     if (!btc) {
       this.lastSignals = [];
@@ -230,7 +230,7 @@ export class DeltaEngine {
       });
       for (const s of [mom, scalp]) {
         const size = this.positionSizing(s, account, settings);
-        const gate = await this.riskGate(s, s === mom ? 'MOMENTUM' : 'SCALPING', account, settings, [], []);
+        const gate = await this.riskGate(s, s === mom ? 'MOMENTUM' : 'SCALPING', account, settings, openPositions, trades);
         await db.insert('dd_signals', {
           symbol: s.symbol, product_id: s.productId, rank: i + 1,
           strategy: s === mom ? 'MOMENTUM' : 'SCALPING', price: s.price, change_24h: s.change,
@@ -273,6 +273,9 @@ export class DeltaEngine {
     if (gate.reasons.length || !gate.size) return false;
     const entryCid = clientId(strategy === 'MOMENTUM' ? 'DDM' : 'DDS', signal.symbol);
     if (await this.findExistingClient(entryCid)) return false;
+
+    try { await this.adapter.setOrderLeverage(signal.productId, Math.min(3, Math.max(1, n(settings.max_leverage || 3)))); }
+    catch (e) { await this.log('WARN', 'Leverage configuration rejected; entry skipped', { symbol: signal.symbol, error: e.message }); return false; }
 
     const entry = await this.adapter.placeOrder({
       product_id: signal.productId,
@@ -429,18 +432,53 @@ export class DeltaEngine {
     const local = await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
     for (const row of local || []) {
       const ep = exchangePositions.find(p => String(p.product_symbol) === String(row.symbol));
+      if (row.origin !== 'ENGINE') {
+        if (!ep) await db.update('dd_positions', 'execution_id=eq.' + encodeURIComponent(row.execution_id), { qty: 0, updated_at: iso() });
+        continue;
+      }
       if (ep) {
         await this.managePositionRow(row, ep, this.currentSettings || {});
       } else {
         await this.finalizeClosedTrade(row, Array.isArray(fills) ? fills : [], Array.isArray(orders) ? orders : []);
       }
     }
+    const recentHistory = await this.adapter.historyOrders().catch(() => []);
+    const allOrders = [...(Array.isArray(orders) ? orders : []), ...(Array.isArray(recentHistory) ? recentHistory : [])];
     for (const ep of exchangePositions) {
-      const known = (local || []).some(p => String(p.symbol) === String(ep.product_symbol || ep.symbol));
-      if (!known) {
-        await this.log('WARN', 'Exchange position found without engine state; recorded as EXTERNAL and not auto-managed', {
-          symbol: ep.product_symbol || ep.symbol, size: ep.size
+      const symbol = String(ep.product_symbol || ep.symbol || '');
+      const known = (local || []).some(p => String(p.symbol) === symbol);
+      if (known) continue;
+      const candidates = allOrders.filter(o => String(o.product_symbol || o.symbol) === symbol);
+      const engineOrder = candidates.find(o => {
+        const cid = String(o.client_order_id || '');
+        return /^(DDM|DDS)-/.test(cid) && o.reduce_only !== true;
+      });
+      if (engineOrder) {
+        const cid = String(engineOrder.client_order_id);
+        const strategy = cid.startsWith('DDM-') ? 'MOMENTUM' : 'SCALPING';
+        const latest = (await db.select('dd_signals', 'symbol=eq.' + encodeURIComponent(symbol) + '&strategy=eq.' + strategy + '&order=captured_at.desc&limit=1'))?.[0] || {};
+        const side = n(ep.size) > 0 ? 'BUY' : 'SELL';
+        const protection = candidates.some(o => o.stop_order_type || o.bracket_order || n(o.bracket_stop_loss_price) || n(o.bracket_take_profit_price));
+        await db.insert('dd_positions', {
+          symbol, product_id: n(ep.product_id || engineOrder.product_id), side,
+          qty: Math.abs(n(ep.size)), entry_price: n(ep.entry_price),
+          current_price: n(ep.mark_price), stop_price: n(latest.stop_price || engineOrder.bracket_stop_loss_price),
+          tp1_price: n(latest.tp1_price), tp_price: n(latest.tp_price || engineOrder.bracket_take_profit_price),
+          initial_qty: Math.abs(n(ep.size)), protection_verified: protection,
+          entry_order_id: String(engineOrder.id), client_order_id: cid,
+          execution_id: cid, strategy, origin: 'ENGINE',
+          opened_at: engineOrder.created_at || iso(), updated_at: iso()
         });
+        await this.log('WARN', 'Recovered engine position after state gap', { symbol, strategy, clientOrderId: cid });
+      } else {
+        await db.insert('dd_positions', {
+          symbol, product_id: n(ep.product_id), side: n(ep.size) > 0 ? 'BUY' : 'SELL',
+          qty: Math.abs(n(ep.size)), entry_price: n(ep.entry_price), current_price: n(ep.mark_price),
+          stop_price: 0, tp1_price: 0, tp_price: 0, initial_qty: Math.abs(n(ep.size)),
+          strategy: 'EXTERNAL', origin: 'EXTERNAL', execution_id: 'EXTERNAL-' + symbol + '-' + Date.now().toString(36),
+          opened_at: ep.created_at || iso(), updated_at: iso()
+        });
+        await this.log('WARN', 'External Delta position recorded; not auto-managed', { symbol, size: ep.size });
       }
     }
     this.lastReconcile = Date.now();
@@ -595,13 +633,13 @@ export class DeltaEngine {
     if (Date.now() - this.lastCandleRefresh > 60000 || !this.candles.size) await this.refreshAllCandles();
 
     const account = await this.accountSnapshot();
-    if (Date.now() - this.lastAnalysis > 55000 || !this.lastSignals.length) {
-      await this.analyseUniverse(account, settings);
-      this.lastAnalysis = Date.now();
-    }
-
+    if (Date.now() - this.lastReconcile > 60000) await this.reconcile();
     const openRows = await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
     const trades = await this.recentTrades();
+    if (Date.now() - this.lastAnalysis > 55000 || !this.lastSignals.length) {
+      await this.analyseUniverse(account, settings, openRows || [], trades || []);
+      this.lastAnalysis = Date.now();
+    }
     const positions = openRows || [];
     if (settings.enabled && settings.auto_trade && !settings.emergency_stop) {
       const candidates = [];
@@ -617,8 +655,6 @@ export class DeltaEngine {
         await this.openTrade(c.item, c.strategy, c.signal, account, settings, positions, trades);
       }
     }
-
-    if (Date.now() - this.lastReconcile > 60000) await this.reconcile();
 
     const unrealized = account.positions.reduce((s, p) => s + n(p.unrealized_pnl), 0);
     const closed = trades || [];

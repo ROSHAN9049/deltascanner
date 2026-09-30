@@ -88,7 +88,7 @@ export class DeltaAdapter {
     return execute();
   }
   async health() { return this.request('GET', '/v2/tickers', { contract_types: 'perpetual_futures' }, null, false); }
-  products() { return this.request('GET', '/v2/products', { contract_types: 'perpetual_futures', states: 'live', page_size: 100 }, null, false); }
+  products() { return this.request('GET', '/v2/products', { contract_types: 'perpetual_futures', states: 'live', page_size: 50 }, null, false); }
   tickers() { return this.request('GET', '/v2/tickers', { contract_types: 'perpetual_futures' }, null, false); }
   candles(symbol, resolution, limit) {
     const seconds = ({ '1m': 60, '5m': 300, '15m': 900 })[resolution] || 300;
@@ -109,5 +109,5 @@ export class DeltaAdapter {
   cancelOrder(body) { return this.request('DELETE', '/v2/orders', {}, body, true); }
   placeBracket(body) { return this.request('POST', '/v2/orders/bracket', {}, body, true); }
   editBracket(body) { return this.request('PUT', '/v2/orders/bracket', {}, body, true); }
-  updateLeverage(body) { return this.request('POST', '/v2/products/update_leverage', {}, body, true); }
+  setOrderLeverage(productId, leverage) { return this.request('POST', '/v2/products/' + productId + '/orders/leverage', {}, { leverage }, true); }
 }

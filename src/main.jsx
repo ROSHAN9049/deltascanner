@@ -103,7 +103,7 @@ function App() {
     {error ? <div className="error">{error}</div> : null}
     <nav>{tabs.map(([id,label]) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}{id === 'live' ? ' 🔒' : ''}</button>)}</nav>
 
-    {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} trades={trades} positions={positions} signals={signals} onInspect={setInspect} inspect={selected} />}
+    {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} trades={trades} positions={positions} signals={signals} onInspect={setInspect} inspect={selected} logs={state?.logs || []} />}
     {tab === 'rotation' && <Rotation ledger={state?.ledger || []} />}
     {tab === 'momentum' && <EngineView engine="MOMENTUM" signals={signals} />}
     {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" />}
@@ -127,7 +127,7 @@ function Panel({ title, children }) {
 function Card({ label, value, sub }) {
   return <div className="card"><small>{label}</small><strong>{value}</strong><span>{sub}</span></div>;
 }
-function Dashboard({ market, settings, health, trades, positions, signals, onInspect, inspect }) {
+function Dashboard({ market, settings, health, trades, positions, signals, onInspect, inspect, logs }) {
   const today = new Date().toISOString().slice(0,10);
   const todayTrades = trades.filter(t => String(t.closed_at || '').slice(0,10) === today);
   const wins = todayTrades.filter(t => num(t.net_pnl) > 0).length;
@@ -154,7 +154,7 @@ function Dashboard({ market, settings, health, trades, positions, signals, onIns
       <Panel title="Signal Stages · WATCH → SETUP → CONFIRMED"><div className="tablewrap"><table><thead><tr><th>COIN</th><th>ENG</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>QTY</th><th>NOTIONAL</th><th>RISK</th><th>READY</th><th>WHY BLOCKED</th></tr></thead><tbody>{signals.slice(0,60).map(s => <tr key={s.symbol + s.strategy}><td className="symbol">{s.symbol}</td><td>{s.strategy === 'MOMENTUM' ? 'MOM' : 'SCALP'}</td><td>{s.stage}</td><td className={s.side === 'BUY' ? 'up' : s.side === 'SELL' ? 'down' : 'muted'}>{s.side || '—'}</td><td><b>{num(s.score).toFixed(0)}</b>/100</td><td>{fmtQty(s.qty_contracts)}</td><td>{money(s.notional)}</td><td>{money(s.risk_usd)}</td><td className={s.ready ? 'up' : 'down'}>{s.ready ? 'YES' : 'NO'}</td><td className="muted">{fmtReasons(s.blocked_reasons)}</td></tr>)}</tbody></table></div></Panel>
     </section>
     <Panel title="Idle Reason"><div className="idle">{idleFromSignals(signals)} <span>Top blocks: {top || 'none recorded'}</span></div></Panel>
-    <Panel title="Engine Log · last 200 lines"><Log rows={[]}/></Panel>
+    <Panel title="Engine Log · last 200 lines"><Log rows={logs || []}/></Panel>
     <div className="micro"><span className={health?.workerLeaseActive ? 'up' : 'down'}>Worker {health?.workerLeaseActive ? 'ONLINE' : 'OFFLINE'}</span><span>Last tick {settings.last_tick_at ? new Date(settings.last_tick_at).toLocaleTimeString('en-IN') : '—'}</span><span>Time drift {health?.timeDriftMs == null ? '—' : Math.round(health.timeDriftMs) + ' ms'}</span><span>Auto {settings.auto_trade ? 'ON' : 'OFF'}</span><span>Continuous {settings.continuous_mode ? 'ON' : 'OFF'}</span></div>
   </>;
 }
@@ -191,7 +191,7 @@ function RiskGovernor({ signals, health, positions, onInspect, inspect }) {
   const gate = reason => !(selected.blocked_reasons || []).join(' · ').toLowerCase().includes(reason.toLowerCase());
   const gates = [
     ['Signal CONFIRMED', selected.stage === 'CONFIRMED' && num(selected.score) >= 80, selected.stage],
-    ['Fee + spread vs 1R', num(selected.fee_risk_ratio) <= 0.15, (num(selected.fee_risk_ratio)*100).toFixed(1)+'% of 1R'],
+    ['Fee + spread vs 1R', num(selected.fee_risk_ratio) <= (selected.strategy === 'SCALPING' ? 0.20 : 0.15), (num(selected.fee_risk_ratio)*100).toFixed(1)+'% of 1R'],
     ['24h anti-chase', !selected.change_24h || (selected.side === 'BUY' ? num(selected.change_24h) <= 12 : selected.side === 'SELL' ? num(selected.change_24h) >= -12 : false), pct(selected.change_24h)],
     ['5m range <= 2.25 ATR', num(selected.atr_5m) > 0 && gate('5m range'), 'range gate'],
     ['EMA21 distance <= 1.75 ATR', !gate('Price > 1.75'), (selected.ema21 ? price(selected.ema21) : '—')],
@@ -224,8 +224,8 @@ function PNL({ trades, settings }) {
   return <section className="cards"><Card label="REALIZED NET" value={money(net)} sub="all real closed trades"/><Card label="FEES" value={money(fees)} sub="real fill commissions"/><Card label="EQUITY" value={money(settings.equity)} sub="current Demo equity"/><Card label="UNREALIZED" value={money(settings.unrealized_pnl)} sub="open positions"/></section>;
 }
 function Rotation({ ledger }) {
-  const released = ledger.reduce((s,x)=>s+num(x.released),0), retained = ledger.reduce((s,x)=>s+num(x.retained),0);
-  return <><section className="cards"><Card label="EVENTS TODAY" value={ledger.length} sub="real profitable exits"/><Card label="RELEASED 90%" value={money(released)} sub="linked to execution ID"/><Card label="ALLOCATED" value={money(released)} sub="rotation released"/><Card label="RETAINED 10%" value={money(retained)} sub="ledger reserve"/></section><Panel title="Profit Rotation V3 Ledger"><div className="tablewrap"><table><thead><tr><th>TIME</th><th>EXECUTION ID</th><th>PROFIT</th><th>RELEASED</th><th>RETAINED</th><th>ROTATION ID</th></tr></thead><tbody>{ledger.map(x=><tr key={x.execution_id}><td>{new Date(x.created_at).toLocaleString('en-IN')}</td><td className="mono">{x.execution_id}</td><td className="up">{money(x.profit)}</td><td>{money(x.released)}</td><td>{money(x.retained)}</td><td>{x.rotation_id}</td></tr>)}</tbody></table></div></Panel></>;
+  const nowDay = new Date().toISOString().slice(0,10); const todayLedger = ledger.filter(x => String(x.created_at || '').slice(0,10) === nowDay); const released = todayLedger.reduce((s,x)=>s+num(x.released),0), retained = todayLedger.reduce((s,x)=>s+num(x.retained),0);
+  return <><section className="cards"><Card label="EVENTS TODAY" value={todayLedger.length} sub="real profitable exits"/><Card label="RELEASED 90%" value={money(released)} sub="linked to execution ID"/><Card label="ALLOCATED" value={money(released)} sub="rotation released"/><Card label="RETAINED 10%" value={money(retained)} sub="ledger reserve"/></section><Panel title="Profit Rotation V3 Ledger"><div className="tablewrap"><table><thead><tr><th>TIME</th><th>EXECUTION ID</th><th>PROFIT</th><th>RELEASED</th><th>RETAINED</th><th>ROTATION ID</th></tr></thead><tbody>{ledger.map(x=><tr key={x.execution_id}><td>{new Date(x.created_at).toLocaleString('en-IN')}</td><td className="mono">{x.execution_id}</td><td className="up">{money(x.profit)}</td><td>{money(x.released)}</td><td>{money(x.retained)}</td><td>{x.rotation_id}</td></tr>)}</tbody></table></div></Panel></>;
 }
 function Analytics({ trades }) {
   const engines = ['MOMENTUM','SCALPING'].map(e => {
