@@ -652,7 +652,14 @@ export class DeltaEngine {
       }
       candidates.sort((a, b) => b.signal.score - a.signal.score);
       for (const c of candidates.slice(0, 10)) {
-        await this.openTrade(c.item, c.strategy, c.signal, account, settings, positions, trades);
+        const opened = await this.openTrade(c.item, c.strategy, c.signal, account, settings, positions, trades);
+        if (opened) {
+          positions.push({
+            symbol: c.signal.symbol,
+            strategy: c.strategy,
+            qty: c.signal.qty_contracts || 1
+          });
+        }
       }
     }
 
