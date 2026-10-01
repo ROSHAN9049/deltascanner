@@ -115,7 +115,7 @@ export class DeltaEngine {
         try { await this.refreshCandle(item[0], item[1]); } catch (e) { await this.log('WARN', 'Candle refresh failed', { symbol: item[0], resolution: item[1], error: e.message }); }
       }
     };
-    await Promise.all([runner(), runner(), runner(), runner(), runner(), runner(), runner(), runner()]);
+    await Promise.all([runner(), runner(), runner()]);
     this.lastCandleRefresh = Date.now();
   }
 
