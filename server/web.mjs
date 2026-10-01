@@ -104,7 +104,16 @@ const server=http.createServer(async(req,res)=>{
   } catch { if (!res.writableEnded) { res.statusCode=500; res.end('Internal Server Error'); } }
 });
 
-server.listen(PORT,'0.0.0.0',()=>console.log('[DeltaScanner Web] TESTNET UI listening on port '+PORT));
+const listeners = [];
+function listenOn(port) {
+  const instance = server.listen(port, '0.0.0.0', () => {
+    console.log('[DeltaScanner Web] TESTNET UI listening on port ' + port);
+  });
+  listeners.push(instance);
+}
+
+listenOn(PORT);
+if (PORT !== 3000) listenOn(3000);
 
 function shutdown(signal) {
   if (shuttingDown) return; shuttingDown=true;
