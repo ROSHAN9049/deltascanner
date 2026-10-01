@@ -1,21 +1,23 @@
 import { CONFIG } from './config.js';
 
 function assertDb() {
-  if (!CONFIG.supabaseUrl || !CONFIG.supabaseServiceRoleKey) {
-    throw new Error('SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY missing');
+  if (!CONFIG.supabaseUrl || !CONFIG.supabaseAdminKey) {
+    throw new Error('SUPABASE_URL / Supabase server key missing');
   }
 }
 async function call(path, init) {
   assertDb();
+  const key = CONFIG.supabaseAdminKey;
+  const headers = {
+    apikey: key,
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+    ...(init && init.headers ? init.headers : {})
+  };
+  if (!key.startsWith('sb_secret_')) headers.Authorization = 'Bearer ' + key;
   const res = await fetch(CONFIG.supabaseUrl.replace(/\/$/, '') + '/rest/v1/' + path, {
     ...(init || {}),
-    headers: {
-      apikey: CONFIG.supabaseServiceRoleKey,
-      Authorization: 'Bearer ' + CONFIG.supabaseServiceRoleKey,
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-      ...(init && init.headers ? init.headers : {})
-    }
+    headers
   });
   const txt = await res.text();
   if (!res.ok) throw new Error('Supabase ' + res.status + ': ' + txt.slice(0, 500));
