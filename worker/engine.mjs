@@ -43,7 +43,10 @@ export class DeltaEngine {
   }
 
   async log(level, message, data) {
-    await db.log(level, message, data);
+    try {
+      const pending = db.log(level, message, data);
+      if (pending && typeof pending.catch === 'function') pending.catch(() => {});
+    } catch {}
   }
 
   async acquireLease() {
