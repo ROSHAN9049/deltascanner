@@ -5,9 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "node --check worker/index.mjs && node --check worker/delta-adapter.mjs && vite build",
+    "build": "npm test && node --check worker/index.mjs && node --check worker/delta-adapter.mjs && vite build",
     "check": "tsc --noEmit",
-    "lint": "eslint . --max-warnings=0"
+    "lint": "eslint . --max-warnings=0",
+    "test": "node worker/selftest.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",

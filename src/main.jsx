@@ -81,7 +81,7 @@ function App() {
   }, [inspect, signals]);
 
   const selectedScalp = selected ? signals.find(x => x.symbol === selected.symbol && x.strategy === 'SCALPING') : null;
-  const stale = !health?.tickFresh;
+  const stale = health ? !health.tickFresh : false;
   return <div className="terminal">
     <header className="topbar">
       <div>
@@ -89,7 +89,7 @@ function App() {
         <div className="sub">DELTA INDIA · PERPETUAL FUTURES COMMAND CENTER</div>
       </div>
       <div className="headerRight">
-        <span>BUILD v2.0.20260930.D1</span>
+        <span>BUILD v2.0.20261001.D2</span>
         <span>UTC {new Date(clock).toISOString().slice(11,19)}</span>
         <span>LOCAL {new Date(clock).toLocaleTimeString('en-IN')}</span>
         <b className="badge test">TESTNET / DEMO</b>
@@ -155,7 +155,7 @@ function Dashboard({ market, settings, health, trades, positions, signals, onIns
     </section>
     <Panel title="Idle Reason"><div className="idle">{idleFromSignals(signals)} <span>Top blocks: {top || 'none recorded'}</span></div></Panel>
     <Panel title="Engine Log · last 200 lines"><Log rows={logs || []}/></Panel>
-    <div className="micro"><span className={health?.workerLeaseActive ? 'up' : 'down'}>Worker {health?.workerLeaseActive ? 'ONLINE' : 'OFFLINE'}</span><span>Last tick {settings.last_tick_at ? new Date(settings.last_tick_at).toLocaleTimeString('en-IN') : '—'}</span><span>Time drift {health?.timeDriftMs == null ? '—' : Math.round(health.timeDriftMs) + ' ms'}</span><span>Auto {settings.auto_trade ? 'ON' : 'OFF'}</span><span>Continuous {settings.continuous_mode ? 'ON' : 'OFF'}</span></div>
+    <div className="micro"><span className={health?.workerLeaseActive && health?.tickFresh ? 'up' : 'down'}>Worker {health?.workerLeaseActive ? 'ONLINE' : 'OFFLINE'}</span><span>Market feed {health?.tickFresh ? 'FRESH' : 'STALE'}</span><span>Last tick {health?.lastTickAt ? new Date(health.lastTickAt).toLocaleTimeString('en-IN') : '—'}</span><span>Time drift {health?.timeDriftMs == null ? '—' : Math.round(health.timeDriftMs) + ' ms'}</span><span>Auto {settings.auto_trade ? 'ON' : 'OFF'}</span><span>Continuous {settings.continuous_mode ? 'ON' : 'OFF'}</span></div>
   </>;
 }
 function idleFromSignals(signals) {
@@ -193,12 +193,12 @@ function RiskGovernor({ signals, health, positions, onInspect, inspect }) {
     ['Signal CONFIRMED', selected.stage === 'CONFIRMED' && num(selected.score) >= 80, selected.stage],
     ['Fee + spread vs 1R', num(selected.fee_risk_ratio) <= (selected.strategy === 'SCALPING' ? 0.20 : 0.15), (num(selected.fee_risk_ratio)*100).toFixed(1)+'% of 1R'],
     ['24h anti-chase', !selected.change_24h || (selected.side === 'BUY' ? num(selected.change_24h) <= 12 : selected.side === 'SELL' ? num(selected.change_24h) >= -12 : false), pct(selected.change_24h)],
-    ['5m range <= 2.25 ATR', num(selected.atr_5m) > 0 && gate('5m range'), 'range gate'],
+    ['Base candle range <= 2.25 ATR', num(selected.atr_5m) > 0 && gate('5m range'), 'range gate'],
     ['EMA21 distance <= 1.75 ATR', !gate('Price > 1.75'), (selected.ema21 ? price(selected.ema21) : '—')],
     ['BTC regime', !gate('BTC regime'), selected.btc_trend || '—'],
     ['Spread', !gate('Spread >'), num(selected.spread_pct).toFixed(3)+'%'],
     ['Fresh closed candles', !gate('Fresh closed candles'), selected.details?.candlesFresh === false ? 'STALE' : 'FRESH'],
-    ['API / worker healthy', !!health?.workerLeaseActive && !!health?.exchangeHealthy && !!health?.tickFresh, health?.tickFresh ? 'PASS' : 'BLOCK'],
+    ['API / worker healthy', !!health?.workerLeaseActive && !!health?.exchangeHealthy && !!health?.tickFresh, health?.tickFresh ? 'LIVE' : 'STALE / BLOCK'],
     ['Duplicate symbol', !positions.some(p => p.symbol === selected.symbol), positions.some(p => p.symbol === selected.symbol) ? 'BLOCK' : 'PASS'],
     ['Margin / min size', num(selected.qty_contracts) >= 1 && num(selected.notional) > 0, num(selected.qty_contracts) >= 1 ? 'PASS' : 'below minimum']
   ];

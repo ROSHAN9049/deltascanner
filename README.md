@@ -38,3 +38,11 @@ Continuous Mode is ON by default on TESTNET. It removes automatic loss pauses/co
 Delta documents size as an integer number of contracts. The current docs consulted do not expose a separate minimum-order-size or size-increment field for perpetuals. Therefore this build uses whole contracts and lets the exchange enforce any additional product-specific minimum. Non-vanilla notional types are skipped by the sizing engine.
 
 An 80% win rate cannot be guaranteed. The implementation is intentionally selective; actual win rate must be measured from real Demo fills after sufficient sample size.
+
+## Scanner parity and hardening (2026-10-01)
+
+The Delta TESTNET worker now follows the same scanner-first operating model as DealDost: separate Momentum (5m) and Scalping (1m) bases with 15m context, normalized/sorted closed-candle history, MACD/RSI/VWAP/ATR/volume/momentum scoring, explicit quality breakdowns, stale market-tick gating, exchange-authoritative reconciliation, and strategy-specific RR handling.
+
+Execution remains TESTNET-only. Every new entry still requires a CONFIRMED signal, risk gates, whole-contract sizing, exchange-side SL/TP protection, and verification of the exact product protection levels before the position is considered managed. LIVE/production execution remains unavailable by design.
+
+Railway HOBBY does not provide Static Outbound IPs. Delta API IP allowlisting therefore remains an infrastructure prerequisite until the worker is moved to a stable-egress environment.

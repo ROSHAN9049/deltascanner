@@ -2,13 +2,13 @@ import crypto from 'node:crypto';
 import WebSocket from 'ws';
 import { CONFIG } from '../server/config.js';
 import { DeltaAdapter } from './delta-adapter.mjs';
-import { analyse } from './strategy.mjs';
+import { analyse, normalizeCandles } from './strategy.mjs';
 import * as db from '../server/db.js';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const n = v => Number.isFinite(+v) ? +v : 0;
 const iso = () => new Date().toISOString();
-const today = () => new Date().toISOString().slice(0, 10);
+const istDateKey = (timestamp = Date.now()) => new Date(timestamp + 5.5 * 60 * 60 * 1000).toISOString().slice(0, 10);
 const sideExit = side => side === 'BUY' ? 'sell' : 'buy';
 const clientId = (prefix, symbol) => (prefix + '-' + symbol.slice(0, 12) + '-' + Date.now().toString(36)).slice(0, 32);
 const roundDown = (v, step) => {
@@ -23,6 +23,7 @@ export class DeltaEngine {
     this.leaseId = crypto.randomUUID();
     this.startedAt = Date.now();
     this.lastTickAt = 0;
+    this.lastMarketDataAt = 0;
     this.lastTickerFetch = 0;
     this.lastUniverseRefresh = 0;
     this.lastCandleRefresh = 0;
@@ -91,14 +92,14 @@ export class DeltaEngine {
     }
     const ranked = [...next.values()].sort((a, b) => n(b.turnover_usd || b.turnover) - n(a.turnover_usd || a.turnover)).slice(0, 50);
     this.tickerMap = new Map(ranked.map(x => [x.symbol, x]));
-    if (ranked.length) this.lastTickAt = Date.now();
+    if (ranked.length) { this.lastTickAt = Date.now(); this.lastMarketDataAt = Date.now(); }
     this.lastTickerFetch = Date.now();
   }
 
   async refreshCandle(symbol, resolution) {
     const key = resolution + ':' + symbol;
     const value = await this.adapter.candles(symbol, resolution, 100);
-    this.candles.set(key, Array.isArray(value) ? value : []);
+    this.candles.set(key, normalizeCandles(value));
     return this.candles.get(key);
   }
 
@@ -177,6 +178,7 @@ export class DeltaEngine {
     if (openPositions.length >= Math.max(1, n(settings.max_open_positions || 20))) reasons.push('Max open positions');
     if (!signal.candlesFresh) reasons.push('Fresh closed candles unavailable');
     if (n(account.equity) <= 0) reasons.push('Account equity unavailable');
+    if (!this.lastMarketDataAt || Date.now() - this.lastMarketDataAt >= 180000) reasons.push('Market tick stale');
     const size = this.positionSizing(signal, account, settings);
     if (!size) reasons.push('Margin / minimum contract size');
     if (signal.feeRiskRatio > signal.costGateRatio) reasons.push('Fee + spread exceeds 1R cost budget');
@@ -189,7 +191,8 @@ export class DeltaEngine {
       const last = symbolTrades[0];
       if (last && Date.now() - new Date(last.closed_at || 0).getTime() < 15 * 60 * 1000) reasons.push('15m cooldown');
       if (last && n(last.net_pnl) < 0 && Date.now() - new Date(last.closed_at || 0).getTime() < 90 * 60 * 1000) reasons.push('90m losing-symbol cooldown');
-      const todayNet = trades.filter(t => String(t.closed_at || '').slice(0, 10) === today()).reduce((s, t) => s + n(t.net_pnl), 0);
+      const todayKey = istDateKey();
+      const todayNet = trades.filter(t => istDateKey(new Date(t.closed_at || 0).getTime()) === todayKey).reduce((s, t) => s + n(t.net_pnl), 0);
       if (todayNet <= -n(account.equity) * 0.03) reasons.push('Daily loss 3%');
       const recent = trades.filter(t => t.strategy === strategy).slice(0, 20);
       const wins = recent.filter(t => n(t.net_pnl) > 0).length;
@@ -242,7 +245,7 @@ export class DeltaEngine {
           qty_contracts: size ? size.qty : 0, notional: size ? size.notional : 0,
           risk_usd: size ? size.risk : 0, fee_risk_ratio: s.feeRiskRatio,
           ready: s.ready && gate.reasons.length === 0, blocked_reasons: gate.reasons,
-          details: { rsi: s.rsi, vwap: s.vwap, fee: s.takerFee, candlesFresh: s.candlesFresh }
+          details: { rsi: s.rsi, vwap: s.vwap, macd: s.macd, regime: s.regime, quality: s.quality, candlesFresh: s.candlesFresh }
         });
       }
       out.push({ ticker, product: p, mom, scalp });
@@ -350,7 +353,7 @@ export class DeltaEngine {
       if (!protectedOrders.length) throw new Error('Exchange-side protection not visible after bracket placement');
 
       await db.update('dd_positions', 'execution_id=eq.' + encodeURIComponent(executionId), {
-        protection_verified: true, tp1_order_id: String(tp1Order.id), updated_at: iso()
+        protection_verified: true, protection_order_id: bracketOrder?.id ? String(bracketOrder.id) : null, tp1_order_id: String(tp1Order.id), updated_at: iso()
       });
       await this.log('INFO', 'TESTNET trade opened with verified protection', {
         symbol: signal.symbol, strategy, side: signal.side, qty: actualQty,
@@ -379,13 +382,14 @@ export class DeltaEngine {
     });
   }
 
-  async managePositionRow(row, exchangePosition, setting) {
+  async managePositionRow(row, exchangePosition, setting, allOrders = [], fills = []) {
     const mark = n(exchangePosition.mark_price || this.tickerMap.get(row.symbol)?.mark_price || row.current_price);
     const qty = Math.abs(n(exchangePosition.size));
     const originalRisk = Math.abs(n(row.entry_price) - n(row.stop_price));
     const fee = n(this.productMap.get(row.symbol)?.taker_commission_rate);
     if (qty <= 0) return;
-    const changed = qty < n(row.initial_qty) && !row.tp1_done;
+    const tp1Filled = !!row.tp1_order_id && fills.some(f => String(f.order_id) === String(row.tp1_order_id));
+    const changed = qty < n(row.initial_qty) && !row.tp1_done && tp1Filled;
     if (changed) {
       const be = row.side === 'BUY' ? n(row.entry_price) * (1 + 2 * fee) : n(row.entry_price) * (1 - 2 * fee);
       const rounded = roundTick(be, n(this.productMap.get(row.symbol)?.tick_size));
@@ -437,7 +441,7 @@ export class DeltaEngine {
         continue;
       }
       if (ep) {
-        await this.managePositionRow(row, ep, this.currentSettings || {});
+        await this.managePositionRow(row, ep, this.currentSettings || {}, allOrders, Array.isArray(fills) ? fills : []);
       } else {
         await this.finalizeClosedTrade(row, Array.isArray(fills) ? fills : [], Array.isArray(orders) ? orders : []);
       }
@@ -589,9 +593,9 @@ export class DeltaEngine {
           for (const x of items) {
             const symbol = String(x.sy || x.symbol || '').replace(/^MARK:/, '');
             if (!symbol) continue;
-            if (msg.type === 'mark_price' || String(msg.type).includes('mark_price')) {
+            if (String(msg.type).startsWith('candlestick_')) {\n              const resolution = String(msg.type).replace('candlestick_', '');\n              const seconds = ({'1m':60,'3m':180,'5m':300,'15m':900,'30m':1800,'1h':3600})[resolution] || 300;\n              const tsRaw = n(x.ts);\n              const tsSec = tsRaw > 2_000_000_000_000 ? tsRaw / 1_000_000 : tsRaw / 1_000;\n              const bucket = Math.floor(tsSec / seconds) * seconds;\n              const key = resolution + ':' + symbol;\n              const next = normalizeCandles([...(this.candles.get(key) || []), { time: bucket, open: x.o, high: x.h, low: x.l, close: x.c, volume: x.v }]);\n              this.candles.set(key, next);\n              this.lastMarketDataAt = Date.now();\n              this.lastTickAt = this.lastMarketDataAt;\n            } else if (msg.type === 'mark_price' || String(msg.type).includes('mark_price')) {
               const t = this.tickerMap.get(symbol);
-              if (t) this.tickerMap.set(symbol, { ...t, mark_price: n(x.p || x.mark_price || x.c || t.mark_price) });
+              if (t) this.tickerMap.set(symbol, { ...t, mark_price: n(x.p || x.mark_price || x.c || t.mark_price) });\n              this.lastMarketDataAt = Date.now();\n              this.lastTickAt = this.lastMarketDataAt;
             } else if (msg.type === 'ticker' || msg.type === 'v2/ticker') {
               const t = this.tickerMap.get(symbol) || { symbol };
               this.tickerMap.set(symbol, {
@@ -671,10 +675,10 @@ export class DeltaEngine {
     await this.updateEngineState({
       equity: account.equity, available_balance: account.available, realized_pnl: realized,
       unrealized_pnl: unrealized, fees_today: feesToday,
-      last_tick_at: new Date(this.lastTickAt || Date.now()).toISOString(),
+      last_tick_at: this.lastMarketDataAt ? new Date(this.lastMarketDataAt).toISOString() : null,
       worker_started_at: new Date(this.startedAt).toISOString(), idle_reason: idle
     });
-    await this.log('INFO', 'Worker heartbeat scan', { lastTickAt: this.lastTickAt, signals: this.lastSignals.length, positions: positions.length });
+    await this.log('INFO', 'Worker heartbeat scan', { lastTickAt: this.lastMarketDataAt, signals: this.lastSignals.length, positions: positions.length });
   }
 
   async run() {
