@@ -657,6 +657,7 @@ export class DeltaEngine {
   }
 
   async scanOnce() {
+    console.log('[DeltaScanner] scan cycle start', { executionReady: this.executionReady });
     if (this.executionReady) {
       await this.acquireLease();
     }
@@ -669,10 +670,15 @@ export class DeltaEngine {
     this.currentSettings = settings;
     if (Date.now() - this.lastTickerFetch > 30000 || !this.tickerMap.size) {
       await this.refreshTickers();
+      console.log('[DeltaScanner] public ticker refresh OK', {
+        symbols: this.tickerMap.size,
+        lastMarketDataAt: this.lastMarketDataAt
+      });
     }
 
     if (this.lastMarketDataAt) {
-      await this.updateEngineState({
+      this.updateEngineState({
+
         last_tick_at: new Date(this.lastMarketDataAt).toISOString(),
         worker_started_at: new Date(this.startedAt).toISOString()
       });
@@ -680,6 +686,10 @@ export class DeltaEngine {
         lastTickAt: this.lastMarketDataAt,
         symbols: this.tickerMap.size,
         executionReady: this.executionReady
+      });
+      console.log('[DeltaScanner] Worker market tick heartbeat', {
+        lastTickAt: this.lastMarketDataAt,
+        symbols: this.tickerMap.size
       });
     }
 
