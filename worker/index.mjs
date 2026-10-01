@@ -43,6 +43,10 @@ async function startupPreflight() {
   }
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 process.on('SIGTERM', async () => { console.log('[DeltaScanner] SIGTERM received; stopping safely'); await engine.stop(); process.exit(0); });
 process.on('SIGINT', async () => { console.log('[DeltaScanner] SIGINT received; stopping safely'); await engine.stop(); process.exit(0); });
 
@@ -57,8 +61,14 @@ process.on('uncaughtException', async error => {
   process.exit(1);
 });
 
-const preflightOk = await startupPreflight();
-if (!preflightOk) process.exit(1);
+let preflightOk = false;
+while (!preflightOk) {
+  preflightOk = await startupPreflight();
+  if (!preflightOk) {
+    console.log('[DeltaScanner] TESTNET preflight will retry in 60s; execution remains fail-closed');
+    await sleep(60_000);
+  }
+}
 
 console.log('[DeltaScanner] TESTNET worker entering engine loop');
 engine.run().catch(async error => {
