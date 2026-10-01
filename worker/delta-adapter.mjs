@@ -52,11 +52,20 @@ export class DeltaAdapter {
           headers.timestamp = ts;
         }
         if (body !== undefined && body !== null) headers['Content-Type'] = 'application/json';
-        const response = await fetch(this.base + path + query, {
-          method,
-          headers,
-          body: body === undefined || body === null ? undefined : payload
-        });
+        const controller = new AbortController();
+        const timeoutMs = auth ? 12000 : 8000;
+        const timeout = setTimeout(() => controller.abort(new Error('request_timeout')), timeoutMs);
+        let response;
+        try {
+          response = await fetch(this.base + path + query, {
+            method,
+            headers,
+            body: body === undefined || body === null ? undefined : payload,
+            signal: controller.signal
+          });
+        } finally {
+          clearTimeout(timeout);
+        }
         this.lastStatus = response.status;
         const serverDate = response.headers.get('date');
         if (serverDate) {
