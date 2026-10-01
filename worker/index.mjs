@@ -61,18 +61,32 @@ process.on('uncaughtException', async error => {
   process.exit(1);
 });
 
-let preflightOk = false;
-while (!preflightOk) {
-  preflightOk = await startupPreflight();
-  if (!preflightOk) {
-    console.log('[DeltaScanner] TESTNET preflight will retry in 60s; execution remains fail-closed');
-    await sleep(60_000);
+async function maintainExecutionPreflight() {
+  let first = true;
+  while (true) {
+    const ok = await startupPreflight();
+    if (ok) {
+      await engine.setExecutionReadiness(true);
+      console.log(first
+        ? '[DeltaScanner] TESTNET execution preflight OK; execution gate is READY'
+        : '[DeltaScanner] TESTNET execution preflight recovered; execution gate is READY');
+      await sleep(300_000);
+    } else {
+      await engine.setExecutionReadiness(false, 'ip_not_whitelisted_for_api_key');
+      console.log('[DeltaScanner] Public market scanning remains active; execution stays BLOCKED until preflight succeeds');
+      await sleep(60_000);
+    }
+    first = false;
   }
 }
 
-console.log('[DeltaScanner] TESTNET worker entering engine loop');
+console.log('[DeltaScanner] TESTNET worker entering market scanner loop; execution preflight runs independently');
+await engine.setExecutionReadiness(false, 'STARTUP_PREFLIGHT_PENDING');
+
 engine.run().catch(async error => {
   console.error('[DeltaScanner] Fatal worker startup error:', error.message);
   await log('ERROR', 'Fatal worker startup error', { error: error.message });
   process.exit(1);
 });
+
+void maintainExecutionPreflight();
