@@ -667,6 +667,19 @@ export class DeltaEngine {
     this.currentSettings = settings;
     if (Date.now() - this.lastUniverseRefresh > 15 * 60 * 1000 || !this.products.length) await this.refreshProducts();
     if (Date.now() - this.lastTickerFetch > 30000 || !this.tickerMap.size) await this.refreshTickers();
+
+    if (this.lastMarketDataAt) {
+      await this.updateEngineState({
+        last_tick_at: new Date(this.lastMarketDataAt).toISOString(),
+        worker_started_at: new Date(this.startedAt).toISOString()
+      });
+      await this.log('INFO', 'Worker market tick heartbeat', {
+        lastTickAt: this.lastMarketDataAt,
+        symbols: this.tickerMap.size,
+        executionReady: this.executionReady
+      });
+    }
+
     if (Date.now() - this.lastCandleRefresh > 60000 || !this.candles.size) await this.refreshAllCandles();
 
     let account = {
