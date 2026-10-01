@@ -69,15 +69,9 @@ export class DeltaEngine {
     try { await db.update('dd_settings', 'id=eq.1', { ...patch, updated_at: iso() }); } catch (e) { await this.log('ERROR', 'State persistence failed', { error: e.message }); }
   }
 
-  async setExecutionReadiness(ready, reason = '') {
+  setExecutionReadiness(ready, reason = '') {
     this.executionReady = Boolean(ready);
     this.executionBlockedReason = this.executionReady ? '' : (String(reason || '').trim() || 'EXECUTION_PREFLIGHT_PENDING');
-    await this.updateEngineState({
-      worker_status: this.running ? 'ONLINE' : 'STARTING',
-      market_status: this.lastMarketDataAt && Date.now() - this.lastMarketDataAt < 180000 ? 'ONLINE' : 'STALE',
-      execution_status: this.executionReady ? 'READY' : 'BLOCKED',
-      execution_blocked_reason: this.executionBlockedReason || null
-    });
   }
 
   async refreshProducts() {
@@ -743,10 +737,6 @@ export class DeltaEngine {
       fees_today: feesToday,
       last_tick_at: this.lastMarketDataAt ? new Date(this.lastMarketDataAt).toISOString() : null,
       worker_started_at: new Date(this.startedAt).toISOString(),
-      worker_status: 'ONLINE',
-      market_status: this.lastMarketDataAt && Date.now() - this.lastMarketDataAt < 180000 ? 'ONLINE' : 'STALE',
-      execution_status: this.executionReady ? 'READY' : 'BLOCKED',
-      execution_blocked_reason: this.executionReady ? null : (this.executionBlockedReason || 'EXECUTION_PREFLIGHT_PENDING'),
       idle_reason: idle
     };
     if (accountReady) {
@@ -760,12 +750,6 @@ export class DeltaEngine {
   async run() {
     if (CONFIG.environment !== 'TESTNET') throw new Error('Production execution disabled');
     this.running = true;
-    await this.updateEngineState({
-      worker_status: 'ONLINE',
-      market_status: 'STARTING',
-      execution_status: this.executionReady ? 'READY' : 'BLOCKED',
-      execution_blocked_reason: this.executionReady ? null : (this.executionBlockedReason || 'STARTUP_PREFLIGHT_PENDING')
-    });
     this.connectWs();
     await this.log('INFO', 'Delta TESTNET worker started; public market scanner is active independently of execution preflight', {
       workerId: CONFIG.workerId
