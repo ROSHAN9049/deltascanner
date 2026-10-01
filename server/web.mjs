@@ -57,7 +57,7 @@ async function handleApi(req,res,url) {
   const target=handlers[url.pathname]; if (!target) return false;
   try {
     const body=await readBody(req);
-    const handler=(await import(target,{with:{type:'module'}})).default;
+    const handler=(await import(target)).default;
     await handler({method:req.method,headers:req.headers,query:parseQuery(url),body},createResponse(res));
   } catch (error) {
     if (!res.writableEnded) {
@@ -89,7 +89,7 @@ async function serveStatic(req,res,url) {
   }
 }
 
-const server=http.createServer(async(req,res)=>{
+const handleRequest = async (req,res) => {
   try {
     const url=new URL(req.url||'/','http://localhost');
     res.setHeader('X-Content-Type-Options','nosniff');
@@ -102,25 +102,35 @@ const server=http.createServer(async(req,res)=>{
     }
     await serveStatic(req,res,url);
   } catch { if (!res.writableEnded) { res.statusCode=500; res.end('Internal Server Error'); } }
+};
+
+const railwayServer = http.createServer(handleRequest);
+const legacyServer = PORT === 3000 ? null : http.createServer(handleRequest);
+
+railwayServer.listen(PORT, '0.0.0.0', () => {
+  console.log('[DeltaScanner Web] TESTNET UI listening on port ' + PORT);
 });
-
-const listeners = [];
-function listenOn(port) {
-  const instance = server.listen(port, '0.0.0.0', () => {
-    console.log('[DeltaScanner Web] TESTNET UI listening on port ' + port);
+if (legacyServer) {
+  legacyServer.listen(3000, '0.0.0.0', () => {
+    console.log('[DeltaScanner Web] TESTNET UI listening on port 3000');
   });
-  listeners.push(instance);
 }
-
-listenOn(PORT);
-if (PORT !== 3000) listenOn(3000);
 
 function shutdown(signal) {
   if (shuttingDown) return; shuttingDown=true;
   console.log('[DeltaScanner Web] '+signal+' received; stopping UI and TESTNET worker safely');
   const timer=setTimeout(()=>process.exit(1),10000);
   timer.unref();
-  worker.once('exit',()=>{ clearTimeout(timer); server.close(()=>process.exit(0)); });
+  let remaining = legacyServer ? 2 : 1;
+  const closeOne = () => {
+    remaining -= 1;
+    if (remaining <= 0) {
+      clearTimeout(timer);
+      process.exit(0);
+    }
+  };
+  railwayServer.close(closeOne);
+  if (legacyServer) legacyServer.close(closeOne);
   worker.kill('SIGTERM');
 }
 worker.on('exit',(code,signal)=>{
