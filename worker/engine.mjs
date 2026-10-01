@@ -586,16 +586,32 @@ export class DeltaEngine {
         ws.send(JSON.stringify({ type: 'enable_heartbeat' }));
       });
       ws.on('message', raw => {
-        this.lastTickAt = Date.now();
         try {
           const msg = JSON.parse(raw.toString());
           const items = Array.isArray(msg.d) ? msg.d : (msg.d && typeof msg.d === 'object' ? [msg.d] : [msg]);
           for (const x of items) {
-            const symbol = String(x.sy || x.symbol || '').replace(/^MARK:/, '');
+            const rawSymbol = String(x.sy || x.symbol || '');
+            const symbol = rawSymbol.replace(/^MARK:/, '');
             if (!symbol) continue;
-            if (String(msg.type).startsWith('candlestick_')) {\n              const resolution = String(msg.type).replace('candlestick_', '');\n              const seconds = ({'1m':60,'3m':180,'5m':300,'15m':900,'30m':1800,'1h':3600})[resolution] || 300;\n              const tsRaw = n(x.ts);\n              const tsSec = tsRaw > 2_000_000_000_000 ? tsRaw / 1_000_000 : tsRaw / 1_000;\n              const bucket = Math.floor(tsSec / seconds) * seconds;\n              const key = resolution + ':' + symbol;\n              const next = normalizeCandles([...(this.candles.get(key) || []), { time: bucket, open: x.o, high: x.h, low: x.l, close: x.c, volume: x.v }]);\n              this.candles.set(key, next);\n              this.lastMarketDataAt = Date.now();\n              this.lastTickAt = this.lastMarketDataAt;\n            } else if (msg.type === 'mark_price' || String(msg.type).includes('mark_price')) {
+
+            if (String(msg.type).startsWith('candlestick_')) {
+              const resolution = String(msg.type).replace('candlestick_', '');
+              const seconds = ({ '1m': 60, '3m': 180, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600 })[resolution] || 300;
+              const tsRaw = n(x.ts);
+              const tsSec = tsRaw > 2_000_000_000_000 ? tsRaw / 1_000_000 : tsRaw > 2_000_000_000 ? tsRaw : tsRaw / 1_000;
+              const bucket = Math.floor(tsSec / seconds) * seconds;
+              const key = resolution + ':' + symbol;
+              const next = normalizeCandles([...(this.candles.get(key) || []), {
+                time: bucket, open: x.o, high: x.h, low: x.l, close: x.c, volume: x.v
+              }]);
+              this.candles.set(key, next);
+              this.lastMarketDataAt = Date.now();
+              this.lastTickAt = this.lastMarketDataAt;
+            } else if (msg.type === 'mark_price' || String(msg.type).includes('mark_price')) {
               const t = this.tickerMap.get(symbol);
-              if (t) this.tickerMap.set(symbol, { ...t, mark_price: n(x.p || x.mark_price || x.c || t.mark_price) });\n              this.lastMarketDataAt = Date.now();\n              this.lastTickAt = this.lastMarketDataAt;
+              if (t) this.tickerMap.set(symbol, { ...t, mark_price: n(x.p || x.mark_price || x.c || t.mark_price) });
+              this.lastMarketDataAt = Date.now();
+              this.lastTickAt = this.lastMarketDataAt;
             } else if (msg.type === 'ticker' || msg.type === 'v2/ticker') {
               const t = this.tickerMap.get(symbol) || { symbol };
               this.tickerMap.set(symbol, {
@@ -607,6 +623,8 @@ export class DeltaEngine {
                 ltp_change_24h: n(x.ltp_change_24h || x.ch || t.ltp_change_24h),
                 turnover_usd: n(x.turnover_usd || x.v || t.turnover_usd)
               });
+              this.lastMarketDataAt = Date.now();
+              this.lastTickAt = this.lastMarketDataAt;
             }
           }
         } catch {}
