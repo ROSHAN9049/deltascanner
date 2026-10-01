@@ -657,7 +657,9 @@ export class DeltaEngine {
   }
 
   async scanOnce() {
-    await this.acquireLease();
+    if (this.executionReady) {
+      await this.acquireLease();
+    }
     const settings = { ...{
       enabled: true, auto_trade: true, emergency_stop: false, continuous_mode: true,
       max_open_positions: 20, risk_pct: 1, max_leverage: 3, score_min: 80,
