@@ -10,6 +10,19 @@ if (!CONFIG.supabaseUrl || !CONFIG.supabaseAdminKey) throw new Error('SUPABASE_U
 
 const engine = new DeltaEngine();
 
+async function getOutboundIp() {
+  try {
+    const response = await fetch('https://api.ipify.org?format=json', {
+      headers: { 'User-Agent': 'DealDost-Delta-Preflight/2.0' }
+    });
+    if (!response.ok) return 'unavailable';
+    const data = await response.json();
+    return String(data.ip || 'unavailable');
+  } catch {
+    return 'unavailable';
+  }
+}
+
 async function startupPreflight() {
   console.log('[DeltaScanner] Starting TESTNET worker preflight');
   try {
@@ -21,7 +34,11 @@ async function startupPreflight() {
     console.log('[DeltaScanner] Delta authenticated TESTNET API OK');
     return true;
   } catch (error) {
-    console.error('[DeltaScanner] Startup preflight FAILED:', String(error?.message || error));
+    const message = String(error?.message || error);
+    console.error('[DeltaScanner] Startup preflight FAILED:', message);
+    if (message.includes('ip_not_whitelisted_for_api_key')) {
+      console.error('[DeltaScanner] Railway outbound public IP:', await getOutboundIp());
+    }
     return false;
   }
 }
