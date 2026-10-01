@@ -10,6 +10,8 @@ export const CONFIG = Object.freeze({
   apiSecret: process.env.DELTA_TESTNET_API_SECRET || '',
   engineSecret: process.env.ENGINE_SECRET || '',
   supabaseUrl: process.env.SUPABASE_URL || '',
+  supabaseSecretKey: process.env.SUPABASE_SECRET_KEY || '',
   supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY || '',
+  supabaseAdminKey: process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '',
   workerId: process.env.WORKER_ID || ('delta-worker-' + process.pid)
 });
