@@ -38,6 +38,8 @@ export class DeltaEngine {
     this.ws = null;
     this.wsRetry = 0;
     this.running = false;
+    this.executionReady = false;
+    this.executionBlockedReason = 'STARTUP_PREFLIGHT_PENDING';
   }
 
   async log(level, message, data) {
@@ -65,6 +67,17 @@ export class DeltaEngine {
 
   async updateEngineState(patch) {
     try { await db.update('dd_settings', 'id=eq.1', { ...patch, updated_at: iso() }); } catch (e) { await this.log('ERROR', 'State persistence failed', { error: e.message }); }
+  }
+
+  async setExecutionReadiness(ready, reason = '') {
+    this.executionReady = Boolean(ready);
+    this.executionBlockedReason = this.executionReady ? '' : (String(reason || '').trim() || 'EXECUTION_PREFLIGHT_PENDING');
+    await this.updateEngineState({
+      worker_status: this.running ? 'ONLINE' : 'STARTING',
+      market_status: this.lastMarketDataAt && Date.now() - this.lastMarketDataAt < 180000 ? 'ONLINE' : 'STALE',
+      execution_status: this.executionReady ? 'READY' : 'BLOCKED',
+      execution_blocked_reason: this.executionBlockedReason || null
+    });
   }
 
   async refreshProducts() {
@@ -171,6 +184,7 @@ export class DeltaEngine {
 
   async riskGate(signal, strategy, account, settings, openPositions, trades) {
     const reasons = [...(signal.blocked || [])];
+    if (!this.executionReady) reasons.push('Execution blocked: ' + (this.executionBlockedReason || 'preflight pending'));
     const continuous = settings.continuous_mode !== false;
     if (settings.emergency_stop) reasons.push('Emergency Stop');
     if (!settings.enabled || !settings.auto_trade) reasons.push('Auto OFF');
@@ -271,6 +285,7 @@ export class DeltaEngine {
   }
 
   async openTrade(item, strategy, signal, account, settings, openPositions, trades) {
+    if (!this.executionReady) return false;
     if (signal.stage !== 'CONFIRMED' || signal.score < n(settings.score_min || 80)) return false;
     const gate = await this.riskGate(signal, strategy, account, settings, openPositions, trades);
     if (gate.reasons.length || !gate.size) return false;
@@ -631,8 +646,11 @@ export class DeltaEngine {
       });
       ws.on('close', () => {
         this.ws = null;
+        if (!this.running) return;
         const wait = Math.min(30000, 5000 * Math.max(1, ++this.wsRetry));
-        setTimeout(() => this.connectWs(), wait);
+        setTimeout(() => {
+          if (this.running) this.connectWs();
+        }, wait);
       });
       ws.on('error', () => {});
     } catch {
@@ -654,8 +672,35 @@ export class DeltaEngine {
     if (Date.now() - this.lastTickerFetch > 30000 || !this.tickerMap.size) await this.refreshTickers();
     if (Date.now() - this.lastCandleRefresh > 60000 || !this.candles.size) await this.refreshAllCandles();
 
-    const account = await this.accountSnapshot();
-    if (Date.now() - this.lastReconcile > 60000) await this.reconcile();
+    let account = {
+      equity: n(settings.equity),
+      available: n(settings.available_balance),
+      unrealized: 0,
+      positions: []
+    };
+    let accountReady = false;
+
+    if (this.executionReady) {
+      try {
+        account = await this.accountSnapshot();
+        accountReady = true;
+        if (Date.now() - this.lastReconcile > 60000) {
+          try { await this.reconcile(); }
+          catch (e) {
+            await this.log('WARN', 'Authenticated reconciliation failed; execution remains fail-closed', {
+              error: e.message, code: e.code || null
+            });
+          }
+        }
+      } catch (e) {
+        this.executionReady = false;
+        this.executionBlockedReason = String(e?.message || e);
+        await this.log('WARN', 'Authenticated account snapshot unavailable; market scanner continues read-only', {
+          error: this.executionBlockedReason, code: e.code || null
+        });
+      }
+    }
+
     const openRows = await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
     const trades = await this.recentTrades();
     if (Date.now() - this.lastAnalysis > 55000 || !this.lastSignals.length) {
@@ -685,25 +730,46 @@ export class DeltaEngine {
       }
     }
 
-    const unrealized = account.positions.reduce((s, p) => s + n(p.unrealized_pnl), 0);
+    const unrealized = accountReady
+      ? account.positions.reduce((s, p) => s + n(p.unrealized_pnl), 0)
+      : n(settings.unrealized_pnl);
     const closed = trades || [];
     const realized = closed.reduce((s, t) => s + n(t.net_pnl), 0);
     const feesToday = closed.filter(t => String(t.closed_at || '').slice(0, 10) === today()).reduce((s, t) => s + n(t.fees), 0);
     const idle = candidatesText(this.lastSignals);
-    await this.updateEngineState({
-      equity: account.equity, available_balance: account.available, realized_pnl: realized,
-      unrealized_pnl: unrealized, fees_today: feesToday,
+    const statePatch = {
+      realized_pnl: realized,
+      unrealized_pnl: unrealized,
+      fees_today: feesToday,
       last_tick_at: this.lastMarketDataAt ? new Date(this.lastMarketDataAt).toISOString() : null,
-      worker_started_at: new Date(this.startedAt).toISOString(), idle_reason: idle
-    });
+      worker_started_at: new Date(this.startedAt).toISOString(),
+      worker_status: 'ONLINE',
+      market_status: this.lastMarketDataAt && Date.now() - this.lastMarketDataAt < 180000 ? 'ONLINE' : 'STALE',
+      execution_status: this.executionReady ? 'READY' : 'BLOCKED',
+      execution_blocked_reason: this.executionReady ? null : (this.executionBlockedReason || 'EXECUTION_PREFLIGHT_PENDING'),
+      idle_reason: idle
+    };
+    if (accountReady) {
+      statePatch.equity = account.equity;
+      statePatch.available_balance = account.available;
+    }
+    await this.updateEngineState(statePatch);
     await this.log('INFO', 'Worker heartbeat scan', { lastTickAt: this.lastMarketDataAt, signals: this.lastSignals.length, positions: positions.length });
   }
 
   async run() {
     if (CONFIG.environment !== 'TESTNET') throw new Error('Production execution disabled');
     this.running = true;
+    await this.updateEngineState({
+      worker_status: 'ONLINE',
+      market_status: 'STARTING',
+      execution_status: this.executionReady ? 'READY' : 'BLOCKED',
+      execution_blocked_reason: this.executionReady ? null : (this.executionBlockedReason || 'STARTUP_PREFLIGHT_PENDING')
+    });
     this.connectWs();
-    await this.log('INFO', 'Delta TESTNET worker started', { workerId: CONFIG.workerId });
+    await this.log('INFO', 'Delta TESTNET worker started; public market scanner is active independently of execution preflight', {
+      workerId: CONFIG.workerId
+    });
     while (this.running) {
       try { await this.scanOnce(); }
       catch (e) {
