@@ -97,7 +97,7 @@ export class DeltaEngine {
     const next = new Map();
     for (const t of all) {
       const p = this.productMap.get(t.symbol);
-      if (!p) continue;
+      if (this.products.length && !p) continue;
       next.set(t.symbol, { ...t });
     }
     const ranked = [...next.values()].sort((a, b) => n(b.turnover_usd || b.turnover) - n(a.turnover_usd || a.turnover)).slice(0, 50);
@@ -667,8 +667,9 @@ export class DeltaEngine {
       scalping_rr: 2.5, tp1_pct: 33, max_hold_minutes: 240
     }, ...(await this.loadSettings()) };
     this.currentSettings = settings;
-    if (Date.now() - this.lastUniverseRefresh > 15 * 60 * 1000 || !this.products.length) await this.refreshProducts();
-    if (Date.now() - this.lastTickerFetch > 30000 || !this.tickerMap.size) await this.refreshTickers();
+    if (Date.now() - this.lastTickerFetch > 30000 || !this.tickerMap.size) {
+      await this.refreshTickers();
+    }
 
     if (this.lastMarketDataAt) {
       await this.updateEngineState({
@@ -680,6 +681,16 @@ export class DeltaEngine {
         symbols: this.tickerMap.size,
         executionReady: this.executionReady
       });
+    }
+
+    if (Date.now() - this.lastUniverseRefresh > 15 * 60 * 1000 || !this.products.length) {
+      try {
+        await this.refreshProducts();
+      } catch (e) {
+        await this.log('WARN', 'Delta product metadata refresh failed; market ticker feed remains active', {
+          error: e.message, code: e.code || null
+        });
+      }
     }
 
     if (Date.now() - this.lastCandleRefresh > 60000 || !this.candles.size) await this.refreshAllCandles();
