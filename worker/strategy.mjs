@@ -220,7 +220,7 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
 
   const highVol = a15 > 0 && price > 0 ? (a15 / price) * 100 > 2.2 : false;
   const lowVol = a15 > 0 && price > 0 ? (a15 / price) * 100 < 0.15 : false;
-  const regime = highVol ? 'HIGH_VOLATILITY' : lowVol ? 'LOW_VOLATILITY' : t15 === 'BULL' ? 'TREND_UP' : t15 === 'BEAR' ? 'TREND_DOWN' : 'RANGE';
+  const regime = highVol ? 'HIGH_VOLATILITY' : lowVol ? 'LOW_VOLATILITY' : tConfirm === 'BULL' ? 'TREND_UP' : tConfirm === 'BEAR' ? 'TREND_DOWN' : 'RANGE';
 
   const stopMin = n(cfg.minStopPct) / 100;
   const atrPct = a > 0 && price > 0 ? 1.25 * a / price : 0;
