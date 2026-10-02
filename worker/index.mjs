@@ -5,7 +5,7 @@ import { log } from '../server/db.js';
 
 if (CONFIG.environment !== 'TESTNET') throw new Error('Production execution is disabled.');
 if (!CONFIG.engineSecret) throw new Error('ENGINE_SECRET is required.');
-if (!CONFIG.apiKey || !CONFIG.apiSecret) throw new Error('DELTA_TESTNET_API_KEY / DELTA_TESTNET_API_SECRET are required.');
+if (!CONFIG.scanOnly && (!CONFIG.apiKey || !CONFIG.apiSecret)) throw new Error('DELTA_TESTNET_API_KEY / DELTA_TESTNET_API_SECRET are required.');
 if (!CONFIG.supabaseUrl || !CONFIG.supabaseAdminKey) throw new Error('SUPABASE_URL / Supabase server key is required.');
 
 const engine = new DeltaEngine();
@@ -23,6 +23,13 @@ async function getOutboundIp() {
   }
 }
 
+function findClientIp(error) {
+  const direct = error?.clientIp || error?.details?.client_ip || error?.details?.clientIp ||
+    error?.details?.ip || error?.details?.meta?.client_ip || error?.details?.meta?.clientIp ||
+    error?.details?.meta?.ip || null;
+  return direct ? String(direct).split(',')[0].trim() : null;
+}
+
 async function startupPreflight() {
   console.log('[DeltaScanner] Starting TESTNET worker preflight');
   try {
@@ -37,7 +44,13 @@ async function startupPreflight() {
     const message = String(error?.message || error);
     console.error('[DeltaScanner] Startup preflight FAILED:', message);
     if (message.includes('ip_not_whitelisted_for_api_key')) {
-      console.error('[DeltaScanner] Railway outbound public IP:', await getOutboundIp());
+      const clientIp = findClientIp(error) || await getOutboundIp();
+      console.error('[DeltaScanner] Railway outbound public IP:', clientIp);
+      await log('ERROR', 'Delta API IP whitelist rejection', {
+        code: error?.code || 'ip_not_whitelisted_for_api_key',
+        status: error?.status || null,
+        clientIp: clientIp || null
+      });
     }
     return false;
   }
@@ -80,8 +93,8 @@ async function maintainExecutionPreflight() {
   }
 }
 
-console.log('[DeltaScanner] TESTNET worker entering market scanner loop; execution preflight runs independently');
-await engine.setExecutionReadiness(false, 'STARTUP_PREFLIGHT_PENDING');
+console.log('[DeltaScanner] TESTNET worker entering market scanner loop', { scanOnly: CONFIG.scanOnly });
+await engine.setExecutionReadiness(false, CONFIG.scanOnly ? 'SCAN_ONLY' : 'STARTUP_PREFLIGHT_PENDING');
 
 engine.run().catch(async error => {
   console.error('[DeltaScanner] Fatal worker startup error:', error.message);
@@ -89,4 +102,4 @@ engine.run().catch(async error => {
   process.exit(1);
 });
 
-void maintainExecutionPreflight();
+if (!CONFIG.scanOnly) void maintainExecutionPreflight();
