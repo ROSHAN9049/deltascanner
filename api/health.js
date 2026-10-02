@@ -8,11 +8,15 @@ export default async function handler(req, res) {
     const workerLeaseActive = !!(lease.expires_at && new Date(lease.expires_at) > new Date());
     const workerTickMs = settings.last_tick_at ? Date.parse(settings.last_tick_at) : NaN;
     const tickFresh = Number.isFinite(workerTickMs) && Date.now() - workerTickMs < 180000;
+    const scanOnly = CONFIG.scanOnly;
+    const exchangeHealthy = scanOnly ? tickFresh : workerLeaseActive && tickFresh;
     return res.status(200).json({
       success: true,
       environment: CONFIG.environment,
       exchange: 'Delta Exchange India Demo',
-      exchangeHealthy: workerLeaseActive && tickFresh,
+      scanOnly,
+      executionReady: scanOnly ? false : workerLeaseActive && tickFresh,
+      exchangeHealthy,
       timeDriftMs: null,
       lastTickAt: settings.last_tick_at || null,
       workerStartedAt: settings.worker_started_at || null,

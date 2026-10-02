@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import WebSocket from 'ws';
 import { CONFIG } from '../server/config.js';
 import { DeltaAdapter } from './delta-adapter.mjs';
-import { analyse, normalizeCandles } from './strategy.mjs';
+import { analyse, normalizeCandles, fillMissingCandles } from './strategy.mjs';
 import * as db from '../server/db.js';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -40,6 +40,11 @@ export class DeltaEngine {
     this.running = false;
     this.executionReady = false;
     this.executionBlockedReason = 'STARTUP_PREFLIGHT_PENDING';
+    this.universeBackoffUntil = 0;
+    this.lastUniverseAttempt = 0;
+    this.lastSignalCleanup = 0;
+    this.lastCompletedScanAt = 0;
+    this.watchdog = null;
   }
 
   async log(level, message, data) {
@@ -78,17 +83,24 @@ export class DeltaEngine {
   }
 
   async refreshProducts() {
+    this.lastUniverseAttempt = Date.now();
     const raw = await this.adapter.products();
     const active = (Array.isArray(raw) ? raw : []).filter(p =>
       p.contract_type === 'perpetual_futures' &&
       p.state === 'live' &&
-      p.trading_status === 'operational' &&
+      (p.trading_status === undefined || p.trading_status === null || p.trading_status === 'operational') &&
       p.only_reduce_only_orders_allowed !== true
     );
+    if (!active.length) {
+      await this.log('WARN', 'Delta product universe returned empty; retaining previous universe and backing off', {});
+      return 0;
+    }
     this.products = active;
     this.productMap = new Map(active.map(p => [p.symbol, p]));
     this.lastUniverseRefresh = Date.now();
+    this.universeBackoffUntil = 0;
     await this.log('INFO', 'Delta product universe refreshed', { active: active.length });
+    return active.length;
   }
 
   async refreshTickers() {
@@ -96,9 +108,21 @@ export class DeltaEngine {
     const all = (Array.isArray(raw) ? raw : []).filter(x => x.contract_type === 'perpetual_futures');
     const next = new Map();
     for (const t of all) {
-      const p = this.productMap.get(t.symbol);
+      const symbol = String(t.symbol || '');
+      const p = this.productMap.get(symbol);
       if (this.products.length && !p) continue;
-      next.set(t.symbol, { ...t });
+      const turnover = n(t.turnover_usd || t.turnover);
+      const change = n(t.ltp_change_24h);
+      const bid = n(t.quotes?.best_bid);
+      const ask = n(t.quotes?.best_ask);
+      const spreadPct = bid > 0 && ask > 0 ? (ask - bid) / ((ask + bid) / 2) * 100 : 99;
+      const keepRegime = symbol === 'BTCUSD';
+      if (!keepRegime && (
+        turnover < CONFIG.minTurnoverUsd ||
+        Math.abs(change) > CONFIG.maxAbsChange24h ||
+        spreadPct > CONFIG.maxSpreadPct
+      )) continue;
+      next.set(symbol, { ...t, spread_pct: spreadPct });
     }
     const ranked = [...next.values()].sort((a, b) => n(b.turnover_usd || b.turnover) - n(a.turnover_usd || a.turnover)).slice(0, 50);
     this.tickerMap = new Map(ranked.map(x => [x.symbol, x]));
@@ -109,7 +133,8 @@ export class DeltaEngine {
   async refreshCandle(symbol, resolution) {
     const key = resolution + ':' + symbol;
     const value = await this.adapter.candles(symbol, resolution, 100);
-    this.candles.set(key, normalizeCandles(value));
+    const normalized = normalizeCandles(value);
+    this.candles.set(key, fillMissingCandles(normalized, resolution));
     return this.candles.get(key);
   }
 
@@ -143,7 +168,7 @@ export class DeltaEngine {
     const equity = n(account.equity);
     const cv = n(signal.contractValue);
     const price = n(signal.price);
-    const stopDistance = Math.abs(n(signal.price) - n(signal.sl));
+    const stopDistance = signal.side ? Math.abs(n(signal.price) - n(signal.sl)) : n(signal.riskDistance);
     const riskBudget = equity * n(settings.risk_pct || 1) / 100;
     if (!equity || !cv || !price || !stopDistance || !riskBudget) return null;
     if (signal.notionalType && signal.notionalType !== 'vanilla') return null;
@@ -181,7 +206,7 @@ export class DeltaEngine {
 
   async riskGate(signal, strategy, account, settings, openPositions, trades) {
     const reasons = [...(signal.blocked || [])];
-    if (!this.executionReady) reasons.push('Execution blocked: ' + (this.executionBlockedReason || 'preflight pending'));
+    if (!CONFIG.scanOnly && !this.executionReady) reasons.push('Execution blocked: ' + (this.executionBlockedReason || 'preflight pending'));
     const continuous = settings.continuous_mode !== false;
     if (settings.emergency_stop) reasons.push('Emergency Stop');
     if (!settings.enabled || !settings.auto_trade) reasons.push('Auto OFF');
@@ -229,6 +254,7 @@ export class DeltaEngine {
     const btc5 = this.getCandles(btc, '5m');
     const btc15 = this.getCandles(btc, '15m');
     const out = [];
+    const rows = [];
     const tickers = [...this.tickerMap.values()];
     for (let i = 0; i < tickers.length; i++) {
       const ticker = tickers[i], p = this.productMap.get(ticker.symbol);
@@ -237,31 +263,156 @@ export class DeltaEngine {
       const c5 = this.getCandles(ticker.symbol, '5m');
       const c15 = this.getCandles(ticker.symbol, '15m');
       const mom = analyse(ticker, p, c1, c5, c15, btc5, btc15, 'MOMENTUM', {
-        minStopPct: n(settings.momentum_sl_min_pct || 0.95), rr: n(settings.momentum_rr || 2.5), scoreMin: n(settings.score_min || 80)
+        minStopPct: n(settings.momentum_sl_min_pct || 0.95),
+        rr: n(settings.momentum_rr || 2.5),
+        scoreMin: n(settings.score_min || 80),
+        volumeMin: CONFIG.volSpikeMin
       });
       const scalp = analyse(ticker, p, c1, c5, c15, btc5, btc15, 'SCALPING', {
-        minStopPct: n(settings.scalping_sl_min_pct || 0.75), rr: n(settings.scalping_rr || 2.5), scoreMin: n(settings.score_min || 80)
+        minStopPct: n(settings.scalping_sl_min_pct || 0.75),
+        rr: n(settings.scalping_rr || 2.5),
+        scoreMin: n(settings.score_min || 80),
+        volumeMin: CONFIG.volSpikeMin
       });
       for (const s of [mom, scalp]) {
+        const strategy = s === mom ? 'MOMENTUM' : 'SCALPING';
         const size = this.positionSizing(s, account, settings);
-        const gate = await this.riskGate(s, s === mom ? 'MOMENTUM' : 'SCALPING', account, settings, openPositions, trades);
-        await db.insert('dd_signals', {
+        const gate = await this.riskGate(s, strategy, account, settings, openPositions, trades);
+        rows.push({
           symbol: s.symbol, product_id: s.productId, rank: i + 1,
-          strategy: s === mom ? 'MOMENTUM' : 'SCALPING', price: s.price, change_24h: s.change,
+          strategy, price: s.price, change_24h: s.change,
           turnover_usd: s.turnover, spread_pct: s.spreadPct, volume_spike: s.volumeSpike,
-          score: s.score, stage: s.stage, side: s.side, rsi: s.rsi, trend: s.trend,
+          score: s.score, stage: s.stage, side: s.side || null, rsi: s.rsi, trend: s.trend,
           confirm_trend: s.confirmTrend, btc_trend: s.btcTrend, ema21: s.ema21,
           atr_5m: s.atr5, atr_15m: s.atr15, support: s.support, resistance: s.resistance,
-          stop_price: s.sl, tp1_price: s.tp1, tp_price: s.tp,
+          stop_price: s.sl || null, tp1_price: s.tp1 || null, tp_price: s.tp || null,
           qty_contracts: size ? size.qty : 0, notional: size ? size.notional : 0,
           risk_usd: size ? size.risk : 0, fee_risk_ratio: s.feeRiskRatio,
           ready: s.ready && gate.reasons.length === 0, blocked_reasons: gate.reasons,
-          details: { rsi: s.rsi, vwap: s.vwap, macd: s.macd, regime: s.regime, quality: s.quality, candlesFresh: s.candlesFresh }
+          details: {
+            rsi: s.rsi, vwap: s.vwap, macd: s.macd, regime: s.regime,
+            quality: s.quality, candlesFresh: s.candlesFresh,
+            rangeAtr: s.rangeAtr, emaDistanceAtr: s.emaDistanceAtr,
+            entryTimeframe: s.entryTimeframe, confirmationTimeframe: s.confirmationTimeframe
+          }
         });
       }
       out.push({ ticker, product: p, mom, scalp });
     }
+    if (rows.length) await db.insert('dd_signals', rows);
     this.lastSignals = out;
+  }
+
+  async paperAccount(openRows, trades, settings) {
+    const paperTrades = (trades || []).filter(t => String(t.execution_id || '').startsWith('PAPER-'));
+    const realized = paperTrades.reduce((sum, t) => sum + n(t.net_pnl), 0);
+    const equity = Math.max(0, CONFIG.paperEquity + realized);
+    let unrealized = 0, margin = 0;
+    for (const row of openRows || []) {
+      if (row.origin !== 'PAPER' || n(row.qty) <= 0) continue;
+      const mark = n(this.tickerMap.get(row.symbol)?.mark_price || this.tickerMap.get(row.symbol)?.close || row.current_price);
+      const value = n(this.productMap.get(row.symbol)?.contract_value) || 1;
+      const pnl = row.side === 'BUY'
+        ? (mark - n(row.entry_price)) * n(row.qty) * value
+        : (n(row.entry_price) - mark) * n(row.qty) * value;
+      unrealized += pnl;
+      margin += Math.abs(n(row.qty) * mark * value) / Math.max(1, n(settings.max_leverage || 3));
+    }
+    return { equity, available: Math.max(0, equity - margin), unrealized, positions: openRows.filter(row => row.origin === 'PAPER' && n(row.qty) > 0) };
+  }
+
+  async managePaperPositions(rows, settings) {
+    for (const row of rows || []) {
+      if (row.origin !== 'PAPER' || n(row.qty) <= 0) continue;
+      const ticker = this.tickerMap.get(row.symbol);
+      const mark = n(ticker?.mark_price || ticker?.close || row.current_price);
+      if (!mark) continue;
+      const product = this.productMap.get(row.symbol);
+      const tick = n(product?.tick_size);
+      const fee = n(product?.taker_commission_rate);
+      const hitTp1 = !row.tp1_done && (row.side === 'BUY' ? mark >= n(row.tp1_price) : mark <= n(row.tp1_price));
+      if (hitTp1 && n(row.tp1_price) > 0) {
+        const be = row.side === 'BUY' ? n(row.entry_price) * (1 + 2 * fee) : n(row.entry_price) * (1 - 2 * fee);
+        await db.update('dd_positions', 'execution_id=eq.' + encodeURIComponent(row.execution_id), {
+          tp1_done: true,
+          stop_price: roundTick(be, tick),
+          current_price: mark,
+          updated_at: iso()
+        });
+        row.tp1_done = true;
+        row.stop_price = roundTick(be, tick);
+        await this.log('INFO', 'PAPER TP1 reached; virtual stop moved to break-even plus fees', {
+          symbol: row.symbol, executionId: row.execution_id, mark, stop: row.stop_price
+        });
+      }
+      const stop = n(row.stop_price);
+      const tp = n(row.tp_price);
+      const hitStop = stop > 0 && (row.side === 'BUY' ? mark <= stop : mark >= stop);
+      const hitTp = tp > 0 && (row.side === 'BUY' ? mark >= tp : mark <= tp);
+      if (hitTp || hitStop || Date.now() - new Date(row.opened_at).getTime() > n(settings.max_hold_minutes || 240) * 60000) {
+        const reason = hitTp ? 'TP' : hitStop ? (row.tp1_done ? 'BREAKEVEN' : 'SL') : 'TIMEOUT';
+        await this.finalizePaperTrade(row, mark, reason);
+      } else {
+        await db.update('dd_positions', 'execution_id=eq.' + encodeURIComponent(row.execution_id), {
+          current_price: mark, updated_at: iso()
+        });
+      }
+    }
+  }
+
+  async finalizePaperTrade(row, exitPrice, reason) {
+    const product = this.productMap.get(row.symbol);
+    const cv = n(product?.contract_value) || 1;
+    const feeRate = n(product?.taker_commission_rate);
+    const qty = Math.abs(n(row.initial_qty || row.qty));
+    const entryPrice = n(row.entry_price);
+    const entryNotional = Math.abs(entryPrice * qty * cv);
+    const exitNotional = Math.abs(exitPrice * qty * cv);
+    const gross = row.side === 'BUY'
+      ? (exitPrice - entryPrice) * qty * cv
+      : (entryPrice - exitPrice) * qty * cv;
+    const fees = (entryNotional + exitNotional) * feeRate;
+    const net = gross - fees;
+    const risk = Math.abs(entryPrice - n(row.stop_price || row.entry_price)) * cv * Math.max(1, qty);
+    const trade = {
+      execution_id: row.execution_id, symbol: row.symbol, strategy: row.strategy, side: row.side,
+      entry_price: entryPrice, exit_price: exitPrice, qty,
+      entry_notional: entryNotional, exit_notional: exitNotional,
+      fees, gross_pnl: gross, net_pnl: net,
+      pnl_pct: entryNotional ? net / entryNotional * 100 : 0,
+      r_multiple: risk ? net / risk : 0,
+      exit_reason: reason, result: net > 0 ? 'WIN' : net < 0 ? 'LOSS' : 'FLAT',
+      entry_fill_ids: [], exit_fill_ids: [],
+      opened_at: row.opened_at, closed_at: iso()
+    };
+    await db.insert('dd_trades', trade);
+    await db.update('dd_positions', 'execution_id=eq.' + encodeURIComponent(row.execution_id), {
+      qty: 0, current_price: exitPrice, updated_at: iso()
+    });
+    await this.log('INFO', 'Paper trade closed', { executionId: row.execution_id, symbol: row.symbol, reason, gross, fees, net });
+  }
+
+  async openPaperTrade(item, strategy, signal, account, settings, openPositions, trades) {
+    if (!CONFIG.scanOnly || signal.stage !== 'CONFIRMED' || !signal.side) return false;
+    const gate = await this.riskGate(signal, strategy, account, settings, openPositions, trades);
+    if (gate.reasons.length || !gate.size) return false;
+    if (openPositions.some(p => p.symbol === signal.symbol && n(p.qty) > 0)) return false;
+    const executionId = clientId('PAPER', signal.symbol);
+    if ((trades || []).some(t => t.execution_id === executionId)) return false;
+    await db.insert('dd_positions', {
+      symbol: signal.symbol, product_id: signal.productId, side: signal.side,
+      qty: gate.size.qty, entry_price: signal.price, current_price: signal.price,
+      stop_price: signal.sl, tp1_price: signal.tp1, tp_price: signal.tp,
+      initial_qty: gate.size.qty, tp1_done: false, protection_verified: true,
+      protection_order_id: 'PAPER', tp1_order_id: null, tp_order_id: null,
+      entry_order_id: null, client_order_id: null, execution_id: executionId,
+      strategy, origin: 'PAPER', opened_at: iso(), updated_at: iso()
+    });
+    await this.log('INFO', 'Paper trade opened', {
+      executionId, symbol: signal.symbol, strategy, side: signal.side,
+      qty: gate.size.qty, entry: signal.price, sl: signal.sl, tp: signal.tp
+    });
+    return true;
   }
 
   async findExistingClient(client) {
@@ -331,7 +482,7 @@ export class DeltaEngine {
     });
 
     try {
-      await this.adapter.placeBracket({
+      const bracketOrder = await this.adapter.placeBracket({
         product_id: signal.productId,
         stop_loss_order: { order_type: 'market_order', stop_price: String(sl) },
         take_profit_order: { order_type: 'market_order', stop_price: String(tp) },
@@ -445,6 +596,8 @@ export class DeltaEngine {
       this.adapter.fills()
     ]);
     const exchangePositions = Array.isArray(positions) ? positions.filter(p => Math.abs(n(p.size)) > 0) : [];
+    const recentHistory = await this.adapter.historyOrders().catch(() => []);
+    const allOrders = [...(Array.isArray(orders) ? orders : []), ...(Array.isArray(recentHistory) ? recentHistory : [])];
     const local = await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
     for (const row of local || []) {
       const ep = exchangePositions.find(p => String(p.product_symbol) === String(row.symbol));
@@ -458,8 +611,6 @@ export class DeltaEngine {
         await this.finalizeClosedTrade(row, Array.isArray(fills) ? fills : [], Array.isArray(orders) ? orders : []);
       }
     }
-    const recentHistory = await this.adapter.historyOrders().catch(() => []);
-    const allOrders = [...(Array.isArray(orders) ? orders : []), ...(Array.isArray(recentHistory) ? recentHistory : [])];
     for (const ep of exchangePositions) {
       const symbol = String(ep.product_symbol || ep.symbol || '');
       const known = (local || []).some(p => String(p.symbol) === symbol);
@@ -657,10 +808,9 @@ export class DeltaEngine {
   }
 
   async scanOnce() {
-    console.log('[DeltaScanner] scan cycle start', { executionReady: this.executionReady });
-    if (this.executionReady) {
-      await this.acquireLease();
-    }
+    console.log('[DeltaScanner] scan cycle start', { scanOnly: CONFIG.scanOnly, executionReady: this.executionReady });
+    if (!CONFIG.scanOnly && this.executionReady) await this.acquireLease();
+
     const settings = { ...{
       enabled: true, auto_trade: true, emergency_stop: false, continuous_mode: true,
       max_open_positions: 20, risk_pct: 1, max_leverage: 3, score_min: 80,
@@ -668,6 +818,20 @@ export class DeltaEngine {
       scalping_rr: 2.5, tp1_pct: 33, max_hold_minutes: 240
     }, ...(await this.loadSettings()) };
     this.currentSettings = settings;
+
+    const universeNeedsRefresh = Date.now() - this.lastUniverseRefresh > 15 * 60 * 1000 || !this.products.length;
+    if (universeNeedsRefresh && Date.now() >= this.universeBackoffUntil) {
+      try {
+        const count = await this.refreshProducts();
+        if (!count) this.universeBackoffUntil = Date.now() + 5 * 60 * 1000;
+      } catch (e) {
+        this.universeBackoffUntil = Date.now() + 5 * 60 * 1000;
+        await this.log('WARN', 'Delta product metadata refresh failed; backing off', {
+          error: e.message, code: e.code || null
+        });
+      }
+    }
+
     if (Date.now() - this.lastTickerFetch > 30000 || !this.tickerMap.size) {
       await this.refreshTickers();
       console.log('[DeltaScanner] public ticker refresh OK', {
@@ -677,43 +841,44 @@ export class DeltaEngine {
     }
 
     if (this.lastMarketDataAt) {
-      this.updateEngineState({
-
+      await this.updateEngineState({
         last_tick_at: new Date(this.lastMarketDataAt).toISOString(),
         worker_started_at: new Date(this.startedAt).toISOString()
       });
       await this.log('INFO', 'Worker market tick heartbeat', {
         lastTickAt: this.lastMarketDataAt,
         symbols: this.tickerMap.size,
-        executionReady: this.executionReady
+        scanOnly: CONFIG.scanOnly
       });
-      console.log('[DeltaScanner] Worker market tick heartbeat', {
-        lastTickAt: this.lastMarketDataAt,
-        symbols: this.tickerMap.size
-      });
-    }
-
-    if (Date.now() - this.lastUniverseRefresh > 15 * 60 * 1000 || !this.products.length) {
-      try {
-        await this.refreshProducts();
-      } catch (e) {
-        await this.log('WARN', 'Delta product metadata refresh failed; market ticker feed remains active', {
-          error: e.message, code: e.code || null
-        });
-      }
     }
 
     if (Date.now() - this.lastCandleRefresh > 60000 || !this.candles.size) await this.refreshAllCandles();
 
-    let account = {
-      equity: n(settings.equity),
-      available: n(settings.available_balance),
-      unrealized: 0,
-      positions: []
-    };
+    let openRows = await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
+    openRows = Array.isArray(openRows) ? openRows : [];
+    let trades = await this.recentTrades();
+    trades = Array.isArray(trades) ? trades : [];
+
+    if (CONFIG.scanOnly) {
+      const paperRows = openRows.filter(row => row.origin === 'PAPER');
+      if (paperRows.length) {
+        await this.managePaperPositions(paperRows, settings);
+        openRows = await db.select('dd_positions', 'origin=eq.PAPER&qty=gt.0&order=updated_at.desc');
+        openRows = Array.isArray(openRows) ? openRows : [];
+        trades = await this.recentTrades();
+        trades = Array.isArray(trades) ? trades : [];
+      }
+    }
+
+    let account = CONFIG.scanOnly
+      ? await this.paperAccount(openRows, trades, settings)
+      : {
+          equity: n(settings.equity), available: n(settings.available_balance),
+          unrealized: n(settings.unrealized_pnl), positions: []
+        };
     let accountReady = false;
 
-    if (this.executionReady) {
+    if (!CONFIG.scanOnly && this.executionReady) {
       try {
         account = await this.accountSnapshot();
         accountReady = true;
@@ -734,13 +899,12 @@ export class DeltaEngine {
       }
     }
 
-    const openRows = await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
-    const trades = await this.recentTrades();
     if (Date.now() - this.lastAnalysis > 55000 || !this.lastSignals.length) {
-      await this.analyseUniverse(account, settings, openRows || [], trades || []);
+      await this.analyseUniverse(account, settings, openRows, trades);
       this.lastAnalysis = Date.now();
     }
-    const positions = openRows || [];
+
+    const positions = openRows.slice();
     if (settings.enabled && settings.auto_trade && !settings.emergency_stop) {
       const candidates = [];
       for (const item of this.lastSignals) {
@@ -752,23 +916,39 @@ export class DeltaEngine {
       }
       candidates.sort((a, b) => b.signal.score - a.signal.score);
       for (const c of candidates.slice(0, 10)) {
-        const opened = await this.openTrade(c.item, c.strategy, c.signal, account, settings, positions, trades);
+        const opened = CONFIG.scanOnly
+          ? await this.openPaperTrade(c.item, c.strategy, c.signal, account, settings, positions, trades)
+          : await this.openTrade(c.item, c.strategy, c.signal, account, settings, positions, trades);
         if (opened) {
           positions.push({
-            symbol: c.signal.symbol,
-            strategy: c.strategy,
-            qty: c.signal.qty_contracts || 1
+            symbol: c.signal.symbol, strategy: c.strategy, qty: c.signal.qty_contracts || 1, origin: CONFIG.scanOnly ? 'PAPER' : 'ENGINE'
           });
         }
       }
     }
 
-    const unrealized = accountReady
-      ? account.positions.reduce((s, p) => s + n(p.unrealized_pnl), 0)
+    if (CONFIG.scanOnly) {
+      const paperRows = await db.select('dd_positions', 'origin=eq.PAPER&qty=gt.0&order=updated_at.desc');
+      account = await this.paperAccount(Array.isArray(paperRows) ? paperRows : [], trades, settings);
+    }
+
+    const unrealized = accountReady || CONFIG.scanOnly
+      ? n(account.unrealized)
       : n(settings.unrealized_pnl);
-    const closed = trades || [];
+    const closed = CONFIG.scanOnly ? trades.filter(t => String(t.execution_id || '').startsWith('PAPER-')) : trades;
     const realized = closed.reduce((s, t) => s + n(t.net_pnl), 0);
     const feesToday = closed.filter(t => String(t.closed_at || '').slice(0, 10) === today()).reduce((s, t) => s + n(t.fees), 0);
+
+    if (Date.now() - this.lastSignalCleanup > 60 * 60 * 1000) {
+      try {
+        const cutoff = encodeURIComponent(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
+        await db.remove('dd_signals', 'captured_at=lt.' + cutoff);
+        this.lastSignalCleanup = Date.now();
+      } catch (e) {
+        await this.log('WARN', 'dd_signals cleanup failed', { error: e.message });
+      }
+    }
+
     const idle = candidatesText(this.lastSignals);
     const statePatch = {
       realized_pnl: realized,
@@ -778,20 +958,38 @@ export class DeltaEngine {
       worker_started_at: new Date(this.startedAt).toISOString(),
       idle_reason: idle
     };
-    if (accountReady) {
+    if (CONFIG.scanOnly) {
+      statePatch.equity = account.equity;
+      statePatch.available_balance = account.available;
+    } else if (accountReady) {
       statePatch.equity = account.equity;
       statePatch.available_balance = account.available;
     }
     await this.updateEngineState(statePatch);
-    await this.log('INFO', 'Worker heartbeat scan', { lastTickAt: this.lastMarketDataAt, signals: this.lastSignals.length, positions: positions.length });
+    await this.log('INFO', 'Worker heartbeat scan', {
+      lastTickAt: this.lastMarketDataAt,
+      signals: this.lastSignals.length,
+      positions: positions.length,
+      scanOnly: CONFIG.scanOnly
+    });
+    this.lastCompletedScanAt = Date.now();
   }
 
   async run() {
     if (CONFIG.environment !== 'TESTNET') throw new Error('Production execution disabled');
     this.running = true;
-    this.connectWs();
-    await this.log('INFO', 'Delta TESTNET worker started; public market scanner is active independently of execution preflight', {
-      workerId: CONFIG.workerId
+    if (!CONFIG.scanOnly) this.connectWs();
+    this.lastCompletedScanAt = Date.now();
+    this.watchdog = setInterval(() => {
+      if (this.running && Date.now() - this.lastCompletedScanAt > 180000) {
+        console.error('[DeltaScanner] Watchdog: no scan completed for 3 minutes; exiting for Railway restart');
+        process.exit(1);
+      }
+    }, 15000);
+    await this.log('INFO', CONFIG.scanOnly
+      ? 'Delta TESTNET worker started in SCAN ONLY mode; public endpoints only'
+      : 'Delta TESTNET worker started; public market scanner is active independently of execution preflight', {
+      workerId: CONFIG.workerId, scanOnly: CONFIG.scanOnly
     });
     while (this.running) {
       try { await this.scanOnce(); }
@@ -804,6 +1002,7 @@ export class DeltaEngine {
 
   async stop() {
     this.running = false;
+    if (this.watchdog) clearInterval(this.watchdog);
     try { this.ws?.close(); } catch {}
     await this.releaseLease();
   }

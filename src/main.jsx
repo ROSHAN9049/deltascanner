@@ -93,6 +93,7 @@ function App() {
         <span>UTC {new Date(clock).toISOString().slice(11,19)}</span>
         <span>LOCAL {new Date(clock).toLocaleTimeString('en-IN')}</span>
         <b className="badge test">TESTNET / DEMO</b>
+        {health?.scanOnly ? <b className="badge test">SCAN ONLY</b> : null}
         <b className="badge lock">LIVE LOCKED</b>
         <button className="estop" disabled={busy || !secret} onClick={() => mutate({ emergencyStop: !settings.emergency_stop })}>
           {settings.emergency_stop ? 'RELEASE E-STOP' : 'EMERGENCY STOP'}
@@ -146,7 +147,7 @@ function Dashboard({ market, settings, health, trades, positions, signals, onIns
       <Card label="OPEN POSITIONS" value={positions.length} sub={'max ' + (settings.max_open_positions || 20)}/>
       <Card label="TODAY" value={todayTrades.length} sub={wins + ' wins / ' + loss + ' losses · ' + (todayTrades.length ? (wins/todayTrades.length*100).toFixed(1) : '0.0') + '% WR'}/>
     </section>
-    <Panel title="Live Scanner · Top 50 by 24h Turnover">
+    <Panel title={'Live Scanner · Top 50 by 24h Turnover · Showing ' + Math.min(market.length, 50) + ' live products'}>
       <MarketTable market={market} signals={signals}/>
     </Panel>
     <section className="grid2">
@@ -188,19 +189,37 @@ function MarketTable({ market, signals }) {
 function RiskGovernor({ signals, health, positions, onInspect, inspect }) {
   const selected = inspect;
   if (!selected) return <Panel title="Risk Governor"><div className="lockedText">No signal selected yet.</div></Panel>;
-  const gate = reason => !(selected.blocked_reasons || []).join(' · ').toLowerCase().includes(reason.toLowerCase());
+  const side = selected.side || '';
+  const spread = num(selected.spread_pct);
+  const feeRatio = num(selected.fee_risk_ratio);
+  const feeGate = selected.strategy === 'SCALPING' ? 0.20 : 0.15;
+  const rangeAtr = num(selected.details?.rangeAtr);
+  const emaDistanceAtr = num(selected.details?.emaDistanceAtr);
+  const candlesFresh = selected.details?.candlesFresh === true;
+  const antiChase = !side || (side === 'BUY' ? num(selected.change_24h) <= 12 : num(selected.change_24h) >= -12);
+  const btcOk = !side || (side === 'BUY'
+    ? selected.btc_trend !== 'BEAR' && selected.btc_confirm_trend !== 'BEAR'
+    : selected.btc_trend !== 'BULL' && selected.btc_confirm_trend !== 'BULL');
+  const healthy = Boolean(health) && Boolean(health.tickFresh) && (
+    health.scanOnly ? true : Boolean(health.workerLeaseActive) && Boolean(health.exchangeHealthy)
+  );
   const gates = [
-    ['Signal CONFIRMED', selected.stage === 'CONFIRMED' && num(selected.score) >= 80, selected.stage],
-    ['Fee + spread vs 1R', num(selected.fee_risk_ratio) <= (selected.strategy === 'SCALPING' ? 0.20 : 0.15), (num(selected.fee_risk_ratio)*100).toFixed(1)+'% of 1R'],
-    ['24h anti-chase', !selected.change_24h || (selected.side === 'BUY' ? num(selected.change_24h) <= 12 : selected.side === 'SELL' ? num(selected.change_24h) >= -12 : false), pct(selected.change_24h)],
-    ['Base candle range <= 2.25 ATR', num(selected.atr_5m) > 0 && gate('5m range'), 'range gate'],
-    ['EMA21 distance <= 1.75 ATR', !gate('Price > 1.75'), (selected.ema21 ? price(selected.ema21) : '—')],
-    ['BTC regime', !gate('BTC regime'), selected.btc_trend || '—'],
-    ['Spread', !gate('Spread >'), num(selected.spread_pct).toFixed(3)+'%'],
-    ['Fresh closed candles', !gate('Fresh closed candles'), selected.details?.candlesFresh === false ? 'STALE' : 'FRESH'],
-    ['API / worker healthy', !!health?.workerLeaseActive && !!health?.exchangeHealthy && !!health?.tickFresh, health?.tickFresh ? 'LIVE' : 'STALE / BLOCK'],
-    ['Duplicate symbol', !positions.some(p => p.symbol === selected.symbol), positions.some(p => p.symbol === selected.symbol) ? 'BLOCK' : 'PASS'],
-    ['Margin / min size', num(selected.qty_contracts) >= 1 && num(selected.notional) > 0, num(selected.qty_contracts) >= 1 ? 'PASS' : 'below minimum']
+    ['Signal CONFIRMED', selected.stage === 'CONFIRMED' && num(selected.score) >= 80,
+      selected.stage === 'CONFIRMED' && num(selected.score) >= 80 ? 'CONFIRMED · ' + num(selected.score).toFixed(0) + '/100' : selected.stage + ' · ' + num(selected.score).toFixed(0) + '/100'],
+    ['Fee + spread vs 1R', feeRatio <= feeGate,
+      feeRatio <= feeGate ? (feeRatio * 100).toFixed(1) + '% ≤ ' + (feeGate * 100).toFixed(0) + '% of 1R' : (feeRatio * 100).toFixed(1) + '% > ' + (feeGate * 100).toFixed(0) + '% of 1R'],
+    ['24h anti-chase', antiChase, side ? pct(selected.change_24h) + ' within side limit' : 'NO SIDE · not evaluated'],
+    ['Base candle range <= 2.25 ATR', rangeAtr > 0 && rangeAtr <= 2.25,
+      rangeAtr > 0 && rangeAtr <= 2.25 ? rangeAtr.toFixed(2) + ' ATR ≤ 2.25' : (rangeAtr ? rangeAtr.toFixed(2) + ' ATR > 2.25' : 'UNAVAILABLE')],
+    ['EMA21 distance <= 1.75 ATR', emaDistanceAtr > 0 && emaDistanceAtr <= 1.75,
+      emaDistanceAtr > 0 && emaDistanceAtr <= 1.75 ? emaDistanceAtr.toFixed(2) + ' ATR ≤ 1.75' : (emaDistanceAtr ? emaDistanceAtr.toFixed(2) + ' ATR > 1.75' : 'UNAVAILABLE')],
+    ['BTC regime', btcOk, side ? side + ' · ' + (selected.btc_trend || '—') + ' / ' + (selected.btc_confirm_trend || '—') + (btcOk ? ' · OK' : ' · BLOCK') : 'NO SIDE · not evaluated'],
+    ['Spread', spread <= 0.25, spread <= 0.25 ? spread.toFixed(3) + '% ≤ 0.250%' : spread.toFixed(3) + '% > 0.250%'],
+    ['Fresh closed candles', candlesFresh, candlesFresh ? 'FRESH · required windows available' : 'STALE / UNAVAILABLE'],
+    ['API / worker healthy', healthy, health?.scanOnly ? (healthy ? 'SCAN ONLY · MARKET FRESH' : 'SCAN ONLY · MARKET STALE') : (healthy ? 'ONLINE · FRESH' : 'OFFLINE / STALE')],
+    ['Duplicate symbol', !positions.some(p => p.symbol === selected.symbol), !positions.some(p => p.symbol === selected.symbol) ? 'NO OPEN DUPLICATE' : 'DUPLICATE OPEN'],
+    ['Margin / min size', num(selected.qty_contracts) >= 1 && num(selected.notional) > 0,
+      num(selected.qty_contracts) >= 1 && num(selected.notional) > 0 ? 'PASS · ' + fmtQty(selected.qty_contracts) + ' contracts' : 'BELOW MINIMUM']
   ];
   return <Panel title="Risk Governor">
     <div className="inspectRow"><label>Inspect coin<select value={selected.symbol} onChange={e => onInspect(e.target.value)}>{[...new Set(signals.map(x=>x.symbol))].slice(0,50).map(x => <option key={x}>{x}</option>)}</select></label><span>{selected.strategy} · {selected.side || 'NO SIDE'} · {num(selected.score).toFixed(0)}/100</span></div>

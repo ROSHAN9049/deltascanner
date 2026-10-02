@@ -22,7 +22,7 @@ function hmac(secret, text) {
 export class DeltaAdapter {
   constructor() {
     if (CONFIG.environment !== 'TESTNET') throw new Error('Production adapter disabled');
-    if (!CONFIG.apiKey || !CONFIG.apiSecret) throw new Error('Delta TESTNET API credentials are missing');
+    if (!CONFIG.scanOnly && (!CONFIG.apiKey || !CONFIG.apiSecret)) throw new Error('Delta TESTNET API credentials are missing');
     this.base = CONFIG.restBase;
     this.apiKey = CONFIG.apiKey;
     this.apiSecret = CONFIG.apiSecret;
@@ -35,7 +35,8 @@ export class DeltaAdapter {
     this.queue = run.catch(() => {});
     return run;
   }
-  async request(method, path, params, body, auth) {
+  async request(method, path, params, body, auth, withMeta = false) {
+    if (auth && CONFIG.scanOnly) throw Object.assign(new Error('SCAN_ONLY_AUTH_DISABLED'), { code: 'scan_only_auth_disabled' });
     const execute = async () => {
       for (let attempt = 0; attempt < 6; attempt++) {
         const query = encodeQuery(params);
@@ -52,20 +53,12 @@ export class DeltaAdapter {
           headers.timestamp = ts;
         }
         if (body !== undefined && body !== null) headers['Content-Type'] = 'application/json';
-        const controller = new AbortController();
-        const timeoutMs = auth ? 12000 : 8000;
-        const timeout = setTimeout(() => controller.abort(new Error('request_timeout')), timeoutMs);
-        let response;
-        try {
-          response = await fetch(this.base + path + query, {
-            method,
-            headers,
-            body: body === undefined || body === null ? undefined : payload,
-            signal: controller.signal
-          });
-        } finally {
-          clearTimeout(timeout);
-        }
+        const response = await fetch(this.base + path + query, {
+          method,
+          headers,
+          body: body === undefined || body === null ? undefined : payload,
+          signal: AbortSignal.timeout(15000)
+        });
         this.lastStatus = response.status;
         const serverDate = response.headers.get('date');
         if (serverDate) {
@@ -75,7 +68,11 @@ export class DeltaAdapter {
         const text = await response.text();
         let data = null;
         try { data = text ? JSON.parse(text) : null; } catch {}
-        if (response.ok && data && data.success !== false) return data.result;
+        if (response.ok && data && data.success !== false) {
+          return withMeta
+            ? { result: data.result, meta: data.meta || {}, date: response.headers.get('date') }
+            : data.result;
+        }
         if (response.status === 429 || response.status >= 500) {
           const reset = Number(response.headers.get('x-rate-limit-reset') || 0);
           const wait = reset > 0 ? Math.min(30000, reset) : Math.min(10000, 500 * Math.pow(2, attempt));
@@ -86,6 +83,7 @@ export class DeltaAdapter {
         err.code = String((data && data.error && data.error.code) || 'http_error');
         err.status = response.status;
         err.details = data;
+        err.clientIp = response.headers.get('x-client-ip') || response.headers.get('x-forwarded-for') || null;
         throw err;
       }
       const err = new Error('rate_limit_or_server_retry_exhausted');
@@ -97,7 +95,20 @@ export class DeltaAdapter {
     return execute();
   }
   async health() { return this.request('GET', '/v2/tickers', { contract_types: 'perpetual_futures' }, null, false); }
-  products() { return this.request('GET', '/v2/products', { contract_types: 'perpetual_futures', states: 'live', page_size: 50 }, null, false); }
+  async products() {
+    const rows = [];
+    let after = '';
+    for (let page = 0; page < 10; page++) {
+      const response = await this.request('GET', '/v2/products', {
+        contract_types: 'perpetual_futures', states: 'live', page_size: 100, after
+      }, null, false, true);
+      rows.push(...(Array.isArray(response?.result) ? response.result : []));
+      const next = String(response?.meta?.after || '').trim();
+      if (!next || next === after) break;
+      after = next;
+    }
+    return rows;
+  }
   tickers() { return this.request('GET', '/v2/tickers', { contract_types: 'perpetual_futures' }, null, false); }
   candles(symbol, resolution, limit) {
     const seconds = ({ '1m': 60, '5m': 300, '15m': 900 })[resolution] || 300;
