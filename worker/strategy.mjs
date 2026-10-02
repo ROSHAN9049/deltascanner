@@ -22,6 +22,23 @@ export function normalizeCandles(rows) {
   return [...map.values()].sort((a, b) => a.time - b.time).slice(-100);
 }
 
+export function fillMissingCandles(candles, resolution) {
+  const seconds = RESOLUTION_SECONDS[resolution] || 0;
+  const sorted = normalizeCandles(candles);
+  if (!seconds || sorted.length < 2) return sorted;
+  const out = [sorted[0]];
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = out[out.length - 1], current = sorted[i];
+    let expected = prev.time + seconds;
+    while (expected < current.time) {
+      out.push({ time: expected, open: prev.close, high: prev.close, low: prev.close, close: prev.close, volume: 0 });
+      expected += seconds;
+    }
+    out.push(current);
+  }
+  return out.slice(-100);
+}
+
 export function closed(candles) {
   const a = normalizeCandles(candles);
   return a.length > 2 ? a.slice(0, -1) : [];
@@ -121,31 +138,6 @@ function pctChange(now, then) {
   return b ? (a - b) / b * 100 : 0;
 }
 
-export function fillMissingCandles(candles, resolution) {
-  const seconds = RESOLUTION_SECONDS[resolution] || 0;
-  const sorted = normalizeCandles(candles);
-  if (!seconds || sorted.length < 2) return sorted;
-  const out = [sorted[0]];
-  for (let i = 1; i < sorted.length; i++) {
-    const prev = out[out.length - 1];
-    const current = sorted[i];
-    let expected = prev.time + seconds;
-    while (expected < current.time) {
-      out.push({
-        time: expected,
-        open: prev.close,
-        high: prev.close,
-        low: prev.close,
-        close: prev.close,
-        volume: 0
-      });
-      expected += seconds;
-    }
-    out.push(current);
-  }
-  return out.slice(-100);
-}
-
 export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg) {
   const isMomentum = strategy === 'MOMENTUM';
   const main = isMomentum ? c5 : c1;
@@ -161,74 +153,76 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
   const bid = n(ticker.quotes?.best_bid);
   const ask = n(ticker.quotes?.best_ask);
   const spreadPct = bid > 0 && ask > 0 ? (ask - bid) / ((ask + bid) / 2) * 100 : 99;
-  const volumeMin = Number.isFinite(+cfg.volumeMin) && +cfg.volumeMin > 0 ? +cfg.volumeMin : 1.6;
-  const spreadMax = Number.isFinite(+cfg.maxSpreadPct) && +cfg.maxSpreadPct > 0 ? +cfg.maxSpreadPct : 0.25;
 
   const e5 = ema(main, 5), e13 = ema(main, 13), e21 = ema(main, 21);
   const e20 = ema(confirm, 20), e50 = ema(confirm, 50);
-  const r = rsi(main), vr = volumeRatio(main), a = atr(main), aConfirm = atr(confirm), vw = vwap(main, 30);
+  const r = rsi(main), vr = volumeRatio(main), a = atr(main), a15 = atr(confirm), vw = vwap(main, 30);
   const macd = macdHistogram(main);
-  const tBase = trendForBase(main), tConfirm = trendForBase(confirm);
+  const tBase = trendForBase(main), tConfirm = trendForContext(confirm);
   const btcT5 = trendForBase(btc5), btcT15 = trendForContext(btc15);
 
+  const lastMain = closedMain.at(-1), prevMain = closedMain.at(-2);
   const momentumPct = pctChange(price, closedMain.at(-6)?.close || price);
   const contextPct = pctChange(closedConfirm.at(-1)?.close || price, closedConfirm.at(-4)?.close || price);
-  const lastMain = closedMain.at(-1);
   const rangeAtr = a > 0 ? Math.abs(n(lastMain?.high) - n(lastMain?.low)) / a : 99;
   const emaDistanceAtr = a > 0 ? Math.abs(price - e21) / a : 99;
 
-  const longAligned = e5 > e13 && tConfirm === 'BULL' && price >= vw;
-  const shortAligned = e5 < e13 && tConfirm === 'BEAR' && price <= vw;
+  const longAligned = e5 > e13 && e20 > e50 && price >= vw && momentumPct >= 0;
+  const shortAligned = e5 < e13 && e20 < e50 && price <= vw && momentumPct <= 0;
+  const bullishContext = tBase === 'BULL' && tConfirm === 'BULL';
+  const bearishContext = tBase === 'BEAR' && tConfirm === 'BEAR';
+
   const longRsi = isMomentum ? r >= 55 && r <= 72 : r >= 52 && r <= 72 && price >= vw;
   const shortRsi = isMomentum ? r >= 28 && r <= 45 : r >= 28 && r <= 48 && price <= vw;
+  const longAnti = change <= 12;
+  const shortAnti = change >= -12;
   const btcLongOk = btcT5 !== 'BEAR' && btcT15 !== 'BEAR';
   const btcShortOk = btcT5 !== 'BULL' && btcT15 !== 'BULL';
+  const longCandidate = longAligned || bullishContext;
+  const shortCandidate = shortAligned || bearishContext;
 
   let longScore = 0, shortScore = 0;
-  if (e5 > e13) { longScore += isMomentum ? 14 : 12; } else if (e5 < e13) { shortScore += isMomentum ? 14 : 12; }
-  if (tConfirm === 'BULL') longScore += isMomentum ? 18 : 20; else if (tConfirm === 'BEAR') shortScore += isMomentum ? 18 : 20;
-  if (longRsi) longScore += isMomentum ? 14 : 16;
-  if (shortRsi) shortScore += isMomentum ? 14 : 16;
-  if (macd > 0) longScore += isMomentum ? 10 : 8; else if (macd < 0) shortScore += isMomentum ? 10 : 8;
-  if (price > vw) longScore += isMomentum ? 6 : 8; else if (price < vw) shortScore += isMomentum ? 6 : 8;
+  if (e5 > e13) longScore += 12; else if (e5 < e13) shortScore += 12;
+  if (e20 > e50) longScore += 10; else if (e20 < e50) shortScore += 10;
+  if (longRsi) longScore += 14; if (shortRsi) shortScore += 14;
+  if (macd > 0) longScore += 12; else if (macd < 0) shortScore += 12;
+  if (price > vw) longScore += 8; else if (price < vw) shortScore += 8;
+  const volumeMin = Number.isFinite(+cfg.volumeMin) && +cfg.volumeMin > 0 ? +cfg.volumeMin : 1.6;
   if (vr >= volumeMin) {
-    if (momentumPct >= 0) longScore += isMomentum ? 14 : 12; else shortScore += isMomentum ? 14 : 12;
+    if (momentumPct >= 0) longScore += 14; else shortScore += 14;
   } else {
-    const partial = Math.max(0, Math.min(1, vr / volumeMin)) * (isMomentum ? 14 : 12);
-    if (momentumPct >= 0) longScore += partial; else if (momentumPct < 0) shortScore += partial;
+    const partial = Math.max(0, Math.min(1, vr / volumeMin)) * 14;
+    if (momentumPct >= 0) longScore += partial; else shortScore += partial;
   }
-  const momentumThreshold = isMomentum ? 0.25 : 0.12;
-  if (Math.abs(momentumPct) >= momentumThreshold) {
-    if (momentumPct > 0) longScore += isMomentum ? 14 : 12; else if (momentumPct < 0) shortScore += isMomentum ? 14 : 12;
+  if (Math.abs(momentumPct) >= (isMomentum ? 0.25 : 0.12)) {
+    if (momentumPct > 0) longScore += 10; else if (momentumPct < 0) shortScore += 10;
   }
   if (contextPct > 0) longScore += 5; else if (contextPct < 0) shortScore += 5;
+  if (tConfirm === 'BULL') longScore += isMomentum ? 15 : 14; else if (tConfirm === 'BEAR') shortScore += isMomentum ? 15 : 14;
   if (tBase === tConfirm && tBase !== 'FLAT') {
-    if (tBase === 'BULL') longScore += isMomentum ? 5 : 5; else if (tBase === 'BEAR') shortScore += isMomentum ? 5 : 5;
+    if (tBase === 'BULL') longScore += 8; else if (tBase === 'BEAR') shortScore += 8;
   }
-  if (rangeAtr <= 2.25) { longScore += isMomentum ? 5 : 7; shortScore += isMomentum ? 5 : 7; }
+  if (rangeAtr <= 2.25) { longScore += 3; shortScore += 3; }
+  if (emaDistanceAtr <= 1.75) { longScore += 3; shortScore += 3; }
+  if (spreadPct <= 0.25) { longScore += 3; shortScore += 3; }
 
-  const rawWinner = Math.max(longScore, shortScore);
-  const rawLoser = Math.min(longScore, shortScore);
-  const separation = Math.max(0, rawWinner - rawLoser);
-  const candidateMin = isMomentum ? 48 : 45;
-  const edgeMin = isMomentum ? 6 : 5;
-  const longCandidate = longScore >= candidateMin && longScore - shortScore >= edgeMin;
-  const shortCandidate = shortScore >= candidateMin && shortScore - longScore >= edgeMin;
-  const side = longCandidate ? 'BUY' : shortCandidate ? 'SELL' : '';
-  const winner = side === 'BUY' ? longScore : side === 'SELL' ? shortScore : rawWinner;
-  const score = Math.max(0, Math.min(100, Math.round(winner + Math.min(6, separation * 0.15))));
+  const winnerIsLong = longScore >= shortScore;
+  const winner = Math.max(longScore, shortScore);
+  const loser = Math.min(longScore, shortScore);
+  const separation = Math.max(0, winner - loser);
+  const side = winner >= 45 && separation >= 6 ? (winnerIsLong ? 'BUY' : 'SELL') : '';
+  const score = Math.max(0, Math.min(100, Math.round(winner * 0.88 + Math.min(12, separation * 0.22) + (isMomentum ? 1 : 0))));
 
-  const confirmOk = side === 'BUY' ? tConfirm === 'BULL' : side === 'SELL' ? tConfirm === 'BEAR' : false;
-  const btcOk = side === 'BUY' ? btcLongOk : side === 'SELL' ? btcShortOk : false;
-  const rsiOk = side === 'BUY' ? longRsi : side === 'SELL' ? shortRsi : false;
-  const antiChase = side === 'BUY' ? change <= 12 : side === 'SELL' ? change >= -12 : true;
-  const aligned = side === 'BUY' ? longAligned : side === 'SELL' ? shortAligned : false;
+  const btcOk = side ? (side === 'BUY' ? btcLongOk : btcShortOk) : true;
+  const rsiOk = side ? (side === 'BUY' ? longRsi : shortRsi) : false;
+  const antiChase = side ? (side === 'BUY' ? longAnti : shortAnti) : true;
+  const aligned = side ? (side === 'BUY' ? longAligned : shortAligned) : false;
 
-  const highVol = aConfirm > 0 && price > 0 ? (aConfirm / price) * 100 > 2.2 : false;
-  const lowVol = aConfirm > 0 && price > 0 ? (aConfirm / price) * 100 < 0.15 : false;
-  const regime = highVol ? 'HIGH_VOLATILITY' : lowVol ? 'LOW_VOLATILITY' : tConfirm === 'BULL' ? 'TREND_UP' : tConfirm === 'BEAR' ? 'TREND_DOWN' : 'RANGE';
+  const highVol = a15 > 0 && price > 0 ? (a15 / price) * 100 > 2.2 : false;
+  const lowVol = a15 > 0 && price > 0 ? (a15 / price) * 100 < 0.15 : false;
+  const regime = highVol ? 'HIGH_VOLATILITY' : lowVol ? 'LOW_VOLATILITY' : t15 === 'BULL' ? 'TREND_UP' : t15 === 'BEAR' ? 'TREND_DOWN' : 'RANGE';
 
-  const stopMin = Math.max(0, n(cfg.minStopPct)) / 100;
+  const stopMin = n(cfg.minStopPct) / 100;
   const atrPct = a > 0 && price > 0 ? 1.25 * a / price : 0;
   const stopPct = Math.max(stopMin, atrPct);
   const indicativeRiskDistance = price > 0 ? price * stopPct : 0;
@@ -241,36 +235,39 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
 
   const fee = n(product.taker_commission_rate);
   const feeRiskRatio = riskDistance > 0 ? (2 * fee * price + spreadPct / 100 * price) / riskDistance : 99;
-  const costGateRatio = isMomentum ? 0.15 : 0.20;
-  const technicalConfirmed = Boolean(side) && candlesFresh && !highVol && score >= n(cfg.scoreMin || 80) &&
-    confirmOk && aligned && vr >= volumeMin && rsiOk;
-  const stage = !candlesFresh || highVol ? 'BLOCKED' : !side ? 'WATCH' : technicalConfirmed ? 'CONFIRMED' : score >= 60 ? 'SETUP' : 'WATCH';
+  const costGateRatio = strategy === 'MOMENTUM' ? 0.15 : 0.20;
+
+  const stage = !candlesFresh || highVol
+    ? 'BLOCKED'
+    : score >= n(cfg.scoreMin || 80) && side && aligned && vr >= volumeMin && rsiOk
+      ? 'CONFIRMED'
+      : score >= 60 || side
+        ? 'SETUP'
+        : 'WATCH';
 
   const blocked = [];
   if (stage !== 'CONFIRMED') blocked.push('Signal not CONFIRMED / score below threshold');
   if (!candlesFresh) blocked.push('Fresh closed candles unavailable');
   if (vr < volumeMin) blocked.push('Volume spike < ' + volumeMin.toFixed(2) + 'x');
   if (side) {
-    if (!rsiOk) blocked.push(isMomentum ? 'RSI range' : 'RSI/VWAP');
+    if (!rsiOk) blocked.push(strategy === 'SCALPING' ? 'RSI/VWAP' : 'RSI range');
     if (!antiChase) blocked.push('24h anti-chase');
     if (rangeAtr > 2.25) blocked.push('5m range > 2.25x ATR');
     if (emaDistanceAtr > 1.75) blocked.push('Price > 1.75x ATR from EMA21');
     if (!btcOk) blocked.push('BTC regime');
-    if (!confirmOk) blocked.push('Higher-timeframe confirmation');
-    if (!aligned) blocked.push(isMomentum ? '5m entry alignment' : '1m entry alignment');
-    if (!riskDistance || !sl) blocked.push('Invalid price/stop');
+    if (spreadPct > 0.25) blocked.push('Spread > 0.25%');
+    if (!price || !riskDistance || !sl) blocked.push('Invalid price/stop');
   } else {
     blocked.push('No directional side');
   }
-  if (spreadPct > spreadMax) blocked.push('Spread > ' + spreadMax.toFixed(2) + '%');
+  if (spreadPct > 0.25) blocked.push('Spread > 0.25%');
   if (feeRiskRatio > costGateRatio) blocked.push('Fee + spread > allowed 1R cost');
-  if (!price || !riskDistance) blocked.push('Invalid price/risk distance');
   if (!Number.isFinite(vr) || !Number.isFinite(r) || !Number.isFinite(a)) blocked.push('Indicator calculation unavailable');
 
   const quality = {
-    trend: Math.min(20, Math.round(Math.abs(e5 - e13) / Math.max(a, 1e-8) * 3 + (tBase === tConfirm && tBase !== 'FLAT' ? 8 : 4))),
+    trend: Math.min(20, Math.round(Math.abs(e5 - e13) / Math.max(a, 1e-8) * 3 + (tBase === t15 && tBase !== 'FLAT' ? 8 : 4))),
     momentum: Math.min(20, Math.round(Math.abs(momentumPct) * 16)),
-    volume: Math.min(15, Math.round(Math.min(vr, volumeMin) / volumeMin * 15)),
+    volume: Math.min(15, Math.round(Math.min(vr, 1.6) / 1.6 * 15)),
     volatility: Math.min(15, Math.round(Math.min(3, a > 0 && price > 0 ? a / price * 100 : 0) * 5)),
     structure: Math.min(15, Math.round(Math.abs(price - vw) / Math.max(a, 1e-8) * 3 + 5)),
     regime: highVol ? 2 : lowVol ? 3 : tConfirm === 'BULL' || tConfirm === 'BEAR' ? 15 : 8,
@@ -297,7 +294,7 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
     regime,
     ema21: e21,
     atr5: a,
-    atr15: aConfirm,
+    atr15: a15,
     vwap: vw,
     macd,
     momentumPct,
@@ -305,10 +302,11 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
     rangeAtr,
     emaDistanceAtr,
     stopPct,
-    riskDistance,
     sl,
     tp1,
     tp,
+    support: closedMain.length ? Math.min(...closedMain.slice(-20).map(c => n(c.low))) : 0,
+    resistance: closedMain.length ? Math.max(...closedMain.slice(-20).map(c => n(c.high))) : 0,
     takerFee: fee,
     makerFee: n(product.maker_commission_rate),
     feeRiskRatio,
@@ -318,7 +316,7 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
     notionalType: product.notional_type,
     maxLeverageNotional: n(product.max_leverage_notional),
     blocked: [...new Set(blocked)],
-    ready: technicalConfirmed && spreadPct <= spreadMax && feeRiskRatio <= costGateRatio,
+    ready: stage === 'CONFIRMED' && blocked.length === 0,
     candlesFresh,
     entryTimeframe: isMomentum ? '5m' : '1m',
     confirmationTimeframe: isMomentum ? '15m' : '5m'
