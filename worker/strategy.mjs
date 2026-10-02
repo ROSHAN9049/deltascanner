@@ -265,7 +265,7 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
   if (!Number.isFinite(vr) || !Number.isFinite(r) || !Number.isFinite(a)) blocked.push('Indicator calculation unavailable');
 
   const quality = {
-    trend: Math.min(20, Math.round(Math.abs(e5 - e13) / Math.max(a, 1e-8) * 3 + (tBase === t15 && tBase !== 'FLAT' ? 8 : 4))),
+    trend: Math.min(20, Math.round(Math.abs(e5 - e13) / Math.max(a, 1e-8) * 3 + (tBase === tConfirm && tBase !== 'FLAT' ? 8 : 4))),
     momentum: Math.min(20, Math.round(Math.abs(momentumPct) * 16)),
     volume: Math.min(15, Math.round(Math.min(vr, 1.6) / 1.6 * 15)),
     volatility: Math.min(15, Math.round(Math.min(3, a > 0 && price > 0 ? a / price * 100 : 0) * 5)),
