@@ -13,11 +13,17 @@ export default async function handler(req, res) {
       select('dd_counters', 'id=eq.1&select=*'),
       select('dd_daily_pnl', 'order=trade_date.desc&limit=1')
     ]);
+    const visiblePositions = CONFIG.scanOnly
+      ? (positions || []).filter(x => x.origin === 'PAPER')
+      : (positions || []);
+    const visibleTrades = CONFIG.scanOnly
+      ? (trades || []).filter(x => String(x.execution_id || '').startsWith('PAPER-'))
+      : (trades || []);
     return res.status(200).json({
-      success: true, environment: CONFIG.environment,
+      success: true, environment: CONFIG.environment, scanOnly: CONFIG.scanOnly,
       settings: settings?.[0] || null,
-      positions: positions || [], signals: signals || [], trades: trades || [],
-      logs: logs || [], ledger: ledger || [], counters: counters?.[0] || null,
+      positions: visiblePositions, signals: signals || [], trades: visibleTrades,
+      logs: logs || [], ledger: CONFIG.scanOnly ? [] : (ledger || []), counters: counters?.[0] || null,
       daily: daily?.[0] || null
     });
   } catch (e) {
