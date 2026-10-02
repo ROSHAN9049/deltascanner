@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { analyse, normalizeCandles, volumeRatio } from './strategy.mjs';
+import { analyse, normalizeCandles, fillMissingCandles, volumeRatio } from './strategy.mjs';
 
 function makeCandles(count, start, drift, baseVolume = 100, bumpLast = false) {
   const rows = [];
@@ -27,6 +27,14 @@ const unsorted = [
 ];
 assert.deepEqual(normalizeCandles(unsorted).map(x => x.time), [1,2,3]);
 assert.equal(normalizeCandles([...unsorted, {...unsorted[0]}]).length, 3);
+const sparse = [
+  {time: 1700000000, open:100, high:101, low:99, close:100.5, volume:10},
+  {time: 1700000120, open:100.5, high:102, low:100, close:101.5, volume:12}
+];
+const filled = fillMissingCandles(sparse, '1m');
+assert.equal(filled.length, 3);
+assert.equal(filled[1].open, filled[0].close);
+assert.equal(filled[1].volume, 0);
 
 const c1 = makeCandles(100, 100, 0.4, 100, true);
 const c5 = makeCandles(100, 100, 0.15, 100, false);
@@ -36,12 +44,17 @@ const btc15 = makeCandles(100, 100, 0.06, 100, false);
 const ticker = {symbol:'BTCUSD', mark_price: 140, close: 140, ltp_change_24h: 1.2, turnover_usd: 1000000, quotes:{best_bid:139.9,best_ask:140.1}};
 const product = {id:27, tick_size:0.5, contract_value:1, taker_commission_rate:0.0005, maker_commission_rate:0.0002, notional_type:'vanilla', max_leverage_notional:100000};
 
-const scalp = analyse(ticker, product, c1, c5, c15, btc5, btc15, 'SCALPING', {minStopPct:0.75, rr:1.8, scoreMin:80});
-const mom = analyse(ticker, product, c1, c5, c15, btc5, btc15, 'MOMENTUM', {minStopPct:0.95, rr:2.5, scoreMin:80});
+const scalp = analyse(ticker, product, c1, c5, c15, btc5, btc15, 'SCALPING', {minStopPct:0.75, rr:1.8, scoreMin:80, volumeMin:1.6});
+const mom = analyse(ticker, product, c1, c5, c15, btc5, btc15, 'MOMENTUM', {minStopPct:0.95, rr:2.5, scoreMin:80, volumeMin:1.6});
 assert.ok(Number.isFinite(scalp.score) && scalp.score >= 0 && scalp.score <= 100);
 assert.ok(Number.isFinite(mom.score) && mom.score >= 0 && mom.score <= 100);
 assert.notEqual(scalp.volumeSpike, mom.volumeSpike);
 assert.notEqual(scalp.tp, mom.tp);
+assert.notEqual(scalp.score, mom.score);
+assert.equal(mom.entryTimeframe, '5m');
+assert.equal(mom.confirmationTimeframe, '15m');
+assert.equal(scalp.entryTimeframe, '1m');
+assert.equal(scalp.confirmationTimeframe, '5m');
 assert.ok(Array.isArray(scalp.blocked));
 assert.equal(analyse(ticker, product, c1.slice(0,20), c5.slice(0,20), c15.slice(0,20), btc5.slice(0,20), btc15.slice(0,20), 'SCALPING', {minStopPct:0.75, rr:2, scoreMin:80}).candlesFresh, false);
 
