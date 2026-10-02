@@ -860,9 +860,9 @@ export class DeltaEngine {
     trades = Array.isArray(trades) ? trades : [];
 
     if (CONFIG.scanOnly) {
-      const paperRows = openRows.filter(row => row.origin === 'PAPER');
-      if (paperRows.length) {
-        await this.managePaperPositions(paperRows, settings);
+      openRows = openRows.filter(row => row.origin === 'PAPER');
+      if (openRows.length) {
+        await this.managePaperPositions(openRows, settings);
         openRows = await db.select('dd_positions', 'origin=eq.PAPER&qty=gt.0&order=updated_at.desc');
         openRows = Array.isArray(openRows) ? openRows : [];
         trades = await this.recentTrades();
