@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "npm test && for f in worker/*.mjs; do node --check "$f"; done && vite build",
+    "build": "npm test && for f in worker/*.mjs; do node --check $f; done && vite build",
     "check": "tsc --noEmit",
     "lint": "eslint . --max-warnings=0",
     "test": "node worker/selftest.mjs"
