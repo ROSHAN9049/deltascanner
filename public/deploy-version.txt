@@ -1,3 +1,0 @@
-Delta Scanner deployment refresh: 2026-09-05
-Paper Trading UI is enabled in src/main.jsx.
-Real trading remains OFF.
