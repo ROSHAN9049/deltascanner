@@ -22,10 +22,16 @@ function hmac(secret, text) {
 export class DeltaAdapter {
   constructor() {
     if (CONFIG.environment !== 'TESTNET') throw new Error('Production adapter disabled');
-    if (!CONFIG.apiKey || !CONFIG.apiSecret) throw new Error('Delta TESTNET API credentials are missing');
     this.base = CONFIG.restBase;
     this.apiKey = CONFIG.apiKey;
     this.apiSecret = CONFIG.apiSecret;
+    this.privateAuthConfigured = !!this.apiKey && !!this.apiSecret;
+    // In Tradetron bridge mode the worker needs only public Delta market data;
+    // Tradetron owns authenticated order/position execution. Keep private
+    // methods fail-closed if called accidentally without credentials.
+    if (!CONFIG.tradetronBridgeEnabled && !this.privateAuthConfigured) {
+      throw new Error('Delta TESTNET API credentials are missing');
+    }
     this.offsetMs = 0;
     this.queue = Promise.resolve();
     this.lastStatus = 0;
@@ -36,6 +42,9 @@ export class DeltaAdapter {
     return run;
   }
   async request(method, path, params, body, auth) {
+    if (auth && !this.privateAuthConfigured) {
+      throw new Error('Delta private API unavailable while Tradetron bridge mode is enabled');
+    }
     const execute = async () => {
       for (let attempt = 0; attempt < 6; attempt++) {
         const query = encodeQuery(params);
