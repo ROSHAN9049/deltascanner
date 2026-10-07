@@ -333,6 +333,7 @@ export class DeltaEngine {
           qty: gate.size.qty,
           entryPrice: signal.price,
           sl: signal.sl,
+          tp1: signal.tp1,
           tp: signal.tp,
           executionId
         });
