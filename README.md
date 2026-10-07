@@ -38,3 +38,19 @@ Continuous Mode is ON by default on TESTNET. It removes automatic loss pauses/co
 Delta documents size as an integer number of contracts. The current docs consulted do not expose a separate minimum-order-size or size-increment field for perpetuals. Therefore this build uses whole contracts and lets the exchange enforce any additional product-specific minimum. Non-vanilla notional types are skipped by the sizing engine.
 
 An 80% win rate cannot be guaranteed. The implementation is intentionally selective; actual win rate must be measured from real Demo fills after sufficient sample size.
+
+## Tradetron Signal Bridge
+
+Tradetron integration is TESTNET/offline-safe and disabled by default. When enabled, confirmed scanner entries are sent to the deployed Tradetron API-controlled Signal Bridge instead of placing a direct Delta order from the worker. This prevents dual execution paths.
+
+Required variables when enabling the bridge:
+- `TRADETRON_BRIDGE_ENABLED=true`
+- `TRADETRON_AUTH_TOKEN=<fresh Tradetron API auth token>`
+
+Optional:
+- `TRADETRON_BASE_URL=https://api.tradetron.tech`
+- `TRADETRON_TIMEOUT_MS=10000`
+
+The bridge selects only `BTCUSD` or `ETHUSD`, writes that symbol's runtime quantity/entry/SL/TP variables, clears the other symbol selector, and then triggers `api_buy=1` or `api_sell=1`. The auth token is never printed in logs.
+
+Keep the Tradetron deployment in **Live Offline** while validating the bridge. Do not switch to Live Auto until the end-to-end signal, symbol routing, quantity, and exit behavior have been verified.
