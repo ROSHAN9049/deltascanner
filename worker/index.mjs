@@ -5,7 +5,9 @@ import { log } from '../server/db.js';
 
 if (CONFIG.environment !== 'TESTNET') throw new Error('Production execution is disabled.');
 if (!CONFIG.engineSecret) throw new Error('ENGINE_SECRET is required.');
-if (!CONFIG.apiKey || !CONFIG.apiSecret) throw new Error('DELTA_TESTNET_API_KEY / DELTA_TESTNET_API_SECRET are required.');
+if (!CONFIG.tradetronBridgeEnabled && (!CONFIG.apiKey || !CONFIG.apiSecret)) {
+  throw new Error('DELTA_TESTNET_API_KEY / DELTA_TESTNET_API_SECRET are required for direct Delta execution.');
+}
 if (!CONFIG.supabaseUrl || !CONFIG.supabaseAdminKey) throw new Error('SUPABASE_URL / Supabase server key is required.');
 
 const engine = new DeltaEngine();
