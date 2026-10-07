@@ -132,8 +132,15 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
   if (spreadPct > 0.25) blocked.push('Spread > 0.25%');
   if (feeRiskRatio > costGateRatio) blocked.push('Fee + spread > allowed 1R cost');
   if (!price || !riskDistance || !sl) blocked.push('Invalid price/stop');
+  const rawCandleTs = Number(closedEntry.at(-1)?.time ?? closedEntry.at(-1)?.timestamp ?? closedEntry.at(-1)?.t ?? 0);
+  const signalCandleTs = rawCandleTs > 1e12
+    ? Math.floor(rawCandleTs / 60000)
+    : rawCandleTs > 1e9
+      ? Math.floor(rawCandleTs / 60)
+      : 0;
   return {
     symbol: ticker.symbol, productId: product.id, price, change, turnover: n(ticker.turnover_usd || ticker.turnover),
+    signalCandleTs,
     spreadPct, side, stage, score, volumeSpike: vr, rsi: r, trend: t5, confirmTrend: t15,
     btcTrend: btcT5, btcConfirmTrend: btcT15, ema21: e21, atr5: a5, atr15: a15, vwap: vw,
     rangeAtr, emaDistanceAtr, stopPct, sl, tp1, tp, support: Math.min(...closed5.slice(-20).map(c => n(c.low))),
