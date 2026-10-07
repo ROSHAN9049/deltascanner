@@ -65,6 +65,38 @@ process.on('uncaughtException', async error => {
 const preflightOk = await startupPreflight();
 if (!preflightOk) process.exit(1);
 
+async function runTradetronSelfTest() {
+  if (String(process.env.TRADETRON_SELF_TEST || '').toLowerCase() !== 'true') return;
+  if (!CONFIG.tradetronBridgeEnabled || !engine.tradetron.isConfigured()) {
+    throw new Error('Tradetron self-test requires bridge enabled and a configured auth token');
+  }
+  const tickers = await engine.adapter.tickers();
+  const btc = (Array.isArray(tickers) ? tickers : []).find(x => String(x.symbol || '').toUpperCase() === 'BTCUSD');
+  const price = Number(btc?.mark_price || btc?.close || 0);
+  if (!Number.isFinite(price) || price <= 0) throw new Error('BTCUSD public price unavailable for self-test');
+  const sl = price * 0.99;
+  const tp = price * 1.025;
+  const result = await engine.tradetron.emitEntry({
+    symbol: 'BTCUSD',
+    side: 'BUY',
+    qty: 1,
+    entryPrice: price,
+    sl,
+    tp,
+    executionId: 'TT-SELFTEST-BTCUSD'
+  });
+  console.log('[DeltaScanner] Tradetron self-test result:', JSON.stringify({
+    ok: result.ok,
+    symbol: result.symbol,
+    side: result.side,
+    qty: result.qty,
+    triggerKey: result.triggerKey,
+    responses: result.responses?.map(x => ({ key: x.key, ok: x.ok, skipped: x.skipped }))
+  }));
+}
+
+await runTradetronSelfTest();
+
 console.log('[DeltaScanner] TESTNET worker entering engine loop');
 engine.run().catch(async error => {
   console.error('[DeltaScanner] Fatal worker startup error:', error.message);
