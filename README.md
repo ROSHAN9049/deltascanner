@@ -4,12 +4,18 @@ TESTNET/Demo-only perpetual futures scanner and Node worker using Delta Exchange
 
 ## Required environment
 DELTA_ENVIRONMENT=TESTNET
-DELTA_TESTNET_API_KEY
-DELTA_TESTNET_API_SECRET
 ENGINE_SECRET
 SUPABASE_URL
 SUPABASE_SERVICE_ROLE_KEY
 WORKER_ID (optional)
+
+Direct Delta execution additionally requires:
+DELTA_TESTNET_API_KEY
+DELTA_TESTNET_API_SECRET
+
+Tradetron bridge execution additionally requires:
+TRADETRON_BRIDGE_ENABLED=true
+TRADETRON_AUTH_TOKEN
 
 The production Delta URL is intentionally not an executable option in this build. The adapter rejects any non-TESTNET environment before connecting or placing an order.
 
@@ -42,6 +48,8 @@ An 80% win rate cannot be guaranteed. The implementation is intentionally select
 ## Tradetron Signal Bridge
 
 Tradetron integration is TESTNET/offline-safe and disabled by default. When enabled, confirmed scanner entries are sent to the deployed Tradetron API-controlled Signal Bridge instead of placing a direct Delta order from the worker. This prevents dual execution paths.
+
+Bridge mode also removes the worker's dependency on Delta private API credentials: the worker reads public Delta market data, while Tradetron owns authenticated execution. This is intended to avoid Delta API IP-whitelist coupling on a cloud worker whose outbound IP may change. See `docs/tradetron-dynamic-bridge.md` for the runtime contract and validation sequence.
 
 Required variables when enabling the bridge:
 - `TRADETRON_BRIDGE_ENABLED=true`
