@@ -17,7 +17,7 @@ export class TradetronBridge {
 
   async setRuntime(key, value) {
     if (!this.isConfigured()) {
-      return { ok: false, skipped: true, reason: this.enabled ? 'TRADТETRON_AUTH_TOKEN missing' : 'bridge disabled' };
+      return { ok: false, skipped: true, reason: this.enabled ? 'TRADETRON_AUTH_TOKEN missing' : 'bridge disabled' };
     }
 
     const controller = new AbortController();
@@ -44,7 +44,7 @@ export class TradetronBridge {
 
   async emitEntry({ symbol, side, qty, entryPrice, sl, tp, executionId }) {
     if (!this.isConfigured()) {
-      return { ok: false, skipped: true, reason: this.enabled ? 'TRADТETRON_AUTH_TOKEN missing' : 'bridge disabled' };
+      return { ok: false, skipped: true, reason: this.enabled ? 'TRADETRON_AUTH_TOKEN missing' : 'bridge disabled' };
     }
 
     const selected = clean(symbol).toUpperCase();
