@@ -148,5 +148,4 @@ export class TradetronBridge {
       dynamic: this.dynamicEnabled
     };
   }
-  }
 }
