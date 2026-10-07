@@ -3,6 +3,7 @@ import WebSocket from 'ws';
 import { CONFIG } from '../server/config.js';
 import { DeltaAdapter } from './delta-adapter.mjs';
 import { analyse } from './strategy.mjs';
+import { TradetronBridge } from './tradetron-bridge.mjs';
 import * as db from '../server/db.js';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -20,6 +21,7 @@ const roundTick = (v, tick) => tick > 0 ? Math.round(v / tick) * tick : v;
 export class DeltaEngine {
   constructor() {
     this.adapter = new DeltaAdapter();
+    this.tradetron = new TradetronBridge();
     this.leaseId = crypto.randomUUID();
     this.startedAt = Date.now();
     this.lastTickAt = 0;
@@ -651,8 +653,14 @@ export class DeltaEngine {
         if (choice.signal.stage === 'CONFIRMED') candidates.push({ item, ...choice });
       }
       candidates.sort((a, b) => b.signal.score - a.signal.score);
-      for (const c of candidates.slice(0, 10)) {
-        await this.openTrade(c.item, c.strategy, c.signal, account, settings, positions, trades);
+
+      if (this.tradetron.route === 'TRADETRON') {
+        const dispatched = await this.tradetron.dispatch(candidates);
+        if (dispatched.length) await this.log('INFO', 'Tradetron signal dispatch cycle', { results: dispatched });
+      } else {
+        for (const c of candidates.slice(0, 10)) {
+          await this.openTrade(c.item, c.strategy, c.signal, account, settings, positions, trades);
+        }
       }
     }
 
@@ -674,7 +682,7 @@ export class DeltaEngine {
     if (CONFIG.environment !== 'TESTNET') throw new Error('Production execution disabled');
     this.running = true;
     this.connectWs();
-    await this.log('INFO', 'Delta TESTNET worker started', { workerId: CONFIG.workerId });
+    await this.log('INFO', 'Delta TESTNET worker started', { workerId: CONFIG.workerId, executionRoute: this.tradetron.route, tradetronBridge: this.tradetron.enabled });
     while (this.running) {
       try { await this.scanOnce(); }
       catch (e) {
