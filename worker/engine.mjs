@@ -406,7 +406,9 @@ export class DeltaEngine {
     const sl = roundTick(signal.side === 'BUY' ? Math.min(signal.sl, entryPrice - tick) : Math.max(signal.sl, entryPrice + tick), tick);
     const riskDistance = Math.abs(entryPrice - sl);
     const tp1 = roundTick(signal.side === 'BUY' ? entryPrice + riskDistance : entryPrice - riskDistance, tick);
-    const tp = roundTick(signal.side === 'BUY' ? entryPrice + riskDistance * n(settings.momentum_rr || 2.5) : entryPrice - riskDistance * n(settings.momentum_rr || 2.5), tick);
+    const requestedRisk = Math.abs(n(signal.tp) - n(signal.price));
+    const rr = riskDistance > 0 && requestedRisk > 0 ? Math.max(1, requestedRisk / Math.max(1e-12, Math.abs(n(signal.price) - n(signal.sl)))) : 2;
+    const tp = roundTick(signal.side === 'BUY' ? entryPrice + riskDistance * rr : entryPrice - riskDistance * rr, tick);
     const executionId = entryCid;
 
     await db.insert('dd_positions', {
