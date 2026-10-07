@@ -6,7 +6,7 @@ const clean = v => String(v ?? '').trim();
 export class TradetronBridge {
   constructor() {
     this.enabled = CONFIG.tradetronBridgeEnabled;
-    this.baseUrl = CONFIG.tradetronBaseUrl.replace(/\\/$/, '');
+    this.baseUrl = CONFIG.tradetronBaseUrl.replace(/\/$/, '');
     this.authToken = clean(CONFIG.tradetronAuthToken);
     this.timeoutMs = Math.max(2000, Number(CONFIG.tradetronTimeoutMs) || 10000);
   }
