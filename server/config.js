@@ -15,6 +15,7 @@ export const CONFIG = Object.freeze({
   supabaseAdminKey: process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '',
   workerId: process.env.WORKER_ID || ('delta-worker-' + process.pid),
   tradetronBridgeEnabled: String(process.env.TRADETRON_BRIDGE_ENABLED || 'false').toLowerCase() === 'true',
+  tradetronDynamicBridgeEnabled: String(process.env.TRADETRON_DYNAMIC_BRIDGE_ENABLED || 'false').toLowerCase() === 'true',
   tradetronBaseUrl: process.env.TRADETRON_BASE_URL || 'https://api.tradetron.tech',
   tradetronAuthToken: process.env.TRADETRON_AUTH_TOKEN || '',
   tradetronTimeoutMs: Number(process.env.TRADETRON_TIMEOUT_MS || 10000),
