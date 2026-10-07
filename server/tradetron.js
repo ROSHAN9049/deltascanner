@@ -6,6 +6,7 @@ const clean = v => String(v ?? '').trim();
 export class TradetronBridge {
   constructor() {
     this.enabled = CONFIG.tradetronBridgeEnabled;
+    this.dynamicEnabled = CONFIG.tradetronDynamicBridgeEnabled;
     this.baseUrl = CONFIG.tradetronBaseUrl.replace(/\/$/, '');
     this.authToken = clean(CONFIG.tradetronAuthToken);
     this.timeoutMs = Math.max(2000, Number(CONFIG.tradetronTimeoutMs) || 10000);
@@ -63,43 +64,76 @@ export class TradetronBridge {
     throw lastError || new Error('Tradetron API request failed');
   }
 
-  async emitEntry({ symbol, side, qty, entryPrice, sl, tp, executionId }) {
+  async emitEntry({ symbol, side, qty, entryPrice, sl, tp1, tp, executionId }) {
     if (!this.isConfigured()) {
       return { ok: false, skipped: true, reason: this.enabled ? 'TRADETRON_AUTH_TOKEN missing' : 'bridge disabled' };
     }
 
     const selected = clean(symbol).toUpperCase();
-    if (!['BTCUSD', 'ETHUSD'].includes(selected)) {
-      throw new Error('Tradetron bridge symbol not allowed: ' + selected);
-    }
-
     const normalizedSide = clean(side).toUpperCase();
     if (!['BUY', 'SELL'].includes(normalizedSide)) {
       throw new Error('Tradetron bridge side must be BUY or SELL');
     }
 
     const quantity = Math.max(1, Math.floor(Number(qty) || 0));
-    if (!Number.isFinite(Number(entryPrice)) || !Number.isFinite(Number(sl)) || !Number.isFinite(Number(tp)) || quantity < 1) {
+    const prices = {
+      entryPrice: Number(entryPrice),
+      sl: Number(sl),
+      tp1: Number(tp1),
+      tp: Number(tp)
+    };
+    if (!Number.isFinite(prices.entryPrice) || !Number.isFinite(prices.sl) || !Number.isFinite(prices.tp) || quantity < 1) {
       throw new Error('Tradetron bridge entry payload is invalid');
     }
 
-    const other = selected === 'BTCUSD' ? 'ETHUSD' : 'BTCUSD';
-
-    // Tradetron expects all runtime variables in ONE ordered JSON request.
-    // The first pair uses key/value; subsequent pairs use key1/value1, etc.
-    // Reset the opposite signal before triggering the requested side.
+    const execution = clean(executionId);
     const triggerKey = normalizedSide === 'BUY' ? 'api_buy' : 'api_sell';
     const resetKey = normalizedSide === 'BUY' ? 'api_sell' : 'api_buy';
-    const writes = [
-      [triggerKey, 1],
-      [resetKey, 0],
-      [selected, 1],
-      [other, 0],
-      [selected + '_qty', quantity],
-      [selected + '_ep', Number(entryPrice)],
-      [selected + '_sl', Number(sl)],
-      [selected + '_tp', Number(tp)]
-    ];
+
+    let writes;
+    if (this.dynamicEnabled) {
+      if (!/^[A-Z0-9]+USD$/.test(selected) || selected === 'USD') {
+        throw new Error('Tradetron dynamic bridge symbol is invalid: ' + selected);
+      }
+      if (!Number.isFinite(prices.tp1)) {
+        throw new Error('Tradetron dynamic bridge TP1 is required');
+      }
+
+      // Dynamic strategy contract. The Tradetron strategy must use
+      // Get Runtime Traded Instrument for tt_symbol and GET RUNTIME for
+      // quantity/price/exit variables. Entry conditions are driven by
+      // tt_buy/tt_sell and must reset those flags back to 0 after entry/exit.
+      writes = [
+        ['tt_symbol', selected],
+        ['tt_side', normalizedSide],
+        ['tt_qty', quantity],
+        ['tt_ep', prices.entryPrice],
+        ['tt_sl', prices.sl],
+        ['tt_tp1', prices.tp1],
+        ['tt_tp', prices.tp],
+        ['tt_exec_id', execution],
+        ['tt_buy', normalizedSide === 'BUY' ? 1 : 0],
+        ['tt_sell', normalizedSide === 'SELL' ? 1 : 0],
+        ['api_buy', 0],
+        ['api_sell', 0]
+      ];
+    } else {
+      if (!['BTCUSD', 'ETHUSD'].includes(selected)) {
+        throw new Error('Tradetron legacy bridge symbol not allowed: ' + selected);
+      }
+
+      const other = selected === 'BTCUSD' ? 'ETHUSD' : 'BTCUSD';
+      writes = [
+        [triggerKey, 1],
+        [resetKey, 0],
+        [selected, 1],
+        [other, 0],
+        [selected + '_qty', quantity],
+        [selected + '_ep', prices.entryPrice],
+        [selected + '_sl', prices.sl],
+        [selected + '_tp', prices.tp]
+      ];
+    }
 
     const result = await this.sendPairs(writes);
 
@@ -108,9 +142,11 @@ export class TradetronBridge {
       symbol: selected,
       side: normalizedSide,
       qty: quantity,
-      executionId: clean(executionId),
-      triggerKey,
-      response: result.body
+      executionId: execution,
+      triggerKey: this.dynamicEnabled ? (normalizedSide === 'BUY' ? 'tt_buy' : 'tt_sell') : triggerKey,
+      response: result.body,
+      dynamic: this.dynamicEnabled
     };
+  }
   }
 }
