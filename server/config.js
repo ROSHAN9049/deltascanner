@@ -17,5 +17,6 @@ export const CONFIG = Object.freeze({
   tradetronBridgeEnabled: String(process.env.TRADETRON_BRIDGE_ENABLED || 'false').toLowerCase() === 'true',
   tradetronBaseUrl: process.env.TRADETRON_BASE_URL || 'https://api.tradetron.tech',
   tradetronAuthToken: process.env.TRADETRON_AUTH_TOKEN || '',
-  tradetronTimeoutMs: Number(process.env.TRADETRON_TIMEOUT_MS || 10000)
+  tradetronTimeoutMs: Number(process.env.TRADETRON_TIMEOUT_MS || 10000),
+  tradetronCapitalUsd: Number(process.env.TRADETRON_CAPITAL_USD || 5000)
 });
