@@ -152,7 +152,11 @@ export class DeltaEngine {
     return { qty, notional, risk, marginEstimate };
   }
 
-  async accountSnapshot() {
+  async accountSnapshot(settings = {}) {
+    if (CONFIG.tradetronBridgeEnabled) {
+      const equity = Math.max(0, Number(CONFIG.tradetronCapitalUsd) || 5000);
+      return { equity, available: equity, unrealized: 0, positions: [] };
+    }
     const [wallet, positions] = await Promise.all([
       this.adapter.wallet(),
       this.adapter.marginedPositions()
@@ -675,8 +679,8 @@ export class DeltaEngine {
     if (Date.now() - this.lastTickerFetch > 30000 || !this.tickerMap.size) await this.refreshTickers();
     if (Date.now() - this.lastCandleRefresh > 60000 || !this.candles.size) await this.refreshAllCandles();
 
-    const account = await this.accountSnapshot();
-    if (Date.now() - this.lastReconcile > 60000) await this.reconcile();
+    const account = await this.accountSnapshot(settings);
+    if (!CONFIG.tradetronBridgeEnabled && Date.now() - this.lastReconcile > 60000) await this.reconcile();
     const openRows = await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
     const trades = await this.recentTrades();
     if (Date.now() - this.lastAnalysis > 55000 || !this.lastSignals.length) {
