@@ -32,7 +32,8 @@ export class TradetronBridge {
     this.timeoutMs = Math.max(3000, Math.min(20000, Math.floor(n(process.env.TRADETRON_TIMEOUT_MS || 8000))));
     this.lastSent = new Map();
 
-    if (this.enabled && this.route === 'TRADETRON') {
+    if (this.route === 'TRADETRON') {
+      if (!this.enabled) throw new Error('TRADETRON_ENABLED=true is required when EXECUTION_ROUTE=TRADETRON');
       if (CONFIG.environment !== 'TESTNET') throw new Error('Tradetron bridge is TESTNET-only in this build');
       if (!this.token) throw new Error('TRADETRON_API_TOKEN is required when TRADETRON_ENABLED=true and EXECUTION_ROUTE=TRADETRON');
     }
