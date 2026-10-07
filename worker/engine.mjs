@@ -229,10 +229,10 @@ export class DeltaEngine {
       const c5 = this.getCandles(ticker.symbol, '5m');
       const c15 = this.getCandles(ticker.symbol, '15m');
       const mom = analyse(ticker, p, c1, c5, c15, btc5, btc15, 'MOMENTUM', {
-        minStopPct: n(settings.momentum_sl_min_pct || 0.95), rr: n(settings.momentum_rr || 2.5), scoreMin: n(settings.score_min || 80)
+        minStopPct: n(settings.momentum_sl_min_pct || 0.95), rr: n(settings.momentum_rr || 2.0), scoreMin: n(settings.score_min || 80)
       });
       const scalp = analyse(ticker, p, c1, c5, c15, btc5, btc15, 'SCALPING', {
-        minStopPct: n(settings.scalping_sl_min_pct || 0.75), rr: n(settings.scalping_rr || 2.5), scoreMin: n(settings.score_min || 80)
+        minStopPct: n(settings.scalping_sl_min_pct || 0.75), rr: n(settings.scalping_rr || 2.0), scoreMin: n(settings.score_min || 80)
       });
       for (const s of [mom, scalp]) {
         const size = this.positionSizing(s, account, settings);
