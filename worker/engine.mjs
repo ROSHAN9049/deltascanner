@@ -298,7 +298,10 @@ export class DeltaEngine {
         });
         return false;
       }
-      const executionId = 'TT-' + strategy + '-' + signal.symbol + '-' + signal.side;
+      // One bridge execution per signal candle. This is stable across the
+      // worker's 15s scan loop, but permits a fresh signal on a later candle.
+      const signalCandle = Number(signal.signalCandleTs || signal.candleTs || 0);
+      const executionId = 'TT-' + strategy + '-' + signal.symbol + '-' + signal.side + '-' + (signalCandle > 0 ? signalCandle : Math.floor(Date.now() / 60000));
       const prior = await this.findBridgeExecution(executionId);
       if (prior?.state === 'DB_ERROR' || prior?.state === 'SIGNAL_SENT') return false;
       if (prior?.state === 'PENDING') {
