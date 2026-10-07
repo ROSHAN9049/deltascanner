@@ -4,6 +4,7 @@ import { CONFIG } from '../server/config.js';
 import { DeltaAdapter } from './delta-adapter.mjs';
 import { analyse } from './strategy.mjs';
 import * as db from '../server/db.js';
+import { TradetronBridge } from '../server/tradetron.js';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const n = v => Number.isFinite(+v) ? +v : 0;
@@ -20,6 +21,7 @@ const roundTick = (v, tick) => tick > 0 ? Math.round(v / tick) * tick : v;
 export class DeltaEngine {
   constructor() {
     this.adapter = new DeltaAdapter();
+    this.tradetron = new TradetronBridge();
     this.leaseId = crypto.randomUUID();
     this.startedAt = Date.now();
     this.lastTickAt = 0;
@@ -271,6 +273,47 @@ export class DeltaEngine {
     if (signal.stage !== 'CONFIRMED' || signal.score < n(settings.score_min || 80)) return false;
     const gate = await this.riskGate(signal, strategy, account, settings, openPositions, trades);
     if (gate.reasons.length || !gate.size) return false;
+
+    // When Tradetron bridge mode is enabled, Tradetron owns execution.
+    // Never fall through to direct Delta order placement, which would create
+    // duplicate execution paths.
+    if (CONFIG.tradetronBridgeEnabled) {
+      if (!this.tradetron.isConfigured()) {
+        await this.log('ERROR', 'Tradetron bridge enabled but auth token is missing; entry blocked', {
+          symbol: signal.symbol, strategy, side: signal.side
+        });
+        return false;
+      }
+      const executionId = 'TT-' + strategy + '-' + signal.symbol + '-' + signal.side;
+      try {
+        const result = await this.tradetron.emitEntry({
+          symbol: signal.symbol,
+          side: signal.side,
+          qty: gate.size.qty,
+          entryPrice: signal.price,
+          sl: signal.sl,
+          tp: signal.tp,
+          executionId
+        });
+        if (!result.ok) {
+          await this.log('ERROR', 'Tradetron bridge signal failed; direct Delta entry blocked', {
+            symbol: signal.symbol, strategy, side: signal.side, executionId
+          });
+          return false;
+        }
+        await this.log('INFO', 'Tradetron TESTNET signal emitted; Delta direct entry skipped', {
+          symbol: signal.symbol, strategy, side: signal.side, qty: gate.size.qty,
+          entry: signal.price, sl: signal.sl, tp: signal.tp, executionId
+        });
+        return true;
+      } catch (e) {
+        await this.log('ERROR', 'Tradetron bridge exception; direct Delta entry blocked', {
+          symbol: signal.symbol, strategy, side: signal.side, error: e.message
+        });
+        return false;
+      }
+    }
+
     const entryCid = clientId(strategy === 'MOMENTUM' ? 'DDM' : 'DDS', signal.symbol);
     if (await this.findExistingClient(entryCid)) return false;
 
