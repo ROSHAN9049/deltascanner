@@ -75,7 +75,8 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
   const main = c5;
   const closed5 = closed(c5), closedEntry = closed(cEntry), closed15 = closed(c15);
   const e9 = ema(main, 9), e21 = ema(main, 21), e50 = ema(main, 50);
-  const r = rsi(main), vr = volumeRatio(main), a5 = atr(main), a15 = atr(c15), vw = vwap(closedEntry.length ? cEntry : main);
+  // Momentum confirms volume on 5m; Scalping confirms volume on 1m.
+  const r = rsi(main), vr = volumeRatio(cEntry), a5 = atr(main), a15 = atr(c15), vw = vwap(closedEntry.length ? cEntry : main);
   const t5 = trendFor5m(main), t15 = trendFor15m(c15);
   const btcT5 = trendFor5m(btc5), btcT15 = trendFor15m(btc15);
   const last5 = closed5.at(-1), prev5 = closed5.at(-2);
