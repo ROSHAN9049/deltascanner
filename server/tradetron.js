@@ -64,9 +64,14 @@ export class TradetronBridge {
 
     const other = selected === 'BTCUSD' ? 'ETHUSD' : 'BTCUSD';
 
-    // The Signal Bridge strategy exposes these runtime variables. Set the
-    // selector and entry parameters first, then fire the API entry variable.
+    // Tradetron expects all runtime variables in ONE ordered JSON request.
+    // The first pair uses key/value; subsequent pairs use key1/value1, etc.
+    // Reset the opposite signal before triggering the requested side.
+    const triggerKey = normalizedSide === 'BUY' ? 'api_buy' : 'api_sell';
+    const resetKey = normalizedSide === 'BUY' ? 'api_sell' : 'api_buy';
     const writes = [
+      [triggerKey, 1],
+      [resetKey, 0],
       [selected, 1],
       [other, 0],
       [selected + '_qty', quantity],
@@ -75,23 +80,16 @@ export class TradetronBridge {
       [selected + '_tp', Number(tp)]
     ];
 
-    const responses = [];
-    for (const [key, value] of writes) {
-      responses.push([key, await this.setRuntime(key, value)]);
-      await sleep(120);
-    }
-
-    const triggerKey = normalizedSide === 'BUY' ? 'api_buy' : 'api_sell';
-    responses.push([triggerKey, await this.setRuntime(triggerKey, 1)]);
+    const result = await this.sendPairs(writes);
 
     return {
-      ok: responses.every(([, r]) => r?.ok),
+      ok: !!result.ok,
       symbol: selected,
       side: normalizedSide,
       qty: quantity,
       executionId: clean(executionId),
       triggerKey,
-      responses: responses.map(([key, result]) => ({ key, ok: !!result?.ok, skipped: !!result?.skipped, body: result?.body || undefined }))
+      response: result.body
     };
   }
 }
