@@ -260,6 +260,16 @@ export class DeltaEngine {
     try { return await this.adapter.clientOrder(client); } catch { return null; }
   }
 
+  async findBridgeExecution(executionId) {
+    try {
+      const rows = await db.select('dd_orders', 'client_order_id=eq.' + encodeURIComponent(executionId) + '&select=state,updated_at&limit=1');
+      return rows && rows[0] ? rows[0] : null;
+    } catch (e) {
+      await this.log('ERROR', 'Tradetron bridge idempotency lookup failed; entry blocked', { executionId, error: e.message });
+      return { state: 'DB_ERROR' };
+    }
+  }
+
   async waitPosition(symbol) {
     for (let i = 0; i < 12; i++) {
       const rows = await this.adapter.positions();
@@ -289,7 +299,34 @@ export class DeltaEngine {
         return false;
       }
       const executionId = 'TT-' + strategy + '-' + signal.symbol + '-' + signal.side;
+      const prior = await this.findBridgeExecution(executionId);
+      if (prior?.state === 'DB_ERROR' || prior?.state === 'SIGNAL_SENT') return false;
+      if (prior?.state === 'PENDING') {
+        const ageMs = Date.now() - new Date(prior.updated_at || 0).getTime();
+        if (Number.isFinite(ageMs) && ageMs < 2 * 60 * 1000) return false;
+      }
+
       try {
+        await db.upsert('dd_orders', {
+          id: executionId,
+          product_id: signal.productId,
+          symbol: signal.symbol,
+          side: signal.side === 'BUY' ? 'buy' : 'sell',
+          order_type: 'tradetron_signal',
+          size: gate.size.qty,
+          state: 'PENDING',
+          client_order_id: executionId,
+          role: 'ENTRY',
+          strategy,
+          execution_id: executionId,
+          raw: {
+            source: 'tradetron_bridge',
+            entry_price: signal.price,
+            stop_price: signal.sl,
+            tp_price: signal.tp
+          }
+        }, 'client_order_id');
+
         const result = await this.tradetron.emitEntry({
           symbol: signal.symbol,
           side: signal.side,
@@ -300,11 +337,28 @@ export class DeltaEngine {
           executionId
         });
         if (!result.ok) {
+          await db.update('dd_orders', 'client_order_id=eq.' + encodeURIComponent(executionId), {
+            state: 'FAILED',
+            updated_at: iso()
+          }).catch(() => {});
           await this.log('ERROR', 'Tradetron bridge signal failed; direct Delta entry blocked', {
             symbol: signal.symbol, strategy, side: signal.side, executionId
           });
           return false;
         }
+
+        await db.update('dd_orders', 'client_order_id=eq.' + encodeURIComponent(executionId), {
+          state: 'SIGNAL_SENT',
+          updated_at: iso(),
+          raw: {
+            source: 'tradetron_bridge',
+            entry_price: signal.price,
+            stop_price: signal.sl,
+            tp_price: signal.tp,
+            bridge_response: result.response || null
+          }
+        });
+
         await this.log('INFO', 'Tradetron TESTNET signal emitted; Delta direct entry skipped', {
           symbol: signal.symbol, strategy, side: signal.side, qty: gate.size.qty,
           entry: signal.price, sl: signal.sl, tp: signal.tp, executionId
