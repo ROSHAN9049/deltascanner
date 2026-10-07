@@ -5,20 +5,23 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const truthy = value => ['1', 'true', 'yes', 'on'].includes(String(value ?? '').trim().toLowerCase());
 const n = value => Number.isFinite(+value) ? +value : 0;
 
-const ACTIONS = Object.freeze({
-  BUY: '1',
-  LONG_EXIT: '2',
-  SHORT: '3',
-  SHORT_EXIT: '4'
-});
-
 function cleanBaseUrl(value) {
   const raw = String(value || 'https://api.tradetron.tech/api').trim();
   return raw.replace(/\/+$/, '');
 }
 
-function keyEnvName(symbol) {
-  return 'TRADETRON_KEY_' + String(symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '_');
+function symbolEnvPart(symbol) {
+  return String(symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '_');
+}
+
+function keyEnvName(symbol, side) {
+  const suffix = side === 'BUY' ? 'LONG' : side === 'SELL' ? 'SHORT' : '';
+  return suffix ? 'TRADETRON_KEY_' + symbolEnvPart(symbol) + '_' + suffix : '';
+}
+
+function valueEnvName(symbol, side) {
+  const suffix = side === 'BUY' ? 'LONG' : side === 'SELL' ? 'SHORT' : '';
+  return suffix ? 'TRADETRON_VALUE_' + symbolEnvPart(symbol) + '_' + suffix : '';
 }
 
 export class TradetronBridge {
@@ -27,6 +30,7 @@ export class TradetronBridge {
     this.route = String(process.env.EXECUTION_ROUTE || 'DELTA_TESTNET').trim().toUpperCase();
     this.apiUrl = cleanBaseUrl(process.env.TRADETRON_API_URL);
     this.token = String(process.env.TRADETRON_API_TOKEN || '').trim();
+    this.defaultValue = String(process.env.TRADETRON_DEFAULT_VALUE || '1').trim() || '1';
     this.maxSignalsPerCycle = Math.max(1, Math.min(5, Math.floor(n(process.env.TRADETRON_MAX_SIGNALS_PER_CYCLE || 1))));
     this.dedupeMs = Math.max(30000, Math.min(15 * 60 * 1000, Math.floor(n(process.env.TRADETRON_DEDUPE_MS || 60000))));
     this.timeoutMs = Math.max(3000, Math.min(20000, Math.floor(n(process.env.TRADETRON_TIMEOUT_MS || 8000))));
@@ -39,32 +43,57 @@ export class TradetronBridge {
     }
   }
 
-  keyFor(symbol) {
-    const symbolKey = keyEnvName(symbol);
-    const configured = process.env[symbolKey];
-    return String(configured || symbol || '').trim();
+  keyFor(symbol, side) {
+    const envName = keyEnvName(symbol, side);
+    return envName ? String(process.env[envName] || '').trim() : '';
   }
 
-  actionForSide(side) {
-    if (side === 'BUY') return ACTIONS.BUY;
-    if (side === 'SELL') return ACTIONS.SHORT;
-    return '';
+  valueFor(symbol, side) {
+    const envName = valueEnvName(symbol, side);
+    return envName
+      ? String(process.env[envName] || this.defaultValue).trim() || this.defaultValue
+      : '';
   }
 
-  configuredFor(symbol) {
-    return Boolean(this.enabled && this.route === 'TRADETRON' && this.token && this.keyFor(symbol));
+  configuredFor(symbol, side) {
+    return Boolean(
+      this.enabled &&
+      this.route === 'TRADETRON' &&
+      this.token &&
+      ['BUY', 'SELL'].includes(side) &&
+      this.keyFor(symbol, side)
+    );
   }
 
-  async send(symbol, action, context = {}) {
-    if (!this.configuredFor(symbol)) return { sent: false, skipped: true, reason: 'bridge_not_configured' };
-    if (!Object.values(ACTIONS).includes(String(action))) {
-      throw new Error('Unsupported Tradetron signal action');
+  statusFor(symbol, side) {
+    const keyEnv = keyEnvName(symbol, side);
+    const configured = this.configuredFor(symbol, side);
+    return {
+      symbol,
+      side,
+      configured,
+      keyConfigured: Boolean(keyEnv && process.env[keyEnv]),
+      valueConfigured: Boolean(valueEnvName(symbol, side) && process.env[valueEnvName(symbol, side)]),
+      value: this.valueFor(symbol, side)
+    };
+  }
+
+  async send(symbol, side, context = {}) {
+    if (!this.configuredFor(symbol, side)) {
+      return {
+        sent: false,
+        skipped: true,
+        reason: 'explicit_tradetron_key_required',
+        symbol,
+        side
+      };
     }
 
-    const key = this.keyFor(symbol);
+    const key = this.keyFor(symbol, side);
+    const value = this.valueFor(symbol, side);
     const fingerprint = [
       key,
-      String(action),
+      value,
       String(context.strategy || ''),
       String(context.score || ''),
       String(context.sl || ''),
@@ -73,23 +102,24 @@ export class TradetronBridge {
 
     const last = this.lastSent.get(fingerprint) || 0;
     if (Date.now() - last < this.dedupeMs) {
-      return { sent: false, deduped: true, key, action: String(action) };
+      return { sent: false, deduped: true, key, value };
     }
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+
     try {
       const response = await fetch(this.apiUrl, {
         method: 'POST',
         headers: {
           Accept: 'application/json',
           'Content-Type': 'application/json',
-          'User-Agent': 'DealDost-Delta-Tradetron/1.0'
+          'User-Agent': 'DealDost-Delta-Tradetron/1.1'
         },
         body: JSON.stringify({
           'auth-token': this.token,
           key,
-          value: String(action)
+          value
         }),
         signal: controller.signal
       });
@@ -106,11 +136,12 @@ export class TradetronBridge {
       }
 
       this.lastSent.set(fingerprint, Date.now());
+
       return {
         sent: true,
         status: response.status,
         key,
-        action: String(action),
+        value,
         response: body
       };
     } finally {
@@ -120,23 +151,33 @@ export class TradetronBridge {
 
   async dispatch(candidates) {
     if (!this.enabled || this.route !== 'TRADETRON') return [];
+
     const chosen = (candidates || [])
       .filter(x => x?.signal?.stage === 'CONFIRMED' && ['BUY', 'SELL'].includes(x.signal.side))
       .sort((a, b) => n(b.signal.score) - n(a.signal.score))
       .slice(0, this.maxSignalsPerCycle);
 
     const results = [];
+
     for (const candidate of chosen) {
       const signal = candidate.signal;
-      const result = await this.send(signal.symbol, this.actionForSide(signal.side), {
+      const result = await this.send(signal.symbol, signal.side, {
         strategy: candidate.strategy,
         score: signal.score,
         sl: signal.sl,
         tp: signal.tp
       });
-      results.push({ symbol: signal.symbol, strategy: candidate.strategy, side: signal.side, ...result });
+
+      results.push({
+        symbol: signal.symbol,
+        strategy: candidate.strategy,
+        side: signal.side,
+        ...result
+      });
+
       await sleep(50);
     }
+
     return results;
   }
 }
