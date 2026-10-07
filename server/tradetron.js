@@ -15,31 +15,52 @@ export class TradetronBridge {
     return this.enabled && !!this.authToken;
   }
 
-  async setRuntime(key, value) {
+  async sendPairs(pairs) {
     if (!this.isConfigured()) {
       return { ok: false, skipped: true, reason: this.enabled ? 'TRADETRON_AUTH_TOKEN missing' : 'bridge disabled' };
     }
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    try {
-      const url = new URL(this.baseUrl + '/api');
-      url.searchParams.set('auth-token', this.authToken);
-      url.searchParams.set('key', key);
-      url.searchParams.set('value', String(value));
+    const payload = { 'auth-token': this.authToken };
+    pairs.forEach(([key, value], index) => {
+      const suffix = index === 0 ? '' : String(index);
+      payload['key' + suffix] = key;
+      payload['value' + suffix] = String(value);
+    });
 
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: { accept: 'text/plain, application/json', 'user-agent': 'DealDost-DeltaScanner/2.0' },
-        cache: 'no-store',
-        signal: controller.signal
-      });
-      const body = (await response.text()).trim();
-      if (!response.ok) throw new Error('Tradetron API ' + response.status + ': ' + body.slice(0, 240));
-      return { ok: true, body: body.slice(0, 240) };
-    } finally {
-      clearTimeout(timer);
+    let lastError = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+      try {
+        const response = await fetch(this.baseUrl + '/api?', {
+          method: 'POST',
+          headers: {
+            accept: 'text/plain, application/json',
+            'content-type': 'application/json',
+            'user-agent': 'DealDost-DeltaScanner/2.0'
+          },
+          body: JSON.stringify(payload),
+          cache: 'no-store',
+          signal: controller.signal
+        });
+        const body = (await response.text()).trim();
+        if (response.status === 429 && attempt === 0) {
+          await sleep(4000);
+          continue;
+        }
+        if (!response.ok) throw new Error('Tradetron API ' + response.status + ': ' + body.slice(0, 240));
+        return { ok: true, body: body.slice(0, 240) };
+      } catch (error) {
+        lastError = error;
+        if (attempt === 0) {
+          await sleep(1500);
+          continue;
+        }
+      } finally {
+        clearTimeout(timer);
+      }
     }
+    throw lastError || new Error('Tradetron API request failed');
   }
 
   async emitEntry({ symbol, side, qty, entryPrice, sl, tp, executionId }) {
