@@ -69,6 +69,7 @@ export const CONFIG = Object.freeze({
   // this route disabled until that strategy exists and has been validated.
   tradetronOptionsBridgeEnabled: String(process.env.TRADETRON_OPTIONS_BRIDGE_ENABLED || 'false').toLowerCase() === 'true',
   tradetronOptionsAuthToken: process.env.TRADETRON_OPTIONS_AUTH_TOKEN || '',
+  tradetronWebhookSecret: process.env.TRADETRON_WEBHOOK_SECRET || '',
   tradetronBaseUrl: process.env.TRADETRON_BASE_URL || 'https://api.tradetron.tech',
   tradetronAuthToken: process.env.TRADETRON_AUTH_TOKEN || '',
   tradetronTimeoutMs: Number(process.env.TRADETRON_TIMEOUT_MS || 10000),
