@@ -64,102 +64,32 @@ export class TradetronBridge {
     throw lastError || new Error('Tradetron API request failed');
   }
 
-  async emitEntry({ symbol, side, qty, entryPrice, sl, tp1, tp, executionId }) {
-    if (!this.isConfigured()) {
-      return { ok: false, skipped: true, reason: this.enabled ? 'TRADETRON_AUTH_TOKEN missing' : 'bridge disabled' };
-    }
+  async emitEntry({ symbol, side, qty, entryPrice, sl, tp1, tp, executionId, strategy }) {
+    if (!this.isConfigured()) return { ok: false, skipped: true, reason: this.enabled ? 'TRADETRON_AUTH_TOKEN missing' : 'bridge disabled' };
 
-    const selected = clean(symbol).toUpperCase();
-    const normalizedSide = clean(side).toUpperCase();
-    if (!['BUY', 'SELL'].includes(normalizedSide)) {
-      throw new Error('Tradetron bridge side must be BUY or SELL');
-    }
+    const selected=clean(symbol).toUpperCase(), normalizedSide=clean(side).toUpperCase(), engine=clean(strategy).toUpperCase()||'MOMENTUM';
+    if (!['BUY','SELL'].includes(normalizedSide)) throw new Error('Tradetron bridge side must be BUY or SELL');
+    if (!['MOMENTUM','SCALPING'].includes(engine)) throw new Error('Tradetron futures bridge strategy is invalid: '+engine);
+    const quantity=Math.max(1,Math.floor(Number(qty)||0));
+    const prices={entryPrice:Number(entryPrice),sl:Number(sl),tp1:Number(tp1),tp:Number(tp)};
+    if (!Number.isFinite(prices.entryPrice)||!Number.isFinite(prices.sl)||!Number.isFinite(prices.tp)||quantity<1) throw new Error('Tradetron bridge entry payload is invalid');
+    if (!/^[A-Z0-9]+USD$/.test(selected)||selected==='USD') throw new Error('Tradetron futures bridge symbol is invalid: '+selected);
 
-    const quantity = Math.max(1, Math.floor(Number(qty) || 0));
-    const prices = {
-      entryPrice: Number(entryPrice),
-      sl: Number(sl),
-      tp1: Number(tp1),
-      tp: Number(tp)
-    };
-    if (!Number.isFinite(prices.entryPrice) || !Number.isFinite(prices.sl) || !Number.isFinite(prices.tp) || quantity < 1) {
-      throw new Error('Tradetron bridge entry payload is invalid');
-    }
-
-    const execution = clean(executionId);
-    const triggerKey = normalizedSide === 'BUY' ? 'api_buy' : 'api_sell';
-    const resetKey = normalizedSide === 'BUY' ? 'api_sell' : 'api_buy';
-
-    let writes;
-    let actionCode = null;
-    if (this.dynamicEnabled) {
-      if (!/^[A-Z0-9]+USD$/.test(selected) || selected === 'USD') {
-        throw new Error('Tradetron dynamic bridge symbol is invalid: ' + selected);
-      }
-      if (!Number.isFinite(prices.tp1)) {
-        throw new Error('Tradetron dynamic bridge TP1 is required');
-      }
-
-      // Dynamic strategy contract. The Tradetron strategy must use
-      // Get Runtime Traded Instrument for tt_symbol and GET RUNTIME for
-      // quantity/price/exit variables. Entry conditions are driven by
-      // tt_buy/tt_sell and must reset those flags back to 0 after entry/exit.
-      writes = [
-        ['tt_symbol', selected],
-        ['tt_side', normalizedSide],
-        ['tt_qty', quantity],
-        ['tt_ep', prices.entryPrice],
-        ['tt_sl', prices.sl],
-        ['tt_tp1', prices.tp1],
-        ['tt_tp', prices.tp],
-        ['tt_exec_id', execution],
-        ['tt_buy', normalizedSide === 'BUY' ? 1 : 0],
-        ['tt_sell', normalizedSide === 'SELL' ? 1 : 0],
-        ['api_buy', 0],
-        ['api_sell', 0]
-      ];
-    } else {
-      // Existing deployed Signal Bridge basket contract.
-      // The deployed strategy is driven by a global api_buy/api_sell trigger,
-      // plus the selected symbol runtime flag and its sizing/price variables.
-      // Keep this exact legacy contract so the existing Tradetron strategy can
-      // consume scanner signals without any strategy-side edits.
-      if (!/^[A-Z0-9]+USD$/.test(selected) || selected === 'USD') {
-        throw new Error('Tradetron Signal Bridge symbol is invalid: ' + selected);
-      }
-
-      // Compatibility contract for the already-deployed Signal Bridge:
-      // - symbol runtime flag carries the side: 1 = BUY/LONG, 3 = SELL/SHORT
-      // - sizing/price variables are written before the trigger
-      // - api_buy/api_sell is kept as a global trigger fallback, but fired LAST
-      // This ordering avoids evaluating the entry trigger before the payload
-      // variables are available in the Tradetron runtime store.
-      actionCode = normalizedSide === 'BUY' ? 1 : 3;
-      writes = [
-        [selected, actionCode],
-        [selected + '_qty', quantity],
-        [selected + '_ep', prices.entryPrice],
-        [selected + '_sl', prices.sl],
-        [selected + '_tp', prices.tp],
-        [triggerKey, 1],
-        [resetKey, 0]
-      ];
-    }
-
-    const result = await this.sendPairs(writes);
-
-    return {
-      ok: !!result.ok,
-      symbol: selected,
-      side: normalizedSide,
-      qty: quantity,
-      executionId: execution,
-      triggerKey: this.dynamicEnabled ? (normalizedSide === 'BUY' ? 'tt_buy' : 'tt_sell') : triggerKey,
-      actionCode: this.dynamicEnabled ? null : actionCode,
-      response: result.body,
-      dynamic: this.dynamicEnabled,
-      contract: this.dynamicEnabled ? 'dynamic_tt_v1' : 'legacy_action_code_trigger_v2'
-    };
+    const execution=clean(executionId), triggerKey=normalizedSide==='BUY'?'api_buy':'api_sell';
+    const writes=[
+      [selected,normalizedSide==='BUY'?1:3],
+      [selected+'_el',normalizedSide==='BUY'?1:0],
+      [selected+'_es',normalizedSide==='SELL'?1:0],
+      [selected+'_xl',0],[selected+'_xs',0],
+      [selected+'_qty',quantity],[selected+'_ep',prices.entryPrice],[selected+'_sl',prices.sl],[selected+'_tp',prices.tp],
+      ['tt_engine',engine],['tt_symbol',selected],['tt_side',normalizedSide],['tt_qty',quantity],
+      ['tt_ep',prices.entryPrice],['tt_sl',prices.sl],['tt_tp1',Number.isFinite(prices.tp1)?prices.tp1:0],['tt_tp',prices.tp],
+      ['tt_exec_id',execution],['tt_buy',normalizedSide==='BUY'?1:0],['tt_sell',normalizedSide==='SELL'?1:0],
+      [triggerKey,1],[normalizedSide==='BUY'?'api_sell':'api_buy',0]
+    ];
+    const result=await this.sendPairs(writes);
+    setTimeout(()=>this.sendPairs([[selected+'_el',0],[selected+'_es',0],[triggerKey,0],['tt_buy',0],['tt_sell',0]]).catch(()=>{}),3000);
+    return {ok:!!result.ok,symbol:selected,side:normalizedSide,qty:quantity,executionId:execution,triggerKey,actionCode:normalizedSide==='BUY'?1:3,response:result.body,dynamic:true,engine,contract:'legacy_symbol_el_es+dynamic_tt_v3'};
   }
 
   async emitOptionSpread({ symbol, hedgeSymbol, side, qty, entryPrice, sl, tp1, tp, underlying, optionType, expiryMs, executionId }) {
@@ -178,6 +108,7 @@ export class TradetronBridge {
     if (!Number.isFinite(Number(entryPrice))) throw new Error('Tradetron option spread entry is invalid');
     const execution = clean(executionId);
     const writes = [
+      ['tt_engine', 'OPTIONS'],
       ['tt_option_short_symbol', selected],
       ['tt_option_hedge_symbol', hedge],
       ['tt_option_side', 'SELL'],
@@ -195,6 +126,7 @@ export class TradetronBridge {
       ['tt_option_spread', 1]
     ];
     const result = await this.sendPairs(writes);
+    setTimeout(() => this.sendPairs([['tt_option_sell', 0], ['tt_option_spread', 0]]).catch(() => {}), 3000);
     return {
       ok: !!result.ok,
       symbol: selected,
@@ -226,6 +158,7 @@ export class TradetronBridge {
     const execution = clean(executionId);
     const writes = [
       ['tt_option_symbol', selected],
+      ['tt_engine', 'OPTIONS'],
       ['tt_option_side', normalizedSide],
       ['tt_option_qty', quantity],
       ['tt_option_ep', prices.entryPrice],
@@ -240,6 +173,7 @@ export class TradetronBridge {
       ['tt_option_sell', normalizedSide === 'SELL' ? 1 : 0]
     ];
     const result = await this.sendPairs(writes);
+    setTimeout(() => this.sendPairs([['tt_option_buy', 0], ['tt_option_sell', 0]]).catch(() => {}), 3000);
     return {
       ok: !!result.ok,
       symbol: selected,
