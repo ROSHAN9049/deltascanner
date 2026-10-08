@@ -201,8 +201,8 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
   const btcT15 = trendFor15m(btc15);
   const lastEntry = closedEntry.at(-1);
 
-  const bullish = t5 === 'BULL' && t15 !== 'BEAR';
-  const bearish = t5 === 'BEAR' && t15 !== 'BULL';
+  const bullish = (t5 === 'BULL' || (t5 === 'FLAT' && t15 === 'BULL')) && t15 !== 'BEAR';
+  const bearish = (t5 === 'BEAR' || (t5 === 'FLAT' && t15 === 'BEAR')) && t15 !== 'BULL';
 
   const volumeMin = n(cfg.volumeMin || (isScalping ? 0.75 : 1.0));
   const antiChaseMax = n(cfg.antiChasePct || 15);
@@ -213,7 +213,7 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
   const scoreMin = n(cfg.scoreMin || 65);
   const btcOverrideScoreMin = n(cfg.btcOverrideScoreMin || 90);
   const btcOverrideVolumeMin = n(cfg.btcOverrideVolumeMin || 1.5);
-  const pullbackAllowanceAtr = n(cfg.pullbackAllowanceAtr || (isScalping ? 1.25 : 0.75));
+  const pullbackAllowanceAtr = n(cfg.pullbackAllowanceAtr || (isScalping ? 1.50 : 1.00));
 
   const entryRoom = entryAtr > 0 ? pullbackAllowanceAtr * entryAtr : 0;
   let side = '';
@@ -237,12 +237,12 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
 
   const rsiOk = side === 'BUY'
     ? (isScalping
-      ? r >= 47 && r <= 75 && (vw <= 0 || price >= vw)
-      : r >= 52 && r <= 72)
+      ? r >= 45 && r <= 75 && (vw <= 0 || price >= vw)
+      : r >= 50 && r <= 75)
     : side === 'SELL'
       ? (isScalping
-        ? r >= 25 && r <= 53 && (vw <= 0 || price <= vw)
-        : r >= 28 && r <= 48)
+        ? r >= 25 && r <= 55 && (vw <= 0 || price <= vw)
+        : r >= 25 && r <= 50)
       : false;
 
   const rangeAtr = entryAtr > 0 && lastEntry
