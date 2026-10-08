@@ -189,7 +189,7 @@ export class DeltaEngine {
     if (n(account.equity) <= 0) reasons.push('Account equity unavailable');
     const size = this.positionSizing(signal, account, settings);
     if (!size) reasons.push('Margin / minimum contract size');
-    if (signal.feeRiskRatio > signal.costGateRatio) reasons.push('Fee + spread exceeds 1R cost budget');
+    if (signal.side && n(signal.feeRiskRatio) > n(signal.costGateRatio)) reasons.push('Fee + spread exceeds 1R cost budget');
 
     const todayNet = trades.filter(t => String(t.closed_at || '').slice(0, 10) === today()).reduce((s, t) => s + n(t.net_pnl), 0);
     if (todayNet <= -n(account.equity) * 0.01) reasons.push('Daily loss 1% hard stop');
