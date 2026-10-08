@@ -433,10 +433,30 @@ export class DeltaEngine {
       const c5 = this.getCandles(ticker.symbol, '5m');
       const c15 = this.getCandles(ticker.symbol, '15m');
       const mom = analyse(ticker, p, c1, c5, c15, btc5, btc15, 'MOMENTUM', {
-        minStopPct: n(settings.momentum_sl_min_pct || 0.95), rr: n(settings.momentum_rr || 2.0), scoreMin: n(settings.score_min || 80)
+        minStopPct: n(settings.momentum_sl_min_pct || 0.95),
+        rr: n(settings.momentum_rr || 2.0),
+        scoreMin: n(settings.score_min || 70),
+        volumeMin: n(settings.volume_min || 1.25),
+        antiChasePct: n(settings.anti_chase_pct || 15),
+        rangeAtrMax: n(settings.range_atr_max || 3.0),
+        emaDistanceMax: n(settings.ema_distance_max || 2.5),
+        spreadMaxPct: n(settings.spread_max_pct || 0.35),
+        costGateRatio: 0.20,
+        btcOverrideScoreMin: n(settings.btc_override_score_min || 90),
+        btcOverrideVolumeMin: n(settings.btc_override_volume_min || 1.5)
       });
       const scalp = analyse(ticker, p, c1, c5, c15, btc5, btc15, 'SCALPING', {
-        minStopPct: n(settings.scalping_sl_min_pct || 0.75), rr: n(settings.scalping_rr || 2.0), scoreMin: n(settings.score_min || 80)
+        minStopPct: n(settings.scalping_sl_min_pct || 0.75),
+        rr: n(settings.scalping_rr || 2.0),
+        scoreMin: n(settings.score_min || 70),
+        volumeMin: n(settings.volume_min || 1.25),
+        antiChasePct: n(settings.anti_chase_pct || 15),
+        rangeAtrMax: n(settings.range_atr_max || 3.0),
+        emaDistanceMax: n(settings.ema_distance_max || 2.5),
+        spreadMaxPct: n(settings.spread_max_pct || 0.35),
+        costGateRatio: 0.25,
+        btcOverrideScoreMin: n(settings.btc_override_score_min || 90),
+        btcOverrideVolumeMin: n(settings.btc_override_volume_min || 1.5)
       });
       for (const s of [mom, scalp]) {
         const size = this.positionSizing(s, account, settings);
@@ -452,7 +472,11 @@ export class DeltaEngine {
           qty_contracts: size ? size.qty : 0, notional: size ? size.notional : 0,
           risk_usd: size ? size.risk : 0, fee_risk_ratio: s.feeRiskRatio,
           ready: s.ready && gate.reasons.length === 0, blocked_reasons: gate.reasons,
-          details: { rsi: s.rsi, vwap: s.vwap, fee: s.takerFee, candlesFresh: s.candlesFresh }
+          details: {
+            rsi: s.rsi, vwap: s.vwap, fee: s.takerFee, candlesFresh: s.candlesFresh,
+            localScore: s.localScore, btcRegimeOverride: s.btcRegimeOverride,
+            btcOverrideScoreMin: s.btcOverrideScoreMin, btcOverrideVolumeMin: s.btcOverrideVolumeMin
+          }
         });
       }
       out.push({ ticker, product: p, mom, scalp });
