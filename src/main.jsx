@@ -90,7 +90,7 @@ function App() {
         <div className="sub">DELTA INDIA · PERPETUAL FUTURES COMMAND CENTER</div>
       </div>
       <div className="headerRight">
-        <span>BUILD v2.0.20261008.08</span>
+        <span>BUILD v2.0.20261008.09</span>
         <span>UTC {new Date(clock).toISOString().slice(11,19)}</span>
         <span>LOCAL {new Date(clock).toLocaleTimeString('en-IN')}</span>
         <b className="badge test">TESTNET / DEMO</b>
@@ -245,7 +245,7 @@ function OptionTable({ rows, type }) {
     let d = s.details || {};
     if (typeof d === 'string') { try { d = JSON.parse(d); } catch {} }
     return <tr key={s.id || s.symbol + s.strategy + s.captured_at}>
-      <td>{s.captured_at ? new Date(s.captured_at).toLocaleTimeString('en-IN') : '—'}</td>
+      <td>{s.cached_at ? new Date(s.cached_at).toLocaleTimeString('en-IN') : (s.captured_at ? new Date(s.captured_at).toLocaleTimeString('en-IN') : '—')}</td>
       <td className="symbol">{d.underlyingSymbol || '—'}</td>
       <td className="symbol">{s.symbol}</td>
       <td>{d.optionType || '—'} / {type}</td>
