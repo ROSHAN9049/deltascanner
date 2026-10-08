@@ -2,6 +2,7 @@ import { CONFIG } from '../../server/config.js';
 import { select } from '../../server/db.js';
 
 export default async function handler(req, res) {
+  res.setHeader('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate');
   try {
     const [settings, positions, signals, trades, logs, ledger, counters, daily] = await Promise.all([
       select('dd_settings', 'id=eq.1&select=*'),
