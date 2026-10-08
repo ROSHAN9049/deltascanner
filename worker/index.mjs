@@ -33,8 +33,11 @@ async function startupPreflight() {
     await engine.adapter.health();
     console.log('[DeltaScanner] Delta public TESTNET API OK');
     if (CONFIG.tradetronBridgeEnabled) {
-      if (!engine.tradetron.isConfigured()) throw new Error('TRADETRON_BRIDGE_ENABLED=true but TRADETRON_AUTH_TOKEN is missing');
-      console.log('[DeltaScanner] Tradetron bridge mode enabled; Delta private API preflight skipped');
+      if (!engine.tradetron.isConfigured()) {
+        console.warn('[DeltaScanner] Tradetron bridge enabled but auth token is missing; execution is blocked until a new token is configured');
+      } else {
+        console.log('[DeltaScanner] Tradetron bridge mode enabled; Delta private API preflight skipped');
+      }
     } else {
       await engine.adapter.wallet();
       console.log('[DeltaScanner] Delta authenticated TESTNET API OK');
