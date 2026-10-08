@@ -28,6 +28,10 @@ export class DeltaEngine {
     this.adapter = new DeltaAdapter();
     this.tradetron = new TradetronBridge();
     this.tradetronOptions = new TradetronBridge({ enabled: CONFIG.tradetronOptionsBridgeEnabled, authToken: CONFIG.tradetronOptionsAuthToken });
+    this.tradetronRouteBridges = new Map((CONFIG.tradetronBridgeRoutes || []).map(route => [
+      route.id,
+      new TradetronBridge({ enabled: CONFIG.tradetronBridgeEnabled, authToken: route.authToken, supportedSymbols: route.symbols })
+    ]));
     this.unsupportedBridgeWarnings = new Set();
     this.leaseId = crypto.randomUUID();
     this.startedAt = Date.now();
@@ -713,20 +717,18 @@ export class DeltaEngine {
     // Never fall through to direct Delta order placement, which would create
     // duplicate execution paths.
     if (CONFIG.tradetronBridgeEnabled) {
-      if (!this.tradetron.isConfigured()) {
-        await this.log('ERROR', 'Tradetron bridge enabled but auth token is missing; entry blocked', {
-          symbol: signal.symbol, strategy, side: signal.side
-        });
-        return false;
-      }
-      if (!this.tradetron.supportsFuturesSymbol(signal.symbol)) {
+      const bridge = this.getTradetronBridgeForSymbol(signal.symbol);
+      if (!bridge || !bridge.isConfigured()) {
         const warningKey = String(signal.symbol || '').toUpperCase();
         if (!this.unsupportedBridgeWarnings.has(warningKey)) {
           this.unsupportedBridgeWarnings.add(warningKey);
-          await this.log('WARN', 'Tradetron entry blocked: symbol is not in the configured fixed basket', {
+          const configuredSymbols = Array.isArray(CONFIG.tradetronBridgeRoutes) && CONFIG.tradetronBridgeRoutes.length
+            ? CONFIG.tradetronBridgeRoutes.flatMap(route => route.symbols)
+            : CONFIG.tradetronSupportedSymbols;
+          await this.log('WARN', 'Tradetron entry blocked: no configured bridge route or API token for symbol', {
             symbol: warningKey,
             strategy,
-            supportedSymbols: CONFIG.tradetronSupportedSymbols
+            configuredSymbols
           });
         }
         return false;
@@ -779,7 +781,7 @@ export class DeltaEngine {
           }
         }, 'client_order_id');
 
-        const result = await this.tradetron.emitEntry({
+        const result = await bridge.emitEntry({
           symbol: signal.symbol,
           side: signal.side,
           qty: gate.size.qty,
@@ -1581,8 +1583,18 @@ export class DeltaEngine {
     }
   }
 
+  getTradetronBridgeForSymbol(symbol) {
+    const selected = String(symbol || '').toUpperCase();
+    const configuredRoutes = Array.isArray(CONFIG.tradetronBridgeRoutes) ? CONFIG.tradetronBridgeRoutes : [];
+    if (configuredRoutes.length) {
+      const route = configuredRoutes.find(item => item.symbols.includes(selected));
+      return route ? this.tradetronRouteBridges.get(route.id) || null : null;
+    }
+    return this.tradetron.supportsFuturesSymbol(selected) ? this.tradetron : null;
+  }
+
   async manageTradetronPositions(rows, settings = {}) {
-    if (!CONFIG.signalOnly || !CONFIG.tradetronBridgeEnabled || !this.tradetron.isConfigured()) return;
+    if (!CONFIG.signalOnly || !CONFIG.tradetronBridgeEnabled) return;
     const marketAge = Date.now() - Math.max(this.lastTickerFetch || 0, this.lastTickAt || 0);
     if (marketAge > 90000) {
       await this.log('WARN', 'Tradetron exit monitor skipped because market data is stale', { marketAgeMs: marketAge });
@@ -1629,13 +1641,15 @@ export class DeltaEngine {
       if (!reason && openedAt > 0 && now - openedAt >= timeoutMs) reason = 'TIMEOUT';
       if (!reason) continue;
 
+      const bridge = this.getTradetronBridgeForSymbol(symbol);
+      if (!bridge || !bridge.isConfigured()) continue;
       const executionId = String(row.execution_id || row.client_order_id || '');
       try {
         await db.update('dd_positions',
           'execution_id=eq.' + encodeURIComponent(executionId),
           { requested_exit_reason: 'BRIDGE_EXIT_PENDING:' + reason, current_price: mark, updated_at: iso() }
         );
-        const result = await this.tradetron.emitExit({ symbol, side, reason, executionId });
+        const result = await bridge.emitExit({ symbol, side, reason, executionId });
         if (!result.ok) {
           // A confirmed non-success can be retried on the next loop.
           await db.update('dd_positions',
