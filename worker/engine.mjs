@@ -239,6 +239,35 @@ export class DeltaEngine {
     await this.log('INFO', 'Option universe refreshed', { contracts: next.size, underlyings });
   }
 
+
+  optionRiskBudget(account, settings) {
+    const equity = n(account?.equity);
+    const pct = Math.max(0.05, n(settings.options_max_risk_pct || 0.30));
+    return equity > 0 ? equity * pct / 100 : 0;
+  }
+
+  optionQuantity(signal, account, settings) {
+    const budget = this.optionRiskBudget(account, settings);
+    const cv = Math.max(1e-9, n(signal?.ticker?.contract_value) || 1);
+    const mark = n(signal?.mark);
+    const stopPct = Math.max(1, n(settings.options_buy_stop_pct || 25));
+    if (!budget || !mark) return 0;
+    const riskPerContract = mark * stopPct / 100 * cv;
+    return riskPerContract > 0 ? Math.floor(budget / riskPerContract) : 0;
+  }
+
+  pickOptionHedge(shortSignal, chain) {
+    return chain
+      .filter(x => String(x.optionType).toUpperCase() === String(shortSignal.optionType).toUpperCase())
+      .filter(x => n(x.expiryMs) === n(shortSignal.expiryMs))
+      .filter(x => n(x.mark) > 0 && n(x.ask) > 0 && n(x.strike) > 0)
+      .filter(x => Math.abs(n(x.delta)) >= 0.05 && Math.abs(n(x.delta)) <= 0.15)
+      .filter(x => shortSignal.optionType === 'CALL'
+        ? n(x.strike) > n(shortSignal.strike)
+        : n(x.strike) < n(shortSignal.strike))
+      .sort((a, b) => Math.abs(Math.abs(n(a.delta)) - 0.10) - Math.abs(Math.abs(n(b.delta)) - 0.10))[0] || null;
+  }
+
   async analyseUniverse(account, settings, openPositions, trades) {
     const btc = this.btcSymbol();
     if (!btc) {
