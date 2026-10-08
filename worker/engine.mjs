@@ -1443,8 +1443,25 @@ export class DeltaEngine {
     if (settings.options_enabled !== false && (Date.now() - this.lastOptionTickerFetch > 60000 || !this.optionTickerMap.size)) await this.refreshOptionTickers();
 
     const account = await this.accountSnapshot(settings);
-    if (!CONFIG.tradetronBridgeEnabled && this.privateExecutionAvailable && Date.now() - this.lastReconcile > 60000) await this.reconcile();
-    const openRows = await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
+    let openRows = await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
+    // In Tradetron execution mode, new entries never use Delta directly.
+    // Reconciliation is retained only for legacy/direct engine positions that
+    // already exist in dd_positions during the migration window.
+    if (
+      this.privateExecutionAvailable &&
+      Date.now() - this.lastReconcile > 60000 &&
+      (!CONFIG.tradetronBridgeEnabled || (openRows || []).length)
+    ) {
+      try {
+        await this.reconcile();
+        this.lastReconcile = Date.now();
+      } catch (e) {
+        await this.log('WARN', 'Legacy Delta position reconciliation unavailable; Tradetron signal mode remains active', {
+          error: e.message, bridge: CONFIG.tradetronBridgeEnabled
+        });
+      }
+      openRows = await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
+    }
     const trades = await this.recentTrades();
     if (Date.now() - this.lastAnalysis > 55000 || !this.lastSignals.length) {
       await this.analyseUniverse(account, settings, openRows || [], trades || []);
