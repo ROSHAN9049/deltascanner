@@ -317,10 +317,13 @@ export class DeltaEngine {
           const s = best.signal;
           const q = this.optionQuantity({ ...s, ticker: best.ticker }, account, settings);
           const duplicate = (openPositions || []).some(p => String(p.symbol) === s.symbol && n(p.qty) > 0);
+          const optionOpenCount = (openPositions || []).filter(p => String(p.strategy || '').startsWith('OPTIONS_') && n(p.qty) > 0).length;
+          const optionCap = Math.max(1, n(settings.options_max_open_positions || 1));
           const executionLocked = settings.options_execution_enabled !== true || CONFIG.tradetronBridgeEnabled || !this.privateExecutionAvailable;
           const blocked = [...s.blocked];
           if (q < 1) blocked.push('Risk budget below 1 contract');
           if (duplicate) blocked.push('Duplicate option position');
+          if (optionOpenCount >= optionCap && !duplicate) blocked.push('Options position cap ' + optionCap);
           if (executionLocked) blocked.push('Option execution route locked; scanner-only TESTNET');
           const ready = s.ready && q >= 1 && !duplicate && !executionLocked;
           const cv = Math.max(1e-9, n(best.ticker.contract_value) || 1);
@@ -372,6 +375,9 @@ export class DeltaEngine {
           const budget = this.optionRiskBudget(account, settings);
           const q = maxRiskPerSpread > 0 ? Math.floor(budget / maxRiskPerSpread) : 0;
           const blocked = [...s.blocked];
+          const optionOpenCount = (openPositions || []).filter(p => String(p.strategy || '').startsWith('OPTIONS_') && n(p.qty) > 0).length;
+          const optionCap = Math.max(1, n(settings.options_max_open_positions || 1));
+          if (optionOpenCount >= optionCap) blocked.push('Options position cap ' + optionCap);
           if (!hedge) blocked.push('Defined-risk hedge unavailable');
           if (!(credit > 0)) blocked.push('Net credit <= 0');
           if (q < 1) blocked.push('Spread risk exceeds option risk budget');
