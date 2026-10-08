@@ -47,7 +47,7 @@ export class DeltaEngine {
     this.ws = null;
     this.wsRetry = 0;
     this.running = false;
-    this.privateExecutionAvailable = true;
+    this.privateExecutionAvailable = false;
     this.lastMarketCacheWrite = 0;
     this.candleWarmCursor = 0;
   }
@@ -1689,7 +1689,7 @@ export class DeltaEngine {
   }
 
   async run() {
-    if (CONFIG.environment !== 'TESTNET') throw new Error('Production execution disabled');
+    if (!CONFIG.signalOnly || CONFIG.directDeltaExecutionEnabled) throw new Error('Production direct execution disabled; scanner must be SIGNAL_ONLY');
     this.running = true;
     this.connectWs();
     await this.log('INFO', 'Delta TESTNET worker started', { workerId: CONFIG.workerId });
