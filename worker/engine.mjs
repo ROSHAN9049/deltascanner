@@ -773,7 +773,8 @@ export class DeltaEngine {
           sl: signal.sl,
           tp1: signal.tp1,
           tp: signal.tp,
-          executionId
+          executionId,
+          strategy
         });
         if (!result.ok) {
           await db.update('dd_orders', 'client_order_id=eq.' + encodeURIComponent(executionId), {
