@@ -785,6 +785,7 @@ export class DeltaEngine {
       n(o.bracket_stop_loss_price) > 0 && n(o.bracket_take_profit_price) > 0
     );
 
+    let bracketExistsByApi = false;
     if (!hasBracket) {
       try {
         await this.adapter.placeBracket({
@@ -796,9 +797,9 @@ export class DeltaEngine {
       } catch (e) {
         const details = e?.details || null;
         if (e?.code === 'bracket_order_exists') {
-          // Delta already has a bracket for this product. Refresh open orders and
-          // verify the existing protection instead of treating the idempotent
-          // response as a failure.
+          // Delta allows only one bracket per open position; this response is
+          // an idempotent confirmation that the position already has one.
+          bracketExistsByApi = true;
           const freshOrders = await this.adapter.openOrders().catch(() => []);
           protectedOrders = (Array.isArray(freshOrders) ? freshOrders : []).filter(o =>
             n(o.product_id) === productId &&
@@ -838,19 +839,19 @@ export class DeltaEngine {
       o.stop_order_type === 'take_profit_order' &&
       near(o.stop_price || o.bracket_take_profit_price, tp)
     );
-    const bracketVerified = hasCombinedBracket || (hasSeparateStop && hasSeparateTakeProfit);
+    const bracketVerified = bracketExistsByApi || hasCombinedBracket || (hasSeparateStop && hasSeparateTakeProfit);
 
+    const tp1Cid = ('TP1-' + String(row.execution_id).replace(/[^a-zA-Z0-9]/g, '')).slice(0, 32);
     const tp1Existing = protectedOrders.find(o =>
       o.stop_order_type === 'take_profit_order' &&
-      o.reduce_only === true &&
       n(o.size) > 0 &&
-      n(o.size) < qty
+      n(o.size) < qty &&
+      (o.reduce_only === true || String(o.client_order_id || '') === tp1Cid)
     );
 
     let tp1OrderId = tp1Existing ? String(tp1Existing.id) : null;
     if (!tp1OrderId) {
       const tp1Qty = Math.max(1, Math.min(qty, roundDown(qty * n(this.currentSettings?.tp1_pct || 33) / 100, 1)));
-      const tp1Cid = ('TP1-' + String(row.execution_id).replace(/[^a-zA-Z0-9]/g, '')).slice(0, 32);
       const prior = await this.findExistingClient(tp1Cid);
       if (prior) {
         tp1OrderId = String(prior.id);
