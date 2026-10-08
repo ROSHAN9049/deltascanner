@@ -54,6 +54,6 @@ Optional:
 - `TRADETRON_BASE_URL=https://api.tradetron.tech`
 - `TRADETRON_TIMEOUT_MS=10000`
 
-The legacy bridge writes the selected symbol runtime quantity/entry/SL/TP variables and triggers `api_buy=1` or `api_sell=1`. The scanner uses this legacy Signal Bridge contract by default because the existing deployed strategy is a fixed Signal Bridge basket. The auth token is never printed in logs.
+The legacy bridge writes `<SYMBOL>=1` for the selected basket member, `<SYMBOL>_qty`, `<SYMBOL>_ep`, `<SYMBOL>_sl`, `<SYMBOL>_tp`, and the deployed strategy's global trigger `api_buy=1` or `api_sell=1`. The scanner uses this exact legacy Signal Bridge contract by default because the existing deployed strategy is a fixed Signal Bridge basket. The auth token is never printed in logs.
 
 Keep the Tradetron deployment in **Live Offline** while validating the bridge. Do not switch to Live Auto until the end-to-end signal, symbol routing, quantity, and exit behavior have been verified. Tradetron outbound activity can be posted to `/api/tradetron/webhook` so the scanner can display received fills/events.
