@@ -3,6 +3,37 @@ import { CONFIG } from './config.js';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const clean = v => String(v ?? '').trim();
 
+// Treat unconfirmed Tradetron entry signals as reserved slots until a matching
+// fill/position event arrives. This keeps SIGNAL_ONLY from opening unlimited
+// simulated positions when activity delivery is delayed or unavailable.
+export function withSignalReservations(openPositions, pendingSignals) {
+  const positions = [...(Array.isArray(openPositions) ? openPositions : [])];
+  const occupied = new Set(positions
+    .filter(row => Math.abs(Number(row?.qty) || 0) > 0)
+    .map(row => clean(row?.symbol).toUpperCase())
+    .filter(Boolean));
+
+  for (const row of Array.isArray(pendingSignals) ? pendingSignals : []) {
+    const state = clean(row?.state).toUpperCase();
+    if (!['PENDING', 'SIGNAL_SENT'].includes(state)) continue;
+    const symbol = clean(row?.symbol).toUpperCase();
+    if (!symbol || occupied.has(symbol)) continue;
+    occupied.add(symbol);
+    const rawSide = clean(row?.side).toUpperCase();
+    positions.push({
+      symbol,
+      side: ['BUY', 'LONG'].includes(rawSide) ? 'BUY' : 'SELL',
+      qty: Math.max(1, Math.abs(Number(row?.size) || 1)),
+      strategy: clean(row?.strategy).toUpperCase(),
+      origin: 'SIGNAL_RESERVATION',
+      execution_id: clean(row?.execution_id || row?.client_order_id) || null,
+      opened_at: row?.created_at || null,
+      reservation_state: state
+    });
+  }
+  return positions;
+}
+
 export class TradetronBridge {
   constructor({
     enabled = CONFIG.tradetronBridgeEnabled,
