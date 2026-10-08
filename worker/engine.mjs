@@ -268,6 +268,141 @@ export class DeltaEngine {
       .sort((a, b) => Math.abs(Math.abs(n(a.delta)) - 0.10) - Math.abs(Math.abs(n(b.delta)) - 0.10))[0] || null;
   }
 
+
+  async analyseOptions(futuresItems, account, settings, openPositions) {
+    if (settings.options_enabled === false) {
+      this.lastOptionSignals = [];
+      return [];
+    }
+    const cfg = {
+      buyMinDelta: settings.options_buy_min_delta,
+      buyMaxDelta: settings.options_buy_max_delta,
+      sellMinDelta: settings.options_sell_min_delta,
+      sellMaxDelta: settings.options_sell_max_delta,
+      minOi: settings.options_min_oi,
+      minVolume: settings.options_min_volume,
+      maxSpreadPct: settings.options_max_spread_pct,
+      minDays: settings.options_min_days_to_expiry,
+      maxDays: settings.options_max_days_to_expiry,
+      scoreMin: settings.score_min,
+      buyStopPct: settings.options_buy_stop_pct,
+      buyTp1Pct: settings.options_buy_tp1_pct,
+      buyTpPct: settings.options_buy_tp_pct
+    };
+    const chains = new Map();
+    for (const ticker of this.optionTickerMap.values()) {
+      const asset = String(ticker.underlying || ticker.symbol || '').toUpperCase().split('-')[1] || '';
+      if (!asset) continue;
+      if (!chains.has(asset)) chains.set(asset, []);
+      chains.get(asset).push(ticker);
+    }
+
+    const out = [];
+    for (const item of futuresItems || []) {
+      const underlying = [item.mom, item.scalp].filter(Boolean).sort((a, b) => n(b.score) - n(a.score))[0];
+      const asset = String(item.ticker?.symbol || '').toUpperCase().replace(/USD$/, '');
+      const chain = chains.get(asset) || [];
+      if (!underlying || !chain.length) continue;
+
+      if (settings.options_buy_enabled !== false) {
+        const candidates = chain
+          .map(ticker => ({ ticker, signal: analyseOption(ticker, underlying, 'OPTIONS_BUY', cfg) }))
+          .filter(x => x.signal.targetType === (underlying.side === 'BUY' ? 'CALL' : 'PUT'))
+          .sort((a, b) => n(b.signal.score) - n(a.signal.score));
+        const best = candidates[0];
+        if (best) {
+          const s = best.signal;
+          const q = this.optionQuantity({ ...s, ticker: best.ticker }, account, settings);
+          const duplicate = (openPositions || []).some(p => String(p.symbol) === s.symbol && n(p.qty) > 0);
+          const executionLocked = settings.options_execution_enabled !== true || CONFIG.tradetronBridgeEnabled || !this.privateExecutionAvailable;
+          const blocked = [...s.blocked];
+          if (q < 1) blocked.push('Risk budget below 1 contract');
+          if (duplicate) blocked.push('Duplicate option position');
+          if (executionLocked) blocked.push('Option execution route locked; scanner-only TESTNET');
+          const ready = s.ready && q >= 1 && !duplicate && !executionLocked;
+          const cv = Math.max(1e-9, n(best.ticker.contract_value) || 1);
+          const row = { ...s, ticker: best.ticker, strategy: 'OPTIONS_BUY', qty: q,
+            notional: q * s.mark * cv,
+            risk: q * s.mark * (Math.max(1, n(settings.options_buy_stop_pct || 25)) / 100) * cv,
+            blocked, executionLocked, ready };
+          await db.insert('dd_signals', {
+            symbol: row.symbol, product_id: n(best.ticker.product_id || best.ticker.id),
+            rank: 1, strategy: 'OPTIONS_BUY', price: row.mark, change_24h: row.underlyingChange,
+            turnover_usd: n(best.ticker.turnover_usd || best.ticker.turnover), spread_pct: row.spreadPct,
+            volume_spike: row.volume, score: row.score, stage: row.stage, side: 'BUY',
+            rsi: underlying.rsi, trend: underlying.trend, confirm_trend: underlying.confirmTrend,
+            btc_trend: underlying.btcTrend, ema21: underlying.ema21, atr_5m: underlying.atr5,
+            atr_15m: underlying.atr15, support: underlying.support, resistance: underlying.resistance,
+            stop_price: row.sl, tp1_price: row.tp1, tp_price: row.tp, qty_contracts: row.qty,
+            notional: row.notional, risk_usd: row.risk, fee_risk_ratio: 0, ready,
+            blocked_reasons: blocked,
+            details: { engine: 'OPTIONS_BUY', optionType: row.optionType, strike: row.strike,
+              dte: row.dte, expiryMs: row.expiryMs, delta: row.delta, gamma: row.gamma, theta: row.theta,
+              vega: row.vega, bid: row.bid, ask: row.ask, openInterest: row.oi, volume: row.volume,
+              underlyingSymbol: row.underlyingSymbol, underlyingScore: row.underlyingScore,
+              executionLocked, testnetOnly: true }
+          });
+          out.push(row);
+        }
+      }
+
+      if (settings.options_sell_enabled !== false) {
+        const candidates = chain
+          .map(ticker => ({ ticker, signal: analyseOption(ticker, underlying, 'OPTIONS_SELL', cfg) }))
+          .filter(x => x.signal.targetType === (underlying.side === 'BUY' ? 'PUT' : 'CALL'))
+          .sort((a, b) => n(b.signal.score) - n(a.signal.score));
+        const best = candidates[0];
+        if (best) {
+          const s = best.signal;
+          const hedgeCandidates = chain
+            .map(ticker => analyseOption(ticker, underlying, 'OPTIONS_SELL', cfg))
+            .filter(h => String(h.optionType) === String(s.optionType) &&
+              n(h.expiryMs) === n(s.expiryMs) &&
+              Math.abs(n(h.delta)) >= 0.05 && Math.abs(n(h.delta)) <= 0.15 &&
+              n(h.mark) > 0 && n(h.ask) > 0 &&
+              (s.optionType === 'CALL' ? n(h.strike) > n(s.strike) : n(h.strike) < n(s.strike)))
+            .sort((a, b) => Math.abs(Math.abs(n(a.delta)) - 0.10) - Math.abs(Math.abs(n(b.delta)) - 0.10));
+          const hedge = hedgeCandidates[0] || null;
+          const credit = hedge ? n(s.bid) - n(hedge.ask) : 0;
+          const width = hedge ? Math.abs(n(s.strike) - n(hedge.strike)) : 0;
+          const maxRiskPerSpread = Math.max(0, width - credit);
+          const budget = this.optionRiskBudget(account, settings);
+          const q = maxRiskPerSpread > 0 ? Math.floor(budget / maxRiskPerSpread) : 0;
+          const blocked = [...s.blocked];
+          if (!hedge) blocked.push('Defined-risk hedge unavailable');
+          if (!(credit > 0)) blocked.push('Net credit <= 0');
+          if (q < 1) blocked.push('Spread risk exceeds option risk budget');
+          blocked.push('SELL requires defined-risk two-leg spread execution');
+          const row = { ...s, ticker: best.ticker, strategy: 'OPTIONS_SELL', qty: q,
+            hedgeSymbol: hedge?.symbol || '', hedgeStrike: hedge?.strike || 0, hedgeDelta: hedge?.delta || 0,
+            credit, maxRiskPerSpread, notional: Math.max(0, credit * q), risk: maxRiskPerSpread * q,
+            blocked, executionLocked: true, ready: false };
+          await db.insert('dd_signals', {
+            symbol: row.symbol, product_id: n(best.ticker.product_id || best.ticker.id),
+            rank: 1, strategy: 'OPTIONS_SELL', price: row.mark, change_24h: row.underlyingChange,
+            turnover_usd: n(best.ticker.turnover_usd || best.ticker.turnover), spread_pct: row.spreadPct,
+            volume_spike: row.volume, score: row.score, stage: row.stage, side: 'SELL',
+            rsi: underlying.rsi, trend: underlying.trend, confirm_trend: underlying.confirmTrend,
+            btc_trend: underlying.btcTrend, ema21: underlying.ema21, atr_5m: underlying.atr5,
+            atr_15m: underlying.atr15, support: underlying.support, resistance: underlying.resistance,
+            stop_price: 0, tp1_price: 0, tp_price: 0, qty_contracts: row.qty,
+            notional: row.notional, risk_usd: row.risk, fee_risk_ratio: 0, ready: false,
+            blocked_reasons: blocked,
+            details: { engine: 'OPTIONS_SELL', optionType: row.optionType, strike: row.strike,
+              dte: row.dte, expiryMs: row.expiryMs, delta: row.delta, bid: row.bid, ask: row.ask,
+              openInterest: row.oi, volume: row.volume, hedgeSymbol: row.hedgeSymbol,
+              hedgeStrike: row.hedgeStrike, hedgeDelta: row.hedgeDelta, credit: row.credit,
+              maxRiskPerSpread: row.maxRiskPerSpread, executionLocked: true, testnetOnly: true,
+              definedRiskOnly: settings.options_sell_defined_risk_only !== false }
+          });
+          out.push(row);
+        }
+      }
+    }
+    this.lastOptionSignals = out;
+    return out;
+  }
+
   async analyseUniverse(account, settings, openPositions, trades) {
     const btc = this.btcSymbol();
     if (!btc) {
