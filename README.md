@@ -57,3 +57,15 @@ Optional:
 The legacy bridge writes `<SYMBOL>=1` for the selected basket member, `<SYMBOL>_qty`, `<SYMBOL>_ep`, `<SYMBOL>_sl`, `<SYMBOL>_tp`, and the deployed strategy's global trigger `api_buy=1` or `api_sell=1`. The scanner uses this exact legacy Signal Bridge contract by default because the existing deployed strategy is a fixed Signal Bridge basket. The auth token is never printed in logs.
 
 Keep the Tradetron deployment in **Live Offline** while validating the bridge. Do not switch to Live Auto until the end-to-end signal, symbol routing, quantity, and exit behavior have been verified. Tradetron outbound activity can be posted to `/api/tradetron/webhook` so the scanner can display received fills/events.
+
+### Tradetron outbound activity webhook
+
+The scanner has a dedicated inbound endpoint for Tradetron outbound activity:
+
+`/api/tradetron/webhook`
+
+Use the full deployed scanner URL plus this path in Tradetron's outbound webhook/integration settings. Enable the activity types available in your Tradetron account that represent fills/executions, position changes, errors, and kill-switch events. The scanner stores the received payload in `dd_tradetron_events`; the dashboard's **TT EVENTS** counter and activity panel read from this table.
+
+Important: **TT SIGNALS** means the scanner successfully sent a signal to Tradetron; it does not mean a fill occurred. **TT EVENTS** only increases after Tradetron posts an outbound event back to the scanner. Keep the Tradetron deployment in **Live Offline** until the signal → execution → webhook → dashboard round-trip has been verified.
+
+The webhook parser accepts JSON and form-encoded payloads and looks through common nested `data/payload/trade/order/fill/execution/position` structures. It also normalizes BUY/LONG/1 and SELL/SHORT/3 side values and supports Unix-second/millisecond event timestamps.
