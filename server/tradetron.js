@@ -77,19 +77,21 @@ export class TradetronBridge {
 
     const execution=clean(executionId), triggerKey=normalizedSide==='BUY'?'api_buy':'api_sell';
     // Tradetron's existing Signal Bridge reads <SYMBOL>_q (not only
-    // <SYMBOL>_qty). Write all sizing/protection metadata before entry triggers
-    // so a strategy evaluating runtime variables cannot consume a stale quantity.
+    // <SYMBOL>_qty). Set quantity and price metadata before raising any entry
+    // trigger so the strategy cannot consume stale runtime values.
     const writes=[
       [selected,normalizedSide==='BUY'?1:3],
-      [selected+'_el',normalizedSide==='BUY'?1:0],
-      [selected+'_es',normalizedSide==='SELL'?1:0],
       [selected+'_xl',0],[selected+'_xs',0],
       [selected+'_q',quantity],[selected+'_qty',quantity],
       [selected+'_ep',prices.entryPrice],[selected+'_sl',prices.sl],[selected+'_tp',prices.tp],
       ['tt_engine',engine],['tt_symbol',selected],['tt_side',normalizedSide],['tt_qty',quantity],
       ['tt_ep',prices.entryPrice],['tt_sl',prices.sl],['tt_tp1',Number.isFinite(prices.tp1)?prices.tp1:0],['tt_tp',prices.tp],
-      ['tt_exec_id',execution],['tt_buy',normalizedSide==='BUY'?1:0],['tt_sell',normalizedSide==='SELL'?1:0],
+      ['tt_exec_id',execution],
       [normalizedSide==='BUY'?'api_sell':'api_buy',0],
+      [selected+'_el',normalizedSide==='BUY'?1:0],
+      [selected+'_es',normalizedSide==='SELL'?1:0],
+      ['tt_buy',normalizedSide==='BUY'?1:0],
+      ['tt_sell',normalizedSide==='SELL'?1:0],
       [triggerKey,1]
     ];
     const result=await this.sendPairs(writes);
