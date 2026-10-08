@@ -17,6 +17,11 @@ const roundDown = (v, step) => {
   return Math.floor(v / s) * s;
 };
 const roundTick = (v, tick) => tick > 0 ? Math.round(v / tick) * tick : v;
+const cleanPrice = v => {
+  const x = n(v);
+  if (!(x > 0)) return String(v);
+  return x.toFixed(12).replace(/0+$/, '').replace(/\.$/, '');
+};
 
 export class DeltaEngine {
   constructor() {
@@ -910,7 +915,7 @@ export class DeltaEngine {
     if (!hasStop && stop > 0) {
       await this.adapter.placeOrder({
         product_id: row.product_id, size: qty, side: 'sell', order_type: 'market_order',
-        stop_order_type: 'stop_loss_order', stop_price: String(roundOption(stop)),
+        stop_order_type: 'stop_loss_order', stop_price: cleanPrice(roundOption(stop)),
         stop_trigger_method: 'mark_price', reduce_only: true, client_order_id: stopCid
       });
     }
@@ -920,7 +925,7 @@ export class DeltaEngine {
       const tp1Qty = Math.max(1, Math.min(qty, roundDown(qty * n(setting.options_buy_tp1_pct || 30) / 100, 1)));
       await this.adapter.placeOrder({
         product_id: row.product_id, size: tp1Qty, side: 'sell', order_type: 'market_order',
-        stop_order_type: 'take_profit_order', stop_price: String(roundOption(tp1)),
+        stop_order_type: 'take_profit_order', stop_price: cleanPrice(roundOption(tp1)),
         stop_trigger_method: 'mark_price', reduce_only: true, client_order_id: tp1Cid
       });
     }
@@ -929,7 +934,7 @@ export class DeltaEngine {
     if (!tpExists && tp > 0) {
       await this.adapter.placeOrder({
         product_id: row.product_id, size: qty, side: 'sell', order_type: 'market_order',
-        stop_order_type: 'take_profit_order', stop_price: String(roundOption(tp)),
+        stop_order_type: 'take_profit_order', stop_price: cleanPrice(roundOption(tp)),
         stop_trigger_method: 'mark_price', reduce_only: true, client_order_id: tpCid
       });
     }
@@ -1012,15 +1017,13 @@ export class DeltaEngine {
       try {
         await this.adapter.placeBracket({
           product_id: productId,
-          stop_loss_order: { order_type: 'market_order', stop_price: String(stop) },
-          take_profit_order: { order_type: 'market_order', stop_price: String(tp) },
+          stop_loss_order: { order_type: 'market_order', stop_price: cleanPrice(stop) },
+          take_profit_order: { order_type: 'market_order', stop_price: cleanPrice(tp) },
           bracket_stop_trigger_method: 'mark_price'
         });
       } catch (e) {
         const details = e?.details || null;
         if (e?.code === 'bracket_order_exists') {
-          // Delta allows only one bracket per open position; this response is
-          // an idempotent confirmation that the position already has one.
           bracketExistsByApi = true;
           const freshOrders = await this.adapter.openOrders().catch(() => []);
           protectedOrders = (Array.isArray(freshOrders) ? freshOrders : []).filter(o =>
@@ -1028,11 +1031,61 @@ export class DeltaEngine {
             (o.stop_order_type || o.bracket_order || n(o.bracket_stop_loss_price) || n(o.bracket_take_profit_price))
           );
         } else {
-          await this.log('ERROR', 'Recovered position bracket placement failed', {
+          // Some Delta products can reject a bracket payload even though
+          // equivalent standalone reduce-only stop/TP orders are valid.
+          // Fall back to exchange-side standalone protection rather than
+          // leaving an already-open ENGINE position unprotected.
+          await this.log('WARN', 'Bracket rejected; attempting standalone reduce-only protection', {
             symbol: row.symbol, executionId: row.execution_id, error: e.message,
             code: e.code || null, status: e.status || null, details
           });
-          return false;
+          try {
+            const suffix = String(row.execution_id).replace(/[^a-zA-Z0-9]/g, '').slice(-20);
+            const stopCid = ('RSL-' + suffix).slice(0, 32);
+            const tpCid = ('RTP-' + suffix).slice(0, 32);
+            const freshOrders = await this.adapter.openOrders().catch(() => []);
+            const same = (Array.isArray(freshOrders) ? freshOrders : []).filter(o => n(o.product_id) === productId);
+            const nearPrice = (a, b) => {
+              const x = n(a), y = n(b);
+              return x > 0 && y > 0 && Math.abs(x - y) <= Math.max(Math.abs(y) * 0.0005, tick > 0 ? tick * 2 : 1e-9);
+            };
+            const stopExisting = same.find(o =>
+              String(o.client_order_id || '') === stopCid ||
+              (o.stop_order_type === 'stop_loss_order' && n(o.size) >= qty && nearPrice(o.stop_price, stop))
+            );
+            const tpExisting = same.find(o =>
+              String(o.client_order_id || '') === tpCid ||
+              (o.stop_order_type === 'take_profit_order' && n(o.size) >= qty && nearPrice(o.stop_price, tp))
+            );
+            if (!stopExisting) {
+              await this.adapter.placeOrder({
+                product_id: productId, size: qty, side: sideExit(row.side),
+                order_type: 'market_order', stop_order_type: 'stop_loss_order',
+                stop_price: cleanPrice(stop), stop_trigger_method: 'mark_price',
+                reduce_only: true, client_order_id: stopCid
+              });
+            }
+            if (!tpExisting) {
+              await this.adapter.placeOrder({
+                product_id: productId, size: qty, side: sideExit(row.side),
+                order_type: 'market_order', stop_order_type: 'take_profit_order',
+                stop_price: cleanPrice(tp), stop_trigger_method: 'mark_price',
+                reduce_only: true, client_order_id: tpCid
+              });
+            }
+            const verifiedOrders = await this.adapter.openOrders();
+            protectedOrders = (Array.isArray(verifiedOrders) ? verifiedOrders : []).filter(o =>
+              n(o.product_id) === productId &&
+              (o.stop_order_type || o.bracket_order || n(o.bracket_stop_loss_price) || n(o.bracket_take_profit_price))
+            );
+          } catch (fallbackError) {
+            await this.log('ERROR', 'Standalone reduce-only protection failed', {
+              symbol: row.symbol, executionId: row.execution_id,
+              error: fallbackError.message, code: fallbackError.code || null,
+              status: fallbackError.status || null, details: fallbackError.details || null
+            });
+            return false;
+          }
         }
       }
       const freshOrders = protectedOrders.length
