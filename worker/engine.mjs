@@ -212,15 +212,9 @@ export class DeltaEngine {
       if (n(signal.feeRiskRatio) > n(signal.costGateRatio)) reasons.push('Fee + spread exceeds 1R cost budget');
     }
 
-    if (
-      signal.side &&
-      CONFIG.tradetronBridgeEnabled &&
-      !CONFIG.tradetronDynamicBridgeEnabled &&
-      strategy !== 'OPTIONS_BUY' &&
-      !['BTCUSD', 'ETHUSD'].includes(String(signal.symbol).toUpperCase())
-    ) {
-      reasons.push('Tradetron legacy bridge supports BTCUSD/ETHUSD only');
-    }
+    // Standard Tradetron Signal Bridge is basket-based. Any Delta futures
+    // symbol is eligible here as long as the already-deployed Tradetron
+    // strategy exposes that symbol's bridge variables.
 
     const todayNet = trades.filter(t => String(t.closed_at || '').slice(0, 10) === today()).reduce((s, t) => s + n(t.net_pnl), 0);
     if (todayNet <= -n(account.equity) * 0.01) reasons.push('Daily loss 1% hard stop');
