@@ -808,9 +808,24 @@ export class DeltaEngine {
       );
     }
 
-    const bracketVerified = protectedOrders.some(o =>
+    const near = (a, b) => {
+      const x = n(a), y = n(b);
+      if (!(x > 0 && y > 0)) return false;
+      const tol = Math.max(Math.abs(y) * 0.0005, tick > 0 ? tick * 2 : 1e-9);
+      return Math.abs(x - y) <= tol;
+    };
+    const hasCombinedBracket = protectedOrders.some(o =>
       n(o.bracket_stop_loss_price) > 0 && n(o.bracket_take_profit_price) > 0
     );
+    const hasSeparateStop = protectedOrders.some(o =>
+      o.stop_order_type === 'stop_loss_order' &&
+      near(o.stop_price || o.bracket_stop_loss_price, stop)
+    );
+    const hasSeparateTakeProfit = protectedOrders.some(o =>
+      o.stop_order_type === 'take_profit_order' &&
+      near(o.stop_price || o.bracket_take_profit_price, tp)
+    );
+    const bracketVerified = hasCombinedBracket || (hasSeparateStop && hasSeparateTakeProfit);
 
     const tp1Existing = protectedOrders.find(o =>
       o.stop_order_type === 'take_profit_order' &&
