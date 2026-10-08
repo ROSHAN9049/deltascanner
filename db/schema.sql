@@ -288,6 +288,26 @@ create table if not exists public.dd_option_cache (
 create index if not exists dd_option_cache_score_idx on public.dd_option_cache(underlying, strategy, score desc);
 create index if not exists dd_option_cache_cached_idx on public.dd_option_cache(cached_at desc);
 
+create table if not exists public.dd_tradetron_events (
+  event_id text primary key,
+  event_type text not null,
+  deployment_id text,
+  execution_id text,
+  symbol text,
+  side text,
+  qty numeric,
+  price numeric,
+  pnl numeric,
+  status text,
+  event_at timestamptz,
+  raw jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+create index if not exists dd_tradetron_events_created_idx on public.dd_tradetron_events(created_at desc);
+create index if not exists dd_tradetron_events_execution_idx on public.dd_tradetron_events(execution_id);
+
+alter table public.dd_tradetron_events enable row level security;
+
 create table if not exists public.dd_daily_pnl (
   trade_date date primary key,
   realized numeric not null default 0,
