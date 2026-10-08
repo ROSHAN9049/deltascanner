@@ -204,13 +204,13 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
   const bullish = t5 === 'BULL' && t15 !== 'BEAR';
   const bearish = t5 === 'BEAR' && t15 !== 'BULL';
 
-  const volumeMin = n(cfg.volumeMin || 1.25);
+  const volumeMin = n(cfg.volumeMin || (isScalping ? 0.75 : 1.0));
   const antiChaseMax = n(cfg.antiChasePct || 15);
-  const rangeMax = n(cfg.rangeAtrMax || 3.0);
-  const emaMax = n(cfg.emaDistanceMax || 2.5);
+  const rangeMax = n(cfg.rangeAtrMax || 4.0);
+  const emaMax = n(cfg.emaDistanceMax || 3.5);
   const spreadMax = n(cfg.spreadMaxPct || 0.35);
   const costGateRatio = n(cfg.costGateRatio || (isScalping ? 0.25 : 0.20));
-  const scoreMin = n(cfg.scoreMin || 70);
+  const scoreMin = n(cfg.scoreMin || 65);
   const btcOverrideScoreMin = n(cfg.btcOverrideScoreMin || 90);
   const btcOverrideVolumeMin = n(cfg.btcOverrideVolumeMin || 1.5);
   const pullbackAllowanceAtr = n(cfg.pullbackAllowanceAtr || (isScalping ? 1.25 : 0.75));
@@ -283,6 +283,21 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
     ? (2 * fee * price + spreadPct / 100 * price) / riskDistance
     : 99;
 
+  // TESTNET high-conviction fallback for sparse volume feeds. The setup
+  // must already have strong score, tight spread, valid RSI and no strongly
+  // opposing BTC regime. This does not apply to LIVE (production is blocked).
+  const volumeFallback =
+    !!side &&
+    vr < volumeMin &&
+    scoreMin <= 65 &&
+    localScore >= 85 &&
+    spreadPct <= 0.20 &&
+    antiChase &&
+    rsiOk &&
+    !btcStronglyOpposed;
+
+  const volumeQualified = vr >= volumeMin || volumeFallback;
+
   const trendAligned = bullish || bearish;
   const localScore = Math.round(
     (trendAligned ? 20 : 0) +
@@ -317,7 +332,7 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
     !!price &&
     !!riskDistance &&
     !!sl &&
-    vr >= volumeMin &&
+    volumeQualified &&
     rsiOk &&
     antiChase &&
     rangeAtr <= rangeMax &&
@@ -334,7 +349,8 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
   } else {
     if (score < scoreMin) blocked.push('Signal score below ' + scoreMin);
     if (!rsiOk) blocked.push('RSI/VWAP');
-    if (vr < volumeMin) blocked.push('Volume spike < ' + volumeMin.toFixed(2) + 'x');
+    if (vr < volumeMin && !volumeFallback) blocked.push('Volume spike < ' + volumeMin.toFixed(2) + 'x');
+    if (volumeFallback) blocked.push('Volume fallback: high-conviction sparse feed');
     if (!antiChase) blocked.push('24h anti-chase');
     if (rangeAtr > rangeMax) blocked.push('Entry candle range > ' + rangeMax.toFixed(2) + 'x ATR');
     if (emaDistanceAtr > emaMax) blocked.push('Price > ' + emaMax.toFixed(2) + 'x ATR from entry EMA21');
