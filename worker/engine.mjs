@@ -728,6 +728,22 @@ export class DeltaEngine {
         if (Number.isFinite(ageMs) && ageMs < 2 * 60 * 1000) return false;
       }
 
+      // Tradetron owns positions in SIGNAL_ONLY mode. Avoid repeatedly firing
+      // the same symbol/engine while the scanner cannot read Tradetron's
+      // simulated positions back directly. The durable signal ledger provides
+      // a five-minute throttle while preserving unlimited opportunity slots.
+      if (CONFIG.signalOnly) {
+        const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+        const recent = await db.select(
+          'dd_orders',
+          'order_type=eq.tradetron_signal&symbol=eq.' + encodeURIComponent(signal.symbol) +
+          '&strategy=eq.' + encodeURIComponent(strategy) +
+          '&created_at=gte.' + encodeURIComponent(cutoff) +
+          '&select=id,state,created_at&limit=1'
+        );
+        if (recent?.length) return false;
+      }
+
       try {
         await db.upsert('dd_orders', {
           id: executionId,
@@ -782,7 +798,7 @@ export class DeltaEngine {
           }
         });
 
-        await this.log('INFO', 'Tradetron TESTNET signal emitted; Delta direct entry skipped', {
+        await this.log('INFO', 'Tradetron production signal emitted; Delta direct entry skipped', {
           symbol: signal.symbol, strategy, side: signal.side, qty: gate.size.qty,
           entry: signal.price, sl: signal.sl, tp: signal.tp, executionId
         });
@@ -1569,11 +1585,13 @@ export class DeltaEngine {
     if (settings.options_enabled !== false && (Date.now() - this.lastOptionTickerFetch > 60000 || !this.optionTickerMap.size)) await this.refreshOptionTickers();
 
     const account = await this.accountSnapshot(settings);
-    let openRows = await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
-    // In Tradetron execution mode, new entries never use Delta directly.
-    // Reconciliation is retained only for legacy/direct engine positions that
-    // already exist in dd_positions during the migration window.
+    // In production SIGNAL_ONLY mode, dd_positions are legacy scanner-owned
+    // execution records and must never be treated as live positions. Tradetron
+    // owns execution; actual Offline positions arrive through the Tradetron
+    // activity webhook and are exposed separately by the API.
+    let openRows = CONFIG.signalOnly ? [] : await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
     if (
+      !CONFIG.signalOnly &&
       this.privateExecutionAvailable &&
       Date.now() - this.lastReconcile > 60000 &&
       (!CONFIG.tradetronBridgeEnabled || (openRows || []).length)
@@ -1582,7 +1600,7 @@ export class DeltaEngine {
         await this.reconcile();
         this.lastReconcile = Date.now();
       } catch (e) {
-        await this.log('WARN', 'Legacy Delta position reconciliation unavailable; Tradetron signal mode remains active', {
+        await this.log('WARN', 'Legacy Delta position reconciliation unavailable; direct engine remains fail-closed', {
           error: e.message, bridge: CONFIG.tradetronBridgeEnabled
         });
       }
@@ -1623,13 +1641,19 @@ export class DeltaEngine {
         return (rank[b.strategy] || 0) - (rank[a.strategy] || 0);
       });
 
-      const maxPositions = Math.max(1, n(settings.max_open_positions || 3));
+      const maxPositions = CONFIG.signalOnly ? Number.POSITIVE_INFINITY : Math.max(1, n(settings.max_open_positions || 3));
+      const maxBridgeSignalsPerCycle = CONFIG.signalOnly ? 2 : Number.POSITIVE_INFINITY;
+      let bridgeSignalsThisCycle = 0;
       for (const c of candidates) {
+        if (CONFIG.signalOnly && bridgeSignalsThisCycle >= maxBridgeSignalsPerCycle) break;
         const freshAccount = await this.accountSnapshot(settings);
-        const freshPositions = await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
+        const freshPositions = CONFIG.signalOnly ? [] : await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
         if ((freshPositions || []).length >= maxPositions) break;
         const opened = await this.openTrade(c.item, c.strategy, c.signal, freshAccount, settings, freshPositions || [], trades);
-        if (opened) await sleep(250);
+        if (opened) {
+          if (CONFIG.signalOnly) bridgeSignalsThisCycle++;
+          await sleep(250);
+        }
       }
     }
 
@@ -1651,7 +1675,7 @@ export class DeltaEngine {
     if (!CONFIG.signalOnly || CONFIG.directDeltaExecutionEnabled) throw new Error('Production direct execution disabled; scanner must be SIGNAL_ONLY');
     this.running = true;
     this.connectWs();
-    await this.log('INFO', 'Delta TESTNET worker started', { workerId: CONFIG.workerId });
+    await this.log('INFO', 'Delta production SIGNAL_ONLY worker started', { workerId: CONFIG.workerId });
     while (this.running) {
       try { await this.scanOnce(); }
       catch (e) {
