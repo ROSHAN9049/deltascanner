@@ -5,7 +5,7 @@ import './style.css';
 const tabs = [
   ['dashboard','Dashboard'],['rotation','Profit Rotation'],['momentum','Momentum'],['momentum-history','Mom History'],
   ['scalping','Scalping'],['scalp-history','Scalp History'],['options','Options'],['positions','Positions'],['trade-history','Trade History'],
-  ['pnl','PNL'],['paper','Paper Trading'],['testnet','Testnet'],['live','Live Trading'],['analytics','Analytics'],['settings','Settings']
+  ['pnl','PNL'],['paper','Paper Trading'],['testnet','Legacy Demo OFF'],['live','Live Trading'],['analytics','Analytics'],['settings','Settings']
 ];
 const num = v => Number.isFinite(+v) ? +v : 0;
 const pct = v => (num(v) >= 0 ? '+' : '') + num(v).toFixed(2) + '%';
