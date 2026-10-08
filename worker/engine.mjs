@@ -39,6 +39,7 @@ export class DeltaEngine {
     this.ws = null;
     this.wsRetry = 0;
     this.running = false;
+    this.privateExecutionAvailable = true;
   }
 
   async log(level, message, data) {
@@ -153,7 +154,7 @@ export class DeltaEngine {
   }
 
   async accountSnapshot(settings = {}) {
-    if (CONFIG.tradetronBridgeEnabled) {
+    if (CONFIG.tradetronBridgeEnabled || !this.privateExecutionAvailable) {
       const equity = Math.max(0, Number(CONFIG.tradetronCapitalUsd) || 5000);
       return { equity, available: equity, unrealized: 0, positions: [] };
     }
@@ -374,6 +375,13 @@ export class DeltaEngine {
         });
         return false;
       }
+    }
+
+    if (!this.privateExecutionAvailable) {
+      await this.log('WARN', 'Direct Delta execution unavailable; entry blocked while scanner remains online', {
+        symbol: signal.symbol, strategy, side: signal.side
+      });
+      return false;
     }
 
     const entryCid = clientId(strategy === 'MOMENTUM' ? 'DDM' : 'DDS', signal.symbol);
@@ -740,7 +748,7 @@ export class DeltaEngine {
     if (Date.now() - this.lastCandleRefresh > 60000 || !this.candles.size) await this.refreshAllCandles();
 
     const account = await this.accountSnapshot(settings);
-    if (!CONFIG.tradetronBridgeEnabled && Date.now() - this.lastReconcile > 60000) await this.reconcile();
+    if (!CONFIG.tradetronBridgeEnabled && this.privateExecutionAvailable && Date.now() - this.lastReconcile > 60000) await this.reconcile();
     const openRows = await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
     const trades = await this.recentTrades();
     if (Date.now() - this.lastAnalysis > 55000 || !this.lastSignals.length) {
