@@ -192,7 +192,7 @@ export class DeltaEngine {
     if (signal.feeRiskRatio > signal.costGateRatio) reasons.push('Fee + spread exceeds 1R cost budget');
 
     const todayNet = trades.filter(t => String(t.closed_at || '').slice(0, 10) === today()).reduce((s, t) => s + n(t.net_pnl), 0);
-    if (todayNet <= -n(account.equity) * 0.03) reasons.push('Daily loss 3% hard stop');
+    if (todayNet <= -n(account.equity) * 0.01) reasons.push('Daily loss 1% hard stop');
 
     if (!continuous) {
       const engineCap = strategy === 'MOMENTUM' ? 3 : 3;
@@ -203,7 +203,7 @@ export class DeltaEngine {
       if (last && Date.now() - new Date(last.closed_at || 0).getTime() < 15 * 60 * 1000) reasons.push('15m cooldown');
       if (last && n(last.net_pnl) < 0 && Date.now() - new Date(last.closed_at || 0).getTime() < 90 * 60 * 1000) reasons.push('90m losing-symbol cooldown');
       const todayNet = trades.filter(t => String(t.closed_at || '').slice(0, 10) === today()).reduce((s, t) => s + n(t.net_pnl), 0);
-      if (todayNet <= -n(account.equity) * 0.03) reasons.push('Daily loss 3%');
+      
       const recent = trades.filter(t => t.strategy === strategy).slice(0, 20);
       const wins = recent.filter(t => n(t.net_pnl) > 0).length;
       const recentNet = recent.reduce((s, t) => s + n(t.net_pnl), 0);
