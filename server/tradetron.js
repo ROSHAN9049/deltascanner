@@ -159,7 +159,7 @@ export class TradetronBridge {
     const selected = clean(symbol).toUpperCase();
     const normalizedSide = clean(side).toUpperCase();
     const asset = clean(underlying).toUpperCase();
-    if (!/^[CP]-[A-Z0-9]+-[0-9.]+-\\d{6}$/.test(selected)) throw new Error('Invalid Tradetron option symbol');
+    if (!/^[CP]-[A-Z0-9]+-[0-9.]+-\d{6}$/.test(selected)) throw new Error('Invalid Tradetron option symbol');
     if (!['BUY','SELL'].includes(normalizedSide)) throw new Error('Tradetron option side must be BUY or SELL');
     const quantity = Math.max(1, Math.floor(Number(qty) || 0));
     const prices = { entryPrice: Number(entryPrice), sl: Number(sl), tp1: Number(tp1), tp: Number(tp) };
