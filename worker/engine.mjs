@@ -937,6 +937,7 @@ export class DeltaEngine {
     if (Date.now() - this.lastUniverseRefresh > 15 * 60 * 1000 || !this.products.length) await this.refreshProducts();
     if (Date.now() - this.lastTickerFetch > 30000 || !this.tickerMap.size) await this.refreshTickers();
     if (Date.now() - this.lastCandleRefresh > 60000 || !this.candles.size) await this.refreshAllCandles();
+    if (settings.options_enabled !== false && (Date.now() - this.lastOptionTickerFetch > 60000 || !this.optionTickerMap.size)) await this.refreshOptionTickers();
 
     const account = await this.accountSnapshot(settings);
     if (!CONFIG.tradetronBridgeEnabled && this.privateExecutionAvailable && Date.now() - this.lastReconcile > 60000) await this.reconcile();
