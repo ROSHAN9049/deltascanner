@@ -53,7 +53,7 @@ function App() {
   const settings = state?.settings || {};
   const trades = state?.trades || [];
   const positions = state?.positions || [];
-  const signals = latestSignals(state?.signals || []);
+  const signals = latestSignals(state?.signalCache || state?.signals || []);
   const today = new Date().toISOString().slice(0,10);
   const todayTrades = trades.filter(t => String(t.closed_at || '').slice(0,10) === today);
   const wins = todayTrades.filter(t => num(t.net_pnl) > 0).length;
@@ -109,7 +109,7 @@ function App() {
     {tab === 'momentum' && <EngineView engine="MOMENTUM" signals={signals} />}
     {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" />}
     {tab === 'scalping' && <EngineView engine="SCALPING" signals={signals} />}
-    {tab === 'options' && <OptionsView signals={signals} settings={settings} />}
+    {tab === 'options' && <OptionsView signals={signals} settings={settings} optionCache={state?.optionCache || []} />}
     {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" />}
     {tab === 'positions' && <Positions rows={positions} />}
     {tab === 'trade-history' && <TradeHistory trades={trades} title="Trade History · Real Fills Only" />}
@@ -148,12 +148,12 @@ function Dashboard({ market, settings, health, trades, positions, signals, onIns
       <Card label="OPEN POSITIONS" value={positions.length} sub={'max ' + (settings.max_open_positions || 20)}/>
       <Card label="TODAY" value={todayTrades.length} sub={wins + ' wins / ' + loss + ' losses · ' + (todayTrades.length ? (wins/todayTrades.length*100).toFixed(1) : '0.0') + '% WR'}/>
     </section>
-    <Panel title="Live Scanner · Top 50 by 24h Turnover">
+    <Panel title={'Full Delta Market Scanner · ' + (market?.length || 0) + ' live perpetuals'}>
       <MarketTable market={market} signals={signals}/>
     </Panel>
     <section className="grid2">
       <RiskGovernor signals={signals} health={health} positions={positions} onInspect={onInspect} inspect={inspect}/>
-      <Panel title="Signal Stages · WATCH → SETUP → CONFIRMED"><div className="tablewrap"><table><thead><tr><th>COIN</th><th>ENG</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>QTY</th><th>NOTIONAL</th><th>RISK</th><th>READY</th><th>WHY BLOCKED</th></tr></thead><tbody>{signals.slice(0,60).map(s => <tr key={s.symbol + s.strategy}><td className="symbol">{s.symbol}</td><td>{s.strategy === 'MOMENTUM' ? 'MOM' : 'SCALP'}</td><td>{s.stage}</td><td className={s.side === 'BUY' ? 'up' : s.side === 'SELL' ? 'down' : 'muted'}>{s.side || '—'}</td><td><b>{num(s.score).toFixed(0)}</b>/100</td><td>{fmtQty(s.qty_contracts)}</td><td>{money(s.notional)}</td><td>{money(s.risk_usd)}</td><td className={s.ready ? 'up' : 'down'}>{s.ready ? 'YES' : 'NO'}</td><td className="muted">{fmtReasons(s.blocked_reasons)}</td></tr>)}</tbody></table></div></Panel>
+      <Panel title="Signal Stages · WATCH → SETUP → CONFIRMED"><div className="tablewrap"><table><thead><tr><th>COIN</th><th>ENG</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>QTY</th><th>NOTIONAL</th><th>RISK</th><th>READY</th><th>WHY BLOCKED</th></tr></thead><tbody>{signals.map(s => <tr key={s.symbol + s.strategy}><td className="symbol">{s.symbol}</td><td>{s.strategy === 'MOMENTUM' ? 'MOM' : 'SCALP'}</td><td>{s.stage}</td><td className={s.side === 'BUY' ? 'up' : s.side === 'SELL' ? 'down' : 'muted'}>{s.side || '—'}</td><td><b>{num(s.score).toFixed(0)}</b>/100</td><td>{fmtQty(s.qty_contracts)}</td><td>{money(s.notional)}</td><td>{money(s.risk_usd)}</td><td className={s.ready ? 'up' : 'down'}>{s.ready ? 'YES' : 'NO'}</td><td className="muted">{fmtReasons(s.blocked_reasons)}</td></tr>)}</tbody></table></div></Panel>
     </section>
     <Panel title="Idle Reason"><div className="idle">{idleFromSignals(signals)} <span>Top blocks: {top || 'none recorded'}</span></div></Panel>
     <Panel title="Engine Log · last 200 lines"><Log rows={logs || []}/></Panel>
@@ -180,7 +180,7 @@ function MarketTable({ market, signals }) {
     if (!map.has(s.symbol)) map.set(s.symbol, {});
     map.get(s.symbol)[s.strategy] = s;
   }
-  return <div className="tablewrap"><table><thead><tr><th>#</th><th>COIN</th><th>PRICE</th><th>24H %</th><th>TURNOVER</th><th>VOL SPIKE</th><th>MOM</th><th>SCALP</th><th>TREND</th><th>SUPPORT</th><th>RESIST.</th><th>SIGNAL</th><th>TRADE</th></tr></thead><tbody>{market.slice(0,50).map((m,i) => {
+  return <div className="tablewrap"><table><thead><tr><th>#</th><th>COIN</th><th>PRICE</th><th>24H %</th><th>TURNOVER</th><th>VOL SPIKE</th><th>MOM</th><th>SCALP</th><th>TREND</th><th>SUPPORT</th><th>RESIST.</th><th>SIGNAL</th><th>TRADE</th></tr></thead><tbody>{market.map((m,i) => {
     const x = map.get(m.symbol) || {};
     const best = [x.MOMENTUM,x.SCALPING].filter(Boolean).sort((a,b) => num(b.score)-num(a.score))[0];
     return <tr key={m.symbol}><td>{i+1}</td><td className="symbol">{m.symbol}</td><td>{price(m.mark_price || m.close)}</td><td className={num(m.ltp_change_24h)>=0?'up':'down'}>{pct(m.ltp_change_24h)}</td><td>{money(m.turnover_usd)}</td><td>{best ? num(best.volume_spike).toFixed(2) + 'x' : '—'}</td><td><span className={x.MOMENTUM?.side==='BUY'?'up':x.MOMENTUM?.side==='SELL'?'down':''}>{x.MOMENTUM ? num(x.MOMENTUM.score).toFixed(0) + ' ' + (x.MOMENTUM.side || '') : '—'}</span></td><td><span className={x.SCALPING?.side==='BUY'?'up':x.SCALPING?.side==='SELL'?'down':''}>{x.SCALPING ? num(x.SCALPING.score).toFixed(0) + ' ' + (x.SCALPING.side || '') : '—'}</span></td><td>{best?.trend || '—'} / {best?.confirm_trend || '—'}</td><td>{price(best?.support)}</td><td>{price(best?.resistance)}</td><td><b className={best?.stage==='CONFIRMED'?'up':best?.stage==='SETUP'?'warn':'muted'}>{best?.stage || 'WATCH'}</b></td><td><button className="tiny" disabled title="Browser never places orders">WORKER</button></td></tr>;
@@ -217,14 +217,14 @@ function EngineView({ engine, signals }) {
   return <Panel title={engine + ' · Closed-Candle Signal Engine'}><div className="tablewrap"><table><thead><tr><th>COIN</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>RSI</th><th>VOL</th><th>EMA21</th><th>ATR</th><th>SL</th><th>TP1</th><th>TP</th><th>QTY</th><th>RISK</th><th>BLOCKED</th></tr></thead><tbody>{rows.map(x => <tr key={x.symbol}><td className="symbol">{x.symbol}</td><td>{x.stage}</td><td className={x.side==='BUY'?'up':x.side==='SELL'?'down':''}>{x.side || '—'}</td><td><b>{num(x.score).toFixed(0)}</b></td><td>{num(x.rsi).toFixed(1)}</td><td>{num(x.volume_spike).toFixed(2)}x</td><td>{price(x.ema21)}</td><td>{price(x.atr_5m)}</td><td>{price(x.stop_price)}</td><td>{price(x.tp1_price)}</td><td>{price(x.tp_price)}</td><td>{fmtQty(x.qty_contracts)}</td><td>{money(x.risk_usd)}</td><td className="muted">{fmtReasons(x.blocked_reasons)}</td></tr>)}</tbody></table></div></Panel>;
 }
 
-function OptionsView({ signals, settings }) {
-  const rows = signals.filter(x => x.strategy === 'OPTIONS_BUY' || x.strategy === 'OPTIONS_SELL')
-    .sort((a,b) => new Date(b.captured_at || 0) - new Date(a.captured_at || 0));
+function OptionsView({ signals, settings, optionCache = [] }) {
+  const rows = (optionCache.length ? optionCache : signals.filter(x => x.strategy === 'OPTIONS_BUY' || x.strategy === 'OPTIONS_SELL'))
+    .sort((a,b) => num(b.score) - num(a.score));
   const buys = rows.filter(x => x.strategy === 'OPTIONS_BUY');
   const sells = rows.filter(x => x.strategy === 'OPTIONS_SELL');
   return <>
     <section className="cards">
-      <Card label="OPTIONS ENGINE" value={settings.options_enabled === false ? 'OFF' : 'ON'} sub="BTC / ETH option-chain scanner"/>
+      <Card label="OPTIONS ENGINE" value={settings.options_enabled === false ? 'OFF' : 'ON'} sub="BTC / ETH / XAUT option-chain scanner"/>
       <Card label="BUY" value={settings.options_buy_enabled === false ? 'OFF' : 'ON'} sub="ATM / near-ITM · Δ 0.45–0.65"/>
       <Card label="SELL" value={settings.options_sell_enabled === false ? 'OFF' : 'ON'} sub="defined-risk spread only"/>
       <Card label="EXECUTION" value="LOCKED" sub="TESTNET option route pending"/>
