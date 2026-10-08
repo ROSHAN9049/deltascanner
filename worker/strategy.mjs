@@ -108,7 +108,8 @@ export function analyseOption(ticker, underlying, strategy, cfg = {}) {
   const targetType = isBuy ? (underlyingBuy ? 'CALL' : 'PUT') : (underlyingBuy ? 'PUT' : 'CALL');
   const deltaMin = n(isBuy ? cfg.buyMinDelta : cfg.sellMinDelta) || (isBuy ? 0.45 : 0.20);
   const deltaMax = n(isBuy ? cfg.buyMaxDelta : cfg.sellMaxDelta) || (isBuy ? 0.65 : 0.35);
-  const underlyingOk = String(underlying?.stage || '') === 'CONFIRMED' && n(underlying?.score) >= n(cfg.scoreMin || 80);
+  const underlyingScoreMin = n(cfg.scoreMin || 70);
+  const underlyingOk = String(underlying?.stage || '') === 'CONFIRMED' && n(underlying?.score) >= underlyingScoreMin;
   const directionOk = !!underlying?.side && optionType === targetType;
   const deltaOk = delta >= deltaMin && delta <= deltaMax;
   const dteOk = dte >= minDte && dte <= maxDte;
@@ -124,7 +125,7 @@ export function analyseOption(ticker, underlying, strategy, cfg = {}) {
     (antiChaseOk ? 10 : 0)
   ));
   const blocked = [];
-  if (!underlyingOk) blocked.push('Underlying CONFIRMED / score < 80');
+  if (!underlyingOk) blocked.push('Underlying CONFIRMED / score < ' + underlyingScoreMin);
   if (!directionOk) blocked.push('Underlying direction / option type mismatch');
   if (!deltaOk) blocked.push('Delta outside target band');
   if (!dteOk) blocked.push('Expiry outside configured DTE');
