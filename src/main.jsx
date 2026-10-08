@@ -4,7 +4,7 @@ import './style.css';
 
 const tabs = [
   ['dashboard','Dashboard'],['rotation','Profit Rotation'],['momentum','Momentum'],['momentum-history','Mom History'],
-  ['scalping','Scalping'],['scalp-history','Scalp History'],['positions','Positions'],['trade-history','Trade History'],
+  ['scalping','Scalping'],['scalp-history','Scalp History'],['options','Options'],['positions','Positions'],['trade-history','Trade History'],
   ['pnl','PNL'],['paper','Paper Trading'],['testnet','Testnet'],['live','Live Trading'],['analytics','Analytics'],['settings','Settings']
 ];
 const num = v => Number.isFinite(+v) ? +v : 0;
@@ -109,6 +109,7 @@ function App() {
     {tab === 'momentum' && <EngineView engine="MOMENTUM" signals={signals} />}
     {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" />}
     {tab === 'scalping' && <EngineView engine="SCALPING" signals={signals} />}
+    {tab === 'options' && <OptionsView signals={signals} settings={settings} />}
     {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" />}
     {tab === 'positions' && <Positions rows={positions} />}
     {tab === 'trade-history' && <TradeHistory trades={trades} title="Trade History · Real Fills Only" />}
@@ -213,6 +214,54 @@ function EngineView({ engine, signals }) {
   const rows = signals.filter(x => x.strategy === engine).sort((a,b) => num(b.score)-num(a.score));
   return <Panel title={engine + ' · Closed-Candle Signal Engine'}><div className="tablewrap"><table><thead><tr><th>COIN</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>RSI</th><th>VOL</th><th>EMA21</th><th>ATR</th><th>SL</th><th>TP1</th><th>TP</th><th>QTY</th><th>RISK</th><th>BLOCKED</th></tr></thead><tbody>{rows.map(x => <tr key={x.symbol}><td className="symbol">{x.symbol}</td><td>{x.stage}</td><td className={x.side==='BUY'?'up':x.side==='SELL'?'down':''}>{x.side || '—'}</td><td><b>{num(x.score).toFixed(0)}</b></td><td>{num(x.rsi).toFixed(1)}</td><td>{num(x.volume_spike).toFixed(2)}x</td><td>{price(x.ema21)}</td><td>{price(x.atr_5m)}</td><td>{price(x.stop_price)}</td><td>{price(x.tp1_price)}</td><td>{price(x.tp_price)}</td><td>{fmtQty(x.qty_contracts)}</td><td>{money(x.risk_usd)}</td><td className="muted">{fmtReasons(x.blocked_reasons)}</td></tr>)}</tbody></table></div></Panel>;
 }
+
+function OptionsView({ signals, settings }) {
+  const rows = signals.filter(x => x.strategy === 'OPTIONS_BUY' || x.strategy === 'OPTIONS_SELL')
+    .sort((a,b) => new Date(b.captured_at || 0) - new Date(a.captured_at || 0));
+  const buys = rows.filter(x => x.strategy === 'OPTIONS_BUY');
+  const sells = rows.filter(x => x.strategy === 'OPTIONS_SELL');
+  return <>
+    <section className="cards">
+      <Card label="OPTIONS ENGINE" value={settings.options_enabled === false ? 'OFF' : 'ON'} sub="BTC / ETH option-chain scanner"/>
+      <Card label="BUY" value={settings.options_buy_enabled === false ? 'OFF' : 'ON'} sub="ATM / near-ITM · Δ 0.45–0.65"/>
+      <Card label="SELL" value={settings.options_sell_enabled === false ? 'OFF' : 'ON'} sub="defined-risk spread only"/>
+      <Card label="EXECUTION" value="LOCKED" sub="TESTNET option route pending"/>
+    </section>
+    <Panel title="Options BUY">
+      <OptionTable rows={buys} type="BUY" />
+    </Panel>
+    <Panel title="Options SELL · Defined Risk">
+      <OptionTable rows={sells} type="SELL" />
+    </Panel>
+  </>;
+}
+
+function OptionTable({ rows, type }) {
+  return <div className="tablewrap"><table><thead><tr>
+    <th>TIME</th><th>UNDERLYING</th><th>CONTRACT</th><th>TYPE</th><th>STRIKE</th><th>DTE</th><th>Δ</th><th>BID</th><th>ASK</th><th>SPREAD</th><th>OI</th><th>VOL</th><th>SCORE</th><th>STAGE</th><th>STATUS</th>
+  </tr></thead><tbody>{rows.slice(0,30).map(s => {
+    let d = s.details || {};
+    if (typeof d === 'string') { try { d = JSON.parse(d); } catch {} }
+    return <tr key={s.id || s.symbol + s.strategy + s.captured_at}>
+      <td>{s.captured_at ? new Date(s.captured_at).toLocaleTimeString('en-IN') : '—'}</td>
+      <td className="symbol">{d.underlyingSymbol || '—'}</td>
+      <td className="symbol">{s.symbol}</td>
+      <td>{d.optionType || '—'} / {type}</td>
+      <td>{num(d.strike).toLocaleString('en-IN',{maximumFractionDigits:2})}</td>
+      <td>{num(d.dte).toFixed(1)}</td>
+      <td>{num(d.delta).toFixed(2)}</td>
+      <td>{price(d.bid)}</td>
+      <td>{price(d.ask)}</td>
+      <td>{num(s.spread_pct).toFixed(2)}%</td>
+      <td>{num(d.openInterest).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
+      <td>{num(d.volume).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
+      <td><b>{num(s.score).toFixed(0)}</b>/100</td>
+      <td>{s.stage}</td>
+      <td className={s.ready ? 'up' : 'down'}>{s.ready ? 'READY' : (String(s.blocked_reasons || '').includes('execution') || String(s.blocked_reasons || '').includes('spread') ? 'LOCKED' : 'WAIT')}</td>
+    </tr>;
+  })}</tbody></table></div>;
+}
+
 function Positions({ rows }) {
   return <Panel title="Positions · ENGINE Origin"><div className="tablewrap"><table><thead><tr><th>TIME</th><th>COIN</th><th>STRATEGY</th><th>SIDE</th><th>QTY</th><th>ENTRY</th><th>MARK</th><th>SL</th><th>TP1</th><th>TP</th><th>PROTECTION</th></tr></thead><tbody>{rows.map(p => <tr key={p.execution_id}><td>{new Date(p.opened_at).toLocaleTimeString('en-IN')}</td><td className="symbol">{p.symbol}</td><td>{p.strategy}</td><td className={p.side==='BUY'?'up':'down'}>{p.side}</td><td>{fmtQty(p.qty)}</td><td>{price(p.entry_price)}</td><td>{price(p.current_price)}</td><td>{price(p.stop_price)}</td><td>{price(p.tp1_price)}</td><td>{price(p.tp_price)}</td><td className={p.protection_verified?'up':'down'}>{p.protection_verified?'VERIFIED':'UNPROTECTED'}</td></tr>)}</tbody></table></div></Panel>;
 }
