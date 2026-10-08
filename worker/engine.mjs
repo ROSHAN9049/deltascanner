@@ -187,9 +187,20 @@ export class DeltaEngine {
     if (openPositions.length >= Math.max(1, n(settings.max_open_positions || 20))) reasons.push('Max open positions');
     if (!signal.candlesFresh) reasons.push('Fresh closed candles unavailable');
     if (n(account.equity) <= 0) reasons.push('Account equity unavailable');
-    const size = this.positionSizing(signal, account, settings);
-    if (!size) reasons.push('Margin / minimum contract size');
-    if (signal.side && n(signal.feeRiskRatio) > n(signal.costGateRatio)) reasons.push('Fee + spread exceeds 1R cost budget');
+    let size = null;
+    if (signal.side) {
+      size = this.positionSizing(signal, account, settings);
+      if (!size) reasons.push('Margin / minimum contract size');
+      if (n(signal.feeRiskRatio) > n(signal.costGateRatio)) reasons.push('Fee + spread exceeds 1R cost budget');
+    }
+    if (
+      signal.side &&
+      CONFIG.tradetronBridgeEnabled &&
+      !CONFIG.tradetronDynamicBridgeEnabled &&
+      !['BTCUSD', 'ETHUSD'].includes(String(signal.symbol).toUpperCase())
+    ) {
+      reasons.push('Tradetron legacy bridge supports BTCUSD/ETHUSD only');
+    }
 
     const todayNet = trades.filter(t => String(t.closed_at || '').slice(0, 10) === today()).reduce((s, t) => s + n(t.net_pnl), 0);
     if (todayNet <= -n(account.equity) * 0.01) reasons.push('Daily loss 1% hard stop');
@@ -1001,11 +1012,16 @@ export class DeltaEngine {
     if (settings.enabled && settings.auto_trade && !settings.emergency_stop) {
       const candidates = [];
       for (const item of this.lastSignals) {
-        const choice = [
+        // Never let a higher-scoring SETUP suppress a lower-scoring CONFIRMED
+        // signal from the other engine on the same symbol.
+        const confirmed = [
           { strategy: 'MOMENTUM', signal: item.mom },
           { strategy: 'SCALPING', signal: item.scalp }
-        ].sort((a, b) => b.signal.score - a.signal.score)[0];
-        if (choice.signal.stage === 'CONFIRMED') candidates.push({ item, ...choice });
+        ].filter(x => x.signal?.stage === 'CONFIRMED' && x.signal?.ready);
+        if (confirmed.length) {
+          const choice = confirmed.sort((a, b) => b.signal.score - a.signal.score)[0];
+          candidates.push({ item, ...choice });
+        }
       }
       candidates.sort((a, b) => b.signal.score - a.signal.score);
       for (const c of candidates.slice(0, 10)) {

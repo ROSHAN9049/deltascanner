@@ -59,6 +59,6 @@ Optional:
 - `TRADETRON_BASE_URL=https://api.tradetron.tech`
 - `TRADETRON_TIMEOUT_MS=10000`
 
-The bridge selects only `BTCUSD` or `ETHUSD`, writes that symbol's runtime quantity/entry/SL/TP variables, clears the other symbol selector, and then triggers `api_buy=1` or `api_sell=1`. The auth token is never printed in logs.
+The legacy bridge selects only `BTCUSD` or `ETHUSD`, writes that symbol's runtime quantity/entry/SL/TP variables, clears the other symbol selector, and then triggers `api_buy=1` or `api_sell=1`. The auth token is never printed in logs.
 
 Keep the Tradetron deployment in **Live Offline** while validating the bridge. Do not switch to Live Auto until the end-to-end signal, symbol routing, quantity, and exit behavior have been verified.

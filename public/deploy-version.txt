@@ -1,3 +1,4 @@
 Delta Scanner deployment refresh: 2026-10-08
+Build v2.0.20261008.06: confirmed-engine selection fix + route-aware TESTNET gating.
 Entry engine calibration: 1m scalping metrics, controlled pullback trigger, cost-aware stop sizing.
 Testnet-only execution remains enforced.
