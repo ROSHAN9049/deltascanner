@@ -7,17 +7,17 @@ export default async function handler(req, res) {
     if (type === 'products') {
       const out = await publicGet('/v2/products', { contract_types: 'perpetual_futures', states: 'live', page_size: 100 });
       const rows = Array.isArray(out.result) ? out.result.filter(p => p.contract_type === 'perpetual_futures' && p.state === 'live' && p.trading_status === 'operational') : [];
-      return res.status(200).json({ success: true, environment: 'TESTNET', result: rows, count: rows.length });
+      return res.status(200).json({ success: true, environment: 'SIGNAL_ONLY', result: rows, count: rows.length });
     }
     if (type === 'candles') {
       const out = await publicGet('/v2/history/candles', req.query || {});
-      return res.status(200).json({ success: true, environment: 'TESTNET', result: out.result || [] });
+      return res.status(200).json({ success: true, environment: 'SIGNAL_ONLY', result: out.result || [] });
     }
     const out = await publicGet('/v2/tickers', { contract_types: 'perpetual_futures' });
     const rows = Array.isArray(out.result) ? out.result.filter(x => x.contract_type === 'perpetual_futures') : [];
     rows.sort((a, b) => Number(b.turnover_usd || 0) - Number(a.turnover_usd || 0));
-    return res.status(200).json({ success: true, environment: 'TESTNET', result: rows, count: rows.length, serverDate: out.date });
+    return res.status(200).json({ success: true, environment: 'SIGNAL_ONLY', result: rows, count: rows.length, serverDate: out.date });
   } catch (e) {
-    return res.status(503).json({ success: false, environment: 'TESTNET', error: e.message });
+    return res.status(503).json({ success: false, environment: 'SIGNAL_ONLY', error: e.message });
   }
 }
