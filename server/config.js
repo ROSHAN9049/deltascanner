@@ -2,6 +2,39 @@ const requested = String(process.env.DELTA_ENVIRONMENT || 'SIGNAL_ONLY').toUpper
 const environment = requested === 'TESTNET' ? 'TESTNET' : 'SIGNAL_ONLY';
 const signalOnly = environment === 'SIGNAL_ONLY';
 
+function parseTradetronBridgeRoutes() {
+  const raw = String(process.env.TRADETRON_BRIDGES_JSON || '').trim();
+  if (!raw) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error('TRADETRON_BRIDGES_JSON must be valid JSON');
+  }
+  if (!Array.isArray(parsed)) throw new Error('TRADETRON_BRIDGES_JSON must be an array');
+
+  const ids = new Set();
+  const allSymbols = new Set();
+  return parsed.map((row, index) => {
+    const id = String(row?.id || 'bridge-' + (index + 1)).trim();
+    const authToken = String(row?.authToken || '').trim();
+    const symbols = [...new Set((Array.isArray(row?.symbols) ? row.symbols : [])
+      .map(x => String(x || '').trim().toUpperCase())
+      .filter(x => /^[A-Z0-9]+USD$/.test(x) && x !== 'USD'))];
+    if (!id || ids.has(id)) throw new Error('TRADETRON_BRIDGES_JSON contains an empty or duplicate bridge id');
+    if (!authToken) throw new Error('TRADETRON_BRIDGES_JSON bridge ' + id + ' is missing authToken');
+    if (!symbols.length) throw new Error('TRADETRON_BRIDGES_JSON bridge ' + id + ' has no valid symbols');
+    for (const symbol of symbols) {
+      if (allSymbols.has(symbol)) throw new Error('TRADETRON_BRIDGES_JSON assigns ' + symbol + ' to more than one bridge');
+      allSymbols.add(symbol);
+    }
+    ids.add(id);
+    return Object.freeze({ id, authToken, symbols: Object.freeze(symbols) });
+  });
+}
+
+const tradetronBridgeRoutes = parseTradetronBridgeRoutes();
+
 export const CONFIG = Object.freeze({
   environment,
   signalOnly,
@@ -26,6 +59,9 @@ export const CONFIG = Object.freeze({
     process.env.TRADETRON_SUPPORTED_SYMBOLS ||
     'BTCUSD,ETHUSD,AAPLXUSD,ADAUSD,ALGOUSD,AMDBUSD,AMZNXUSD,ATOMUSD,AVAXUSD,BCHUSD,BNBUSD,CBRSBUSD,COINXUSD'
   ).split(',').map(x => x.trim().toUpperCase()).filter(x => /^[A-Z0-9]+USD$/.test(x)))],
+  // If provided, this route table replaces the legacy single-token allowlist.
+  // Each bridge id owns a distinct, fixed symbol set and linked API token.
+  tradetronBridgeRoutes,
   // Options require a separately configured Tradetron strategy/token. Keep
   // this route disabled until that strategy exists and has been validated.
   tradetronOptionsBridgeEnabled: String(process.env.TRADETRON_OPTIONS_BRIDGE_ENABLED || 'false').toLowerCase() === 'true',
