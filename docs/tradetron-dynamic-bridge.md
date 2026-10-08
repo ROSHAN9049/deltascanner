@@ -1,56 +1,89 @@
 # DealDost + Tradetron Signal Bridge
 
-The DealDost scanner is a production-market signal engine only. Tradetron is the execution and Live Offline simulation layer. Direct Delta execution is disabled.
+## Execution boundary
 
-## Runtime contract
+The DeltaScanner worker reads live Delta Exchange India production market data and emits signals only. It does not place direct Delta production orders. Tradetron remains the intended execution / Live Offline layer.
 
-The worker sends these runtime variables to the linked Tradetron API strategy:
+Keep the existing strategy `Signal Bridge - Delta Exchange India (13 symbols)` as a preserved reference until a replacement is validated.
 
-- `tt_symbol` — selected Delta India instrument symbol, for example `BTCUSD` or `XRPUSD`
-- `tt_side` — `BUY` or `SELL`
-- `tt_qty` — whole-number contracts
-- `tt_ep` — scanner reference entry price
-- `tt_sl` — scanner stop price
-- `tt_tp1` — scanner 1R target
-- `tt_tp` — scanner final target
-- `tt_exec_id` — DealDost execution/idempotency identifier
-- `tt_buy` — 1 for BUY signal, otherwise 0
-- `tt_sell` — 1 for SELL signal, otherwise 0
+## Existing futures bridge is static
 
-Legacy `api_buy`/`api_sell` variables are reset to 0 in dynamic mode so the legacy two-symbol bridge does not fire accidentally.
+The inspected strategy has a fixed 13-symbol instrument basket; it cannot use an arbitrary `tt_symbol` runtime string as a Position Builder instrument. The worker must not claim that a signal for a coin outside that basket was routed successfully.
 
-## Existing deployed Signal Bridge contract
+The default supported-symbol allowlist is:
 
-The current deployed strategy is `Signal Bridge - Delta Exchange India (13 symbols)`. The scanner therefore defaults to the deployed legacy Signal Bridge contract: `api_buy=1` or `api_sell=1` as the global trigger, `<SYMBOL>=1` for the selected basket member, plus `<SYMBOL>_qty`, `<SYMBOL>_ep`, `<SYMBOL>_sl`, and `<SYMBOL>_tp`. The scanner does not require editing the strategy.
+`BTCUSD,ETHUSD,AAPLXUSD,ADAUSD,ALGOUSD,AMDBUSD,AMZNXUSD,ATOMUSD,AVAXUSD,BCHUSD,BNBUSD,CBRSBUSD,COINXUSD`
 
-The newer `tt_*` dynamic contract remains documented for future strategy variants but is not enabled by default.
+To change the allowlist, set Railway variable `TRADETRON_SUPPORTED_SYMBOLS` to the comma-separated set of futures symbols that are actually configured in the linked Tradetron strategy. Adding a symbol to this variable does not add a leg to Tradetron; the strategy itself must be updated first. Unsupported symbols are blocked before the scanner records a Tradetron signal as sent.
 
-## Validation
+## Futures entry contract
 
-1. Keep the existing deployment **Live Offline** and Active.
-2. Verify a scanner-confirmed signal appears in Tradetron Runtime Data.
-3. Confirm the expected legacy `api_buy`/`api_sell` trigger equals 1 and the selected symbol variable equals 1 after a fresh signal.
-4. Confirm the deployed strategy has an instrument/position path that uses those variables.
-5. Confirm the resulting simulated trade appears in Tradetron Positions/Statistics.
-6. Use the outbound webhook endpoint `/api/tradetron/webhook` to send Tradetron activity events back to DealDost so the scanner can display received fills/events.
-7. Only after sufficient forward-test performance should the user manually enable Live Auto.
+For a supported coin, the worker writes quantity and price metadata before raising any entry trigger:
 
-## Important safety rule
+- `<SYMBOL>_q` — quantity consumed by the inspected Signal Bridge.
+- `<SYMBOL>_qty` — compatibility alias for the newer scanner contract.
+- `<SYMBOL>_ep`, `<SYMBOL>_sl`, `<SYMBOL>_tp` — scanner reference entry, stop and final target.
+- `<SYMBOL>_el` — 1 for long entry; otherwise 0.
+- `<SYMBOL>_es` — 1 for short entry; otherwise 0.
+- `<SYMBOL>_xl` — long exit trigger.
+- `<SYMBOL>_xs` — short exit trigger.
+- `api_buy` / `api_sell` — legacy global trigger.
+- `tt_engine`, `tt_symbol`, `tt_side`, `tt_qty`, `tt_ep`, `tt_sl`, `tt_tp1`, `tt_tp`, `tt_exec_id`, `tt_buy`, `tt_sell` — supplementary runtime metadata; the existing 13-symbol strategy does not dynamically select an instrument from `tt_symbol`.
 
-The worker is production-market SIGNAL_ONLY. When bridge mode is enabled, it must not place direct Delta orders. The direct Delta private API path is hard-disabled, preventing dual execution.
+The strategy's own entry condition remains the final source of truth. Receiving an API variable is not proof of an executed simulated trade.
 
-## Current limitations
+## Futures exits
 
-Tradetron API OAuth is write-oriented for external signals. The worker does not assume it can query Tradetron positions back into DealDost. Therefore Tradetron must enforce its own duplicate-position, entry, target and stop rules. DealDost keeps its own signal/audit records and blocks duplicate bridge execution IDs.
+The worker can send a scanner-driven `<SYMBOL>_xl` or `<SYMBOL>_xs` exit trigger only when all of the following are true:
 
-Tradetron Initialize Variables have lifecycle limitations and cannot be used for list-based strategies, so dynamic instrument selection should use runtime variables/keywords supported by the strategy type.
+1. The worker is in production `SIGNAL_ONLY` mode and the Tradetron API route is configured.
+2. Tradetron's outbound activity webhook has materialized an open row in `dd_positions` with `origin=TRADETRON`.
+3. The position is tagged to the scanner's `MOMENTUM` or `SCALPING` engine.
+4. Market data is fresh and the scanner observes the configured stop, final target, or maximum holding time.
 
-## Notes
+A submitted exit trigger is recorded to prevent repeated triggers while awaiting the Tradetron activity webhook to confirm the position update/close. This is a signal to Tradetron, not direct Delta order placement. If the outbound webhook is not configured or positions cannot be linked to a scanner engine, automatic scanner-driven exits will not run.
 
-Tradetron Runtime Data confirms that an API variable reached the strategy, but it does not by itself prove that the strategy consumed the variable to open a position. The deployed strategy's own entry conditions and position builder remain the source of truth. Live Offline does not send broker orders; Live Auto later can.
+This monitor does not claim exchange-side/Tradetron-side protection exists until verified in actual deployment. Before relying on it, validate one Live Offline entry and one stop/target exit. TP1 partial-close/break-even logic is not implemented by this legacy bridge contract.
 
-Official Tradetron guidance used for this contract:
-- API signals can control a Tradetron strategy while Tradetron handles execution and position management.
-- Hybrid Mode allows external API signals plus Tradetron-side target/stop processing.
-- Runtime variables can store entry-time values and be reused in exits.
-- GET RUNTIME quantity formulas require QTY mode.
+## Options are a separate route
+
+The existing futures basket has no Options legs. The scanner's `tt_option_*` variables are not consumed by the existing 13-symbol futures strategy.
+
+Options routing is fail-closed unless these Railway variables are explicitly configured after a dedicated Tradetron Options strategy exists:
+
+- `TRADETRON_OPTIONS_BRIDGE_ENABLED=true`
+- `TRADETRON_OPTIONS_AUTH_TOKEN=<token linked to the dedicated Options strategy>`
+
+Do not enable these settings before creating and verifying the appropriate Options BUY and defined-risk Options SELL strategy in Tradetron. Do not route naked/unhedged short options.
+
+## Required Railway variables
+
+Futures:
+- `TRADETRON_BRIDGE_ENABLED=true`
+- `TRADETRON_AUTH_TOKEN=<token linked to the current futures strategy>`
+- `TRADETRON_SUPPORTED_SYMBOLS=<comma-separated symbols actually configured in that strategy>`
+
+Options (only after a separate strategy has been created and validated):
+- `TRADETRON_OPTIONS_BRIDGE_ENABLED=true`
+- `TRADETRON_OPTIONS_AUTH_TOKEN=<separate strategy token>`
+
+The scanner must not log token values.
+
+## Validation checklist
+
+1. Confirm the relevant Tradetron deployment is Active in **Live Offline**.
+2. Confirm a scanner-confirmed, supported-symbol signal appears in Tradetron Runtime Data.
+3. Confirm the correct `<SYMBOL>_q` quantity and entry flag are received.
+4. Confirm a simulated position is actually created in Tradetron Positions/Statistics.
+5. Configure Tradetron's outbound webhook to call the scanner's `/api/tradetron/webhook` endpoint.
+6. Confirm a fill/position event appears in the scanner's `dd_tradetron_events` table and that the corresponding open row appears in `dd_positions` with `origin=TRADETRON`.
+7. In Live Offline, verify the stop/target exit trigger is consumed and a close event comes back to the scanner.
+8. Do not enable Live Auto until the whole signal → position → exit → webhook round-trip and adequate forward-test behavior are verified.
+
+## Known limitations
+
+- A single static 13-symbol Signal Bridge does not cover the full 231+ scanner universe.
+- Runtime `tt_symbol` does not choose arbitrary instrument legs in the existing strategy.
+- Multiple futures bridges require a deterministic scanner-side symbol-to-bridge/API-token mapping and separate verification.
+- Options need a dedicated strategy and separate bridge credentials.
+- Tradetron Live Offline uses live prices but does not send exchange orders; do not treat it as evidence of live execution.
