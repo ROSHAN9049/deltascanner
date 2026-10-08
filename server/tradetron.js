@@ -16,6 +16,12 @@ export class TradetronBridge {
     return this.enabled && !!this.authToken;
   }
 
+  supportsFuturesSymbol(symbol) {
+    const selected = clean(symbol).toUpperCase();
+    return Array.isArray(CONFIG.tradetronSupportedSymbols) &&
+      CONFIG.tradetronSupportedSymbols.includes(selected);
+  }
+
   async sendPairs(pairs) {
     if (!this.isConfigured()) {
       return { ok: false, skipped: true, reason: this.enabled ? 'TRADETRON_AUTH_TOKEN missing' : 'bridge disabled' };
