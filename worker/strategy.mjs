@@ -189,6 +189,8 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
   const emaMax = n(cfg.emaDistanceMax || 2.5);
   const spreadMax = n(cfg.spreadMaxPct || 0.35);
   const costGateRatio = n(cfg.costGateRatio || (strategy === 'MOMENTUM' ? 0.20 : 0.25));
+  const btcOverrideScoreMin = n(cfg.btcOverrideScoreMin || 90);
+  const btcOverrideVolumeMin = n(cfg.btcOverrideVolumeMin || 1.5);
   const bullish = t5 === 'BULL' && t15 !== 'BEAR';
   const bearish = t5 === 'BEAR' && t15 !== 'BULL';
   let side = '';
@@ -215,7 +217,7 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
   const fee = n(product.taker_commission_rate);
   const feeRiskRatio = riskDistance > 0 ? (2 * fee * price + spreadPct / 100 * price) / riskDistance : 99;
   const trendAligned = (bullish || bearish);
-  const score = Math.min(100, Math.round(
+  const localScore = Math.round(
     (trendAligned ? 20 : 0) +
     (t5 === t15 && t5 !== 'FLAT' ? 20 : trendAligned ? 10 : 0) +
     (vr >= volumeMin ? 15 : Math.min(vr / volumeMin, 1) * 15) +
@@ -223,9 +225,22 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
     (emaDistanceAtr <= emaMax ? 10 : 0) +
     (rangeAtr <= rangeMax ? 5 : 0) +
     (antiChase ? 5 : 0) +
-    (btcOk ? 5 : 0) +
     (spreadPct <= spreadMax ? 5 : 0)
-  ));
+  );
+  const score = Math.min(100, localScore + (btcOk ? 5 : 0));
+  const btcRegimeOverride =
+    !btcOk &&
+    localScore >= btcOverrideScoreMin &&
+    t5 === t15 &&
+    t5 !== 'FLAT' &&
+    vr >= btcOverrideVolumeMin &&
+    rsiOk &&
+    antiChase &&
+    rangeAtr <= rangeMax &&
+    emaDistanceAtr <= emaMax &&
+    spreadPct <= spreadMax &&
+    feeRiskRatio <= costGateRatio &&
+    !!price && !!riskDistance && !!sl;
   const stage = score >= cfg.scoreMin && side && vr >= volumeMin && rsiOk ? 'CONFIRMED'
     : (score >= 45 || side ? 'SETUP' : 'WATCH');
   const blocked = [];
@@ -235,7 +250,7 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
   if (!antiChase) blocked.push('24h anti-chase');
   if (rangeAtr > rangeMax) blocked.push('5m range > ' + rangeMax.toFixed(2) + 'x ATR');
   if (emaDistanceAtr > emaMax) blocked.push('Price > ' + emaMax.toFixed(2) + 'x ATR from EMA21');
-  if (!btcOk) blocked.push('BTC regime');
+  if (!btcOk && !btcRegimeOverride) blocked.push('BTC regime');
   if (spreadPct > spreadMax) blocked.push('Spread > ' + spreadMax.toFixed(2) + '%');
   if (feeRiskRatio > costGateRatio) blocked.push('Fee + spread > allowed 1R cost');
   if (!price || !riskDistance || !sl) blocked.push('Invalid price/stop');
@@ -253,8 +268,9 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
     rangeAtr, emaDistanceAtr, stopPct, sl, tp1, tp, support: Math.min(...closed5.slice(-20).map(c => n(c.low))),
     resistance: Math.max(...closed5.slice(-20).map(c => n(c.high))),
     takerFee: fee, makerFee: n(product.maker_commission_rate), feeRiskRatio, costGateRatio,
+    localScore, btcRegimeOverride, btcOverrideScoreMin, btcOverrideVolumeMin,
     contractValue: n(product.contract_value), tickSize: tick, notionalType: product.notional_type,
-    maxLeverageNotional: n(product.max_leverage_notional), blocked, ready: stage === 'CONFIRMED' && blocked.length <= 1,
+    maxLeverageNotional: n(product.max_leverage_notional), blocked, ready: stage === 'CONFIRMED' && blocked.length === 0,
     candlesFresh: closedEntry.length >= 30 && closed15.length >= 30 && closed5.length >= 30
   };
 }
