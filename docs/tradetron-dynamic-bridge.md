@@ -21,7 +21,7 @@ Legacy `api_buy`/`api_sell` variables are reset to 0 in dynamic mode so the lega
 
 ## Existing deployed Signal Bridge contract
 
-The current deployed strategy is `Signal Bridge - Delta Exchange India (13 symbols)`. The scanner therefore defaults to the legacy Signal Bridge contract: selected symbol runtime flag + `<SYMBOL>_qty`, `<SYMBOL>_ep`, `<SYMBOL>_sl`, `<SYMBOL>_tp`, followed by `api_buy=1` or `api_sell=1`. The scanner does not require editing the strategy.
+The current deployed strategy is `Signal Bridge - Delta Exchange India (13 symbols)`. The scanner therefore defaults to the deployed legacy Signal Bridge contract: `api_buy=1` or `api_sell=1` as the global trigger, `<SYMBOL>=1` for the selected basket member, plus `<SYMBOL>_qty`, `<SYMBOL>_ep`, `<SYMBOL>_sl`, and `<SYMBOL>_tp`. The scanner does not require editing the strategy.
 
 The newer `tt_*` dynamic contract remains documented for future strategy variants but is not enabled by default.
 
@@ -29,7 +29,7 @@ The newer `tt_*` dynamic contract remains documented for future strategy variant
 
 1. Keep the existing deployment **Live Offline** and Active.
 2. Verify a scanner-confirmed signal appears in Tradetron Runtime Data.
-3. Confirm the expected legacy `api_buy`/`api_sell` trigger and selected symbol variable appear after a fresh signal.
+3. Confirm the expected legacy `api_buy`/`api_sell` trigger equals 1 and the selected symbol variable equals 1 after a fresh signal.
 4. Confirm the deployed strategy has an instrument/position path that uses those variables.
 5. Confirm the resulting simulated trade appears in Tradetron Positions/Statistics.
 6. Use the outbound webhook endpoint `/api/tradetron/webhook` to send Tradetron activity events back to DealDost so the scanner can display received fills/events.
