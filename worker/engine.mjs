@@ -312,7 +312,11 @@ export class DeltaEngine {
   }
 
   async refreshOptionTickers() {
-    const underlyings = ['BTC', 'ETH'];
+    const configured = String(this.currentSettings?.options_underlyings || 'BTC,ETH,XAUT')
+      .split(',')
+      .map(x => x.trim().toUpperCase())
+      .filter(x => /^[A-Z0-9]+$/.test(x));
+    const underlyings = [...new Set(configured.length ? configured : ['BTC', 'ETH', 'XAUT'])];
     const results = await Promise.all(underlyings.map(async underlying => {
       try {
         const rows = await this.adapter.optionTickers(underlying);
