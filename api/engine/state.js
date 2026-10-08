@@ -6,7 +6,7 @@ export default async function handler(req, res) {
   try {
     const [settings, positions, signals, signalCache, marketCache, optionCache, trades, logs, ledger, counters, daily, signalOrders, tradetronEvents] = await Promise.all([
       select('dd_settings', 'id=eq.1&select=*'),
-      CONFIG.signalOnly ? Promise.resolve([]) : select('dd_positions', 'qty=gt.0&order=updated_at.desc'),
+      CONFIG.signalOnly ? select('dd_positions', 'origin=eq.TRADETRON&qty=gt.0&order=updated_at.desc') : select('dd_positions', 'qty=gt.0&order=updated_at.desc'),
       select('dd_signals', 'order=captured_at.desc&limit=200'),
       select('dd_signal_cache', 'order=score.desc'),
       select('dd_market_cache', 'active=eq.true&order=market_rank.asc'),
