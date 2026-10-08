@@ -49,6 +49,106 @@ export function volumeRatio(candles, period = 20) {
   const base = a.slice(-period - 1, -1).reduce((s, c) => s + n(c.volume), 0) / period;
   return base ? current / base : 0;
 }
+function expiryFromOptionSymbol(symbol) {
+  const m = String(symbol || '').match(/^[CP]-[A-Z0-9]+-[0-9.]+-(\d{6})$/);
+  if (!m) return 0;
+  const dd = Number(m[1].slice(0, 2));
+  const mm = Number(m[1].slice(2, 4));
+  const yy = Number(m[1].slice(4, 6));
+  const year = 2000 + yy;
+  const ts = Date.UTC(year, Math.max(0, mm - 1), dd, 8, 0, 0);
+  return Number.isFinite(ts) ? ts : 0;
+}
+
+function optionStrikeFromSymbol(symbol) {
+  const m = String(symbol || '').match(/^[CP]-[A-Z0-9]+-([0-9.]+)-\d{6}$/);
+  return m ? n(m[1]) : 0;
+}
+
+function optionTypeFromTicker(ticker) {
+  const t = String(ticker?.contract_type || '').toLowerCase();
+  if (t === 'call_options') return 'CALL';
+  if (t === 'put_options') return 'PUT';
+  const s = String(ticker?.symbol || '').toUpperCase();
+  return s.startsWith('C-') ? 'CALL' : s.startsWith('P-') ? 'PUT' : '';
+}
+
+function optionGreeks(ticker) {
+  const g = ticker?.greeks && typeof ticker.greeks === 'object' ? ticker.greeks : {};
+  return {
+    delta: n(g.delta ?? ticker.delta),
+    gamma: n(g.gamma ?? ticker.gamma),
+    theta: n(g.theta ?? ticker.theta),
+    vega: n(g.vega ?? ticker.vega),
+    rho: n(g.rho ?? ticker.rho)
+  };
+}
+
+export function analyseOption(ticker, underlying, strategy, cfg = {}) {
+  const symbol = String(ticker?.symbol || '').toUpperCase();
+  const optionType = optionTypeFromTicker(ticker);
+  const strike = optionStrikeFromSymbol(symbol);
+  const expiryMs = expiryFromOptionSymbol(symbol);
+  const dte = expiryMs > 0 ? (expiryMs - Date.now()) / 86400000 : 0;
+  const mark = n(ticker?.mark_price || ticker?.close);
+  const bid = n(ticker?.quotes?.best_bid ?? ticker?.best_bid ?? ticker?.bid);
+  const ask = n(ticker?.quotes?.best_ask ?? ticker?.best_ask ?? ticker?.ask);
+  const spreadPct = bid > 0 && ask > 0 ? (ask - bid) / ((ask + bid) / 2) * 100 : 99;
+  const oi = n(ticker?.open_interest ?? ticker?.openInterest ?? ticker?.oi);
+  const volume = n(ticker?.volume);
+  const greeks = optionGreeks(ticker);
+  const delta = Math.abs(greeks.delta);
+  const minDte = Math.max(1, n(cfg.minDays) || 2);
+  const maxDte = Math.max(minDte, n(cfg.maxDays) || 14);
+  const minOi = Math.max(0, n(cfg.minOi) || 50);
+  const minVol = Math.max(0, n(cfg.minVolume) || 1);
+  const maxSpread = Math.max(0.1, n(cfg.maxSpreadPct) || 1.5);
+  const isBuy = strategy === 'OPTIONS_BUY';
+  const underlyingBuy = String(underlying?.side || '').toUpperCase() === 'BUY';
+  const targetType = isBuy ? (underlyingBuy ? 'CALL' : 'PUT') : (underlyingBuy ? 'PUT' : 'CALL');
+  const deltaMin = n(isBuy ? cfg.buyMinDelta : cfg.sellMinDelta) || (isBuy ? 0.45 : 0.20);
+  const deltaMax = n(isBuy ? cfg.buyMaxDelta : cfg.sellMaxDelta) || (isBuy ? 0.65 : 0.35);
+  const underlyingOk = String(underlying?.stage || '') === 'CONFIRMED' && n(underlying?.score) >= n(cfg.scoreMin || 80);
+  const directionOk = !!underlying?.side && optionType === targetType;
+  const deltaOk = delta >= deltaMin && delta <= deltaMax;
+  const dteOk = dte >= minDte && dte <= maxDte;
+  const liqOk = mark > 0 && bid > 0 && ask > 0 && spreadPct <= maxSpread && oi >= minOi && volume >= minVol;
+  const antiChaseOk = Math.abs(n(underlying?.change)) <= (isBuy ? 12 : 8);
+  const noExpiryRisk = dte >= minDte;
+  const score = Math.min(100, Math.round(
+    (underlyingOk ? 30 : Math.min(n(underlying?.score) / 80, 1) * 30) +
+    (directionOk ? 15 : 0) +
+    (deltaOk ? 15 : 0) +
+    (liqOk ? 20 : Math.max(0, 20 - Math.min(spreadPct / Math.max(maxSpread, 0.1), 2) * 10)) +
+    (dteOk ? 10 : 0) +
+    (antiChaseOk ? 10 : 0)
+  ));
+  const blocked = [];
+  if (!underlyingOk) blocked.push('Underlying CONFIRMED / score < 80');
+  if (!directionOk) blocked.push('Underlying direction / option type mismatch');
+  if (!deltaOk) blocked.push('Delta outside target band');
+  if (!dteOk) blocked.push('Expiry outside configured DTE');
+  if (!liqOk) blocked.push('Option liquidity / spread / OI');
+  if (!antiChaseOk) blocked.push(isBuy ? '24h anti-chase' : 'Short-option breakout risk');
+  if (!noExpiryRisk) blocked.push('Expiry risk');
+  const stage = score >= 80 && blocked.length === 0 ? 'CONFIRMED' : (score >= 55 ? 'SETUP' : 'WATCH');
+  const stopPct = Math.max(0.01, n(cfg.buyStopPct) || 25);
+  const tp1Pct = Math.max(0.01, n(cfg.buyTp1Pct) || 30);
+  const tpPct = Math.max(tp1Pct, n(cfg.buyTpPct) || 60);
+  const sl = isBuy && mark > 0 ? mark * (1 - stopPct / 100) : 0;
+  const tp1 = isBuy && mark > 0 ? mark * (1 + tp1Pct / 100) : 0;
+  const tp = isBuy && mark > 0 ? mark * (1 + tpPct / 100) : 0;
+  return {
+    symbol, optionType, strike, expiryMs, dte, mark, bid, ask, spreadPct, oi, volume,
+    delta: greeks.delta, gamma: greeks.gamma, theta: greeks.theta, vega: greeks.vega,
+    targetType, strategy, side: isBuy ? 'BUY' : 'SELL', score, stage, blocked,
+    ready: stage === 'CONFIRMED' && blocked.length === 0,
+    underlyingSymbol: String(underlying?.symbol || ''),
+    underlyingScore: n(underlying?.score), underlyingSide: String(underlying?.side || ''),
+    underlyingChange: n(underlying?.change), sl, tp1, tp
+  };
+}
+
 function trendFor5m(c) {
   const e9 = ema(c, 9), e21 = ema(c, 21), e50 = ema(c, 50), p = n(closed(c).at(-1)?.close);
   if (p > e9 && e9 > e21 && e21 > e50) return 'BULL';
