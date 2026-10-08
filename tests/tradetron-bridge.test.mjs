@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { TradetronBridge } from '../server/tradetron.js';
+import { TradetronBridge, withSignalReservations } from '../server/tradetron.js';
 import { isAuthenticatedWebhookRequest } from '../api/tradetron/webhook.js';
 
 async function withoutThreeSecondReset(fn) {
@@ -75,6 +75,21 @@ test('fixed basket allowlist rejects symbols not actually configured', () => {
   const { bridge } = makeBridge(['BTCUSD']);
   assert.equal(bridge.supportsFuturesSymbol('BTCUSD'), true);
   assert.equal(bridge.supportsFuturesSymbol('UNLISTEDUSD'), false);
+});
+
+test('unconfirmed Tradetron entry signals reserve slots until activity sync', () => {
+  const positions = [{ symbol: 'BTCUSD', qty: 1, strategy: 'MOMENTUM', origin: 'TRADETRON' }];
+  const rows = withSignalReservations(positions, [
+    { symbol: 'BTCUSD', side: 'buy', size: 1, strategy: 'SCALPING', state: 'SIGNAL_SENT' },
+    { symbol: 'ETHUSD', side: 'buy', size: 2, strategy: 'MOMENTUM', state: 'SIGNAL_SENT', execution_id: 'TT-ETH-1' },
+    { symbol: 'SOLUSD', side: 'sell', size: 1, strategy: 'SCALPING', state: 'PENDING', execution_id: 'TT-SOL-1' },
+    { symbol: 'ADAUSD', side: 'buy', size: 1, strategy: 'MOMENTUM', state: 'FAILED', execution_id: 'TT-ADA-1' }
+  ]);
+  assert.equal(rows.length, 3);
+  assert.equal(rows.filter(row => row.origin === 'SIGNAL_RESERVATION').length, 2);
+  assert.equal(rows.some(row => row.symbol === 'ADAUSD'), false);
+  assert.equal(rows.find(row => row.symbol === 'ETHUSD')?.origin, 'SIGNAL_RESERVATION');
+  assert.equal(rows.find(row => row.symbol === 'SOLUSD')?.side, 'SELL');
 });
 
 test('disabled bridge fails closed even if a token is present', () => {
