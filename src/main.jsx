@@ -93,7 +93,7 @@ function App() {
         <span>BUILD v2.0.20261008.09</span>
         <span>UTC {new Date(clock).toISOString().slice(11,19)}</span>
         <span>LOCAL {new Date(clock).toLocaleTimeString('en-IN')}</span>
-        <b className="badge test">TESTNET / DEMO</b>
+        <b className="badge test">LIVE MARKET · SIGNAL ONLY</b>
         <b className="badge lock">LIVE LOCKED</b>
         <button className="estop" disabled={busy || !secret} onClick={() => mutate({ emergencyStop: !settings.emergency_stop })}>
           {settings.emergency_stop ? 'RELEASE E-STOP' : 'EMERGENCY STOP'}
@@ -114,12 +114,12 @@ function App() {
     {tab === 'positions' && <Positions rows={positions} />}
     {tab === 'trade-history' && <TradeHistory trades={trades} title="Trade History · Real Fills Only" />}
     {tab === 'pnl' && <PNL trades={trades} settings={settings} />}
-    {tab === 'paper' && <Panel title="Paper Trading"><div className="lockedText">Paper mode is a simulation view only. The TESTNET worker is the sole execution loop; the browser does not place trades.</div></Panel>}
+    {tab === 'paper' && <Panel title="Paper Trading"><div className="lockedText">Scanner is signal-only. No Delta order is placed here; Tradetron Live Offline runs the simulated execution.</div></Panel>}
     {tab === 'testnet' && <Testnet settings={settings} health={health} busy={busy} mutate={mutate} positions={positions} />}
-    {tab === 'live' && <Panel title="Live Trading"><div className="liveLock">🔒 PRODUCTION EXECUTION LOCKED<br/><small>This build contains no executable production Delta endpoint and no LIVE order path.</small></div></Panel>}
+    {tab === 'live' && <Panel title="Live Trading"><div className="liveLock">🔒 DIRECT DELTA EXECUTION LOCKED<br/><small>The scanner never sends production orders. Future live execution must be enabled manually in Tradetron.</small></div></Panel>}
     {tab === 'analytics' && <Analytics trades={trades} />}
     {tab === 'settings' && <Settings settings={settings} secret={secret} setSecret={v => { setSecret(v); sessionStorage.setItem('delta-engine-secret', v); }} busy={busy} mutate={mutate} />}
-    <footer>Delta Exchange India Demo · server-side worker only · real fills / real commissions · no guaranteed win rate</footer>
+    <footer>Delta Exchange India · production market feed · Tradetron signal-only · no direct orders · no guaranteed win rate</footer>
   </div>;
 }
 
@@ -139,8 +139,8 @@ function Dashboard({ market, settings, health, trades, positions, signals, onIns
   const top = Object.entries(reasons).sort((a,b) => b[1]-a[1]).slice(0,3).map(x => x[0] + ' (' + x[1] + ')').join(', ');
   return <>
     <section className="cards">
-      <Card label="EQUITY" value={money(settings.equity)} sub="Delta Demo account"/>
-      <Card label="AVAILABLE" value={money(settings.available_balance)} sub="wallet available"/>
+      <Card label="EQUITY" value={money(settings.equity)} sub="Tradetron signal-only capital"/>
+      <Card label="AVAILABLE" value={money(settings.available_balance)} sub="signal sizing reference"/>
       <Card label="REALIZED PNL" value={money(settings.realized_pnl)} sub="closed trades after fees"/>
       <Card label="UNREALIZED PNL" value={money(settings.unrealized_pnl)} sub="open positions"/>
       <Card label="TOTAL PNL" value={money(num(settings.realized_pnl)+num(settings.unrealized_pnl))} sub="realized + unrealized"/>
@@ -148,13 +148,14 @@ function Dashboard({ market, settings, health, trades, positions, signals, onIns
       <Card label="OPEN POSITIONS" value={positions.length} sub={'max ' + (settings.max_open_positions || 20)}/>
       <Card label="TODAY" value={todayTrades.length} sub={wins + ' wins / ' + loss + ' losses · ' + (todayTrades.length ? (wins/todayTrades.length*100).toFixed(1) : '0.0') + '% WR'}/>
     </section>
-    <Panel title={'Full Delta Market Scanner · ' + (market?.length || 0) + ' live perpetuals'}>
+    <Panel title={'Full Delta Market Scanner · ' + (market?.length || 0) + ' live perpetuals · Signal Only'}>
       <MarketTable market={market} signals={signals}/>
     </Panel>
     <section className="grid2">
       <RiskGovernor signals={signals} health={health} positions={positions} onInspect={onInspect} inspect={inspect}/>
       <Panel title="Signal Stages · WATCH → SETUP → CONFIRMED"><div className="tablewrap"><table><thead><tr><th>COIN</th><th>ENG</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>QTY</th><th>NOTIONAL</th><th>RISK</th><th>READY</th><th>WHY BLOCKED</th></tr></thead><tbody>{signals.map(s => <tr key={s.symbol + s.strategy}><td className="symbol">{s.symbol}</td><td>{s.strategy === 'MOMENTUM' ? 'MOM' : 'SCALP'}</td><td>{s.stage}</td><td className={s.side === 'BUY' ? 'up' : s.side === 'SELL' ? 'down' : 'muted'}>{s.side || '—'}</td><td><b>{num(s.score).toFixed(0)}</b>/100</td><td>{fmtQty(s.qty_contracts)}</td><td>{money(s.notional)}</td><td>{money(s.risk_usd)}</td><td className={s.ready ? 'up' : 'down'}>{s.ready ? 'YES' : 'NO'}</td><td className="muted">{fmtReasons(s.blocked_reasons)}</td></tr>)}</tbody></table></div></Panel>
     </section>
+    <Panel title="Signal Mode"><div className="idle">SCANNER → TRADETRON → LIVE OFFLINE <span>No orders are sent by the scanner. Tradetron is the execution/simulation layer.</span></div></Panel>
     <Panel title="Idle Reason"><div className="idle">{idleFromSignals(signals)} <span>Top blocks: {top || 'none recorded'}</span></div></Panel>
     <Panel title="Engine Log · last 200 lines"><Log rows={logs || []}/></Panel>
     <div className="micro"><span className={health?.workerLeaseActive ? 'up' : 'down'}>Worker {health?.workerLeaseActive ? 'ONLINE' : 'OFFLINE'}</span><span>Last tick {settings.last_tick_at ? new Date(settings.last_tick_at).toLocaleTimeString('en-IN') : '—'}</span><span>Time drift {health?.timeDriftMs == null ? '—' : Math.round(health.timeDriftMs) + ' ms'}</span><span>Auto {settings.auto_trade ? 'ON' : 'OFF'}</span><span>Continuous {settings.continuous_mode ? 'ON' : 'OFF'}</span></div>
