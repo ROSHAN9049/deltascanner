@@ -115,8 +115,21 @@ export class DeltaAdapter {
     const start = end - seconds * ((limit || 120) + 3);
     return this.request('GET', '/v2/history/candles', { resolution, symbol, start, end }, null, false);
   }
-  positions(contractTypes = 'perpetual_futures,call_options,put_options') {
-    return this.request('GET', '/v2/positions', { contract_types: contractTypes }, null, true);
+  positions(identifier) {
+    const raw = String(identifier ?? '').trim();
+    if (!raw) return Promise.reject(Object.assign(new Error('Position lookup requires product_id or underlying_asset_symbol'), { code: 'bad_schema', status: 400 }));
+    let params;
+    if (/^\\d+$/.test(raw)) {
+      params = { product_id: Number(raw) };
+    } else {
+      const parts = raw.split('-');
+      const underlying = parts.length >= 2 && /^[CP]$/.test(parts[0]) ? parts[1] : raw.replace(/USD$/i, '');
+      if (!/^[A-Z0-9]+$/i.test(underlying)) {
+        return Promise.reject(Object.assign(new Error('Invalid position lookup identifier'), { code: 'bad_schema', status: 400 }));
+      }
+      params = { underlying_asset_symbol: underlying.toUpperCase() };
+    }
+    return this.request('GET', '/v2/positions', params, null, true);
   }
   marginedPositions(contractTypes = 'perpetual_futures,call_options,put_options') {
     return this.request('GET', '/v2/positions/margined', { contract_types: contractTypes }, null, true);
