@@ -26,6 +26,15 @@ async function call(path, init) {
 export const select = (table, query) => call(table + '?' + (query || ''));
 export const insert = (table, row) => call(table, { method: 'POST', headers: { Prefer: 'return=minimal' }, body: JSON.stringify(row) });
 export const upsert = (table, row, conflict) => call(table + '?on_conflict=' + encodeURIComponent(conflict), { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify(row) });
+export const upsertMany = (table, rows, conflict) => {
+  const list = Array.isArray(rows) ? rows.filter(Boolean) : [];
+  if (!list.length) return Promise.resolve([]);
+  return call(table + '?on_conflict=' + encodeURIComponent(conflict), {
+    method: 'POST',
+    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify(list)
+  });
+};
 export const update = (table, query, row) => call(table + '?' + query, { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify(row) });
 export const rpc = (name, args) => call('rpc/' + name, { method: 'POST', headers: { Prefer: 'return=representation' }, body: JSON.stringify(args || {}) });
 export async function log(level, message, data) {
