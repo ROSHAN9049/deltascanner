@@ -74,7 +74,7 @@ The scanner has an inbound endpoint for activity events, if a supported sender/r
 
 `/api/tradetron/webhook`
 
-Set Railway variable `TRADETRON_WEBHOOK_SECRET` before accepting POST events. The endpoint accepts the secret as `Authorization: Bearer <secret>` or `x-tradetron-webhook-secret: <secret>`; the `?secret=<secret>` fallback should only be used if the sender cannot set headers. Never put the secret in source control or chat.
+Set `TRADETRON_WEBHOOK_SECRET` as a **sensitive Production environment variable in the Vercel `deltascanner` project** (this path is a Vercel serverless function, not a Railway worker endpoint), then redeploy the Vercel project. Configure the sender to provide the same secret as `Authorization: Bearer <secret>` or `x-tradetron-webhook-secret: <secret>`; the `?secret=<secret>` fallback should only be used if the sender cannot set headers. Never put the secret in source control.
 
 Tradetron's current public integrations page advertises outbound webhooks for fills, errors, and kill-switch events to HTTPS endpoints. That confirms the platform advertises an outbound-webhook capability, but the account-specific configuration and payload fields still need a Live Offline test. Confirm that the chosen event type can call `/api/tradetron/webhook` with the configured authentication header. **TT SIGNALS** means the scanner sent a signal to Tradetron; it does not prove a fill occurred. **TT EVENTS** only increases after an authenticated event is received. Keep the Tradetron deployment in **Live Offline** until the signal → execution → event → dashboard round-trip is verified.
 
