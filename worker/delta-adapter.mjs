@@ -82,8 +82,10 @@ export class DeltaAdapter {
           await sleep(wait);
           continue;
         }
-        const err = new Error((data && data.error && (data.error.message || data.error.code)) || ('HTTP_' + response.status));
-        err.code = String((data && data.error && data.error.code) || 'http_error');
+        const apiErrorCode = String((data && data.error && data.error.code) || '');
+        const apiErrorMessage = String((data && data.error && (data.error.message || data.error.code)) || ('HTTP_' + response.status));
+        const err = new Error(apiErrorMessage);
+        err.code = apiErrorCode || 'http_error';
         err.status = response.status;
         err.details = data;
         throw err;
