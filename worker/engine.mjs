@@ -1593,6 +1593,7 @@ export class DeltaEngine {
       const existingReason = String(row.requested_exit_reason || '').toUpperCase();
       const updatedAt = Date.parse(row.updated_at || 0) || 0;
       if (existingReason.startsWith('BRIDGE_EXIT:')) continue;
+      if (existingReason && !existingReason.startsWith('BRIDGE_EXIT_PENDING:')) continue;
       if (existingReason.startsWith('BRIDGE_EXIT_PENDING:') && now - updatedAt < 120000) continue;
 
       const ticker = this.tickerMap.get(symbol);
