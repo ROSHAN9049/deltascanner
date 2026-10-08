@@ -127,14 +127,21 @@ export class TradetronBridge {
         throw new Error('Tradetron Signal Bridge symbol is invalid: ' + selected);
       }
 
+      // Compatibility contract for the already-deployed Signal Bridge:
+      // - symbol runtime flag carries the side: 1 = BUY/LONG, 3 = SELL/SHORT
+      // - sizing/price variables are written before the trigger
+      // - api_buy/api_sell is kept as a global trigger fallback, but fired LAST
+      // This ordering avoids evaluating the entry trigger before the payload
+      // variables are available in the Tradetron runtime store.
+      const actionCode = normalizedSide === 'BUY' ? 1 : 3;
       writes = [
-        [triggerKey, 1],
-        [resetKey, 0],
-        [selected, 1],
+        [selected, actionCode],
         [selected + '_qty', quantity],
         [selected + '_ep', prices.entryPrice],
         [selected + '_sl', prices.sl],
-        [selected + '_tp', prices.tp]
+        [selected + '_tp', prices.tp],
+        [triggerKey, 1],
+        [resetKey, 0]
       ];
     }
 
@@ -146,9 +153,11 @@ export class TradetronBridge {
       side: normalizedSide,
       qty: quantity,
       executionId: execution,
-      triggerKey: this.dynamicEnabled ? (normalizedSide === 'BUY' ? 'tt_buy' : 'tt_sell') : selected,
+      triggerKey: this.dynamicEnabled ? (normalizedSide === 'BUY' ? 'tt_buy' : 'tt_sell') : triggerKey,
+      actionCode: this.dynamicEnabled ? null : actionCode,
       response: result.body,
-      dynamic: this.dynamicEnabled
+      dynamic: this.dynamicEnabled,
+      contract: this.dynamicEnabled ? 'dynamic_tt_v1' : 'legacy_action_code_trigger_v2'
     };
   }
 
