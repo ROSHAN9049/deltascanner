@@ -283,21 +283,6 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
     ? (2 * fee * price + spreadPct / 100 * price) / riskDistance
     : 99;
 
-  // TESTNET high-conviction fallback for sparse volume feeds. The setup
-  // must already have strong score, tight spread, valid RSI and no strongly
-  // opposing BTC regime. This does not apply to LIVE (production is blocked).
-  const volumeFallback =
-    !!side &&
-    vr < volumeMin &&
-    scoreMin <= 65 &&
-    localScore >= 85 &&
-    spreadPct <= 0.20 &&
-    antiChase &&
-    rsiOk &&
-    !btcStronglyOpposed;
-
-  const volumeQualified = vr >= volumeMin || volumeFallback;
-
   const trendAligned = bullish || bearish;
   const localScore = Math.round(
     (trendAligned ? 20 : 0) +
@@ -310,6 +295,21 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
     (spreadPct <= spreadMax ? 5 : 0)
   );
   const score = Math.min(100, localScore + (btcOk ? 5 : 0));
+
+  // TESTNET-only sparse-volume fallback: requires a strong local setup and
+  // keeps spread/anti-chase/RSI/BTC protections intact. Production execution
+  // is structurally disabled by server/config.js.
+  const volumeFallback =
+    !!side &&
+    vr < volumeMin &&
+    scoreMin <= 65 &&
+    localScore >= 85 &&
+    spreadPct <= 0.20 &&
+    antiChase &&
+    rsiOk &&
+    !btcStronglyOpposed;
+
+  const volumeQualified = vr >= volumeMin || volumeFallback;
 
   const btcRegimeOverride =
     !!side &&
