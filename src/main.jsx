@@ -90,7 +90,7 @@ function App() {
         <div className="sub">DELTA INDIA · PERPETUAL FUTURES COMMAND CENTER</div>
       </div>
       <div className="headerRight">
-        <span>BUILD v2.0.20261008.11</span>
+        <span>BUILD v2.0.20261008.12</span>
         <span>UTC {new Date(clock).toISOString().slice(11,19)}</span>
         <span>LOCAL {new Date(clock).toLocaleTimeString('en-IN')}</span>
         <b className="badge test">LIVE MARKET · SIGNAL ONLY</b>
@@ -305,10 +305,14 @@ function Settings({ settings, secret, setSecret, busy, mutate }) {
 }
 function TradetronActivity({ events, signals }) {
   const rows = (events || []).slice(0, 30);
+  const webhookUrl = typeof window !== 'undefined'
+    ? window.location.origin + '/api/tradetron/webhook'
+    : '/api/tradetron/webhook';
   return <Panel title="Tradetron Offline Activity · actual events received">
+    <div className="lockedText"><b>Outbound webhook:</b> <span className="mono">{webhookUrl}</span><br/><small>Tradetron → scanner: configure outbound activity/fill/error events to POST to this URL. Keep the Tradetron deployment in Live Offline while validating the round-trip.</small></div>
     {rows.length ? <div className="tablewrap"><table><thead><tr><th>TIME</th><th>EVENT</th><th>SYMBOL</th><th>SIDE</th><th>QTY</th><th>PRICE</th><th>PNL</th><th>STATUS</th><th>EXECUTION</th></tr></thead><tbody>{rows.map(e => <tr key={e.event_id}><td>{e.event_at ? new Date(e.event_at).toLocaleTimeString('en-IN') : new Date(e.created_at).toLocaleTimeString('en-IN')}</td><td>{e.event_type || 'UNKNOWN'}</td><td className="symbol">{e.symbol || '—'}</td><td className={e.side==='BUY'?'up':e.side==='SELL'?'down':''}>{e.side || '—'}</td><td>{fmtQty(e.qty)}</td><td>{price(e.price)}</td><td className={num(e.pnl)>=0?'up':'down'}>{e.pnl == null ? '—' : money(e.pnl)}</td><td>{e.status || '—'}</td><td className="mono">{e.execution_id || '—'}</td></tr>)}</tbody></table></div>
-    : <div className="lockedText">No Tradetron outbound activity has reached the scanner yet. Scanner signals are being accepted separately; when Tradetron sends its fill/position event to <span className="mono">/api/tradetron/webhook</span>, it will appear here.</div>}
-    <div className="micro"><span>Signals sent: {signals?.length || 0}</span><span>Tradetron events: {events?.length || 0}</span><span>Live Offline: ACTIVE on Tradetron</span></div>
+    : <div className="lockedText">No Tradetron outbound activity has reached the scanner yet. Scanner signals are accepted separately; once Tradetron posts activity/fills/errors to the webhook above, they will appear here.</div>}
+    <div className="micro"><span>Signals sent: {signals?.length || 0}</span><span>Tradetron events: {events?.length || 0}</span><span>Webhook: READY</span><span>Live Offline: ACTIVE on Tradetron</span></div>
   </Panel>;
 }
 function Log({ rows }) {
