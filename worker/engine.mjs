@@ -1692,6 +1692,10 @@ export class DeltaEngine {
       }
       openRows = await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
     }
+    // In production SIGNAL_ONLY mode, manage exits only for verified Tradetron
+    // futures positions materialized by the outbound activity webhook. This
+    // does not submit any direct Delta Exchange order.
+    if (CONFIG.signalOnly) await this.manageTradetronPositions(openRows || [], settings);
     const trades = await this.recentTrades();
     if (Date.now() - this.lastAnalysis > 55000 || !this.lastSignals.length) {
       await this.analyseUniverse(account, settings, openRows || [], trades || []);
