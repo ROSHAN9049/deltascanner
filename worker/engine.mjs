@@ -215,6 +215,30 @@ export class DeltaEngine {
     return { reasons: [...new Set(reasons)], size };
   }
 
+
+  async refreshOptionTickers() {
+    const underlyings = ['BTC', 'ETH'];
+    const results = await Promise.all(underlyings.map(async underlying => {
+      try {
+        const rows = await this.adapter.optionTickers(underlying);
+        return (Array.isArray(rows) ? rows : []).map(x => ({ ...x, underlying }));
+      } catch (e) {
+        await this.log('WARN', 'Option chain refresh failed', { underlying, error: e.message });
+        return [];
+      }
+    }));
+    const next = new Map();
+    for (const rows of results) {
+      for (const t of rows) {
+        const symbol = String(t.symbol || '').toUpperCase();
+        if (symbol && /^[CP]-/.test(symbol)) next.set(symbol, { ...t, symbol });
+      }
+    }
+    this.optionTickerMap = next;
+    this.lastOptionTickerFetch = Date.now();
+    await this.log('INFO', 'Option universe refreshed', { contracts: next.size, underlyings });
+  }
+
   async analyseUniverse(account, settings, openPositions, trades) {
     const btc = this.btcSymbol();
     if (!btc) {
