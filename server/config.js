@@ -26,6 +26,10 @@ export const CONFIG = Object.freeze({
     process.env.TRADETRON_SUPPORTED_SYMBOLS ||
     'BTCUSD,ETHUSD,AAPLXUSD,ADAUSD,ALGOUSD,AMDBUSD,AMZNXUSD,ATOMUSD,AVAXUSD,BCHUSD,BNBUSD,CBRSBUSD,COINXUSD'
   ).split(',').map(x => x.trim().toUpperCase()).filter(x => /^[A-Z0-9]+USD$/.test(x)))],
+  // Options require a separately configured Tradetron strategy/token. Keep
+  // this route disabled until that strategy exists and has been validated.
+  tradetronOptionsBridgeEnabled: String(process.env.TRADETRON_OPTIONS_BRIDGE_ENABLED || 'false').toLowerCase() === 'true',
+  tradetronOptionsAuthToken: process.env.TRADETRON_OPTIONS_AUTH_TOKEN || '',
   tradetronBaseUrl: process.env.TRADETRON_BASE_URL || 'https://api.tradetron.tech',
   tradetronAuthToken: process.env.TRADETRON_AUTH_TOKEN || '',
   tradetronTimeoutMs: Number(process.env.TRADETRON_TIMEOUT_MS || 10000),
