@@ -118,16 +118,19 @@ export class TradetronBridge {
         ['api_sell', 0]
       ];
     } else {
-      if (!['BTCUSD', 'ETHUSD'].includes(selected)) {
-        throw new Error('Tradetron legacy bridge symbol not allowed: ' + selected);
+      // Standard Signal Bridge basket contract. Each symbol is represented by
+      // its own runtime flag plus _qty/_ep/_sl/_tp values, while api_buy/api_sell
+      // acts as the global trigger. This lets the scanner drive any symbol that
+      // already exists in the user's deployed Signal Bridge strategy without
+      // changing that Tradetron strategy.
+      if (!/^[A-Z0-9]+USD$/.test(selected) || selected === 'USD') {
+        throw new Error('Tradetron Signal Bridge symbol is invalid: ' + selected);
       }
 
-      const other = selected === 'BTCUSD' ? 'ETHUSD' : 'BTCUSD';
       writes = [
         [triggerKey, 1],
         [resetKey, 0],
         [selected, 1],
-        [other, 0],
         [selected + '_qty', quantity],
         [selected + '_ep', prices.entryPrice],
         [selected + '_sl', prices.sl],
