@@ -49,6 +49,10 @@ For a supported coin, the worker writes quantity and price metadata before raisi
 
 The strategy's own entry condition remains the final source of truth. Receiving an API variable is not proof of an executed simulated trade.
 
+## Signal-only position cap
+
+The worker enforces a hard maximum of two total open/reserved positions in SIGNAL_ONLY mode, respecting any lower setting. A `PENDING` or `SIGNAL_SENT` Tradetron entry reserves a slot until an authenticated activity event confirms that it became active or closed. When the outbound event hook is not configured or delivery is delayed, new entries may pause at the cap by design. This fail-closed behavior prevents the scanner from continuously adding untracked simulated positions. Configure and test the activity event sender before expecting automatic slot recycling.
+
 ## Futures exits
 
 The worker can send a scanner-driven `<SYMBOL>_xl` or `<SYMBOL>_xs` exit trigger only when all of the following are true:
