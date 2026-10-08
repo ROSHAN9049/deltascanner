@@ -76,16 +76,21 @@ export class TradetronBridge {
     if (!/^[A-Z0-9]+USD$/.test(selected)||selected==='USD') throw new Error('Tradetron futures bridge symbol is invalid: '+selected);
 
     const execution=clean(executionId), triggerKey=normalizedSide==='BUY'?'api_buy':'api_sell';
+    // Tradetron's existing Signal Bridge reads <SYMBOL>_q (not only
+    // <SYMBOL>_qty). Write all sizing/protection metadata before entry triggers
+    // so a strategy evaluating runtime variables cannot consume a stale quantity.
     const writes=[
       [selected,normalizedSide==='BUY'?1:3],
       [selected+'_el',normalizedSide==='BUY'?1:0],
       [selected+'_es',normalizedSide==='SELL'?1:0],
       [selected+'_xl',0],[selected+'_xs',0],
-      [selected+'_qty',quantity],[selected+'_ep',prices.entryPrice],[selected+'_sl',prices.sl],[selected+'_tp',prices.tp],
+      [selected+'_q',quantity],[selected+'_qty',quantity],
+      [selected+'_ep',prices.entryPrice],[selected+'_sl',prices.sl],[selected+'_tp',prices.tp],
       ['tt_engine',engine],['tt_symbol',selected],['tt_side',normalizedSide],['tt_qty',quantity],
       ['tt_ep',prices.entryPrice],['tt_sl',prices.sl],['tt_tp1',Number.isFinite(prices.tp1)?prices.tp1:0],['tt_tp',prices.tp],
       ['tt_exec_id',execution],['tt_buy',normalizedSide==='BUY'?1:0],['tt_sell',normalizedSide==='SELL'?1:0],
-      [triggerKey,1],[normalizedSide==='BUY'?'api_sell':'api_buy',0]
+      [normalizedSide==='BUY'?'api_sell':'api_buy',0],
+      [triggerKey,1]
     ];
     const result=await this.sendPairs(writes);
     setTimeout(()=>this.sendPairs([[selected+'_el',0],[selected+'_es',0],[triggerKey,0],['tt_buy',0],['tt_sell',0]]).catch(()=>{}),3000);
