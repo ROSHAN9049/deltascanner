@@ -67,14 +67,14 @@ The futures bridge writes the legacy `<SYMBOL>_q` quantity read by the inspected
 
 Keep the Tradetron deployment in **Live Offline** while validating the bridge. Do not switch to Live Auto until the end-to-end signal, symbol routing, quantity, and exit behavior have been verified. Tradetron outbound activity can be posted to `/api/tradetron/webhook` so the scanner can display received fills/events.
 
-### Tradetron outbound activity webhook
+### Inbound Tradetron activity endpoint
 
-The scanner has a dedicated inbound endpoint for Tradetron outbound activity:
+The scanner has an inbound endpoint for activity events, if a supported sender/relay is configured:
 
 `/api/tradetron/webhook`
 
-Use the full deployed scanner URL plus this path in Tradetron's outbound webhook/integration settings. Enable the activity types available in your Tradetron account that represent fills/executions, position changes, errors, and kill-switch events. The scanner stores the received payload in `dd_tradetron_events`; the dashboard's **TT EVENTS** counter and activity panel read from this table.
+Set Railway variable `TRADETRON_WEBHOOK_SECRET` before accepting POST events. The endpoint accepts the secret as `Authorization: Bearer <secret>` or `x-tradetron-webhook-secret: <secret>`; the `?secret=<secret>` fallback should only be used if the sender cannot set headers. Never put the secret in source control or chat.
 
-Important: **TT SIGNALS** means the scanner successfully sent a signal to Tradetron; it does not mean a fill occurred. **TT EVENTS** only increases after Tradetron posts an outbound event back to the scanner. Keep the Tradetron deployment in **Live Offline** until the signal → execution → webhook → dashboard round-trip has been verified.
+Important: public Tradetron documentation verified for this integration confirms the external-signal path into Tradetron; it does not establish a general native Tradetron-to-arbitrary-URL activity webhook. Confirm the actual sender/relay is supported before relying on this endpoint. **TT SIGNALS** means the scanner sent a signal to Tradetron; it does not prove a fill occurred. **TT EVENTS** only increases after an authenticated event is received. Keep the Tradetron deployment in **Live Offline** until the signal → execution → event → dashboard round-trip is verified.
 
-The webhook parser accepts JSON and form-encoded payloads and looks through common nested `data/payload/trade/order/fill/execution/position` structures. It also normalizes BUY/LONG/1 and SELL/SHORT/3 side values and supports Unix-second/millisecond event timestamps.
+The parser accepts JSON and form-encoded payloads and normalizes common event/side field shapes.
