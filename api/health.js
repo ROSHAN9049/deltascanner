@@ -2,6 +2,7 @@ import { CONFIG } from '../server/config.js';
 import { select } from '../server/db.js';
 
 export default async function handler(req, res) {
+  res.setHeader('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate');
   try {
     // Health must be driven by the worker's durable heartbeat in Supabase.
     // Do not call Delta /v2/tickers here: the dashboard already polls market data
