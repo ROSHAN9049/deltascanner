@@ -151,4 +151,48 @@ export class TradetronBridge {
       dynamic: this.dynamicEnabled
     };
   }
+
+  async emitOptionEntry({ symbol, side, qty, entryPrice, sl, tp1, tp, underlying, optionType, expiryMs, executionId }) {
+    if (!this.isConfigured()) {
+      return { ok: false, skipped: true, reason: this.enabled ? 'TRADETRON_AUTH_TOKEN missing' : 'bridge disabled' };
+    }
+    const selected = clean(symbol).toUpperCase();
+    const normalizedSide = clean(side).toUpperCase();
+    const asset = clean(underlying).toUpperCase();
+    if (!/^[CP]-[A-Z0-9]+-[0-9.]+-\\d{6}$/.test(selected)) throw new Error('Invalid Tradetron option symbol');
+    if (!['BUY','SELL'].includes(normalizedSide)) throw new Error('Tradetron option side must be BUY or SELL');
+    const quantity = Math.max(1, Math.floor(Number(qty) || 0));
+    const prices = { entryPrice: Number(entryPrice), sl: Number(sl), tp1: Number(tp1), tp: Number(tp) };
+    if (!Number.isFinite(prices.entryPrice) || !Number.isFinite(prices.sl) || !Number.isFinite(prices.tp)) {
+      throw new Error('Tradetron option signal prices are invalid');
+    }
+    const execution = clean(executionId);
+    const writes = [
+      ['tt_option_symbol', selected],
+      ['tt_option_side', normalizedSide],
+      ['tt_option_qty', quantity],
+      ['tt_option_ep', prices.entryPrice],
+      ['tt_option_sl', prices.sl],
+      ['tt_option_tp1', Number.isFinite(prices.tp1) ? prices.tp1 : 0],
+      ['tt_option_tp', prices.tp],
+      ['tt_option_underlying', asset],
+      ['tt_option_type', clean(optionType).toUpperCase()],
+      ['tt_option_expiry', Math.round(Number(expiryMs) || 0)],
+      ['tt_option_exec_id', execution],
+      ['tt_option_buy', normalizedSide === 'BUY' ? 1 : 0],
+      ['tt_option_sell', normalizedSide === 'SELL' ? 1 : 0]
+    ];
+    const result = await this.sendPairs(writes);
+    return {
+      ok: !!result.ok,
+      symbol: selected,
+      side: normalizedSide,
+      qty: quantity,
+      executionId: execution,
+      triggerKey: normalizedSide === 'BUY' ? 'tt_option_buy' : 'tt_option_sell',
+      response: result.body,
+      option: true
+    };
+  }
+
 }
