@@ -14,7 +14,24 @@ The default supported-symbol allowlist is:
 
 `BTCUSD,ETHUSD,AAPLXUSD,ADAUSD,ALGOUSD,AMDBUSD,AMZNXUSD,ATOMUSD,AVAXUSD,BCHUSD,BNBUSD,CBRSBUSD,COINXUSD`
 
-To change the allowlist, set Railway variable `TRADETRON_SUPPORTED_SYMBOLS` to the comma-separated set of futures symbols that are actually configured in the linked Tradetron strategy. Adding a symbol to this variable does not add a leg to Tradetron; the strategy itself must be updated first. Unsupported symbols are blocked before the scanner records a Tradetron signal as sent.
+To change the allowlist for a single strategy, set Railway variable `TRADETRON_SUPPORTED_SYMBOLS` to the comma-separated set of futures symbols actually configured in the linked Tradetron strategy. Adding a symbol to this variable does not add a leg to Tradetron; the strategy itself must be updated first.
+
+### Multiple static bridges for a larger universe
+
+When multiple Tradetron basket strategies have actually been created and each has its own API token, configure Railway variable `TRADETRON_BRIDGES_JSON` as a JSON array. When present, it **replaces** the single-token routing/allowlist; do not use a partial route table while expecting fallback to the existing strategy.
+
+Example only (replace placeholder tokens in Railway Variables; never paste actual tokens into chat or source control):
+
+```json
+[
+  { "id": "bridge-01", "symbols": ["BTCUSD", "ETHUSD"], "authToken": "<TOKEN_FOR_BRIDGE_01>" },
+  { "id": "bridge-02", "symbols": ["ADAUSD", "AVAXUSD"], "authToken": "<TOKEN_FOR_BRIDGE_02>" }
+]
+```
+
+Each route must have a unique ID, unique API token and non-overlapping symbol set. The router validates that every symbol belongs to only one bridge and routes both entry and exit triggers through the same bridge. This is only configuration support: it does not create the Tradetron strategies or add their position-builder legs. Do not configure it until all selected basket strategies and their tokens are verified in Tradetron Live Offline.
+
+Unsupported symbols are blocked before the scanner records a Tradetron signal as sent.
 
 ## Futures entry contract
 
