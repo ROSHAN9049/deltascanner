@@ -58,7 +58,11 @@ The worker can send a scanner-driven `<SYMBOL>_xl` or `<SYMBOL>_xs` exit trigger
 3. The position is tagged to the scanner's `MOMENTUM` or `SCALPING` engine.
 4. Market data is fresh and the scanner observes the configured stop, final target, or maximum holding time.
 
-A submitted exit trigger is recorded to prevent repeated triggers while awaiting the Tradetron activity webhook to confirm the position update/close. This is a signal to Tradetron, not direct Delta order placement. If the outbound webhook is not configured or positions cannot be linked to a scanner engine, automatic scanner-driven exits will not run.
+A submitted exit trigger is recorded to prevent repeated triggers while awaiting an authenticated activity event to confirm the position update/close. This is a signal to Tradetron, not direct Delta order placement. If event delivery is unavailable or positions cannot be linked to a scanner engine, automatic scanner-driven exits will not run.
+
+The inbound endpoint `/api/tradetron/webhook` rejects POST requests until `TRADETRON_WEBHOOK_SECRET` is configured. The sender must provide the secret using `Authorization: Bearer <secret>` or `x-tradetron-webhook-secret: <secret>`; `?secret=<secret>` is supported only for senders that cannot set headers and is less preferred because URLs may be logged. Keep the secret in Railway Variables and the sender configuration, never in source control or chat.
+
+Important limitation: the public Tradetron documentation found for this project confirms the external-signal path **into** Tradetron. It does not establish a general native Tradetron-to-arbitrary-URL activity webhook. Do not assume the endpoint receives events just because it exists; confirm an actual supported sender/relay and verify `TT EVENTS` increases. The current dashboard's zero-event state is not evidence of a round trip.
 
 This monitor does not claim exchange-side/Tradetron-side protection exists until verified in actual deployment. Before relying on it, validate one Live Offline entry and one stop/target exit. TP1 partial-close/break-even logic is not implemented by this legacy bridge contract.
 
@@ -92,10 +96,10 @@ The scanner must not log token values.
 2. Confirm a scanner-confirmed, supported-symbol signal appears in Tradetron Runtime Data.
 3. Confirm the correct `<SYMBOL>_q` quantity and entry flag are received.
 4. Confirm a simulated position is actually created in Tradetron Positions/Statistics.
-5. Configure Tradetron's outbound webhook to call the scanner's `/api/tradetron/webhook` endpoint.
-6. Confirm a fill/position event appears in the scanner's `dd_tradetron_events` table and that the corresponding open row appears in `dd_positions` with `origin=TRADETRON`.
+5. Configure a supported activity sender or relay to call `/api/tradetron/webhook`, with `TRADETRON_WEBHOOK_SECRET` and the required authentication header. Confirm the chosen sender is actually supported; do not assume Tradetron's inbound API automatically emits outbound events.
+6. Confirm an authenticated fill/position event appears in `dd_tradetron_events` and that the corresponding row appears in `dd_positions` with `origin=TRADETRON`.
 7. In Live Offline, verify the stop/target exit trigger is consumed and a close event comes back to the scanner.
-8. Do not enable Live Auto until the whole signal → position → exit → webhook round-trip and adequate forward-test behavior are verified.
+8. Do not enable Live Auto until the whole signal → position → exit → event round-trip and adequate forward-test behavior are verified.
 
 ## Known limitations
 
