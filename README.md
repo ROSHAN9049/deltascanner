@@ -66,6 +66,8 @@ A separate Options route is disabled by default. Only after creating and verifyi
 
 The futures bridge writes the legacy `<SYMBOL>_q` quantity read by the inspected strategy, plus `<SYMBOL>_qty` for compatibility, entry/exit metadata, the symbol-specific `_el/_es` entry trigger, and `api_buy/api_sell`. On verified webhook-linked Momentum/Scalping futures positions, the scanner can request `_xl/_xs` exits when fresh market marks cross stop/target or max-hold rules. This exit monitor requires Tradetron outbound activity to be configured and the simulated position to be synced back into `dd_positions`; it is not proof of an exchange-side bracket. The auth token is never printed in logs.
 
+In SIGNAL_ONLY mode, outstanding Tradetron entry signals reserve position slots until an authenticated activity event syncs them to a position or close. The scanner enforces a hard maximum of **two total open/reserved slots** (or a lower setting). If outbound activity events are not configured or arrive late, the scanner intentionally pauses new entries once these slots are used rather than risking duplicate or untracked positions.
+
 Keep the Tradetron deployment in **Live Offline** while validating the bridge. Do not switch to Live Auto until the end-to-end signal, symbol routing, quantity, and exit behavior have been verified. Tradetron outbound activity can be posted to `/api/tradetron/webhook` so the scanner can display received fills/events.
 
 ### Inbound Tradetron activity endpoint
