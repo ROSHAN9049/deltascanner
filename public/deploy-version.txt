@@ -3,3 +3,4 @@ Build v2.0.20261008.06: confirmed-engine selection fix + route-aware TESTNET gat
 Entry engine calibration: 1m scalping metrics, controlled pullback trigger, cost-aware stop sizing.
 Testnet-only execution remains enforced.
 \nBuild v2.0.20261008.07: runtime settings aligned with relaxed TESTNET entry gates.\n\nBuild v2.0.20261008.08: allow FLAT/confirmed-higher-timeframe trend entries with controlled pullback and RSI bands.\n
+Build v2.0.20261008.09: full Delta perpetual universe scan/cache, WebSocket candle cache warmup, and BTC/ETH/XAUT option signal cache with Gold settlement timing.
