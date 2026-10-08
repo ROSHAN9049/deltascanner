@@ -48,6 +48,8 @@ export class DeltaEngine {
     this.wsRetry = 0;
     this.running = false;
     this.privateExecutionAvailable = true;
+    this.lastMarketCacheWrite = 0;
+    this.candleWarmCursor = 0;
   }
 
   async log(level, message, data) {
@@ -96,14 +98,65 @@ export class DeltaEngine {
     const all = (Array.isArray(raw) ? raw : []).filter(x => x.contract_type === 'perpetual_futures');
     const next = new Map();
     for (const t of all) {
-      const p = this.productMap.get(t.symbol);
+      const symbol = String(t.symbol || '').toUpperCase();
+      const p = this.productMap.get(symbol);
       if (!p) continue;
-      next.set(t.symbol, { ...t });
+      next.set(symbol, { ...t, symbol });
     }
-    const ranked = [...next.values()].sort((a, b) => n(b.turnover_usd || b.turnover) - n(a.turnover_usd || a.turnover)).slice(0, 50);
+    const ranked = [...next.values()].sort((a, b) => n(b.turnover_usd || b.turnover) - n(a.turnover_usd || a.turnover));
     this.tickerMap = new Map(ranked.map(x => [x.symbol, x]));
     if (ranked.length) this.lastTickAt = Date.now();
     this.lastTickerFetch = Date.now();
+  }
+
+  async cacheMarketState(force = false) {
+    if (!force && Date.now() - this.lastMarketCacheWrite < 30000) return;
+    const rows = [...this.tickerMap.values()]
+      .sort((a, b) => n(b.turnover_usd || b.turnover) - n(a.turnover_usd || a.turnover))
+      .map((ticker, index) => {
+        const p = this.productMap.get(ticker.symbol) || {};
+        const bid = n(ticker.quotes?.best_bid ?? ticker.best_bid);
+        const ask = n(ticker.quotes?.best_ask ?? ticker.best_ask);
+        const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : 0;
+        return {
+          symbol: ticker.symbol,
+          product_id: n(p.id),
+          contract_type: p.contract_type || 'perpetual_futures',
+          state: p.state || 'live',
+          trading_status: p.trading_status || 'operational',
+          underlying_asset: String(p.underlying_asset || p.contract_unit_currency || ticker.symbol || '').replace(/USD$/i, ''),
+          price: n(ticker.mark_price || ticker.close),
+          mark_price: n(ticker.mark_price),
+          change_24h: n(ticker.ltp_change_24h),
+          turnover_usd: n(ticker.turnover_usd || ticker.turnover),
+          volume: n(ticker.volume),
+          open_interest: n(ticker.open_interest),
+          bid, ask,
+          spread_pct: mid > 0 ? (ask - bid) / mid * 100 : 0,
+          tick_size: n(p.tick_size),
+          contract_value: n(p.contract_value),
+          notional_type: p.notional_type || null,
+          max_leverage: n(p.default_leverage),
+          max_leverage_notional: n(p.max_leverage_notional),
+          position_notional_limit: n(p.position_notional_limit || p.position_limit_notional),
+          market_rank: index + 1,
+          active: true,
+          cached_at: iso(),
+          details: {
+            description: p.description || null,
+            shortDescription: p.short_description || null,
+            makerFee: n(p.maker_commission_rate),
+            takerFee: n(p.taker_commission_rate),
+            launchTime: p.launch_time || null,
+            settlementTime: p.settlement_time || null,
+            productSpecs: p.product_specs || null,
+            tags: p.tags || p.ui_config?.tags || []
+          }
+        };
+      });
+    await db.upsertMany('dd_market_cache', rows, 'symbol');
+    this.lastMarketCacheWrite = Date.now();
+    await this.log('INFO', 'Full Delta market cache refreshed', { perpetuals: rows.length });
   }
 
   async refreshCandle(symbol, resolution) {
@@ -113,20 +166,35 @@ export class DeltaEngine {
     return this.candles.get(key);
   }
 
-  async refreshAllCandles() {
-    const symbols = [...this.tickerMap.keys()];
+  async refreshCandleWarmup() {
+    const ranked = [...this.tickerMap.values()]
+      .sort((a, b) => n(b.turnover_usd || b.turnover) - n(a.turnover_usd || a.turnover));
+    if (!ranked.length) return;
+    const batchSize = 8;
+    const total = ranked.length;
     const work = [];
-    for (const symbol of symbols) {
-      for (const res of ['1m', '5m', '15m']) work.push([symbol, res]);
+    let scanned = 0;
+    while (scanned < Math.min(batchSize, total)) {
+      const symbol = ranked[(this.candleWarmCursor + scanned) % total].symbol;
+      for (const resolution of ['1m', '5m', '15m']) {
+        if (!this.candles.has(resolution + ':' + symbol)) work.push([symbol, resolution]);
+      }
+      scanned++;
     }
+    this.candleWarmCursor = (this.candleWarmCursor + scanned) % total;
+
     let cursor = 0;
     const runner = async () => {
       while (cursor < work.length) {
-        const item = work[cursor++];
-        try { await this.refreshCandle(item[0], item[1]); } catch (e) { await this.log('WARN', 'Candle refresh failed', { symbol: item[0], resolution: item[1], error: e.message }); }
+        const [symbol, resolution] = work[cursor++];
+        try {
+          await this.refreshCandle(symbol, resolution);
+        } catch (e) {
+          await this.log('WARN', 'Candle warmup failed', { symbol, resolution, error: e.message });
+        }
       }
     };
-    await Promise.all([runner(), runner(), runner()]);
+    await Promise.all([runner(), runner(), runner(), runner(), runner(), runner()]);
     this.lastCandleRefresh = Date.now();
   }
 
@@ -449,6 +517,7 @@ export class DeltaEngine {
     const btc5 = this.getCandles(btc, '5m');
     const btc15 = this.getCandles(btc, '15m');
     const out = [];
+    const signalCacheRows = [];
     const tickers = [...this.tickerMap.values()];
     for (let i = 0; i < tickers.length; i++) {
       const ticker = tickers[i], p = this.productMap.get(ticker.symbol);
@@ -485,23 +554,44 @@ export class DeltaEngine {
       for (const s of [mom, scalp]) {
         const size = this.positionSizing(s, account, settings);
         const gate = await this.riskGate(s, s === mom ? 'MOMENTUM' : 'SCALPING', account, settings, openPositions, trades);
-        await db.insert('dd_signals', {
-          symbol: s.symbol, product_id: s.productId, rank: i + 1,
-          strategy: s === mom ? 'MOMENTUM' : 'SCALPING', price: s.price, change_24h: s.change,
-          turnover_usd: s.turnover, spread_pct: s.spreadPct, volume_spike: s.volumeSpike,
-          score: s.score, stage: s.stage, side: s.side, rsi: s.rsi, trend: s.trend,
-          confirm_trend: s.confirmTrend, btc_trend: s.btcTrend, ema21: s.ema21,
-          atr_5m: s.atr5, atr_15m: s.atr15, support: s.support, resistance: s.resistance,
+        const strategyName = s === mom ? 'MOMENTUM' : 'SCALPING';
+        const cacheRow = {
+          cache_key: s.symbol + ':' + strategyName,
+          symbol: s.symbol, product_id: s.productId, strategy: strategyName,
+          price: s.price, change_24h: s.change, turnover_usd: s.turnover, spread_pct: s.spreadPct,
+          volume_spike: s.volumeSpike, score: s.score, stage: s.stage, side: s.side,
+          rsi: s.rsi, trend: s.trend, confirm_trend: s.confirmTrend, btc_trend: s.btcTrend,
+          ema21: s.ema21, atr_5m: s.atr5, atr_15m: s.atr15, support: s.support, resistance: s.resistance,
           stop_price: s.sl, tp1_price: s.tp1, tp_price: s.tp,
           qty_contracts: size ? size.qty : 0, notional: size ? size.notional : 0,
           risk_usd: size ? size.risk : 0, fee_risk_ratio: s.feeRiskRatio,
           ready: s.ready && gate.reasons.length === 0, blocked_reasons: gate.reasons,
+          cached_at: iso(),
           details: {
             rsi: s.rsi, vwap: s.vwap, fee: s.takerFee, candlesFresh: s.candlesFresh,
             localScore: s.localScore, btcRegimeOverride: s.btcRegimeOverride,
-            btcOverrideScoreMin: s.btcOverrideScoreMin, btcOverrideVolumeMin: s.btcOverrideVolumeMin
+            btcOverrideScoreMin: s.btcOverrideScoreMin, btcOverrideVolumeMin: s.btcOverrideVolumeMin,
+            fullMarketScan: true
           }
-        });
+        };
+        signalCacheRows.push(cacheRow);
+        // Keep durable signal history for actionable states only. WATCH states
+        // remain in the low-cost cache and do not fill the history table every minute.
+        if (s.stage !== 'WATCH' || cacheRow.ready) {
+          await db.insert('dd_signals', {
+            symbol: s.symbol, product_id: s.productId, rank: i + 1,
+            strategy: strategyName, price: s.price, change_24h: s.change,
+            turnover_usd: s.turnover, spread_pct: s.spreadPct, volume_spike: s.volumeSpike,
+            score: s.score, stage: s.stage, side: s.side, rsi: s.rsi, trend: s.trend,
+            confirm_trend: s.confirmTrend, btc_trend: s.btcTrend, ema21: s.ema21,
+            atr_5m: s.atr5, atr_15m: s.atr15, support: s.support, resistance: s.resistance,
+            stop_price: s.sl, tp1_price: s.tp1, tp_price: s.tp,
+            qty_contracts: size ? size.qty : 0, notional: size ? size.notional : 0,
+            risk_usd: size ? size.risk : 0, fee_risk_ratio: s.feeRiskRatio,
+            ready: cacheRow.ready, blocked_reasons: gate.reasons,
+            details: cacheRow.details
+          });
+        }
       }
       out.push({ ticker, product: p, mom, scalp });
     }
@@ -518,6 +608,61 @@ export class DeltaEngine {
       const key = symbol.endsWith('USD') ? symbol.slice(0, -3) : symbol;
       item.options = byUnderlying.get(key) || {};
     }
+    await db.upsertMany('dd_signal_cache', signalCacheRows, 'cache_key');
+
+    const optionCache = new Map();
+    for (const s of optionSignals) {
+      const underlying = String(s.underlyingSymbol || '').toUpperCase().replace(/USD$/, '');
+      const key = underlying + ':' + s.strategy;
+      const previous = optionCache.get(key);
+      if (!previous || n(s.score) > n(previous.score)) optionCache.set(key, s);
+    }
+    const optionCacheRows = [...optionCache.values()].map(s => ({
+      cache_key: String(s.underlyingSymbol || '').toUpperCase().replace(/USD$/, '') + ':' + s.strategy,
+      underlying: String(s.underlyingSymbol || '').toUpperCase().replace(/USD$/, ''),
+      strategy: s.strategy,
+      symbol: s.symbol,
+      product_id: n(s.ticker?.product_id || s.productId),
+      option_type: s.optionType,
+      strike: s.strike,
+      expiry_ms: Math.round(n(s.expiryMs)),
+      dte: s.dte,
+      mark: s.mark,
+      bid: s.bid,
+      ask: s.ask,
+      spread_pct: s.spreadPct,
+      oi: s.oi,
+      volume: s.volume,
+      delta: s.delta,
+      gamma: s.gamma,
+      theta: s.theta,
+      vega: s.vega,
+      score: s.score,
+      stage: s.stage,
+      side: s.side,
+      ready: s.ready,
+      blocked_reasons: s.blocked || [],
+      cached_at: iso(),
+      details: {
+        optionType: s.optionType,
+        strike: s.strike,
+        dte: s.dte,
+        expiryMs: s.expiryMs,
+        underlyingSymbol: s.underlyingSymbol,
+        underlyingAsset: s.underlyingAsset || String(s.underlyingSymbol || '').replace(/USD$/, ''),
+        underlyingScore: s.underlyingScore,
+        underlyingSide: s.underlyingSide,
+        underlyingChange: s.underlyingChange,
+        bid: s.bid,
+        ask: s.ask,
+        volume: s.volume,
+        openInterest: s.oi,
+        fullMarketScan: true,
+        goldOptionSettlement: String(s.underlyingSymbol || '').toUpperCase().startsWith('XAUT')
+      }
+    }));
+    await db.upsertMany('dd_option_cache', optionCacheRows, 'cache_key');
+
     this.lastSignals = out;
   }
 
@@ -1395,6 +1540,27 @@ export class DeltaEngine {
             if (msg.type === 'mark_price' || String(msg.type).includes('mark_price')) {
               const t = this.tickerMap.get(symbol);
               if (t) this.tickerMap.set(symbol, { ...t, mark_price: n(x.p || x.mark_price || x.c || t.mark_price) });
+            } else if (String(msg.type || '').startsWith('candlestick_')) {
+              const match = String(msg.type || '').match(/^candlestick_(.+)$/);
+              const resolution = match?.[1] || String(x.res || '');
+              if (!resolution || !['1m','5m','15m'].includes(resolution)) continue;
+              const key = resolution + ':' + symbol;
+              const current = Array.isArray(this.candles.get(key)) ? [...this.candles.get(key)] : [];
+              const tsRaw = Number(x.ts ?? x.timestamp ?? x.t ?? 0);
+              const candle = {
+                time: tsRaw > 1e12 ? Math.floor(tsRaw / 1000) : tsRaw,
+                open: n(x.o),
+                high: n(x.h),
+                low: n(x.l),
+                close: n(x.c),
+                volume: n(x.v),
+                res: resolution
+              };
+              if (!(candle.close > 0) || !(candle.high > 0) || !(candle.low > 0)) continue;
+              const last = current.at(-1);
+              if (last && Number(last.time) === Number(candle.time)) current[current.length - 1] = candle;
+              else current.push(candle);
+              this.candles.set(key, current.slice(-120));
             } else if (msg.type === 'ticker' || msg.type === 'v2/ticker') {
               const t = this.tickerMap.get(symbol) || { symbol };
               this.tickerMap.set(symbol, {
@@ -1404,7 +1570,8 @@ export class DeltaEngine {
                 mark_price: n(x.mark_price || x.mp || t.mark_price),
                 close: n(x.close || x.c || t.close),
                 ltp_change_24h: n(x.ltp_change_24h || x.ch || t.ltp_change_24h),
-                turnover_usd: n(x.turnover_usd || x.v || t.turnover_usd)
+                turnover_usd: n(x.turnover_usd || x.v || t.turnover_usd),
+                open_interest: n(x.open_interest || x.oi || t.open_interest)
               });
             }
           }
@@ -1427,13 +1594,19 @@ export class DeltaEngine {
     const settings = { ...{
       enabled: true, auto_trade: true, emergency_stop: false, continuous_mode: true,
       max_open_positions: 3, risk_pct: 0.3, max_leverage: 3, score_min: 65,
+      options_underlyings: 'BTC,ETH,XAUT',
       momentum_sl_min_pct: 0.95, scalping_sl_min_pct: 0.75, momentum_rr: 2.5,
       scalping_rr: 2.5, tp1_pct: 33, max_hold_minutes: 240
     }, ...(await this.loadSettings()) };
     this.currentSettings = settings;
     if (Date.now() - this.lastUniverseRefresh > 15 * 60 * 1000 || !this.products.length) await this.refreshProducts();
-    if (Date.now() - this.lastTickerFetch > 30000 || !this.tickerMap.size) await this.refreshTickers();
-    if (Date.now() - this.lastCandleRefresh > 60000 || !this.candles.size) await this.refreshAllCandles();
+    if (Date.now() - this.lastTickerFetch > 30000 || !this.tickerMap.size) {
+      await this.refreshTickers();
+      await this.cacheMarketState(true);
+    } else {
+      await this.cacheMarketState(false);
+    }
+    await this.refreshCandleWarmup();
     if (settings.options_enabled !== false && (Date.now() - this.lastOptionTickerFetch > 60000 || !this.optionTickerMap.size)) await this.refreshOptionTickers();
 
     const account = await this.accountSnapshot(settings);
