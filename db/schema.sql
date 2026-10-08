@@ -188,6 +188,106 @@ create table if not exists public.dd_signals (
 create index if not exists dd_signals_time_idx on public.dd_signals(captured_at desc);
 create index if not exists dd_signals_symbol_idx on public.dd_signals(symbol);
 
+create table if not exists public.dd_market_cache (
+  symbol text primary key,
+  product_id bigint not null,
+  contract_type text not null,
+  state text,
+  trading_status text,
+  underlying_asset text,
+  price numeric,
+  mark_price numeric,
+  change_24h numeric,
+  turnover_usd numeric,
+  volume numeric,
+  open_interest numeric,
+  bid numeric,
+  ask numeric,
+  spread_pct numeric,
+  tick_size numeric,
+  contract_value numeric,
+  notional_type text,
+  max_leverage numeric,
+  max_leverage_notional numeric,
+  position_notional_limit numeric,
+  market_rank integer,
+  active boolean not null default true,
+  cached_at timestamptz not null default now(),
+  details jsonb not null default '{}'::jsonb
+);
+create index if not exists dd_market_cache_rank_idx on public.dd_market_cache(market_rank);
+create index if not exists dd_market_cache_cached_idx on public.dd_market_cache(cached_at desc);
+
+create table if not exists public.dd_signal_cache (
+  cache_key text primary key,
+  symbol text not null,
+  product_id bigint not null,
+  strategy text not null,
+  price numeric,
+  change_24h numeric,
+  turnover_usd numeric,
+  spread_pct numeric,
+  volume_spike numeric,
+  score numeric,
+  stage text,
+  side text,
+  rsi numeric,
+  trend text,
+  confirm_trend text,
+  btc_trend text,
+  ema21 numeric,
+  atr_5m numeric,
+  atr_15m numeric,
+  support numeric,
+  resistance numeric,
+  stop_price numeric,
+  tp1_price numeric,
+  tp_price numeric,
+  qty_contracts numeric,
+  notional numeric,
+  risk_usd numeric,
+  fee_risk_ratio numeric,
+  ready boolean,
+  blocked_reasons jsonb not null default '[]'::jsonb,
+  details jsonb not null default '{}'::jsonb,
+  cached_at timestamptz not null default now(),
+  unique(symbol, strategy)
+);
+create index if not exists dd_signal_cache_score_idx on public.dd_signal_cache(strategy, score desc);
+create index if not exists dd_signal_cache_cached_idx on public.dd_signal_cache(cached_at desc);
+
+create table if not exists public.dd_option_cache (
+  cache_key text primary key,
+  underlying text not null,
+  strategy text not null,
+  symbol text not null,
+  product_id bigint,
+  option_type text,
+  strike numeric,
+  expiry_ms bigint,
+  dte numeric,
+  mark numeric,
+  bid numeric,
+  ask numeric,
+  spread_pct numeric,
+  oi numeric,
+  volume numeric,
+  delta numeric,
+  gamma numeric,
+  theta numeric,
+  vega numeric,
+  score numeric,
+  stage text,
+  side text,
+  ready boolean,
+  blocked_reasons jsonb not null default '[]'::jsonb,
+  details jsonb not null default '{}'::jsonb,
+  cached_at timestamptz not null default now(),
+  unique(underlying, strategy)
+);
+create index if not exists dd_option_cache_score_idx on public.dd_option_cache(underlying, strategy, score desc);
+create index if not exists dd_option_cache_cached_idx on public.dd_option_cache(cached_at desc);
+
 create table if not exists public.dd_daily_pnl (
   trade_date date primary key,
   realized numeric not null default 0,
@@ -247,6 +347,9 @@ as $$
   returning true;
 $$;
 
+alter table public.dd_market_cache enable row level security;
+alter table public.dd_signal_cache enable row level security;
+alter table public.dd_option_cache enable row level security;
 alter table public.dd_settings enable row level security;
 alter table public.dd_engine_lease enable row level security;
 alter table public.dd_positions enable row level security;
