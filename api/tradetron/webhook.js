@@ -92,7 +92,7 @@ function parseEventTime(value) {
 
 function buildEventId(payload, rawBody) {
   const provided = clean(pick(nested(payload), [
-    'event_id','eventId','notification_id','notificationId','execution_id','executionId','id','uuid','event_uuid','eventUuid'
+    'event_id','eventId','notification_id','notificationId','webhook_event_id','webhookEventId','id','uuid','event_uuid','eventUuid'
   ], ''));
   if (provided) return provided.slice(0, 180);
   return 'ttweb-' + crypto.createHash('sha256').update(rawBody || JSON.stringify(payload)).digest('hex').slice(0, 48);
