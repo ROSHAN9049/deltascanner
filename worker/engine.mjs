@@ -674,14 +674,6 @@ export class DeltaEngine {
     const tp = roundTick(signal.side === 'BUY' ? entryPrice + riskDistance * rr : entryPrice - riskDistance * rr, tick);
     const executionId = entryCid;
 
-    await db.insert('dd_positions', {
-      symbol: signal.symbol, product_id: signal.productId,
-      side: signal.side, qty: actualQty, entry_price: entryPrice, current_price: n(signal.price),
-      stop_price: sl, tp1_price: tp1, tp_price: tp, initial_qty: actualQty,
-      entry_order_id: entryId, client_order_id: entryCid, execution_id: executionId,
-      strategy, origin: 'ENGINE', opened_at: iso()
-    });
-
     try {
       await this.adapter.placeBracket({
         product_id: signal.productId,
@@ -716,17 +708,36 @@ export class DeltaEngine {
       );
       if (!protectedOrders.length) throw new Error('Exchange-side protection not visible after bracket placement');
 
-      await db.update('dd_positions', 'execution_id=eq.' + encodeURIComponent(executionId), {
-        protection_verified: true, tp1_order_id: String(tp1Order.id), updated_at: iso()
+      await db.insert('dd_positions', {
+        symbol: signal.symbol, product_id: signal.productId,
+        side: signal.side, qty: actualQty, entry_price: entryPrice, current_price: n(signal.price),
+        stop_price: sl, tp1_price: tp1, tp_price: tp, initial_qty: actualQty,
+        entry_order_id: entryId, client_order_id: entryCid, execution_id: executionId,
+        strategy, origin: 'ENGINE', protection_verified: true, tp1_order_id: String(tp1Order.id),
+        opened_at: iso()
       });
+
       await this.log('INFO', 'TESTNET trade opened with verified protection', {
         symbol: signal.symbol, strategy, side: signal.side, qty: actualQty,
         entry: entryPrice, sl, tp1, tp, risk: gate.size.risk, notional: gate.size.notional
       });
       return true;
     } catch (e) {
-      await this.log('ERROR', 'Protection failed; closing immediately', { symbol: signal.symbol, error: e.message });
-      await this.closePosition(signal.symbol, signal.productId, actualQty, signal.side, 'UNPROTECTED');
+      await this.log('ERROR', 'Entry protection or persistence failed', {
+        symbol: signal.symbol, error: e.message, code: e.code || null, status: e.status || null, details: e.details || null
+      });
+      // The protection calls happen before local state persistence. If protection
+      // succeeded but DB persistence failed, leave the exchange-side protection
+      // intact and let reconcile recover the local state on the next cycle.
+      const hasProtectedState = await this.ensurePositionProtection({
+        symbol: signal.symbol, product_id: signal.productId, side: signal.side,
+        qty: actualQty, initial_qty: actualQty, entry_price: entryPrice,
+        stop_price: sl, tp1_price: tp1, tp_price: tp, strategy, execution_id: executionId,
+        protection_verified: false, opened_at: iso()
+      }, { size: actualQty, product_id: signal.productId, mark_price: entryPrice }, []).catch(() => false);
+      if (!hasProtectedState) {
+        await this.closePosition(signal.symbol, signal.productId, actualQty, signal.side, 'UNPROTECTED');
+      }
       return false;
     }
   }
@@ -746,12 +757,135 @@ export class DeltaEngine {
     });
   }
 
-  async managePositionRow(row, exchangePosition, setting) {
+  async ensurePositionProtection(row, exchangePosition, openOrders = []) {
+    const qty = Math.abs(n(exchangePosition?.size));
+    const productId = n(row.product_id || exchangePosition?.product_id);
+    if (qty <= 0 || !productId) return false;
+
+    const tick = n(this.productMap.get(row.symbol)?.tick_size) || n(row.tick_size) || 0;
+    const stop = roundTick(n(row.stop_price), tick);
+    const tp1 = roundTick(n(row.tp1_price), tick);
+    const tp = roundTick(n(row.tp_price), tick);
+    if (!(stop > 0 && tp1 > 0 && tp > 0)) {
+      await this.log('ERROR', 'Recovered position has incomplete protection prices', {
+        symbol: row.symbol, executionId: row.execution_id, stop, tp1, tp
+      });
+      return false;
+    }
+
+    const sameProduct = (Array.isArray(openOrders) ? openOrders : []).filter(o => n(o.product_id) === productId);
+    let protectedOrders = sameProduct.filter(o =>
+      o.stop_order_type ||
+      o.bracket_order ||
+      n(o.bracket_stop_loss_price) ||
+      n(o.bracket_take_profit_price)
+    );
+
+    const hasBracket = protectedOrders.some(o =>
+      n(o.bracket_stop_loss_price) > 0 && n(o.bracket_take_profit_price) > 0
+    );
+
+    if (!hasBracket) {
+      try {
+        await this.adapter.placeBracket({
+          product_id: productId,
+          stop_loss_order: { order_type: 'market_order', stop_price: String(stop) },
+          take_profit_order: { order_type: 'market_order', stop_price: String(tp) },
+          bracket_stop_trigger_method: 'mark_price'
+        });
+      } catch (e) {
+        const details = e?.details || null;
+        await this.log('ERROR', 'Recovered position bracket placement failed', {
+          symbol: row.symbol, executionId: row.execution_id, error: e.message,
+          code: e.code || null, status: e.status || null, details
+        });
+        return false;
+      }
+      const freshOrders = await this.adapter.openOrders().catch(() => []);
+      protectedOrders = (Array.isArray(freshOrders) ? freshOrders : []).filter(o =>
+        n(o.product_id) === productId &&
+        (o.stop_order_type || o.bracket_order || n(o.bracket_stop_loss_price) || n(o.bracket_take_profit_price))
+      );
+    }
+
+    const bracketVerified = protectedOrders.some(o =>
+      n(o.bracket_stop_loss_price) > 0 && n(o.bracket_take_profit_price) > 0
+    );
+
+    const tp1Existing = protectedOrders.find(o =>
+      o.stop_order_type === 'take_profit_order' &&
+      o.reduce_only === true &&
+      n(o.size) > 0 &&
+      n(o.size) < qty
+    );
+
+    let tp1OrderId = tp1Existing ? String(tp1Existing.id) : null;
+    if (!tp1OrderId) {
+      const tp1Qty = Math.max(1, Math.min(qty, roundDown(qty * n(this.currentSettings?.tp1_pct || 33) / 100, 1)));
+      const tp1Cid = ('TP1-' + String(row.execution_id).replace(/[^a-zA-Z0-9]/g, '')).slice(0, 32);
+      const prior = await this.findExistingClient(tp1Cid);
+      if (prior) {
+        tp1OrderId = String(prior.id);
+      } else {
+        try {
+          const tp1Order = await this.adapter.placeOrder({
+            product_id: productId,
+            size: tp1Qty,
+            side: sideExit(row.side),
+            order_type: 'market_order',
+            stop_order_type: 'take_profit_order',
+            stop_price: String(tp1),
+            stop_trigger_method: 'mark_price',
+            reduce_only: true,
+            client_order_id: tp1Cid
+          });
+          tp1OrderId = String(tp1Order.id);
+          await db.upsert('dd_orders', {
+            id: String(tp1Order.id), product_id: productId, symbol: row.symbol,
+            side: sideExit(row.side), order_type: 'market_order', stop_order_type: 'take_profit_order',
+            size: tp1Qty, unfilled_size: n(tp1Order.unfilled_size), state: tp1Order.state,
+            client_order_id: tp1Cid, role: 'TP1', strategy: row.strategy, execution_id: row.execution_id, raw: tp1Order
+          }, 'client_order_id');
+        } catch (e) {
+          await this.log('ERROR', 'Recovered position TP1 placement failed', {
+            symbol: row.symbol, executionId: row.execution_id, error: e.message,
+            code: e.code || null, status: e.status || null, details: e.details || null
+          });
+          return false;
+        }
+      }
+    }
+
+    const verified = bracketVerified && !!tp1OrderId;
+    if (verified) {
+      await db.update('dd_positions', 'execution_id=eq.' + encodeURIComponent(row.execution_id), {
+        protection_verified: true,
+        tp1_order_id: tp1OrderId,
+        updated_at: iso()
+      });
+      await this.log('INFO', 'Recovered TESTNET position protection verified', {
+        symbol: row.symbol, executionId: row.execution_id, qty, stop, tp1, tp, tp1OrderId
+      });
+    }
+    return verified;
+  }
+
+  async managePositionRow(row, exchangePosition, setting, openOrders = []) {
     const mark = n(exchangePosition.mark_price || this.tickerMap.get(row.symbol)?.mark_price || row.current_price);
     const qty = Math.abs(n(exchangePosition.size));
     const originalRisk = Math.abs(n(row.entry_price) - n(row.stop_price));
     const fee = n(this.productMap.get(row.symbol)?.taker_commission_rate);
     if (qty <= 0) return;
+    if (!row.protection_verified) {
+      const protectedNow = await this.ensurePositionProtection(row, exchangePosition, openOrders);
+      if (!protectedNow) {
+        await this.log('ERROR', 'Unprotected engine position remains blocked from management', {
+          symbol: row.symbol, executionId: row.execution_id, qty
+        });
+        return;
+      }
+      row.protection_verified = true;
+    }
     const changed = qty < n(row.initial_qty) && !row.tp1_done;
     if (changed) {
       const be = row.side === 'BUY' ? n(row.entry_price) * (1 + 2 * fee) : n(row.entry_price) * (1 - 2 * fee);
@@ -804,7 +938,7 @@ export class DeltaEngine {
         continue;
       }
       if (ep) {
-        await this.managePositionRow(row, ep, this.currentSettings || {});
+        await this.managePositionRow(row, ep, this.currentSettings || {}, Array.isArray(orders) ? orders : []);
       } else {
         await this.finalizeClosedTrade(row, Array.isArray(fills) ? fills : [], Array.isArray(orders) ? orders : []);
       }
@@ -1051,7 +1185,9 @@ export class DeltaEngine {
     while (this.running) {
       try { await this.scanOnce(); }
       catch (e) {
-        await this.log('ERROR', 'Engine failed closed for cycle', { error: e.message, code: e.code || null });
+        await this.log('ERROR', 'Engine failed closed for cycle', {
+          error: e.message, code: e.code || null, status: e.status || null, details: e.details || null
+        });
       }
       await sleep(15000);
     }
