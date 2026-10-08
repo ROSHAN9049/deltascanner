@@ -1,23 +1,19 @@
 # DealDost Delta India Scanner
 
-TESTNET/Demo-only perpetual futures scanner and Node worker using Delta Exchange India's documented v2 API.
+Production-market signal-only perpetual futures scanner and Node worker using Delta Exchange India's documented v2 API. The scanner reads live Delta India market data and sends signals to Tradetron; it never places direct Delta production orders.
 
 ## Required environment
-DELTA_ENVIRONMENT=TESTNET
+DELTA_ENVIRONMENT=SIGNAL_ONLY
 ENGINE_SECRET
 SUPABASE_URL
 SUPABASE_SERVICE_ROLE_KEY
 WORKER_ID (optional)
 
-Direct Delta execution additionally requires:
-DELTA_TESTNET_API_KEY
-DELTA_TESTNET_API_SECRET
-
 Tradetron bridge execution additionally requires:
 TRADETRON_BRIDGE_ENABLED=true
 TRADETRON_AUTH_TOKEN
 
-The production Delta URL is intentionally not an executable option in this build. The adapter rejects any non-TESTNET environment before connecting or placing an order.
+The production Delta public market API is the only market-data endpoint used in SIGNAL_ONLY mode. Private Delta execution is structurally disabled.
 
 ## Database
 Run db/schema.sql against a dedicated Supabase/Postgres trading database. Do not reuse an unrelated website database.
@@ -26,12 +22,11 @@ Run db/schema.sql against a dedicated Supabase/Postgres trading database. Do not
 Use the repository as the Railway service, Node 22+, start command:
 node worker/index.mjs
 
-The browser is monitor/control only. All trading REST calls are server-side in the worker and protected by the database lease.
+The browser is monitor/control only. Production market-data calls are server-side in the worker and protected by the database lease. Tradetron owns any simulated/live execution.
 
 ## Official Delta details verified
-Demo REST base: https://cdn-ind.testnet.deltaex.org
-Demo public WebSocket: wss://socket-ind-pub.testnet.deltaex.org
-Demo private WebSocket: wss://socket-ind.testnet.deltaex.org
+Production REST base: https://api.india.delta.exchange
+Production public WebSocket: wss://public-socket.india.delta.exchange
 
 Authentication uses HMAC-SHA256 over HTTP method + Unix timestamp + request path + query string + JSON body. client_order_id is limited to 32 characters. Products expose contract_value, tick_size, leverage/notional limits and maker/taker commission rates. Wallet balances are available at /v2/wallet/balances, positions at /v2/positions and /v2/positions/margined, fills at /v2/fills, orders at /v2/orders, and bracket protection at /v2/orders/bracket.
 
@@ -47,7 +42,7 @@ An 80% win rate cannot be guaranteed. The implementation is intentionally select
 
 ## Tradetron Signal Bridge
 
-Tradetron integration is TESTNET/offline-safe and disabled by default. When enabled, confirmed scanner entries are sent to the deployed Tradetron API-controlled Signal Bridge instead of placing a direct Delta order from the worker. This prevents dual execution paths.
+Tradetron integration is production-market / signal-only. The scanner never places direct Delta production orders. Tradetron Live Offline is the intended forward-test execution layer. When enabled, confirmed scanner entries are sent to the deployed Tradetron API-controlled Signal Bridge instead of placing a direct Delta order from the worker. This prevents dual execution paths.
 
 Bridge mode also removes the worker's dependency on Delta private API credentials: the worker reads public Delta market data, while Tradetron owns authenticated execution. This is intended to avoid Delta API IP-whitelist coupling on a cloud worker whose outbound IP may change. See `docs/tradetron-dynamic-bridge.md` for the runtime contract and validation sequence.
 
@@ -59,6 +54,6 @@ Optional:
 - `TRADETRON_BASE_URL=https://api.tradetron.tech`
 - `TRADETRON_TIMEOUT_MS=10000`
 
-The legacy bridge selects only `BTCUSD` or `ETHUSD`, writes that symbol's runtime quantity/entry/SL/TP variables, clears the other symbol selector, and then triggers `api_buy=1` or `api_sell=1`. The auth token is never printed in logs.
+The legacy bridge writes the selected symbol runtime quantity/entry/SL/TP variables and triggers `api_buy=1` or `api_sell=1`. The scanner uses this legacy Signal Bridge contract by default because the existing deployed strategy is a fixed Signal Bridge basket. The auth token is never printed in logs.
 
-Keep the Tradetron deployment in **Live Offline** while validating the bridge. Do not switch to Live Auto until the end-to-end signal, symbol routing, quantity, and exit behavior have been verified.
+Keep the Tradetron deployment in **Live Offline** while validating the bridge. Do not switch to Live Auto until the end-to-end signal, symbol routing, quantity, and exit behavior have been verified. Tradetron outbound activity can be posted to `/api/tradetron/webhook` so the scanner can display received fills/events.
