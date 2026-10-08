@@ -1,6 +1,6 @@
-# DealDost + Tradetron Dynamic Bridge
+# DealDost + Tradetron Signal Bridge
 
-This build keeps the DealDost scanner as the signal engine and Tradetron as the TESTNET execution/position-management layer.
+The DealDost scanner is a production-market signal engine only. Tradetron is the execution and Live Offline simulation layer. Direct Delta execution is disabled.
 
 ## Runtime contract
 
@@ -19,22 +19,25 @@ The worker sends these runtime variables to the linked Tradetron API strategy:
 
 Legacy `api_buy`/`api_sell` variables are reset to 0 in dynamic mode so the legacy two-symbol bridge does not fire accidentally.
 
-## Required Tradetron setup
+## Existing deployed Signal Bridge contract
 
-1. Link the Tradetron strategy through API OAuth.
-2. Set **Hybrid Mode = Yes** when the strategy contains Tradetron-side target/stop/repair logic.
-3. Configure the strategy to read the runtime variables above with **Get Runtime / Get Runtime Number**.
-4. Configure the traded instrument from `tt_symbol` using Tradetron's runtime/traded-instrument keywords.
-5. Configure the position builder to use **QTY**, not LOTS or VALUE, when quantity is read from `tt_qty`.
-6. Use `tt_buy > 0` and `tt_sell > 0` as the external entry triggers.
-7. Store the entry-time SL/TP values in runtime variables or use them directly in the appropriate position/exit logic.
-8. Reset the trigger variables to 0 after the entry/exit cycle so the same signal cannot loop.
-9. Keep the Tradetron deployment in **Live Offline** or **Paper Trade** while validating signal reception, instrument routing, quantity and exits.
-10. Only after end-to-end TESTNET validation should execution be considered for unattended operation.
+The current deployed strategy is `Signal Bridge - Delta Exchange India (13 symbols)`. The scanner therefore defaults to the legacy Signal Bridge contract: selected symbol runtime flag + `<SYMBOL>_qty`, `<SYMBOL>_ep`, `<SYMBOL>_sl`, `<SYMBOL>_tp`, followed by `api_buy=1` or `api_sell=1`. The scanner does not require editing the strategy.
+
+The newer `tt_*` dynamic contract remains documented for future strategy variants but is not enabled by default.
+
+## Validation
+
+1. Keep the existing deployment **Live Offline** and Active.
+2. Verify a scanner-confirmed signal appears in Tradetron Runtime Data.
+3. Confirm the expected legacy `api_buy`/`api_sell` trigger and selected symbol variable appear after a fresh signal.
+4. Confirm the deployed strategy has an instrument/position path that uses those variables.
+5. Confirm the resulting simulated trade appears in Tradetron Positions/Statistics.
+6. Use the outbound webhook endpoint `/api/tradetron/webhook` to send Tradetron activity events back to DealDost so the scanner can display received fills/events.
+7. Only after sufficient forward-test performance should the user manually enable Live Auto.
 
 ## Important safety rule
 
-The worker is TESTNET-only. When bridge mode is enabled, it must not also place direct Delta orders. The direct Delta private API path remains disabled by the bridge branch, preventing dual execution.
+The worker is production-market SIGNAL_ONLY. When bridge mode is enabled, it must not place direct Delta orders. The direct Delta private API path is hard-disabled, preventing dual execution.
 
 ## Current limitations
 
@@ -42,20 +45,9 @@ Tradetron API OAuth is write-oriented for external signals. The worker does not 
 
 Tradetron Initialize Variables have lifecycle limitations and cannot be used for list-based strategies, so dynamic instrument selection should use runtime variables/keywords supported by the strategy type.
 
-## Validation sequence
+## Notes
 
-Use this order:
-
-1. API token linked to the intended strategy.
-2. Hybrid Mode enabled if Tradetron-side exits are used.
-3. Live Offline/Paper deployment active.
-4. Confirm runtime variables appear after a safe test entry.
-5. Confirm `tt_symbol` selects the intended instrument.
-6. Confirm QTY equals `tt_qty`.
-7. Confirm SL/TP values are the intended TESTNET values.
-8. Confirm trigger reset prevents repeated entries.
-9. Test one BUY and one SELL on a low-risk TESTNET instrument.
-10. Only then enable `TRADETRON_DYNAMIC_BRIDGE_ENABLED=true`.
+Tradetron Runtime Data confirms that an API variable reached the strategy, but it does not by itself prove that the strategy consumed the variable to open a position. The deployed strategy's own entry conditions and position builder remain the source of truth. Live Offline does not send broker orders; Live Auto later can.
 
 Official Tradetron guidance used for this contract:
 - API signals can control a Tradetron strategy while Tradetron handles execution and position management.
