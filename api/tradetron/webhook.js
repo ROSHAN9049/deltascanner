@@ -4,6 +4,32 @@ import * as db from '../../server/db.js';
 
 const clean = v => String(v ?? '').trim();
 
+function safeSecretEqual(candidate, expected) {
+  const left = Buffer.from(String(candidate || ''), 'utf8');
+  const right = Buffer.from(String(expected || ''), 'utf8');
+  return left.length > 0 && left.length === right.length && crypto.timingSafeEqual(left, right);
+}
+
+function isAuthenticatedWebhookRequest(req) {
+  const expected = clean(CONFIG.tradetronWebhookSecret);
+  if (!expected) return false;
+
+  const headers = req.headers || {};
+  const authorization = clean(headers.authorization || headers.Authorization);
+  const bearer = authorization.match(/^Bearer\\s+(.+)$/i)?.[1] || '';
+  const headerSecret = clean(headers['x-tradetron-webhook-secret'] || headers['X-Tradetron-Webhook-Secret']);
+  let querySecret = '';
+  if (typeof req.query?.secret === 'string') {
+    querySecret = req.query.secret;
+  } else {
+    try { querySecret = new URL(String(req.url || '/'), 'http://localhost').searchParams.get('secret') || ''; } catch {}
+  }
+
+  // Header authentication is preferred. The query parameter is supported for
+  // senders that cannot set headers, but should be avoided where possible.
+  return [bearer, headerSecret, querySecret].some(candidate => safeSecretEqual(candidate, expected));
+}
+
 function asObject(value) {
   if (value && typeof value === 'object') return value;
   if (typeof value !== 'string') return {};
@@ -366,6 +392,12 @@ export default async function handler(req, res) {
   }
 
   if (req.method !== 'POST') return res.status(405).json({ success: false, error: 'Method not allowed' });
+  if (!CONFIG.tradetronWebhookSecret) {
+    return res.status(503).json({ success: false, error: 'Tradetron webhook authentication is not configured' });
+  }
+  if (!isAuthenticatedWebhookRequest(req)) {
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
+  }
 
   try {
     const payload = parseRequestBody(req);
