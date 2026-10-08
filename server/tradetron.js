@@ -4,11 +4,11 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const clean = v => String(v ?? '').trim();
 
 export class TradetronBridge {
-  constructor() {
-    this.enabled = CONFIG.tradetronBridgeEnabled;
+  constructor({ enabled = CONFIG.tradetronBridgeEnabled, authToken = CONFIG.tradetronAuthToken } = {}) {
+    this.enabled = !!enabled;
     this.dynamicEnabled = CONFIG.tradetronDynamicBridgeEnabled;
     this.baseUrl = CONFIG.tradetronBaseUrl.replace(/\/$/, '');
-    this.authToken = clean(CONFIG.tradetronAuthToken);
+    this.authToken = clean(authToken);
     this.timeoutMs = Math.max(2000, Number(CONFIG.tradetronTimeoutMs) || 10000);
   }
 
