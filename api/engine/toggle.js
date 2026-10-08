@@ -21,6 +21,13 @@ export default async function handler(req, res) {
     if (body.scalpingRr !== undefined) patch.scalping_rr = Math.max(1, Math.min(5, Number(body.scalpingRr)));
     if (body.tp1Pct !== undefined) patch.tp1_pct = Math.max(1, Math.min(99, Number(body.tp1Pct)));
     if (body.maxHoldMinutes !== undefined) patch.max_hold_minutes = Math.max(1, Math.min(1440, Math.round(Number(body.maxHoldMinutes))));
+    if (body.optionsEnabled !== undefined) patch.options_enabled = !!body.optionsEnabled;
+    if (body.optionsBuyEnabled !== undefined) patch.options_buy_enabled = !!body.optionsBuyEnabled;
+    if (body.optionsSellEnabled !== undefined) patch.options_sell_enabled = !!body.optionsSellEnabled;
+    if (body.optionsBuyMinDelta !== undefined) patch.options_buy_min_delta = Math.max(0.30, Math.min(0.80, Number(body.optionsBuyMinDelta)));
+    if (body.optionsBuyMaxDelta !== undefined) patch.options_buy_max_delta = Math.max(0.40, Math.min(0.90, Number(body.optionsBuyMaxDelta)));
+    if (body.optionsSellMinDelta !== undefined) patch.options_sell_min_delta = Math.max(0.05, Math.min(0.50, Number(body.optionsSellMinDelta)));
+    if (body.optionsSellMaxDelta !== undefined) patch.options_sell_max_delta = Math.max(0.10, Math.min(0.60, Number(body.optionsSellMaxDelta)));
     if (!Object.keys(patch).length) return res.status(400).json({ success: false, error: 'No supported setting supplied' });
     await update('dd_settings', 'id=eq.1', { ...patch, updated_at: new Date().toISOString() });
     return res.status(200).json({ success: true, changed: patch, previous: current });
