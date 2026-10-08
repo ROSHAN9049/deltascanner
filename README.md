@@ -53,6 +53,8 @@ Required variables when enabling the futures bridge:
 
 The default supported-symbol allowlist matches the inspected 13-symbol strategy: BTCUSD, ETHUSD, AAPLXUSD, ADAUSD, ALGOUSD, AMDBUSD, AMZNXUSD, ATOMUSD, AVAXUSD, BCHUSD, BNBUSD, CBRSBUSD and COINXUSD. This variable only allows symbols already configured in Tradetron; it does not add strategy legs. Signals for symbols outside the allowlist are blocked rather than reported as sent.
 
+For multiple static baskets, set `TRADETRON_BRIDGES_JSON` to a validated JSON array containing each bridge's unique `id`, `symbols` list and unique `authToken`. When set, it fully replaces single-token symbol routing, and entries and exits are sent through the mapped bridge. Configure it only after each Tradetron strategy and its token are created/verified; never put actual tokens in source control or chat. See `docs/tradetron-dynamic-bridge.md` for the format.
+
 Optional:
 - `TRADETRON_BASE_URL=https://api.tradetron.tech`
 - `TRADETRON_TIMEOUT_MS=10000`
