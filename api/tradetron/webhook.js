@@ -255,6 +255,14 @@ async function recordClosedTrade(row, context, exitPrice, pnl, fees, reason) {
   }).catch(() => {});
 }
 
+async function markSignalOrderState(executionId, state) {
+  const id = clean(executionId);
+  if (!id) return;
+  await db.update('dd_orders', 'execution_id=eq.' + encodeURIComponent(id), {
+    state, updated_at: new Date().toISOString()
+  }).catch(() => {});
+}
+
 async function syncPosition({ symbol, side, qty, price, pnl, fees, eventType, status, executionId, candidates, exitReason, snapshot, context, eventId }) {
   if (!symbol) return { synced: false, reason: 'symbol_missing' };
 
@@ -294,6 +302,7 @@ async function syncPosition({ symbol, side, qty, price, pnl, fees, eventType, st
         'execution_id=eq.' + encodeURIComponent(current.execution_id),
         { qty: 0, current_price: mark || current.current_price, requested_exit_reason: exitReason || 'MANUAL', updated_at: new Date().toISOString() }
       );
+      await markSignalOrderState(current.execution_id, 'CLOSED');
       return { synced: true, action: 'closed', executionId: current.execution_id };
     }
 
@@ -304,6 +313,8 @@ async function syncPosition({ symbol, side, qty, price, pnl, fees, eventType, st
         'execution_id=eq.' + encodeURIComponent(current.execution_id),
         { qty: nextQty, initial_qty: Math.max(Number(current.initial_qty) || 0, nextQty), current_price: mark || current.current_price, updated_at: new Date().toISOString() }
       );
+      await markSignalOrderState(context.order?.execution_id || context.order?.client_order_id, 'ACTIVE');
+      await markSignalOrderState(current.execution_id, 'ACTIVE');
       return { synced: true, action: 'updated', executionId: current.execution_id };
     }
     if (current) {
@@ -312,9 +323,10 @@ async function syncPosition({ symbol, side, qty, price, pnl, fees, eventType, st
         'execution_id=eq.' + encodeURIComponent(current.execution_id),
         { qty: 0, current_price: mark || current.current_price, requested_exit_reason: exitReason || 'MANUAL', updated_at: new Date().toISOString() }
       );
+      await markSignalOrderState(current.execution_id, 'CLOSED');
     }
     if (!productId) return { synced: false, reason: 'product_id_missing' };
-    const exec = clean(executionId) || ('TT-POS-' + symbol + '-' + Date.now().toString(36));
+    const exec = clean(context.order?.execution_id || context.order?.client_order_id || executionId) || ('TT-POS-' + symbol + '-' + Date.now().toString(36));
     await db.insert('dd_positions', {
       symbol, product_id: productId, side: nextSide, qty: nextQty,
       entry_price: entry, current_price: mark,
@@ -326,6 +338,7 @@ async function syncPosition({ symbol, side, qty, price, pnl, fees, eventType, st
       opened_at: context.order?.created_at || new Date().toISOString(),
       updated_at: new Date().toISOString()
     });
+    await markSignalOrderState(context.order?.execution_id || context.order?.client_order_id || exec, 'ACTIVE');
     return { synced: true, action: 'created', executionId: exec };
   }
 
@@ -336,7 +349,7 @@ async function syncPosition({ symbol, side, qty, price, pnl, fees, eventType, st
   if (!current) {
     if (exitReason) return { synced: false, reason: 'exit_without_open_position' };
     if (!productId) return { synced: false, reason: 'product_id_missing' };
-    const exec = clean(executionId) || ('TT-FILL-' + eventId.slice(0, 40));
+    const exec = clean(context.order?.execution_id || context.order?.client_order_id || executionId) || ('TT-FILL-' + eventId.slice(0, 40));
     await db.insert('dd_positions', {
       symbol, product_id: productId, side, qty: eventQty,
       entry_price: entry, current_price: mark || entry,
@@ -348,6 +361,7 @@ async function syncPosition({ symbol, side, qty, price, pnl, fees, eventType, st
       opened_at: context.order?.created_at || new Date().toISOString(),
       updated_at: new Date().toISOString()
     });
+    await markSignalOrderState(context.order?.execution_id || context.order?.client_order_id || exec, 'ACTIVE');
     return { synced: true, action: 'created_from_fill', executionId: exec };
   }
 
@@ -357,6 +371,8 @@ async function syncPosition({ symbol, side, qty, price, pnl, fees, eventType, st
       'execution_id=eq.' + encodeURIComponent(current.execution_id),
       { qty: nextQty, initial_qty: Math.max(Number(current.initial_qty) || 0, nextQty), current_price: mark || current.current_price, updated_at: new Date().toISOString() }
     );
+    await markSignalOrderState(context.order?.execution_id || context.order?.client_order_id, 'ACTIVE');
+    await markSignalOrderState(current.execution_id, 'ACTIVE');
     return { synced: true, action: 'increased', executionId: current.execution_id };
   }
 
@@ -366,6 +382,8 @@ async function syncPosition({ symbol, side, qty, price, pnl, fees, eventType, st
       'execution_id=eq.' + encodeURIComponent(current.execution_id),
       { qty: remaining, current_price: mark || current.current_price, requested_exit_reason: exitReason || current.requested_exit_reason || null, updated_at: new Date().toISOString() }
     );
+    await markSignalOrderState(current.execution_id, 'ACTIVE');
+    await markSignalOrderState(context.order?.execution_id || context.order?.client_order_id, 'ACTIVE');
     return { synced: true, action: 'reduced', executionId: current.execution_id };
   }
 
@@ -374,6 +392,8 @@ async function syncPosition({ symbol, side, qty, price, pnl, fees, eventType, st
     'execution_id=eq.' + encodeURIComponent(current.execution_id),
     { qty: 0, current_price: mark || current.current_price, requested_exit_reason: exitReason || 'MANUAL', updated_at: new Date().toISOString() }
   );
+  await markSignalOrderState(current.execution_id, 'CLOSED');
+  await markSignalOrderState(context.order?.execution_id || context.order?.client_order_id, 'CLOSED');
   return { synced: true, action: 'closed', executionId: current.execution_id };
 }
 
