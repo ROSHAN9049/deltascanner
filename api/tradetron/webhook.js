@@ -240,9 +240,17 @@ async function syncPosition({ symbol, side, qty, price, pnl, fees, eventType, st
     numberValue(candidates, ['product_id','productId','instrument_id','instrumentId']) ||
     context.order?.product_id || context.signal?.product_id || context.market?.product_id
   ) || 0;
-  const strategy = clean(pick(candidates,
+  const eventStrategy = clean(pick(candidates,
     ['strategy','strategy_name','strategyName','engine','engine_name','engineName'], ''
-  )) || clean(context.order?.strategy) || clean(context.signal?.strategy) || 'TRADETRON';
+  ));
+  const linkedStrategy = clean(context.order?.strategy) || clean(context.signal?.strategy);
+  const knownEngine = value => ['MOMENTUM','SCALPING','OPTIONS_BUY','OPTIONS_SELL'].includes(clean(value).toUpperCase());
+  // Tradetron events often report the bridge/template name rather than the
+  // scanner engine. Prefer a linked scanner order/signal when it identifies
+  // a known engine so position management can apply the correct safeguards.
+  const strategy = knownEngine(linkedStrategy) ? linkedStrategy
+    : knownEngine(eventStrategy) ? eventStrategy
+    : eventStrategy || linkedStrategy || 'TRADETRON';
   const raw = context.order?.raw && typeof context.order.raw === 'object' ? context.order.raw : {};
   const stop = Number(context.signal?.stop_price || raw.stop_price || raw.stopPrice || 0);
   const tp1 = Number(context.signal?.tp1_price || raw.tp1_price || raw.tp1 || 0);
