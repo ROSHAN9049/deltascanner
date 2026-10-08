@@ -191,6 +191,9 @@ export class DeltaEngine {
     if (!size) reasons.push('Margin / minimum contract size');
     if (signal.feeRiskRatio > signal.costGateRatio) reasons.push('Fee + spread exceeds 1R cost budget');
 
+    const todayNet = trades.filter(t => String(t.closed_at || '').slice(0, 10) === today()).reduce((s, t) => s + n(t.net_pnl), 0);
+    if (todayNet <= -n(account.equity) * 0.03) reasons.push('Daily loss 3% hard stop');
+
     if (!continuous) {
       const engineCap = strategy === 'MOMENTUM' ? 3 : 3;
       if (openPositions.filter(p => p.strategy === strategy).length >= engineCap) reasons.push(strategy + ' cap');
