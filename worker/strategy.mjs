@@ -182,6 +182,12 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
   const last5 = closed5.at(-1), prev5 = closed5.at(-2);
   const rangeAtr = a5 > 0 ? Math.abs(n(last5?.high) - n(last5?.low)) / a5 : 99;
   const emaDistanceAtr = a5 > 0 ? Math.abs(price - e21) / a5 : 99;
+  const volumeMin = n(cfg.volumeMin || 1.25);
+  const antiChaseMax = n(cfg.antiChasePct || 15);
+  const rangeMax = n(cfg.rangeAtrMax || 3.0);
+  const emaMax = n(cfg.emaDistanceMax || 2.5);
+  const spreadMax = n(cfg.spreadMaxPct || 0.35);
+  const costGateRatio = n(cfg.costGateRatio || (strategy === 'MOMENTUM' ? 0.20 : 0.25));
   const bullish = t5 === 'BULL' && t15 !== 'BEAR';
   const bearish = t5 === 'BEAR' && t15 !== 'BULL';
   let side = '';
@@ -207,12 +213,6 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
   const tp = side === 'BUY' ? roundToTick(price + riskDistance * cfg.rr, tick) : side === 'SELL' ? roundToTick(price - riskDistance * cfg.rr, tick) : 0;
   const fee = n(product.taker_commission_rate);
   const feeRiskRatio = riskDistance > 0 ? (2 * fee * price + spreadPct / 100 * price) / riskDistance : 99;
-  const volumeMin = n(cfg.volumeMin || 1.25);
-  const antiChaseMax = n(cfg.antiChasePct || 15);
-  const rangeMax = n(cfg.rangeAtrMax || 3.0);
-  const emaMax = n(cfg.emaDistanceMax || 2.5);
-  const spreadMax = n(cfg.spreadMaxPct || 0.35);
-  const costGateRatio = n(cfg.costGateRatio || (strategy === 'MOMENTUM' ? 0.20 : 0.25));
   const trendAligned = (bullish || bearish);
   const score = Math.min(100, Math.round(
     (trendAligned ? 20 : 0) +
