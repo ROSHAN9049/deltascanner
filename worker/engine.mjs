@@ -418,12 +418,12 @@ export class DeltaEngine {
           const duplicate = (openPositions || []).some(p => String(p.symbol) === s.symbol && n(p.qty) > 0);
           const optionOpenCount = (openPositions || []).filter(p => String(p.strategy || '').startsWith('OPTIONS_') && n(p.qty) > 0).length;
           const optionCap = Math.max(1, n(settings.options_max_open_positions || 1));
-          const executionLocked = settings.options_execution_enabled !== true || CONFIG.tradetronBridgeEnabled || !this.privateExecutionAvailable;
+          const executionLocked = !CONFIG.tradetronBridgeEnabled || !this.tradetron.isConfigured();
           const blocked = [...s.blocked];
           if (q < 1) blocked.push('Risk budget below 1 contract');
           if (duplicate) blocked.push('Duplicate option position');
           if (optionOpenCount >= optionCap && !duplicate) blocked.push('Options position cap ' + optionCap);
-          if (executionLocked) blocked.push('Option execution route locked; scanner-only TESTNET');
+          if (executionLocked) blocked.push('Tradetron option signal route unavailable');
           const ready = s.ready && q >= 1 && !duplicate && !executionLocked;
           const cv = Math.max(1e-9, n(best.ticker.contract_value) || 1);
           const row = { ...s, ticker: best.ticker, strategy: 'OPTIONS_BUY', qty: q,
@@ -445,7 +445,7 @@ export class DeltaEngine {
               dte: row.dte, expiryMs: row.expiryMs, delta: row.delta, gamma: row.gamma, theta: row.theta,
               vega: row.vega, bid: row.bid, ask: row.ask, openInterest: row.oi, volume: row.volume,
               underlyingSymbol: row.underlyingSymbol, underlyingScore: row.underlyingScore,
-              executionLocked, testnetOnly: true }
+              executionLocked, signalOnly: CONFIG.signalOnly, tradetronRoute: 'tt_option_*' }
           });
           out.push(row);
         }
@@ -481,10 +481,12 @@ export class DeltaEngine {
           if (!(credit > 0)) blocked.push('Net credit <= 0');
           if (q < 1) blocked.push('Spread risk exceeds option risk budget');
           blocked.push('SELL requires defined-risk two-leg spread execution');
+          const optionRouteReady = CONFIG.tradetronBridgeEnabled && this.tradetron.isConfigured();
+          if (!optionRouteReady) blocked.push('Tradetron option signal route unavailable');
           const row = { ...s, ticker: best.ticker, strategy: 'OPTIONS_SELL', qty: q,
             hedgeSymbol: hedge?.symbol || '', hedgeStrike: hedge?.strike || 0, hedgeDelta: hedge?.delta || 0,
             credit, maxRiskPerSpread, notional: Math.max(0, credit * q), risk: maxRiskPerSpread * q,
-            blocked, executionLocked: true, ready: false };
+            blocked, executionLocked: true, ready: false, optionRouteReady };
           await db.insert('dd_signals', {
             symbol: row.symbol, product_id: n(best.ticker.product_id || best.ticker.id),
             rank: 1, strategy: 'OPTIONS_SELL', price: row.mark, change_24h: row.underlyingChange,
@@ -500,7 +502,7 @@ export class DeltaEngine {
               dte: row.dte, expiryMs: row.expiryMs, delta: row.delta, bid: row.bid, ask: row.ask,
               openInterest: row.oi, volume: row.volume, hedgeSymbol: row.hedgeSymbol,
               hedgeStrike: row.hedgeStrike, hedgeDelta: row.hedgeDelta, credit: row.credit,
-              maxRiskPerSpread: row.maxRiskPerSpread, executionLocked: true, testnetOnly: true,
+              maxRiskPerSpread: row.maxRiskPerSpread, executionLocked: true, signalOnly: CONFIG.signalOnly, tradetronRoute: 'tt_option_*',
               definedRiskOnly: settings.options_sell_defined_risk_only !== false }
           });
           out.push(row);
@@ -908,7 +910,74 @@ export class DeltaEngine {
 
   async openOptionTrade(item, signal, account, settings, openPositions, trades) {
     if (signal.stage !== 'CONFIRMED' || !signal.ready) return false;
-    if (settings.options_execution_enabled !== true || CONFIG.tradetronBridgeEnabled || !this.privateExecutionAvailable) return false;
+    if (!CONFIG.tradetronBridgeEnabled || !this.tradetron.isConfigured()) return false;
+
+    const executionId = 'TT-OPT-' + String(signal.strategy) + '-' + String(signal.symbol).replace(/[^A-Z0-9]/g, '').slice(0, 18) + '-' + (Number(signal.expiryMs) || Math.floor(Date.now() / 60000));
+    const prior = await this.findBridgeExecution(executionId);
+    if (prior?.state === 'DB_ERROR' || prior?.state === 'SIGNAL_SENT') return false;
+
+    try {
+      const result = signal.strategy === 'OPTIONS_SELL'
+        ? await this.tradetron.emitOptionSpread({
+            symbol: signal.symbol,
+            hedgeSymbol: signal.hedgeSymbol,
+            side: 'SELL',
+            qty: signal.qty,
+            entryPrice: signal.mark,
+            sl: signal.sl || 0,
+            tp1: signal.tp1 || 0,
+            tp: signal.tp || 0,
+            underlying: signal.underlyingAsset || signal.underlyingSymbol,
+            optionType: signal.optionType,
+            expiryMs: signal.expiryMs,
+            executionId
+          })
+        : await this.tradetron.emitOptionEntry({
+            symbol: signal.symbol,
+            side: 'BUY',
+            qty: signal.qty,
+            entryPrice: signal.mark,
+            sl: signal.sl,
+            tp1: signal.tp1,
+            tp: signal.tp,
+            underlying: signal.underlyingAsset || signal.underlyingSymbol,
+            optionType: signal.optionType,
+            expiryMs: signal.expiryMs,
+            executionId
+          });
+
+      if (!result?.ok) return false;
+      await db.upsert('dd_orders', {
+        id: executionId,
+        product_id: n(signal.ticker?.product_id || signal.productId),
+        symbol: signal.symbol,
+        side: signal.strategy === 'OPTIONS_SELL' ? 'sell' : 'buy',
+        order_type: 'tradetron_signal',
+        size: signal.qty,
+        state: 'SIGNAL_SENT',
+        client_order_id: executionId,
+        role: 'ENTRY',
+        strategy: signal.strategy,
+        execution_id: executionId,
+        raw: {
+          source: 'tradetron_option_bridge',
+          option_type: signal.optionType,
+          underlying: signal.underlyingAsset || signal.underlyingSymbol,
+          hedge_symbol: signal.hedgeSymbol || null,
+          entry_price: signal.mark,
+          response: result.response || 'Ok'
+        }
+      }, 'client_order_id');
+      await this.log('INFO', 'Tradetron option signal emitted; direct Delta option execution skipped', {
+        symbol: signal.symbol, strategy: signal.strategy, underlying: signal.underlyingSymbol,
+        qty: signal.qty, executionId
+      });
+      return true;
+    } catch (e) {
+      await this.log('WARN', 'Tradetron option signal failed', { symbol: signal.symbol, strategy: signal.strategy, error: e.message });
+      return false;
+    }
+  }
 
     const gate = await this.riskGate(signal, 'OPTIONS_BUY', account, settings, openPositions, trades);
     if (gate.reasons.length || !gate.size) return false;
@@ -1652,15 +1721,19 @@ export class DeltaEngine {
         }
 
         const optionBuy = item.options?.buy;
-        if (optionBuy?.stage === 'CONFIRMED' && optionBuy?.ready && settings.options_execution_enabled === true) {
+        if (optionBuy?.stage === 'CONFIRMED' && optionBuy?.ready) {
           candidates.push({ item, strategy: 'OPTIONS_BUY', signal: optionBuy });
+        }
+        const optionSell = item.options?.sell;
+        if (optionSell?.stage === 'CONFIRMED' && optionSell?.ready) {
+          candidates.push({ item, strategy: 'OPTIONS_SELL', signal: optionSell });
         }
       }
 
       candidates.sort((a, b) => {
         const scoreDelta = n(b.signal.score) - n(a.signal.score);
         if (scoreDelta) return scoreDelta;
-        const rank = { MOMENTUM: 3, SCALPING: 2, OPTIONS_BUY: 1 };
+        const rank = { MOMENTUM: 3, SCALPING: 2, OPTIONS_BUY: 1, OPTIONS_SELL: 1 };
         return (rank[b.strategy] || 0) - (rank[a.strategy] || 0);
       });
 
