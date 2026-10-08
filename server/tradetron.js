@@ -99,6 +99,52 @@ export class TradetronBridge {
     return {ok:!!result.ok,symbol:selected,side:normalizedSide,qty:quantity,executionId:execution,triggerKey,actionCode:normalizedSide==='BUY'?1:3,response:result.body,dynamic:true,engine,contract:'legacy_symbol_el_es+dynamic_tt_v3'};
   }
 
+  async emitExit({ symbol, side, reason, executionId }) {
+    if (!this.isConfigured()) {
+      return { ok: false, skipped: true, reason: this.enabled ? 'TRADETRON_AUTH_TOKEN missing' : 'bridge disabled' };
+    }
+    const selected = clean(symbol).toUpperCase();
+    const normalizedSide = clean(side).toUpperCase();
+    const exitReason = clean(reason).toUpperCase() || 'SCANNER_EXIT';
+    if (!/^[A-Z0-9]+USD$/.test(selected) || selected === 'USD') {
+      throw new Error('Tradetron futures exit symbol is invalid: ' + selected);
+    }
+    if (!['BUY','SELL','LONG','SHORT'].includes(normalizedSide)) {
+      throw new Error('Tradetron exit side is invalid: ' + normalizedSide);
+    }
+    const isLong = normalizedSide === 'BUY' || normalizedSide === 'LONG';
+    const execution = clean(executionId);
+    const longExit = selected + '_xl';
+    const shortExit = selected + '_xs';
+    // Existing Signal Bridge uses _xl for closing a long and _xs for closing
+    // a short. Raise the appropriate exit flag last, after clearing entry flags.
+    const writes = [
+      [selected + '_el', 0],
+      [selected + '_es', 0],
+      ['api_buy', 0],
+      ['api_sell', 0],
+      ['tt_buy', 0],
+      ['tt_sell', 0],
+      ['tt_symbol', selected],
+      ['tt_side', isLong ? 'BUY' : 'SELL'],
+      ['tt_exit_reason', exitReason],
+      ['tt_exec_id', execution],
+      [longExit, isLong ? 1 : 0],
+      [shortExit, isLong ? 0 : 1]
+    ];
+    const result = await this.sendPairs(writes);
+    setTimeout(() => this.sendPairs([[longExit, 0], [shortExit, 0]]).catch(() => {}), 3000);
+    return {
+      ok: !!result.ok,
+      symbol: selected,
+      side: isLong ? 'BUY' : 'SELL',
+      reason: exitReason,
+      executionId: execution,
+      triggerKey: isLong ? longExit : shortExit,
+      response: result.body
+    };
+  }
+
   async emitOptionSpread({ symbol, hedgeSymbol, side, qty, entryPrice, sl, tp1, tp, underlying, optionType, expiryMs, executionId }) {
     if (!this.isConfigured()) {
       return { ok: false, skipped: true, reason: this.enabled ? 'TRADETRON_AUTH_TOKEN missing' : 'bridge disabled' };
