@@ -181,22 +181,37 @@ export class DeltaEngine {
   async riskGate(signal, strategy, account, settings, openPositions, trades) {
     const reasons = [...(signal.blocked || [])];
     const continuous = settings.continuous_mode !== false;
+
     if (settings.emergency_stop) reasons.push('Emergency Stop');
     if (!settings.enabled || !settings.auto_trade) reasons.push('Auto OFF');
-    if (openPositions.some(p => p.symbol === signal.symbol && n(p.qty) > 0)) reasons.push('Duplicate symbol');
-    if (openPositions.length >= Math.max(1, n(settings.max_open_positions || 20))) reasons.push('Max open positions');
-    if (!signal.candlesFresh) reasons.push('Fresh closed candles unavailable');
+    if (openPositions.some(p => String(p.symbol) === String(signal.symbol) && n(p.qty) > 0)) reasons.push('Duplicate symbol');
+    if (openPositions.length >= Math.max(1, n(settings.max_open_positions || 3))) reasons.push('Max open positions');
+    if (!signal.candlesFresh && strategy !== 'OPTIONS_BUY') reasons.push('Fresh closed candles unavailable');
     if (n(account.equity) <= 0) reasons.push('Account equity unavailable');
+
     let size = null;
-    if (signal.side) {
+    if (strategy === 'OPTIONS_BUY') {
+      const qty = Math.floor(this.optionQuantity(signal, account, settings));
+      const cv = Math.max(1e-9, n(signal?.ticker?.contract_value) || 1);
+      const mark = n(signal.mark);
+      const stopPct = Math.max(1, n(settings.options_buy_stop_pct || 25));
+      const notional = qty * mark * cv;
+      const risk = qty * mark * (stopPct / 100) * cv;
+      if (qty < 1) reasons.push('Risk budget below 1 contract');
+      else if (n(account.available) > 0 && notional > n(account.available)) reasons.push('Margin / minimum contract size');
+      else size = { qty, notional, risk, marginEstimate: notional };
+      if (signal.executionLocked) reasons.push('Option execution route locked');
+    } else if (signal.side) {
       size = this.positionSizing(signal, account, settings);
       if (!size) reasons.push('Margin / minimum contract size');
       if (n(signal.feeRiskRatio) > n(signal.costGateRatio)) reasons.push('Fee + spread exceeds 1R cost budget');
     }
+
     if (
       signal.side &&
       CONFIG.tradetronBridgeEnabled &&
       !CONFIG.tradetronDynamicBridgeEnabled &&
+      strategy !== 'OPTIONS_BUY' &&
       !['BTCUSD', 'ETHUSD'].includes(String(signal.symbol).toUpperCase())
     ) {
       reasons.push('Tradetron legacy bridge supports BTCUSD/ETHUSD only');
@@ -213,12 +228,12 @@ export class DeltaEngine {
       const last = symbolTrades[0];
       if (last && Date.now() - new Date(last.closed_at || 0).getTime() < 15 * 60 * 1000) reasons.push('15m cooldown');
       if (last && n(last.net_pnl) < 0 && Date.now() - new Date(last.closed_at || 0).getTime() < 90 * 60 * 1000) reasons.push('90m losing-symbol cooldown');
-      const todayNet = trades.filter(t => String(t.closed_at || '').slice(0, 10) === today()).reduce((s, t) => s + n(t.net_pnl), 0);
-      
+
       const recent = trades.filter(t => t.strategy === strategy).slice(0, 20);
       const wins = recent.filter(t => n(t.net_pnl) > 0).length;
       const recentNet = recent.reduce((s, t) => s + n(t.net_pnl), 0);
       if (recent.length >= 10 && (wins / recent.length < 0.35 || recentNet < 0)) reasons.push('Engine expectancy throttle');
+
       const losses = trades.filter(t => n(t.net_pnl) < 0).slice(0, 2);
       if (losses.length >= 2) {
         const a = new Date(losses[0].closed_at || 0).getTime();
@@ -228,7 +243,6 @@ export class DeltaEngine {
     }
     return { reasons: [...new Set(reasons)], size };
   }
-
 
   async refreshOptionTickers() {
     const underlyings = ['BTC', 'ETH'];
@@ -537,6 +551,7 @@ export class DeltaEngine {
   }
 
   async openTrade(item, strategy, signal, account, settings, openPositions, trades) {
+    if (strategy === 'OPTIONS_BUY') return this.openOptionTrade(item, signal, account, settings, openPositions, trades);
     if (signal.stage !== 'CONFIRMED' || signal.score < n(settings.score_min || 80)) return false;
     const gate = await this.riskGate(signal, strategy, account, settings, openPositions, trades);
     if (gate.reasons.length || !gate.size) return false;
@@ -740,6 +755,212 @@ export class DeltaEngine {
       }
       return false;
     }
+  }
+
+  async openOptionTrade(item, signal, account, settings, openPositions, trades) {
+    if (signal.stage !== 'CONFIRMED' || !signal.ready) return false;
+    if (settings.options_execution_enabled !== true || CONFIG.tradetronBridgeEnabled || !this.privateExecutionAvailable) return false;
+
+    const gate = await this.riskGate(signal, 'OPTIONS_BUY', account, settings, openPositions, trades);
+    if (gate.reasons.length || !gate.size) return false;
+
+    const entryCid = clientId('DDO', signal.symbol);
+    if (await this.findExistingClient(entryCid)) return false;
+
+    try {
+      const entry = await this.adapter.placeOrder({
+        product_id: signal.productId,
+        size: gate.size.qty,
+        side: 'buy',
+        order_type: 'market_order',
+        client_order_id: entryCid
+      });
+      const entryId = String(entry.id);
+      await db.upsert('dd_orders', {
+        id: entryId, product_id: signal.productId, symbol: signal.symbol,
+        side: 'buy', order_type: 'market_order', size: gate.size.qty,
+        unfilled_size: n(entry.unfilled_size), state: entry.state,
+        client_order_id: entryCid, role: 'ENTRY', strategy: 'OPTIONS_BUY',
+        execution_id: entryCid, raw: entry
+      }, 'client_order_id');
+
+      const pos = await this.waitPosition(signal.symbol);
+      if (!pos) throw new Error('Option entry accepted but position not visible');
+
+      const actualQty = Math.abs(n(pos.size));
+      const entryPrice = n(pos.entry_price) || n(signal.mark);
+      const product = signal.ticker || {};
+      const tick = n(product.tick_size);
+      const roundOption = v => tick > 0 ? roundTick(v, tick) : v;
+      const riskDistance = Math.max(entryPrice * Math.max(1, n(settings.options_buy_stop_pct || 25)) / 100, tick > 0 ? tick : 0);
+      const sl = roundOption(Math.max(0, entryPrice - riskDistance));
+      const tp1Distance = Math.max(entryPrice * Math.max(1, n(settings.options_buy_tp1_pct || 30)) / 100, tick > 0 ? tick : 0);
+      const tpDistance = Math.max(entryPrice * Math.max(1, n(settings.options_buy_tp_pct || 60)) / 100, tp1Distance);
+      const tp1 = roundOption(entryPrice + tp1Distance);
+      const tp = roundOption(entryPrice + tpDistance);
+      const executionId = entryCid;
+
+      const stopCid = clientId('OSL', signal.symbol);
+      const tp1Cid = clientId('OTP1', signal.symbol);
+      const tpCid = clientId('OTP', signal.symbol);
+      const tp1Qty = Math.max(1, Math.min(actualQty, roundDown(actualQty * n(settings.options_tp1_pct || settings.tp1_pct || 30) / 100, 1)));
+
+      const stopExisting = await this.findExistingClient(stopCid);
+      const tp1Existing = await this.findExistingClient(tp1Cid);
+      const tpExisting = await this.findExistingClient(tpCid);
+
+      const stopOrder = stopExisting || await this.adapter.placeOrder({
+        product_id: signal.productId, size: actualQty, side: 'sell', order_type: 'market_order',
+        stop_order_type: 'stop_loss_order', stop_price: String(sl),
+        stop_trigger_method: 'mark_price', reduce_only: true, client_order_id: stopCid
+      });
+      const tp1Order = tp1Existing || await this.adapter.placeOrder({
+        product_id: signal.productId, size: tp1Qty, side: 'sell', order_type: 'market_order',
+        stop_order_type: 'take_profit_order', stop_price: String(tp1),
+        stop_trigger_method: 'mark_price', reduce_only: true, client_order_id: tp1Cid
+      });
+      const tpOrder = tpExisting || await this.adapter.placeOrder({
+        product_id: signal.productId, size: actualQty, side: 'sell', order_type: 'market_order',
+        stop_order_type: 'take_profit_order', stop_price: String(tp),
+        stop_trigger_method: 'mark_price', reduce_only: true, client_order_id: tpCid
+      });
+
+      const openOrders = await this.adapter.openOrders();
+      const protectedIds = new Set((Array.isArray(openOrders) ? openOrders : []).map(o => String(o.id)));
+      if (!protectedIds.has(String(stopOrder.id)) || !protectedIds.has(String(tp1Order.id)) || !protectedIds.has(String(tpOrder.id))) {
+        throw new Error('Option exchange-side protection not visible after placement');
+      }
+
+      await db.upsert('dd_orders', {
+        id: String(stopOrder.id), product_id: signal.productId, symbol: signal.symbol,
+        side: 'sell', order_type: 'market_order', stop_order_type: 'stop_loss_order',
+        size: actualQty, unfilled_size: n(stopOrder.unfilled_size), state: stopOrder.state,
+        client_order_id: stopCid, role: 'STOP', strategy: 'OPTIONS_BUY', execution_id: executionId, raw: stopOrder
+      }, 'client_order_id');
+      await db.upsert('dd_orders', {
+        id: String(tp1Order.id), product_id: signal.productId, symbol: signal.symbol,
+        side: 'sell', order_type: 'market_order', stop_order_type: 'take_profit_order',
+        size: tp1Qty, unfilled_size: n(tp1Order.unfilled_size), state: tp1Order.state,
+        client_order_id: tp1Cid, role: 'TP1', strategy: 'OPTIONS_BUY', execution_id: executionId, raw: tp1Order
+      }, 'client_order_id');
+      await db.upsert('dd_orders', {
+        id: String(tpOrder.id), product_id: signal.productId, symbol: signal.symbol,
+        side: 'sell', order_type: 'market_order', stop_order_type: 'take_profit_order',
+        size: actualQty, unfilled_size: n(tpOrder.unfilled_size), state: tpOrder.state,
+        client_order_id: tpCid, role: 'TP', strategy: 'OPTIONS_BUY', execution_id: executionId, raw: tpOrder
+      }, 'client_order_id');
+
+      await db.insert('dd_positions', {
+        symbol: signal.symbol, product_id: signal.productId, side: 'BUY',
+        qty: actualQty, entry_price: entryPrice, current_price: n(signal.mark),
+        stop_price: sl, tp1_price: tp1, tp_price: tp, initial_qty: actualQty,
+        entry_order_id: entryId, protection_order_id: String(stopOrder.id),
+        tp1_order_id: String(tp1Order.id), tp_order_id: String(tpOrder.id),
+        client_order_id: entryCid, execution_id: executionId,
+        strategy: 'OPTIONS_BUY', origin: 'ENGINE', protection_verified: true,
+        opened_at: iso(), updated_at: iso()
+      });
+
+      await this.log('INFO', 'TESTNET options BUY opened with verified protection', {
+        symbol: signal.symbol, qty: actualQty, entry: entryPrice, sl, tp1, tp, executionId
+      });
+      return true;
+    } catch (e) {
+      await this.log('ERROR', 'Options BUY execution/protection failed', {
+        symbol: signal.symbol, error: e.message, code: e.code || null, status: e.status || null
+      });
+      try {
+        const orderList = await this.adapter.openOrders();
+        const mine = (Array.isArray(orderList) ? orderList : []).filter(o =>
+          n(o.product_id) === n(signal.productId) &&
+          ['OSL','OTP1','OTP'].some(prefix => String(o.client_order_id || '').startsWith(prefix + '-'))
+        );
+        for (const o of mine) await this.adapter.cancelOrder({ id: Number(o.id), product_id: signal.productId }).catch(() => {});
+      } catch {}
+      try {
+        const p = await this.waitPosition(signal.symbol);
+        const qty = Math.abs(n(p?.size));
+        if (qty > 0) await this.closePosition(signal.symbol, signal.productId, qty, 'BUY', 'UNPROTECTED');
+      } catch {}
+      return false;
+    }
+  }
+
+  async manageOptionPositionRow(row, exchangePosition, setting, openOrders = []) {
+    const qty = Math.abs(n(exchangePosition?.size));
+    const mark = n(exchangePosition?.mark_price || row.current_price);
+    if (qty <= 0) return;
+
+    const product = this.optionTickerMap.get(row.symbol) || {};
+    const tick = n(product.tick_size);
+    const roundOption = v => tick > 0 ? roundTick(v, tick) : v;
+    const entry = n(row.entry_price);
+    const fee = n(product.taker_commission_rate);
+    const stop = n(row.stop_price);
+    const tp1 = n(row.tp1_price);
+    const tp = n(row.tp_price);
+    const base = Array.isArray(openOrders) ? openOrders.filter(o => n(o.product_id) === n(row.product_id)) : [];
+
+    const stopCid = clientId('OSL', row.symbol);
+    const tp1Cid = String('OTP1-' + String(row.execution_id).replace(/[^a-zA-Z0-9]/g, '')).slice(0, 32);
+    const tpCid = clientId('OTP', row.symbol);
+
+    const hasStop = base.some(o => String(o.client_order_id || '') === stopCid || (o.stop_order_type === 'stop_loss_order' && n(o.size) >= qty));
+    if (!hasStop && stop > 0) {
+      await this.adapter.placeOrder({
+        product_id: row.product_id, size: qty, side: 'sell', order_type: 'market_order',
+        stop_order_type: 'stop_loss_order', stop_price: String(roundOption(stop)),
+        stop_trigger_method: 'mark_price', reduce_only: true, client_order_id: stopCid
+      });
+    }
+
+    const tp1Exists = base.some(o => String(o.client_order_id || '') === tp1Cid || (o.stop_order_type === 'take_profit_order' && n(o.size) > 0 && n(o.size) < qty));
+    if (!tp1Exists && tp1 > 0) {
+      const tp1Qty = Math.max(1, Math.min(qty, roundDown(qty * n(setting.options_buy_tp1_pct || 30) / 100, 1)));
+      await this.adapter.placeOrder({
+        product_id: row.product_id, size: tp1Qty, side: 'sell', order_type: 'market_order',
+        stop_order_type: 'take_profit_order', stop_price: String(roundOption(tp1)),
+        stop_trigger_method: 'mark_price', reduce_only: true, client_order_id: tp1Cid
+      });
+    }
+
+    const tpExists = base.some(o => String(o.client_order_id || '') === tpCid || (o.stop_order_type === 'take_profit_order' && n(o.size) >= qty));
+    if (!tpExists && tp > 0) {
+      await this.adapter.placeOrder({
+        product_id: row.product_id, size: qty, side: 'sell', order_type: 'market_order',
+        stop_order_type: 'take_profit_order', stop_price: String(roundOption(tp)),
+        stop_trigger_method: 'mark_price', reduce_only: true, client_order_id: tpCid
+      });
+    }
+
+    const tp1Done = qty < n(row.initial_qty) && !row.tp1_done;
+    if (tp1Done) {
+      const be = roundOption(fee > 0 ? entry * (1 + 2 * fee) : entry);
+      const fresh = await this.adapter.openOrders();
+      const stopOrder = (Array.isArray(fresh) ? fresh : []).find(o => String(o.client_order_id || '') === stopCid);
+      if (stopOrder) {
+        await this.adapter.cancelOrder({ id: Number(stopOrder.id), product_id: row.product_id }).catch(() => {});
+      }
+      const beCid = String('OSLBE-' + String(row.execution_id).replace(/[^a-zA-Z0-9]/g, '')).slice(0, 32);
+      await this.adapter.placeOrder({
+        product_id: row.product_id, size: qty, side: 'sell', order_type: 'market_order',
+        stop_order_type: 'stop_loss_order', stop_price: String(be),
+        stop_trigger_method: 'mark_price', reduce_only: true, client_order_id: beCid
+      });
+      await db.update('dd_positions', 'execution_id=eq.' + encodeURIComponent(row.execution_id), {
+        qty, tp1_done: true, stop_price: be, current_price: mark, updated_at: iso()
+      });
+      await this.log('INFO', 'Options TP1 detected; stop moved to break-even', { symbol: row.symbol, qty, stop: be });
+      return;
+    }
+
+    if (Date.now() - new Date(row.opened_at).getTime() > n(setting.max_hold_minutes || 240) * 60000) {
+      await this.closePosition(row.symbol, row.product_id, qty, 'BUY', 'TIMEOUT');
+    }
+
+    await db.update('dd_positions', 'execution_id=eq.' + encodeURIComponent(row.execution_id), {
+      qty, current_price: mark, updated_at: iso()
+    });
   }
 
   async closePosition(symbol, productId, qty, side, reason) {
@@ -967,7 +1188,11 @@ export class DeltaEngine {
         continue;
       }
       if (ep) {
-        await this.managePositionRow(row, ep, this.currentSettings || {}, Array.isArray(orders) ? orders : []);
+        if (row.strategy === 'OPTIONS_BUY') {
+          await this.manageOptionPositionRow(row, ep, this.currentSettings || {}, Array.isArray(orders) ? orders : []);
+        } else {
+          await this.managePositionRow(row, ep, this.currentSettings || {}, Array.isArray(orders) ? orders : []);
+        }
       } else {
         await this.finalizeClosedTrade(row, Array.isArray(fills) ? fills : [], Array.isArray(orders) ? orders : []);
       }
@@ -981,11 +1206,11 @@ export class DeltaEngine {
       const candidates = allOrders.filter(o => String(o.product_symbol || o.symbol) === symbol);
       const engineOrder = candidates.find(o => {
         const cid = String(o.client_order_id || '');
-        return /^(DDM|DDS)-/.test(cid) && o.reduce_only !== true;
+        return /^(DDM|DDS|DDO)-/.test(cid) && o.reduce_only !== true;
       });
       if (engineOrder) {
         const cid = String(engineOrder.client_order_id);
-        const strategy = cid.startsWith('DDM-') ? 'MOMENTUM' : 'SCALPING';
+        const strategy = cid.startsWith('DDM-') ? 'MOMENTUM' : cid.startsWith('DDO-') ? 'OPTIONS_BUY' : 'SCALPING';
         const latest = (await db.select('dd_signals', 'symbol=eq.' + encodeURIComponent(symbol) + '&strategy=eq.' + strategy + '&order=captured_at.desc&limit=1'))?.[0] || {};
         const side = n(ep.size) > 0 ? 'BUY' : 'SELL';
         const protection = candidates.some(o => o.stop_order_type || o.bracket_order || n(o.bracket_stop_loss_price) || n(o.bracket_take_profit_price));
@@ -1153,7 +1378,7 @@ export class DeltaEngine {
     await this.acquireLease();
     const settings = { ...{
       enabled: true, auto_trade: true, emergency_stop: false, continuous_mode: true,
-      max_open_positions: 2, risk_pct: 0.3, max_leverage: 3, score_min: 70,
+      max_open_positions: 3, risk_pct: 0.3, max_leverage: 3, score_min: 65,
       momentum_sl_min_pct: 0.95, scalping_sl_min_pct: 0.75, momentum_rr: 2.5,
       scalping_rr: 2.5, tp1_pct: 33, max_hold_minutes: 240
     }, ...(await this.loadSettings()) };
@@ -1175,20 +1400,35 @@ export class DeltaEngine {
     if (settings.enabled && settings.auto_trade && !settings.emergency_stop) {
       const candidates = [];
       for (const item of this.lastSignals) {
-        // Never let a higher-scoring SETUP suppress a lower-scoring CONFIRMED
-        // signal from the other engine on the same symbol.
-        const confirmed = [
+        const futuresChoices = [
           { strategy: 'MOMENTUM', signal: item.mom },
           { strategy: 'SCALPING', signal: item.scalp }
         ].filter(x => x.signal?.stage === 'CONFIRMED' && x.signal?.ready);
-        if (confirmed.length) {
-          const choice = confirmed.sort((a, b) => b.signal.score - a.signal.score)[0];
+        if (futuresChoices.length) {
+          const choice = futuresChoices.sort((a, b) => b.signal.score - a.signal.score)[0];
           candidates.push({ item, ...choice });
         }
+
+        const optionBuy = item.options?.buy;
+        if (optionBuy?.stage === 'CONFIRMED' && optionBuy?.ready && settings.options_execution_enabled === true) {
+          candidates.push({ item, strategy: 'OPTIONS_BUY', signal: optionBuy });
+        }
       }
-      candidates.sort((a, b) => b.signal.score - a.signal.score);
-      for (const c of candidates.slice(0, 10)) {
-        await this.openTrade(c.item, c.strategy, c.signal, account, settings, positions, trades);
+
+      candidates.sort((a, b) => {
+        const scoreDelta = n(b.signal.score) - n(a.signal.score);
+        if (scoreDelta) return scoreDelta;
+        const rank = { MOMENTUM: 3, SCALPING: 2, OPTIONS_BUY: 1 };
+        return (rank[b.strategy] || 0) - (rank[a.strategy] || 0);
+      });
+
+      const maxPositions = Math.max(1, n(settings.max_open_positions || 3));
+      for (const c of candidates) {
+        const freshAccount = await this.accountSnapshot(settings);
+        const freshPositions = await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
+        if ((freshPositions || []).length >= maxPositions) break;
+        const opened = await this.openTrade(c.item, c.strategy, c.signal, freshAccount, settings, freshPositions || [], trades);
+        if (opened) await sleep(250);
       }
     }
 
