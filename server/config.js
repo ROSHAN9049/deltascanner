@@ -14,6 +14,7 @@ function parseTradetronBridgeRoutes() {
   if (!Array.isArray(parsed)) throw new Error('TRADETRON_BRIDGES_JSON must be an array');
 
   const ids = new Set();
+  const tokens = new Set();
   const allSymbols = new Set();
   return parsed.map((row, index) => {
     const id = String(row?.id || 'bridge-' + (index + 1)).trim();
@@ -23,12 +24,14 @@ function parseTradetronBridgeRoutes() {
       .filter(x => /^[A-Z0-9]+USD$/.test(x) && x !== 'USD'))];
     if (!id || ids.has(id)) throw new Error('TRADETRON_BRIDGES_JSON contains an empty or duplicate bridge id');
     if (!authToken) throw new Error('TRADETRON_BRIDGES_JSON bridge ' + id + ' is missing authToken');
+    if (tokens.has(authToken)) throw new Error('TRADETRON_BRIDGES_JSON must use a unique authToken for each bridge');
     if (!symbols.length) throw new Error('TRADETRON_BRIDGES_JSON bridge ' + id + ' has no valid symbols');
     for (const symbol of symbols) {
       if (allSymbols.has(symbol)) throw new Error('TRADETRON_BRIDGES_JSON assigns ' + symbol + ' to more than one bridge');
       allSymbols.add(symbol);
     }
     ids.add(id);
+    tokens.add(authToken);
     return Object.freeze({ id, authToken, symbols: Object.freeze(symbols) });
   });
 }
