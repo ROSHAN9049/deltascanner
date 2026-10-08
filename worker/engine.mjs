@@ -27,6 +27,7 @@ export class DeltaEngine {
   constructor() {
     this.adapter = new DeltaAdapter();
     this.tradetron = new TradetronBridge();
+    this.unsupportedBridgeWarnings = new Set();
     this.leaseId = crypto.randomUUID();
     this.startedAt = Date.now();
     this.lastTickAt = 0;
@@ -715,6 +716,18 @@ export class DeltaEngine {
         await this.log('ERROR', 'Tradetron bridge enabled but auth token is missing; entry blocked', {
           symbol: signal.symbol, strategy, side: signal.side
         });
+        return false;
+      }
+      if (!this.tradetron.supportsFuturesSymbol(signal.symbol)) {
+        const warningKey = String(signal.symbol || '').toUpperCase();
+        if (!this.unsupportedBridgeWarnings.has(warningKey)) {
+          this.unsupportedBridgeWarnings.add(warningKey);
+          await this.log('WARN', 'Tradetron entry blocked: symbol is not in the configured fixed basket', {
+            symbol: warningKey,
+            strategy,
+            supportedSymbols: CONFIG.tradetronSupportedSymbols
+          });
+        }
         return false;
       }
       // One bridge execution per signal candle. This is stable across the
