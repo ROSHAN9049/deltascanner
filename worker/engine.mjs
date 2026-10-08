@@ -480,13 +480,13 @@ export class DeltaEngine {
           if (!hedge) blocked.push('Defined-risk hedge unavailable');
           if (!(credit > 0)) blocked.push('Net credit <= 0');
           if (q < 1) blocked.push('Spread risk exceeds option risk budget');
-          blocked.push('SELL requires defined-risk two-leg spread execution');
           const optionRouteReady = CONFIG.tradetronBridgeEnabled && this.tradetron.isConfigured();
           if (!optionRouteReady) blocked.push('Tradetron option signal route unavailable');
+          const ready = s.ready && q >= 1 && !!hedge && credit > 0 && optionRouteReady;
           const row = { ...s, ticker: best.ticker, strategy: 'OPTIONS_SELL', qty: q,
             hedgeSymbol: hedge?.symbol || '', hedgeStrike: hedge?.strike || 0, hedgeDelta: hedge?.delta || 0,
             credit, maxRiskPerSpread, notional: Math.max(0, credit * q), risk: maxRiskPerSpread * q,
-            blocked, executionLocked: true, ready: false, optionRouteReady };
+            blocked, executionLocked: false, ready, optionRouteReady };
           await db.insert('dd_signals', {
             symbol: row.symbol, product_id: n(best.ticker.product_id || best.ticker.id),
             rank: 1, strategy: 'OPTIONS_SELL', price: row.mark, change_24h: row.underlyingChange,
@@ -496,7 +496,7 @@ export class DeltaEngine {
             btc_trend: underlying.btcTrend, ema21: underlying.ema21, atr_5m: underlying.atr5,
             atr_15m: underlying.atr15, support: underlying.support, resistance: underlying.resistance,
             stop_price: 0, tp1_price: 0, tp_price: 0, qty_contracts: row.qty,
-            notional: row.notional, risk_usd: row.risk, fee_risk_ratio: 0, ready: false,
+            notional: row.notional, risk_usd: row.risk, fee_risk_ratio: 0, ready: row.ready,
             blocked_reasons: blocked,
             details: { engine: 'OPTIONS_SELL', optionType: row.optionType, strike: row.strike,
               dte: row.dte, expiryMs: row.expiryMs, delta: row.delta, bid: row.bid, ask: row.ask,
@@ -1622,10 +1622,7 @@ export class DeltaEngine {
           { strategy: 'MOMENTUM', signal: item.mom },
           { strategy: 'SCALPING', signal: item.scalp }
         ].filter(x => x.signal?.stage === 'CONFIRMED' && x.signal?.ready);
-        if (futuresChoices.length) {
-          const choice = futuresChoices.sort((a, b) => b.signal.score - a.signal.score)[0];
-          candidates.push({ item, ...choice });
-        }
+        for (const choice of futuresChoices) candidates.push({ item, ...choice });
 
         const optionBuy = item.options?.buy;
         if (optionBuy?.stage === 'CONFIRMED' && optionBuy?.ready) {
@@ -1640,16 +1637,15 @@ export class DeltaEngine {
       candidates.sort((a, b) => {
         const scoreDelta = n(b.signal.score) - n(a.signal.score);
         if (scoreDelta) return scoreDelta;
-        const rank = { MOMENTUM: 3, SCALPING: 2, OPTIONS_BUY: 1, OPTIONS_SELL: 1 };
+        const rank = { MOMENTUM: 4, SCALPING: 3, OPTIONS_BUY: 2, OPTIONS_SELL: 2 };
         return (rank[b.strategy] || 0) - (rank[a.strategy] || 0);
       });
 
       const maxPositions = CONFIG.signalOnly ? Number.POSITIVE_INFINITY : Math.max(1, n(settings.max_open_positions || 3));
 
-      // Signal-only mode intentionally has no position-count cap. It does,
-      // however, need a global bridge rate guard so the 15s scanner loop does
-      // not emit dozens of independent Tradetron signals during the same
-      // market window. Limit accepted bridge entries to 2 per rolling 5m.
+      // Signal-only mode is execution-routed through Tradetron. Keep a small
+      // rolling guard so the 15s scanner loop cannot flood the external API,
+      // while allowing Momentum + Scalping + one Options opportunity through.
       // Per-symbol/candle idempotency still runs inside openTrade().
       let bridgeSignalsInWindow = 0;
       if (CONFIG.signalOnly) {
@@ -1663,12 +1659,12 @@ export class DeltaEngine {
           bridgeSignalsInWindow = Array.isArray(recent) ? recent.length : 0;
         } catch (e) {
           await this.log('WARN', 'Bridge rate guard lookup failed; cycle remains fail-safe', { error: e.message });
-          bridgeSignalsInWindow = 2;
+          bridgeSignalsInWindow = 3;
         }
       }
 
       for (const c of candidates) {
-        if (CONFIG.signalOnly && bridgeSignalsInWindow >= 2) break;
+        if (CONFIG.signalOnly && bridgeSignalsInWindow >= 3) break;
         const freshAccount = await this.accountSnapshot(settings);
         const freshPositions = CONFIG.signalOnly ? await db.select('dd_positions', 'origin=eq.TRADETRON&qty=gt.0&order=updated_at.desc') : await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
         if ((freshPositions || []).length >= maxPositions) break;
