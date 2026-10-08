@@ -46,15 +46,22 @@ Tradetron integration is production-market / signal-only. The scanner never plac
 
 Bridge mode also removes the worker's dependency on Delta private API credentials: the worker reads public Delta market data, while Tradetron owns authenticated execution. This is intended to avoid Delta API IP-whitelist coupling on a cloud worker whose outbound IP may change. See `docs/tradetron-dynamic-bridge.md` for the runtime contract and validation sequence.
 
-Required variables when enabling the bridge:
+Required variables when enabling the futures bridge:
 - `TRADETRON_BRIDGE_ENABLED=true`
 - `TRADETRON_AUTH_TOKEN=<fresh Tradetron API auth token>`
+- `TRADETRON_SUPPORTED_SYMBOLS=<comma-separated symbols configured in the linked strategy>`
+
+The default supported-symbol allowlist matches the inspected 13-symbol strategy: BTCUSD, ETHUSD, AAPLXUSD, ADAUSD, ALGOUSD, AMDBUSD, AMZNXUSD, ATOMUSD, AVAXUSD, BCHUSD, BNBUSD, CBRSBUSD and COINXUSD. This variable only allows symbols already configured in Tradetron; it does not add strategy legs. Signals for symbols outside the allowlist are blocked rather than reported as sent.
 
 Optional:
 - `TRADETRON_BASE_URL=https://api.tradetron.tech`
 - `TRADETRON_TIMEOUT_MS=10000`
 
-The legacy bridge writes `<SYMBOL>=1` for the selected basket member, `<SYMBOL>_qty`, `<SYMBOL>_ep`, `<SYMBOL>_sl`, `<SYMBOL>_tp`, and the deployed strategy's global trigger `api_buy=1` or `api_sell=1`. The scanner uses this exact legacy Signal Bridge contract by default because the existing deployed strategy is a fixed Signal Bridge basket. The auth token is never printed in logs.
+A separate Options route is disabled by default. Only after creating and verifying a dedicated Options strategy in Tradetron, configure:
+- `TRADETRON_OPTIONS_BRIDGE_ENABLED=true`
+- `TRADETRON_OPTIONS_AUTH_TOKEN=<token linked to that separate Options strategy>`
+
+The futures bridge writes the legacy `<SYMBOL>_q` quantity read by the inspected strategy, plus `<SYMBOL>_qty` for compatibility, entry/exit metadata, the symbol-specific `_el/_es` entry trigger, and `api_buy/api_sell`. On verified webhook-linked Momentum/Scalping futures positions, the scanner can request `_xl/_xs` exits when fresh market marks cross stop/target or max-hold rules. This exit monitor requires Tradetron outbound activity to be configured and the simulated position to be synced back into `dd_positions`; it is not proof of an exchange-side bracket. The auth token is never printed in logs.
 
 Keep the Tradetron deployment in **Live Offline** while validating the bridge. Do not switch to Live Auto until the end-to-end signal, symbol routing, quantity, and exit behavior have been verified. Tradetron outbound activity can be posted to `/api/tradetron/webhook` so the scanner can display received fills/events.
 
