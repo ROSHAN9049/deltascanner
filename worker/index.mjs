@@ -113,7 +113,7 @@ async function runTradetronSelfTest() {
 
 await runTradetronSelfTest();
 
-console.log('[DeltaScanner] TESTNET worker entering engine loop');
+console.log('[DeltaScanner] Production SIGNAL_ONLY worker entering engine loop');
 engine.run().catch(async error => {
   console.error('[DeltaScanner] Fatal worker startup error:', error.message);
   await log('ERROR', 'Fatal worker startup error', { error: error.message });
