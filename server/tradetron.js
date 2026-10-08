@@ -91,6 +91,7 @@ export class TradetronBridge {
     const resetKey = normalizedSide === 'BUY' ? 'api_sell' : 'api_buy';
 
     let writes;
+    let actionCode = null;
     if (this.dynamicEnabled) {
       if (!/^[A-Z0-9]+USD$/.test(selected) || selected === 'USD') {
         throw new Error('Tradetron dynamic bridge symbol is invalid: ' + selected);
@@ -133,7 +134,7 @@ export class TradetronBridge {
       // - api_buy/api_sell is kept as a global trigger fallback, but fired LAST
       // This ordering avoids evaluating the entry trigger before the payload
       // variables are available in the Tradetron runtime store.
-      const actionCode = normalizedSide === 'BUY' ? 1 : 3;
+      actionCode = normalizedSide === 'BUY' ? 1 : 3;
       writes = [
         [selected, actionCode],
         [selected + '_qty', quantity],
