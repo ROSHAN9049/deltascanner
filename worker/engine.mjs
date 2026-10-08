@@ -445,10 +445,24 @@ export class DeltaEngine {
       }
       out.push({ ticker, product: p, mom, scalp });
     }
+    const optionSignals = await this.analyseOptions(out, account, settings, openPositions || []);
+    const byUnderlying = new Map();
+    for (const s of optionSignals) {
+      const key = String(s.underlyingSymbol || '').toUpperCase();
+      if (!byUnderlying.has(key)) byUnderlying.set(key, {});
+      if (s.strategy === 'OPTIONS_BUY') byUnderlying.get(key).buy = s;
+      if (s.strategy === 'OPTIONS_SELL') byUnderlying.get(key).sell = s;
+    }
+    for (const item of out) {
+      const symbol = String(item.ticker?.symbol || '').toUpperCase();
+      const key = symbol.endsWith('USD') ? symbol.slice(0, -3) : symbol;
+      item.options = byUnderlying.get(key) || {};
+    }
     this.lastSignals = out;
   }
 
   async findExistingClient(client) {
+
     try { return await this.adapter.clientOrder(client); } catch { return null; }
   }
 
