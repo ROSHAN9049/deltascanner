@@ -1591,7 +1591,7 @@ export class DeltaEngine {
     // execution records and must never be treated as live positions. Tradetron
     // owns execution; actual Offline positions arrive through the Tradetron
     // activity webhook and are exposed separately by the API.
-    let openRows = CONFIG.signalOnly ? [] : await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
+    let openRows = CONFIG.signalOnly ? await db.select('dd_positions', 'origin=eq.TRADETRON&qty=gt.0&order=updated_at.desc') : await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
     if (
       !CONFIG.signalOnly &&
       this.privateExecutionAvailable &&
@@ -1669,7 +1669,7 @@ export class DeltaEngine {
       for (const c of candidates) {
         if (CONFIG.signalOnly && bridgeSignalsInWindow >= 2) break;
         const freshAccount = await this.accountSnapshot(settings);
-        const freshPositions = CONFIG.signalOnly ? [] : await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
+        const freshPositions = CONFIG.signalOnly ? await db.select('dd_positions', 'origin=eq.TRADETRON&qty=gt.0&order=updated_at.desc') : await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
         if ((freshPositions || []).length >= maxPositions) break;
         const opened = await this.openTrade(c.item, c.strategy, c.signal, freshAccount, settings, freshPositions || [], trades);
         if (opened) {
