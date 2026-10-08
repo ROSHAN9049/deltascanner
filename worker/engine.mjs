@@ -1567,6 +1567,89 @@ export class DeltaEngine {
     }
   }
 
+  async manageTradetronPositions(rows, settings = {}) {
+    if (!CONFIG.signalOnly || !CONFIG.tradetronBridgeEnabled || !this.tradetron.isConfigured()) return;
+    const marketAge = Date.now() - Math.max(this.lastTickerFetch || 0, this.lastTickAt || 0);
+    if (marketAge > 90000) {
+      await this.log('WARN', 'Tradetron exit monitor skipped because market data is stale', { marketAgeMs: marketAge });
+      return;
+    }
+
+    const now = Date.now();
+    const timeoutMs = Math.max(1, n(settings.max_hold_minutes || 240)) * 60000;
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const symbol = String(row.symbol || '').toUpperCase();
+      const strategy = String(row.strategy || '').toUpperCase();
+      const qty = Math.abs(n(row.qty));
+      const sideValue = String(row.side || '').toUpperCase();
+      const side = ['BUY', 'LONG'].includes(sideValue) ? 'BUY'
+        : ['SELL', 'SHORT'].includes(sideValue) ? 'SELL' : '';
+      // This manager intentionally handles only the existing fixed futures
+      // Signal Bridge. Options have separate instrument/hedge semantics.
+      if (row.origin !== 'TRADETRON' || qty <= 0 ||
+          !/^[A-Z0-9]+USD$/.test(symbol) || symbol === 'USD' ||
+          !['MOMENTUM', 'SCALPING'].includes(strategy) || !side) continue;
+
+      const existingReason = String(row.requested_exit_reason || '').toUpperCase();
+      const updatedAt = Date.parse(row.updated_at || 0) || 0;
+      if (existingReason.startsWith('BRIDGE_EXIT:')) continue;
+      if (existingReason.startsWith('BRIDGE_EXIT_PENDING:') && now - updatedAt < 120000) continue;
+
+      const ticker = this.tickerMap.get(symbol);
+      const mark = n(ticker?.mark_price || ticker?.close || ticker?.price);
+      if (!(mark > 0)) continue;
+      const stop = n(row.stop_price);
+      const target = n(row.tp_price);
+      let reason = '';
+
+      if (side === 'BUY') {
+        if (stop > 0 && mark <= stop) reason = 'STOP_LOSS';
+        else if (target > 0 && mark >= target) reason = 'TAKE_PROFIT';
+      } else {
+        if (stop > 0 && mark >= stop) reason = 'STOP_LOSS';
+        else if (target > 0 && mark <= target) reason = 'TAKE_PROFIT';
+      }
+
+      const openedAt = Date.parse(row.opened_at || 0) || 0;
+      if (!reason && openedAt > 0 && now - openedAt >= timeoutMs) reason = 'TIMEOUT';
+      if (!reason) continue;
+
+      const executionId = String(row.execution_id || row.client_order_id || '');
+      try {
+        await db.update('dd_positions',
+          'execution_id=eq.' + encodeURIComponent(executionId),
+          { requested_exit_reason: 'BRIDGE_EXIT_PENDING:' + reason, current_price: mark, updated_at: iso() }
+        );
+        const result = await this.tradetron.emitExit({ symbol, side, reason, executionId });
+        if (!result.ok) {
+          // A confirmed non-success can be retried on the next loop.
+          await db.update('dd_positions',
+            'execution_id=eq.' + encodeURIComponent(executionId),
+            { requested_exit_reason: null, updated_at: iso() }
+          ).catch(() => {});
+          await this.log('ERROR', 'Tradetron exit signal was not accepted', {
+            symbol, side, qty, reason, executionId, response: result.response || null
+          });
+          continue;
+        }
+        await db.update('dd_positions',
+          'execution_id=eq.' + encodeURIComponent(executionId),
+          { requested_exit_reason: 'BRIDGE_EXIT:' + reason, current_price: mark, updated_at: iso() }
+        );
+        await this.log('INFO', 'Tradetron exit trigger sent from scanner risk monitor', {
+          symbol, side, qty, mark, stop, target, reason, executionId,
+          triggerKey: result.triggerKey || null
+        });
+      } catch (error) {
+        // Leave the pending marker for two minutes: the request may have
+        // reached Tradetron even if the network response was lost.
+        await this.log('ERROR', 'Tradetron exit monitor failed closed', {
+          symbol, side, qty, reason, executionId, error: error.message
+        });
+      }
+    }
+  }
+
   async scanOnce() {
     await this.acquireLease();
     const settings = { ...{
