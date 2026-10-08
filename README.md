@@ -50,6 +50,7 @@ Required variables when enabling the futures bridge:
 - `TRADETRON_BRIDGE_ENABLED=true`
 - `TRADETRON_AUTH_TOKEN=<fresh Tradetron API auth token>`
 - `TRADETRON_SUPPORTED_SYMBOLS=<comma-separated symbols configured in the linked strategy>`
+- `TRADETRON_CAPITAL_USD=51.5` for the project's INR 5,000 planning capital (the sizing value is USD, not INR). Change it only by converting the intended INR capital to USD; a fresh exchange rate may be used whenever capital is recalibrated.
 
 The default supported-symbol allowlist matches the inspected 13-symbol strategy: BTCUSD, ETHUSD, AAPLXUSD, ADAUSD, ALGOUSD, AMDBUSD, AMZNXUSD, ATOMUSD, AVAXUSD, BCHUSD, BNBUSD, CBRSBUSD and COINXUSD. This variable only allows symbols already configured in Tradetron; it does not add strategy legs. Signals for symbols outside the allowlist are blocked rather than reported as sent.
 
