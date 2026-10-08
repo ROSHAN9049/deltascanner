@@ -172,55 +172,122 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
   const bid = n(ticker.quotes?.best_bid);
   const ask = n(ticker.quotes?.best_ask);
   const spreadPct = bid > 0 && ask > 0 ? (ask - bid) / ((ask + bid) / 2) * 100 : 99;
-  const cEntry = strategy === 'MOMENTUM' ? c5 : c1;
-  const main = c5;
-  const closed5 = closed(c5), closedEntry = closed(cEntry), closed15 = closed(c15);
-  const e9 = ema(main, 9), e21 = ema(main, 21), e50 = ema(main, 50);
-  // Momentum confirms volume on 5m; Scalping confirms volume on 1m.
-  const r = rsi(main), vr = volumeRatio(cEntry), a5 = atr(main), a15 = atr(c15), vw = vwap(closedEntry.length ? cEntry : main);
-  const t5 = trendFor5m(main), t15 = trendFor15m(c15);
-  const btcT5 = trendFor5m(btc5), btcT15 = trendFor15m(btc15);
-  const last5 = closed5.at(-1), prev5 = closed5.at(-2);
-  const rangeAtr = a5 > 0 ? Math.abs(n(last5?.high) - n(last5?.low)) / a5 : 99;
-  const emaDistanceAtr = a5 > 0 ? Math.abs(price - e21) / a5 : 99;
+  const isScalping = strategy === 'SCALPING';
+
+  // Use the engine's actual entry timeframe for RSI/VWAP/volume/EMA/ATR.
+  // The 5m + 15m stack remains the directional regime for both engines.
+  const entryCandles = isScalping ? c1 : c5;
+  const closedEntry = closed(entryCandles);
+  const closed5 = closed(c5);
+  const closed15 = closed(c15);
+
+  const entryE9 = ema(entryCandles, 9);
+  const entryE21 = ema(entryCandles, 21);
+  const entryE50 = ema(entryCandles, 50);
+  const r = rsi(entryCandles);
+  const vr = volumeRatio(entryCandles);
+  const entryAtr = atr(entryCandles);
+  const a5 = atr(c5);
+  const a15 = atr(c15);
+  const vw = vwap(entryCandles);
+
+  const t5 = trendFor5m(c5);
+  const t15 = trendFor15m(c15);
+  const btcT5 = trendFor5m(btc5);
+  const btcT15 = trendFor15m(btc15);
+  const lastEntry = closedEntry.at(-1);
+
+  const bullish = t5 === 'BULL' && t15 !== 'BEAR';
+  const bearish = t5 === 'BEAR' && t15 !== 'BULL';
+
   const volumeMin = n(cfg.volumeMin || 1.25);
   const antiChaseMax = n(cfg.antiChasePct || 15);
   const rangeMax = n(cfg.rangeAtrMax || 3.0);
   const emaMax = n(cfg.emaDistanceMax || 2.5);
   const spreadMax = n(cfg.spreadMaxPct || 0.35);
-  const costGateRatio = n(cfg.costGateRatio || (strategy === 'MOMENTUM' ? 0.20 : 0.25));
+  const costGateRatio = n(cfg.costGateRatio || (isScalping ? 0.25 : 0.20));
+  const scoreMin = n(cfg.scoreMin || 70);
   const btcOverrideScoreMin = n(cfg.btcOverrideScoreMin || 90);
   const btcOverrideVolumeMin = n(cfg.btcOverrideVolumeMin || 1.5);
-  const bullish = t5 === 'BULL' && t15 !== 'BEAR';
-  const bearish = t5 === 'BEAR' && t15 !== 'BULL';
+  const pullbackAllowanceAtr = n(cfg.pullbackAllowanceAtr || (isScalping ? 1.25 : 0.75));
+
+  // A signal can trigger after a controlled pullback toward the entry EMA;
+  // it no longer requires the last closed candle itself to move in the
+  // same direction as price. This materially reduces false "no-side" states.
+  const entryRoom = entryAtr > 0 ? pullbackAllowanceAtr * entryAtr : 0;
   let side = '';
-  if (bullish && n(last5?.close) >= n(prev5?.close) && price >= e21) side = 'BUY';
-  if (bearish && n(last5?.close) <= n(prev5?.close) && price <= e21) side = 'SELL';
-  const antiChase = side === 'BUY' ? change <= antiChaseMax : side === 'SELL' ? change >= -antiChaseMax : false;
+  if (bullish && price > 0 && (entryE21 <= 0 || price >= entryE21 - entryRoom)) side = 'BUY';
+  if (bearish && price > 0 && (entryE21 <= 0 || price <= entryE21 + entryRoom)) side = 'SELL';
+
+  const antiChase = side === 'BUY'
+    ? change <= antiChaseMax
+    : side === 'SELL'
+      ? change >= -antiChaseMax
+      : true;
+
   const btcOk = side === 'BUY'
     ? btcT5 !== 'BEAR' && btcT15 !== 'BEAR'
     : side === 'SELL'
       ? btcT5 !== 'BULL' && btcT15 !== 'BULL'
+      : true;
+
+  const rsiOk = side === 'BUY'
+    ? (isScalping
+      ? r >= 47 && r <= 75 && (vw <= 0 || price >= vw)
+      : r >= 52 && r <= 72)
+    : side === 'SELL'
+      ? (isScalping
+        ? r >= 25 && r <= 53 && (vw <= 0 || price <= vw)
+        : r >= 28 && r <= 48)
       : false;
-  const rsiOk = strategy === 'MOMENTUM'
-    ? (side === 'BUY' ? r >= 52 && r <= 72 : side === 'SELL' ? r >= 28 && r <= 48 : false)
-    : (side === 'BUY' ? r >= 50 && r <= 74 && price >= vw : side === 'SELL' ? r >= 26 && r <= 50 && price <= vw : false);
-  const stopMin = (cfg.minStopPct / 100);
-  const atrPct = a5 > 0 ? 1.25 * a5 / Math.max(price, 1) : 0;
-  const stopPct = Math.max(stopMin, atrPct);
-  const rawSl = side === 'BUY' ? price * (1 - stopPct) : side === 'SELL' ? price * (1 + stopPct) : 0;
+
+  const rangeAtr = entryAtr > 0 && lastEntry
+    ? Math.abs(n(lastEntry.high) - n(lastEntry.low)) / entryAtr
+    : 99;
+  const emaDistanceAtr = entryAtr > 0 && entryE21 > 0
+    ? Math.abs(price - entryE21) / entryAtr
+    : 99;
+
+  const stopMin = n(cfg.minStopPct || (isScalping ? 0.75 : 0.95)) / 100;
+  const atrStopPct = entryAtr > 0 ? 1.25 * entryAtr / Math.max(price, 1) : 0;
+
+  // Prevent a circular rejection where fees/spread exceed the 1R budget
+  // solely because the stop is hard-clamped too tightly. The stop expands
+  // to the minimum level required by the configured cost budget.
+  const marketCostPct = Math.max(0, 2 * n(product.taker_commission_rate) + spreadPct / 100);
+  const costFloorStopPct = costGateRatio > 0 ? marketCostPct / costGateRatio : 0;
+  const stopPct = Math.max(stopMin, atrStopPct, costFloorStopPct);
+
+  const rawSl = side === 'BUY'
+    ? price * (1 - stopPct)
+    : side === 'SELL'
+      ? price * (1 + stopPct)
+      : 0;
   const tick = n(product.tick_size);
-  const sl = roundToTick(rawSl, tick);
+  const sl = side ? roundToTick(rawSl, tick) : 0;
   const riskDistance = side ? Math.abs(price - sl) : 0;
-  const tp1 = side === 'BUY' ? roundToTick(price + riskDistance, tick) : side === 'SELL' ? roundToTick(price - riskDistance, tick) : 0;
-  const tp = side === 'BUY' ? roundToTick(price + riskDistance * cfg.rr, tick) : side === 'SELL' ? roundToTick(price - riskDistance * cfg.rr, tick) : 0;
+  const tp1 = side === 'BUY'
+    ? roundToTick(price + riskDistance, tick)
+    : side === 'SELL'
+      ? roundToTick(price - riskDistance, tick)
+      : 0;
+  const rr = n(cfg.rr || 2.0);
+  const tp = side === 'BUY'
+    ? roundToTick(price + riskDistance * rr, tick)
+    : side === 'SELL'
+      ? roundToTick(price - riskDistance * rr, tick)
+      : 0;
+
   const fee = n(product.taker_commission_rate);
-  const feeRiskRatio = riskDistance > 0 ? (2 * fee * price + spreadPct / 100 * price) / riskDistance : 99;
-  const trendAligned = (bullish || bearish);
+  const feeRiskRatio = riskDistance > 0
+    ? (2 * fee * price + spreadPct / 100 * price) / riskDistance
+    : 99;
+
+  const trendAligned = bullish || bearish;
   const localScore = Math.round(
     (trendAligned ? 20 : 0) +
     (t5 === t15 && t5 !== 'FLAT' ? 20 : trendAligned ? 10 : 0) +
-    (vr >= volumeMin ? 15 : Math.min(vr / volumeMin, 1) * 15) +
+    (vr >= volumeMin ? 15 : Math.min(vr / Math.max(volumeMin, 0.01), 1) * 15) +
     (rsiOk ? 15 : 0) +
     (emaDistanceAtr <= emaMax ? 10 : 0) +
     (rangeAtr <= rangeMax ? 5 : 0) +
@@ -228,7 +295,9 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
     (spreadPct <= spreadMax ? 5 : 0)
   );
   const score = Math.min(100, localScore + (btcOk ? 5 : 0));
+
   const btcRegimeOverride =
+    !!side &&
     !btcOk &&
     localScore >= btcOverrideScoreMin &&
     t5 === t15 &&
@@ -241,36 +310,101 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
     spreadPct <= spreadMax &&
     feeRiskRatio <= costGateRatio &&
     !!price && !!riskDistance && !!sl;
-  const stage = score >= cfg.scoreMin && side && vr >= volumeMin && rsiOk ? 'CONFIRMED'
-    : (score >= 45 || side ? 'SETUP' : 'WATCH');
+
+  const hardReady =
+    !!side &&
+    score >= scoreMin &&
+    !!price &&
+    !!riskDistance &&
+    !!sl &&
+    vr >= volumeMin &&
+    rsiOk &&
+    antiChase &&
+    rangeAtr <= rangeMax &&
+    emaDistanceAtr <= emaMax &&
+    (btcOk || btcRegimeOverride) &&
+    spreadPct <= spreadMax &&
+    feeRiskRatio <= costGateRatio;
+
+  const stage = hardReady ? 'CONFIRMED' : (score >= 45 || side ? 'SETUP' : 'WATCH');
   const blocked = [];
-  if (stage !== 'CONFIRMED') blocked.push('Signal not CONFIRMED / score below threshold');
-  if (!rsiOk) blocked.push('RSI/VWAP');
-  if (vr < volumeMin) blocked.push('Volume spike < ' + volumeMin.toFixed(2) + 'x');
-  if (!antiChase) blocked.push('24h anti-chase');
-  if (rangeAtr > rangeMax) blocked.push('5m range > ' + rangeMax.toFixed(2) + 'x ATR');
-  if (emaDistanceAtr > emaMax) blocked.push('Price > ' + emaMax.toFixed(2) + 'x ATR from EMA21');
-  if (!btcOk && !btcRegimeOverride) blocked.push('BTC regime');
-  if (spreadPct > spreadMax) blocked.push('Spread > ' + spreadMax.toFixed(2) + '%');
-  if (feeRiskRatio > costGateRatio) blocked.push('Fee + spread > allowed 1R cost');
-  if (!price || !riskDistance || !sl) blocked.push('Invalid price/stop');
-  const rawCandleTs = Number(closedEntry.at(-1)?.time ?? closedEntry.at(-1)?.timestamp ?? closedEntry.at(-1)?.t ?? 0);
+
+  if (!side) {
+    blocked.push('No directional trigger');
+  } else {
+    if (score < scoreMin) blocked.push('Signal score below ' + scoreMin);
+    if (!rsiOk) blocked.push('RSI/VWAP');
+    if (vr < volumeMin) blocked.push('Volume spike < ' + volumeMin.toFixed(2) + 'x');
+    if (!antiChase) blocked.push('24h anti-chase');
+    if (rangeAtr > rangeMax) blocked.push('Entry candle range > ' + rangeMax.toFixed(2) + 'x ATR');
+    if (emaDistanceAtr > emaMax) blocked.push('Price > ' + emaMax.toFixed(2) + 'x ATR from entry EMA21');
+    if (!btcOk && !btcRegimeOverride) blocked.push('BTC regime');
+    if (spreadPct > spreadMax) blocked.push('Spread > ' + spreadMax.toFixed(2) + '%');
+    if (feeRiskRatio > costGateRatio) blocked.push('Fee + spread > allowed 1R cost');
+    if (!price || !riskDistance || !sl) blocked.push('Invalid price/stop');
+  }
+
+  const rawCandleTs = Number(
+    closedEntry.at(-1)?.time ??
+    closedEntry.at(-1)?.timestamp ??
+    closedEntry.at(-1)?.t ??
+    0
+  );
   const signalCandleTs = rawCandleTs > 1e12
     ? Math.floor(rawCandleTs / 60000)
     : rawCandleTs > 1e9
       ? Math.floor(rawCandleTs / 60)
       : 0;
+
+  const supportWindow = closed5.slice(-20).map(c => n(c.low)).filter(v => v > 0);
+  const resistanceWindow = closed5.slice(-20).map(c => n(c.high)).filter(v => v > 0);
+
   return {
-    symbol: ticker.symbol, productId: product.id, price, change, turnover: n(ticker.turnover_usd || ticker.turnover),
+    symbol: ticker.symbol,
+    productId: product.id,
+    price,
+    change,
+    turnover: n(ticker.turnover_usd || ticker.turnover),
     signalCandleTs,
-    spreadPct, side, stage, score, volumeSpike: vr, rsi: r, trend: t5, confirmTrend: t15,
-    btcTrend: btcT5, btcConfirmTrend: btcT15, ema21: e21, atr5: a5, atr15: a15, vwap: vw,
-    rangeAtr, emaDistanceAtr, stopPct, sl, tp1, tp, support: Math.min(...closed5.slice(-20).map(c => n(c.low))),
-    resistance: Math.max(...closed5.slice(-20).map(c => n(c.high))),
-    takerFee: fee, makerFee: n(product.maker_commission_rate), feeRiskRatio, costGateRatio,
-    localScore, btcRegimeOverride, btcOverrideScoreMin, btcOverrideVolumeMin,
-    contractValue: n(product.contract_value), tickSize: tick, notionalType: product.notional_type,
-    maxLeverageNotional: n(product.max_leverage_notional), blocked, ready: stage === 'CONFIRMED' && blocked.length === 0,
+    spreadPct,
+    side,
+    stage,
+    score,
+    volumeSpike: vr,
+    rsi: r,
+    trend: t5,
+    confirmTrend: t15,
+    btcTrend: btcT5,
+    btcConfirmTrend: btcT15,
+    ema21: entryE21,
+    ema9: entryE9,
+    ema50: entryE50,
+    atrEntry: entryAtr,
+    atr5: a5,
+    atr15: a15,
+    vwap: vw,
+    rangeAtr,
+    emaDistanceAtr,
+    pullbackAllowanceAtr,
+    stopPct,
+    costFloorStopPct,
+    sl,
+    tp1,
+    tp,
+    takerFee: fee,
+    makerFee: n(product.maker_commission_rate),
+    feeRiskRatio,
+    costGateRatio,
+    localScore,
+    btcRegimeOverride: !!btcRegimeOverride,
+    btcOverrideScoreMin,
+    btcOverrideVolumeMin,
+    contractValue: n(product.contract_value),
+    tickSize: tick,
+    notionalType: product.notional_type,
+    maxLeverageNotional: n(product.max_leverage_notional),
+    blocked,
+    ready: hardReady,
     candlesFresh: closedEntry.length >= 30 && closed15.length >= 30 && closed5.length >= 30
   };
 }
