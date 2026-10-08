@@ -235,14 +235,18 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
       : false;
   const btcOk = !btcStronglyOpposed;
 
+  const vwapTolerance = Math.max(
+    entryAtr > 0 ? entryAtr * (isScalping ? 0.35 : 0.25) : 0,
+    price > 0 ? price * (isScalping ? 0.0025 : 0.0020) : 0
+  );
   const rsiOk = side === 'BUY'
     ? (isScalping
-      ? r >= 45 && r <= 75 && (vw <= 0 || price >= vw)
-      : r >= 50 && r <= 75)
+      ? r >= 40 && r <= 80 && (vw <= 0 || price >= vw - vwapTolerance)
+      : r >= 45 && r <= 80)
     : side === 'SELL'
       ? (isScalping
-        ? r >= 25 && r <= 55 && (vw <= 0 || price <= vw)
-        : r >= 25 && r <= 50)
+        ? r >= 20 && r <= 60 && (vw <= 0 || price <= vw + vwapTolerance)
+        : r >= 20 && r <= 55)
       : false;
 
   const rangeAtr = entryAtr > 0 && lastEntry
@@ -388,6 +392,6 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
     contractValue: n(product.contract_value), tickSize: tick,
     notionalType: product.notional_type, maxLeverageNotional: n(product.max_leverage_notional),
     blocked, ready: hardReady,
-    candlesFresh: closedEntry.length >= 30 && closed15.length >= 30 && closed5.length >= 30
+    candlesFresh: closedEntry.length >= (isScalping ? 20 : 30) && closed15.length >= 30 && closed5.length >= 30
   };
 }
