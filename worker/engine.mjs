@@ -27,6 +27,7 @@ export class DeltaEngine {
   constructor() {
     this.adapter = new DeltaAdapter();
     this.tradetron = new TradetronBridge();
+    this.tradetronOptions = new TradetronBridge({ enabled: CONFIG.tradetronOptionsBridgeEnabled, authToken: CONFIG.tradetronOptionsAuthToken });
     this.unsupportedBridgeWarnings = new Set();
     this.leaseId = crypto.randomUUID();
     this.startedAt = Date.now();
@@ -419,7 +420,7 @@ export class DeltaEngine {
           const duplicate = (openPositions || []).some(p => String(p.symbol) === s.symbol && n(p.qty) > 0);
           const optionOpenCount = (openPositions || []).filter(p => String(p.strategy || '').startsWith('OPTIONS_') && n(p.qty) > 0).length;
           const optionCap = Math.max(1, n(settings.options_max_open_positions || 1));
-          const executionLocked = !CONFIG.tradetronBridgeEnabled || !this.tradetron.isConfigured();
+          const executionLocked = !CONFIG.tradetronOptionsBridgeEnabled || !this.tradetronOptions.isConfigured();
           const blocked = [...s.blocked];
           if (q < 1) blocked.push('Risk budget below 1 contract');
           if (duplicate) blocked.push('Duplicate option position');
@@ -481,7 +482,7 @@ export class DeltaEngine {
           if (!hedge) blocked.push('Defined-risk hedge unavailable');
           if (!(credit > 0)) blocked.push('Net credit <= 0');
           if (q < 1) blocked.push('Spread risk exceeds option risk budget');
-          const optionRouteReady = CONFIG.tradetronBridgeEnabled && this.tradetron.isConfigured();
+          const optionRouteReady = CONFIG.tradetronOptionsBridgeEnabled && this.tradetronOptions.isConfigured();
           if (!optionRouteReady) blocked.push('Tradetron option signal route unavailable');
           const ready = s.ready && q >= 1 && !!hedge && credit > 0 && optionRouteReady;
           const row = { ...s, ticker: best.ticker, strategy: 'OPTIONS_SELL', qty: q,
@@ -703,7 +704,7 @@ export class DeltaEngine {
   }
 
   async openTrade(item, strategy, signal, account, settings, openPositions, trades) {
-    if (strategy === 'OPTIONS_BUY') return this.openOptionTrade(item, signal, account, settings, openPositions, trades);
+    if (strategy === 'OPTIONS_BUY' || strategy === 'OPTIONS_SELL') return this.openOptionTrade(item, signal, account, settings, openPositions, trades);
     if (signal.stage !== 'CONFIRMED' || signal.score < n(settings.score_min || 80)) return false;
     const gate = await this.riskGate(signal, strategy, account, settings, openPositions, trades);
     if (gate.reasons.length || !gate.size) return false;
@@ -942,7 +943,7 @@ export class DeltaEngine {
 
   async openOptionTrade(item, signal, account, settings, openPositions, trades) {
     if (signal.stage !== 'CONFIRMED' || !signal.ready) return false;
-    if (!CONFIG.tradetronBridgeEnabled || !this.tradetron.isConfigured()) return false;
+    if (!CONFIG.tradetronOptionsBridgeEnabled || !this.tradetronOptions.isConfigured()) return false;
 
     const executionId = 'TT-OPT-' + String(signal.strategy) + '-' +
       String(signal.symbol).replace(/[^A-Z0-9]/g, '').slice(0, 18) + '-' +
@@ -952,7 +953,7 @@ export class DeltaEngine {
 
     try {
       const result = signal.strategy === 'OPTIONS_SELL'
-        ? await this.tradetron.emitOptionSpread({
+        ? await this.tradetronOptions.emitOptionSpread({
             symbol: signal.symbol,
             hedgeSymbol: signal.hedgeSymbol,
             side: 'SELL',
@@ -966,7 +967,7 @@ export class DeltaEngine {
             expiryMs: signal.expiryMs,
             executionId
           })
-        : await this.tradetron.emitOptionEntry({
+        : await this.tradetronOptions.emitOptionEntry({
             symbol: signal.symbol,
             side: 'BUY',
             qty: signal.qty,
