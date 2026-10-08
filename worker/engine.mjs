@@ -912,7 +912,9 @@ export class DeltaEngine {
     if (signal.stage !== 'CONFIRMED' || !signal.ready) return false;
     if (!CONFIG.tradetronBridgeEnabled || !this.tradetron.isConfigured()) return false;
 
-    const executionId = 'TT-OPT-' + String(signal.strategy) + '-' + String(signal.symbol).replace(/[^A-Z0-9]/g, '').slice(0, 18) + '-' + (Number(signal.expiryMs) || Math.floor(Date.now() / 60000));
+    const executionId = 'TT-OPT-' + String(signal.strategy) + '-' +
+      String(signal.symbol).replace(/[^A-Z0-9]/g, '').slice(0, 18) + '-' +
+      (Number(signal.expiryMs) || Math.floor(Date.now() / 60000));
     const prior = await this.findBridgeExecution(executionId);
     if (prior?.state === 'DB_ERROR' || prior?.state === 'SIGNAL_SENT') return false;
 
@@ -947,6 +949,7 @@ export class DeltaEngine {
           });
 
       if (!result?.ok) return false;
+
       await db.upsert('dd_orders', {
         id: executionId,
         product_id: n(signal.ticker?.product_id || signal.productId),
@@ -968,138 +971,21 @@ export class DeltaEngine {
           response: result.response || 'Ok'
         }
       }, 'client_order_id');
+
       await this.log('INFO', 'Tradetron option signal emitted; direct Delta option execution skipped', {
-        symbol: signal.symbol, strategy: signal.strategy, underlying: signal.underlyingSymbol,
-        qty: signal.qty, executionId
+        symbol: signal.symbol,
+        strategy: signal.strategy,
+        underlying: signal.underlyingSymbol,
+        qty: signal.qty,
+        executionId
       });
       return true;
     } catch (e) {
-      await this.log('WARN', 'Tradetron option signal failed', { symbol: signal.symbol, strategy: signal.strategy, error: e.message });
-      return false;
-    }
-  }
-
-    const gate = await this.riskGate(signal, 'OPTIONS_BUY', account, settings, openPositions, trades);
-    if (gate.reasons.length || !gate.size) return false;
-
-    const entryCid = clientId('DDO', signal.symbol);
-    if (await this.findExistingClient(entryCid)) return false;
-
-    try {
-      const entry = await this.adapter.placeOrder({
-        product_id: signal.productId,
-        size: gate.size.qty,
-        side: 'buy',
-        order_type: 'market_order',
-        client_order_id: entryCid
+      await this.log('WARN', 'Tradetron option signal failed', {
+        symbol: signal.symbol,
+        strategy: signal.strategy,
+        error: e.message
       });
-      const entryId = String(entry.id);
-      await db.upsert('dd_orders', {
-        id: entryId, product_id: signal.productId, symbol: signal.symbol,
-        side: 'buy', order_type: 'market_order', size: gate.size.qty,
-        unfilled_size: n(entry.unfilled_size), state: entry.state,
-        client_order_id: entryCid, role: 'ENTRY', strategy: 'OPTIONS_BUY',
-        execution_id: entryCid, raw: entry
-      }, 'client_order_id');
-
-      const pos = await this.waitPosition(signal.symbol);
-      if (!pos) throw new Error('Option entry accepted but position not visible');
-
-      const actualQty = Math.abs(n(pos.size));
-      const entryPrice = n(pos.entry_price) || n(signal.mark);
-      const product = signal.ticker || {};
-      const tick = n(product.tick_size);
-      const roundOption = v => tick > 0 ? roundTick(v, tick) : v;
-      const riskDistance = Math.max(entryPrice * Math.max(1, n(settings.options_buy_stop_pct || 25)) / 100, tick > 0 ? tick : 0);
-      const sl = roundOption(Math.max(0, entryPrice - riskDistance));
-      const tp1Distance = Math.max(entryPrice * Math.max(1, n(settings.options_buy_tp1_pct || 30)) / 100, tick > 0 ? tick : 0);
-      const tpDistance = Math.max(entryPrice * Math.max(1, n(settings.options_buy_tp_pct || 60)) / 100, tp1Distance);
-      const tp1 = roundOption(entryPrice + tp1Distance);
-      const tp = roundOption(entryPrice + tpDistance);
-      const executionId = entryCid;
-
-      const stopCid = clientId('OSL', signal.symbol);
-      const tp1Cid = clientId('OTP1', signal.symbol);
-      const tpCid = clientId('OTP', signal.symbol);
-      const tp1Qty = Math.max(1, Math.min(actualQty, roundDown(actualQty * n(settings.options_tp1_pct || settings.tp1_pct || 30) / 100, 1)));
-
-      const stopExisting = await this.findExistingClient(stopCid);
-      const tp1Existing = await this.findExistingClient(tp1Cid);
-      const tpExisting = await this.findExistingClient(tpCid);
-
-      const stopOrder = stopExisting || await this.adapter.placeOrder({
-        product_id: signal.productId, size: actualQty, side: 'sell', order_type: 'market_order',
-        stop_order_type: 'stop_loss_order', stop_price: String(sl),
-        stop_trigger_method: 'mark_price', reduce_only: true, client_order_id: stopCid
-      });
-      const tp1Order = tp1Existing || await this.adapter.placeOrder({
-        product_id: signal.productId, size: tp1Qty, side: 'sell', order_type: 'market_order',
-        stop_order_type: 'take_profit_order', stop_price: String(tp1),
-        stop_trigger_method: 'mark_price', reduce_only: true, client_order_id: tp1Cid
-      });
-      const tpOrder = tpExisting || await this.adapter.placeOrder({
-        product_id: signal.productId, size: actualQty, side: 'sell', order_type: 'market_order',
-        stop_order_type: 'take_profit_order', stop_price: String(tp),
-        stop_trigger_method: 'mark_price', reduce_only: true, client_order_id: tpCid
-      });
-
-      const openOrders = await this.adapter.openOrders();
-      const protectedIds = new Set((Array.isArray(openOrders) ? openOrders : []).map(o => String(o.id)));
-      if (!protectedIds.has(String(stopOrder.id)) || !protectedIds.has(String(tp1Order.id)) || !protectedIds.has(String(tpOrder.id))) {
-        throw new Error('Option exchange-side protection not visible after placement');
-      }
-
-      await db.upsert('dd_orders', {
-        id: String(stopOrder.id), product_id: signal.productId, symbol: signal.symbol,
-        side: 'sell', order_type: 'market_order', stop_order_type: 'stop_loss_order',
-        size: actualQty, unfilled_size: n(stopOrder.unfilled_size), state: stopOrder.state,
-        client_order_id: stopCid, role: 'STOP', strategy: 'OPTIONS_BUY', execution_id: executionId, raw: stopOrder
-      }, 'client_order_id');
-      await db.upsert('dd_orders', {
-        id: String(tp1Order.id), product_id: signal.productId, symbol: signal.symbol,
-        side: 'sell', order_type: 'market_order', stop_order_type: 'take_profit_order',
-        size: tp1Qty, unfilled_size: n(tp1Order.unfilled_size), state: tp1Order.state,
-        client_order_id: tp1Cid, role: 'TP1', strategy: 'OPTIONS_BUY', execution_id: executionId, raw: tp1Order
-      }, 'client_order_id');
-      await db.upsert('dd_orders', {
-        id: String(tpOrder.id), product_id: signal.productId, symbol: signal.symbol,
-        side: 'sell', order_type: 'market_order', stop_order_type: 'take_profit_order',
-        size: actualQty, unfilled_size: n(tpOrder.unfilled_size), state: tpOrder.state,
-        client_order_id: tpCid, role: 'TP', strategy: 'OPTIONS_BUY', execution_id: executionId, raw: tpOrder
-      }, 'client_order_id');
-
-      await db.insert('dd_positions', {
-        symbol: signal.symbol, product_id: signal.productId, side: 'BUY',
-        qty: actualQty, entry_price: entryPrice, current_price: n(signal.mark),
-        stop_price: sl, tp1_price: tp1, tp_price: tp, initial_qty: actualQty,
-        entry_order_id: entryId, protection_order_id: String(stopOrder.id),
-        tp1_order_id: String(tp1Order.id), tp_order_id: String(tpOrder.id),
-        client_order_id: entryCid, execution_id: executionId,
-        strategy: 'OPTIONS_BUY', origin: 'ENGINE', protection_verified: true,
-        opened_at: iso(), updated_at: iso()
-      });
-
-      await this.log('INFO', 'TESTNET options BUY opened with verified protection', {
-        symbol: signal.symbol, qty: actualQty, entry: entryPrice, sl, tp1, tp, executionId
-      });
-      return true;
-    } catch (e) {
-      await this.log('ERROR', 'Options BUY execution/protection failed', {
-        symbol: signal.symbol, error: e.message, code: e.code || null, status: e.status || null
-      });
-      try {
-        const orderList = await this.adapter.openOrders();
-        const mine = (Array.isArray(orderList) ? orderList : []).filter(o =>
-          n(o.product_id) === n(signal.productId) &&
-          ['OSL','OTP1','OTP'].some(prefix => String(o.client_order_id || '').startsWith(prefix + '-'))
-        );
-        for (const o of mine) await this.adapter.cancelOrder({ id: Number(o.id), product_id: signal.productId }).catch(() => {});
-      } catch {}
-      try {
-        const p = await this.waitPosition(signal.symbol);
-        const qty = Math.abs(n(p?.size));
-        if (qty > 0) await this.closePosition(signal.symbol, signal.productId, qty, 'BUY', 'UNPROTECTED');
-      } catch {}
       return false;
     }
   }
