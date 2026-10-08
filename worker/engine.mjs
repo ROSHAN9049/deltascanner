@@ -795,13 +795,26 @@ export class DeltaEngine {
         });
       } catch (e) {
         const details = e?.details || null;
-        await this.log('ERROR', 'Recovered position bracket placement failed', {
-          symbol: row.symbol, executionId: row.execution_id, error: e.message,
-          code: e.code || null, status: e.status || null, details
-        });
-        return false;
+        if (e?.code === 'bracket_order_exists') {
+          // Delta already has a bracket for this product. Refresh open orders and
+          // verify the existing protection instead of treating the idempotent
+          // response as a failure.
+          const freshOrders = await this.adapter.openOrders().catch(() => []);
+          protectedOrders = (Array.isArray(freshOrders) ? freshOrders : []).filter(o =>
+            n(o.product_id) === productId &&
+            (o.stop_order_type || o.bracket_order || n(o.bracket_stop_loss_price) || n(o.bracket_take_profit_price))
+          );
+        } else {
+          await this.log('ERROR', 'Recovered position bracket placement failed', {
+            symbol: row.symbol, executionId: row.execution_id, error: e.message,
+            code: e.code || null, status: e.status || null, details
+          });
+          return false;
+        }
       }
-      const freshOrders = await this.adapter.openOrders().catch(() => []);
+      const freshOrders = protectedOrders.length
+        ? protectedOrders
+        : await this.adapter.openOrders().catch(() => []);
       protectedOrders = (Array.isArray(freshOrders) ? freshOrders : []).filter(o =>
         n(o.product_id) === productId &&
         (o.stop_order_type || o.bracket_order || n(o.bracket_stop_loss_price) || n(o.bracket_take_profit_price))
