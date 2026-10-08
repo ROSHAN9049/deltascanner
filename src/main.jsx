@@ -34,10 +34,11 @@ function App() {
 
   const load = async () => {
     try {
+      const cacheBust = '?t=' + Date.now();
       const results = await Promise.all([
-        fetch('/api/market', { cache: 'no-store' }).then(r => r.json()),
-        fetch('/api/health', { cache: 'no-store' }).then(r => r.json()),
-        fetch('/api/engine/state', { cache: 'no-store' }).then(r => r.json())
+        fetch('/api/market' + cacheBust, { cache: 'no-store' }).then(r => r.json()),
+        fetch('/api/health' + cacheBust, { cache: 'no-store' }).then(r => r.json()),
+        fetch('/api/engine/state' + cacheBust, { cache: 'no-store' }).then(r => r.json())
       ]);
       if (!results[0].success) throw new Error(results[0].error || 'Market unavailable');
       setMarket(results[0].result || []);
