@@ -1,6 +1,7 @@
 import { publicGet } from '../server/public.js';
 
 export default async function handler(req, res) {
+  res.setHeader('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate');
   try {
     const type = String(req.query?.type || 'tickers');
     if (type === 'products') {
