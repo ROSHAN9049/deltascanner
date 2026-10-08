@@ -39,8 +39,20 @@ async function startupPreflight() {
         console.log('[DeltaScanner] Tradetron bridge mode enabled; Delta private API preflight skipped');
       }
     } else {
-      await engine.adapter.wallet();
-      console.log('[DeltaScanner] Delta authenticated TESTNET API OK');
+      try {
+        await engine.adapter.wallet();
+        engine.privateExecutionAvailable = true;
+        console.log('[DeltaScanner] Delta authenticated TESTNET API OK');
+      } catch (error) {
+        const message = String(error?.message || error);
+        if (message.includes('ip_not_whitelisted_for_api_key')) {
+          engine.privateExecutionAvailable = false;
+          console.warn('[DeltaScanner] Delta private API unavailable; scanner will remain online in public-data-only fail-safe mode');
+          console.error('[DeltaScanner] Railway outbound public IP:', await getOutboundIp());
+        } else {
+          throw error;
+        }
+      }
     }
     return true;
   } catch (error) {
