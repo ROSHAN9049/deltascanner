@@ -41,7 +41,7 @@ export class DeltaAdapter {
     this.queue = run.catch(() => {});
     return run;
   }
-  async request(method, path, params, body, auth) {
+  async request(method, path, params, body, auth, options = {}) {
     if (auth && !this.privateAuthConfigured) {
       throw new Error('Delta private API unavailable while Tradetron bridge mode is enabled');
     }
@@ -75,7 +75,10 @@ export class DeltaAdapter {
         const text = await response.text();
         let data = null;
         try { data = text ? JSON.parse(text) : null; } catch {}
-        if (response.ok && data && data.success !== false) return data.result;
+        if (response.ok && data && data.success !== false) {
+          if (options.withMeta) return { result: data.result, meta: data.meta || {}, date: serverDate || null };
+          return data.result;
+        }
         if (response.status === 429 || response.status >= 500) {
           const reset = Number(response.headers.get('x-rate-limit-reset') || 0);
           const wait = reset > 0 ? Math.min(30000, reset) : Math.min(10000, 500 * Math.pow(2, attempt));
@@ -99,7 +102,28 @@ export class DeltaAdapter {
     return execute();
   }
   async health() { return this.request('GET', '/v2/tickers', { contract_types: 'perpetual_futures' }, null, false); }
-  products() { return this.request('GET', '/v2/products', { contract_types: 'perpetual_futures', states: 'live', page_size: 50 }, null, false); }
+  async products() {
+    const all = [];
+    let after = '';
+    let previousAfter = '';
+    for (let page = 0; page < 20; page++) {
+      const response = await this.request(
+        'GET',
+        '/v2/products',
+        { contract_types: 'perpetual_futures', states: 'live', page_size: 100, after },
+        null,
+        false,
+        { withMeta: true }
+      );
+      const rows = Array.isArray(response?.result) ? response.result : [];
+      all.push(...rows);
+      const nextAfter = String(response?.meta?.after || '');
+      if (!nextAfter || nextAfter === previousAfter || nextAfter === after || !rows.length) break;
+      previousAfter = after;
+      after = nextAfter;
+    }
+    return all;
+  }
   tickers() { return this.request('GET', '/v2/tickers', { contract_types: 'perpetual_futures' }, null, false); }
   optionTickers(underlying) {
     const asset = String(underlying || '').trim().toUpperCase();
