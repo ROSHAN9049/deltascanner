@@ -3,11 +3,9 @@ import { CONFIG } from '../server/config.js';
 import * as db from '../server/db.js';
 import { log } from '../server/db.js';
 
-if (CONFIG.environment !== 'TESTNET') throw new Error('Production execution is disabled.');
+if (!CONFIG.signalOnly || CONFIG.directDeltaExecutionEnabled) throw new Error('Scanner must run in SIGNAL_ONLY mode with direct Delta execution disabled.');
 if (!CONFIG.engineSecret) throw new Error('ENGINE_SECRET is required.');
-if (!CONFIG.tradetronBridgeEnabled && (!CONFIG.apiKey || !CONFIG.apiSecret)) {
-  throw new Error('DELTA_TESTNET_API_KEY / DELTA_TESTNET_API_SECRET are required for direct Delta execution.');
-}
+if (!CONFIG.tradetronBridgeEnabled) throw new Error('Tradetron signal bridge is required in SIGNAL_ONLY mode.');
 if (!CONFIG.supabaseUrl || !CONFIG.supabaseAdminKey) throw new Error('SUPABASE_URL / Supabase server key is required.');
 
 const engine = new DeltaEngine();
@@ -26,34 +24,19 @@ async function getOutboundIp() {
 }
 
 async function startupPreflight() {
-  console.log('[DeltaScanner] Starting TESTNET worker preflight');
+  console.log('[DeltaScanner] Starting PRODUCTION-MARKET SIGNAL-ONLY worker preflight');
   try {
     const settings = await db.select('dd_settings', 'id=eq.1&select=id&limit=1');
     console.log('[DeltaScanner] Supabase connectivity OK; settings rows=' + (settings?.length || 0));
     await engine.adapter.health();
-    console.log('[DeltaScanner] Delta public TESTNET API OK');
+    console.log('[DeltaScanner] Delta India production public market API OK');
     if (CONFIG.tradetronBridgeEnabled) {
       if (!engine.tradetron.isConfigured()) {
-        console.warn('[DeltaScanner] Tradetron bridge enabled but auth token is missing; execution is blocked until a new token is configured');
+        console.warn('[DeltaScanner] Tradetron bridge enabled but auth token is missing; signals are blocked');
       } else {
-        console.log('[DeltaScanner] Tradetron bridge mode enabled');
+        console.log('[DeltaScanner] Tradetron signal bridge enabled; Delta direct execution HARD LOCKED');
       }
-      try {
-        await engine.adapter.wallet();
-        engine.privateExecutionAvailable = true;
-        console.log('[DeltaScanner] Delta authenticated TESTNET API diagnostic OK (read-only preflight)');
-      } catch (error) {
-        const message = String(error?.message || error);
-        engine.privateExecutionAvailable = false;
-        if (message.includes('ip_not_whitelisted_for_api_key')) {
-          console.warn('[DeltaScanner] Delta authenticated TESTNET API diagnostic blocked by IP whitelist');
-          console.error('[DeltaScanner] Railway outbound public IP:', await getOutboundIp());
-        } else if (message.includes('-2015') || /invalid.*api.*key/i.test(message)) {
-          console.warn('[DeltaScanner] Delta authenticated TESTNET API diagnostic rejected the API key/secret');
-        } else {
-          console.warn('[DeltaScanner] Delta authenticated TESTNET API diagnostic failed:', message.slice(0, 240));
-        }
-      }
+      engine.privateExecutionAvailable = false;
     } else {
       try {
         await engine.adapter.wallet();
