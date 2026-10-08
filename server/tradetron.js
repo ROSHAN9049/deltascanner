@@ -127,14 +127,29 @@ export class TradetronBridge {
         throw new Error('Tradetron Signal Bridge symbol is invalid: ' + selected);
       }
 
+      // Tradetron Signal Bridge convention: the instrument runtime variable
+      // receives an action code: 1 = BUY/LONG entry, 3 = SELL/SHORT entry.
+      // Keep the richer tt_* values as metadata for bridge variants, but reset
+      // their old dynamic triggers so an older signal cannot fire accidentally.
+      const actionCode = normalizedSide === 'BUY' ? 1 : 3;
       writes = [
-        [triggerKey, 1],
-        [resetKey, 0],
-        [selected, 1],
+        [selected, actionCode],
         [selected + '_qty', quantity],
         [selected + '_ep', prices.entryPrice],
         [selected + '_sl', prices.sl],
-        [selected + '_tp', prices.tp]
+        [selected + '_tp', prices.tp],
+        ['tt_symbol', selected],
+        ['tt_side', normalizedSide],
+        ['tt_qty', quantity],
+        ['tt_ep', prices.entryPrice],
+        ['tt_sl', prices.sl],
+        ['tt_tp1', prices.tp1],
+        ['tt_tp', prices.tp],
+        ['tt_exec_id', execution],
+        ['tt_buy', 0],
+        ['tt_sell', 0],
+        ['api_buy', 0],
+        ['api_sell', 0]
       ];
     }
 
@@ -146,7 +161,7 @@ export class TradetronBridge {
       side: normalizedSide,
       qty: quantity,
       executionId: execution,
-      triggerKey: this.dynamicEnabled ? (normalizedSide === 'BUY' ? 'tt_buy' : 'tt_sell') : triggerKey,
+      triggerKey: this.dynamicEnabled ? (normalizedSide === 'BUY' ? 'tt_buy' : 'tt_sell') : selected,
       response: result.body,
       dynamic: this.dynamicEnabled
     };
