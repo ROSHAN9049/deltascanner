@@ -49,14 +49,19 @@ export function volumeRatio(candles, period = 20) {
   const base = a.slice(-period - 1, -1).reduce((s, c) => s + n(c.volume), 0) / period;
   return base ? current / base : 0;
 }
-function expiryFromOptionSymbol(symbol) {
+function expiryFromOptionSymbol(symbol, underlying) {
   const m = String(symbol || '').match(/^[CP]-[A-Z0-9]+-[0-9.]+-(\d{6})$/);
   if (!m) return 0;
   const dd = Number(m[1].slice(0, 2));
   const mm = Number(m[1].slice(2, 4));
   const yy = Number(m[1].slice(4, 6));
   const year = 2000 + yy;
-  const ts = Date.UTC(year, Math.max(0, mm - 1), dd, 8, 0, 0);
+  // Delta India settles BTC/ETH options at 12:00 UTC and Gold (XAUT)
+  // options at 16:00 UTC. Use the exchange's settlement convention when
+  // calculating DTE so Gold is not treated as if it expires four hours early.
+  const asset = String(underlying || String(symbol || '').split('-')[1] || '').toUpperCase();
+  const settlementHourUtc = asset === 'XAUT' ? 16 : 12;
+  const ts = Date.UTC(year, Math.max(0, mm - 1), dd, settlementHourUtc, 0, 0);
   return Number.isFinite(ts) ? ts : 0;
 }
 
@@ -88,7 +93,8 @@ export function analyseOption(ticker, underlying, strategy, cfg = {}) {
   const symbol = String(ticker?.symbol || '').toUpperCase();
   const optionType = optionTypeFromTicker(ticker);
   const strike = optionStrikeFromSymbol(symbol);
-  const expiryMs = expiryFromOptionSymbol(symbol);
+  const underlyingAsset = String(underlying?.symbol || '').toUpperCase().replace(/USD$/, '');
+  const expiryMs = expiryFromOptionSymbol(symbol, underlyingAsset);
   const dte = expiryMs > 0 ? (expiryMs - Date.now()) / 86400000 : 0;
   const mark = n(ticker?.mark_price || ticker?.close);
   const bid = n(ticker?.quotes?.best_bid ?? ticker?.best_bid ?? ticker?.bid);
@@ -145,6 +151,7 @@ export function analyseOption(ticker, underlying, strategy, cfg = {}) {
     targetType, strategy, side: isBuy ? 'BUY' : 'SELL', score, stage, blocked,
     ready: stage === 'CONFIRMED' && blocked.length === 0,
     underlyingSymbol: String(underlying?.symbol || ''),
+    underlyingAsset,
     underlyingScore: n(underlying?.score), underlyingSide: String(underlying?.side || ''),
     underlyingChange: n(underlying?.change), sl, tp1, tp
   };
