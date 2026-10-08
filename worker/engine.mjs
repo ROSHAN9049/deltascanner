@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import WebSocket from 'ws';
 import { CONFIG } from '../server/config.js';
 import { DeltaAdapter } from './delta-adapter.mjs';
-import { analyse } from './strategy.mjs';
+import { analyse, analyseOption } from './strategy.mjs';
 import * as db from '../server/db.js';
 import { TradetronBridge } from '../server/tradetron.js';
 
@@ -32,6 +32,9 @@ export class DeltaEngine {
     this.lastReconcile = 0;
     this.lastAccount = 0;
     this.lastSignals = [];
+    this.lastOptionSignals = [];
+    this.optionTickerMap = new Map();
+    this.lastOptionTickerFetch = 0;
     this.tickerMap = new Map();
     this.products = [];
     this.productMap = new Map();
