@@ -21,7 +21,7 @@ function hmac(secret, text) {
 
 export class DeltaAdapter {
   constructor() {
-    if (CONFIG.environment !== 'TESTNET') throw new Error('Production adapter disabled');
+    if (!['TESTNET', 'SIGNAL_ONLY'].includes(CONFIG.environment)) throw new Error('Unsupported scanner environment');
     this.base = CONFIG.restBase;
     this.apiKey = CONFIG.apiKey;
     this.apiSecret = CONFIG.apiSecret;
@@ -29,7 +29,7 @@ export class DeltaAdapter {
     // In Tradetron bridge mode the worker needs only public Delta market data;
     // Tradetron owns authenticated order/position execution. Keep private
     // methods fail-closed if called accidentally without credentials.
-    if (!CONFIG.tradetronBridgeEnabled && !this.privateAuthConfigured) {
+    if (!CONFIG.signalOnly && !CONFIG.tradetronBridgeEnabled && !this.privateAuthConfigured) {
       throw new Error('Delta TESTNET API credentials are missing');
     }
     this.offsetMs = 0;
@@ -171,9 +171,24 @@ export class DeltaAdapter {
   wallet() { return this.request('GET', '/v2/wallet/balances', {}, null, true); }
   heartbeatCreate(body) { return this.request('POST', '/v2/heartbeat/create', {}, body, true); }
   heartbeat(body) { return this.request('POST', '/v2/heartbeat', {}, body, true); }
-  placeOrder(body) { return this.request('POST', '/v2/orders', {}, body, true); }
-  cancelOrder(body) { return this.request('DELETE', '/v2/orders', {}, body, true); }
-  placeBracket(body) { return this.request('POST', '/v2/orders/bracket', {}, body, true); }
-  editBracket(body) { return this.request('PUT', '/v2/orders/bracket', {}, body, true); }
-  setOrderLeverage(productId, leverage) { return this.request('POST', '/v2/products/' + productId + '/orders/leverage', {}, { leverage }, true); }
+  placeOrder(body) {
+    if (CONFIG.signalOnly || !CONFIG.directDeltaExecutionEnabled) throw new Error('Direct Delta order execution is disabled in SIGNAL_ONLY mode');
+    return this.request('POST', '/v2/orders', {}, body, true);
+  }
+  cancelOrder(body) {
+    if (CONFIG.signalOnly || !CONFIG.directDeltaExecutionEnabled) throw new Error('Direct Delta order execution is disabled in SIGNAL_ONLY mode');
+    return this.request('DELETE', '/v2/orders', {}, body, true);
+  }
+  placeBracket(body) {
+    if (CONFIG.signalOnly || !CONFIG.directDeltaExecutionEnabled) throw new Error('Direct Delta order execution is disabled in SIGNAL_ONLY mode');
+    return this.request('POST', '/v2/orders/bracket', {}, body, true);
+  }
+  editBracket(body) {
+    if (CONFIG.signalOnly || !CONFIG.directDeltaExecutionEnabled) throw new Error('Direct Delta order execution is disabled in SIGNAL_ONLY mode');
+    return this.request('PUT', '/v2/orders/bracket', {}, body, true);
+  }
+  setOrderLeverage(productId, leverage) {
+    if (CONFIG.signalOnly || !CONFIG.directDeltaExecutionEnabled) throw new Error('Direct Delta leverage changes are disabled in SIGNAL_ONLY mode');
+    return this.request('POST', '/v2/products/' + productId + '/orders/leverage', {}, { leverage }, true);
+  }
 }
