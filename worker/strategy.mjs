@@ -182,20 +182,20 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
   const last5 = closed5.at(-1), prev5 = closed5.at(-2);
   const rangeAtr = a5 > 0 ? Math.abs(n(last5?.high) - n(last5?.low)) / a5 : 99;
   const emaDistanceAtr = a5 > 0 ? Math.abs(price - e21) / a5 : 99;
-  const bullish = t5 === 'BULL' && t15 === 'BULL';
-  const bearish = t5 === 'BEAR' && t15 === 'BEAR';
+  const bullish = t5 === 'BULL' && t15 !== 'BEAR';
+  const bearish = t5 === 'BEAR' && t15 !== 'BULL';
   let side = '';
   if (bullish && n(last5?.close) >= n(prev5?.close) && price >= e21) side = 'BUY';
   if (bearish && n(last5?.close) <= n(prev5?.close) && price <= e21) side = 'SELL';
-  const antiChase = side === 'BUY' ? change <= 12 : side === 'SELL' ? change >= -12 : false;
+  const antiChase = side === 'BUY' ? change <= antiChaseMax : side === 'SELL' ? change >= -antiChaseMax : false;
   const btcOk = side === 'BUY'
     ? btcT5 !== 'BEAR' && btcT15 !== 'BEAR'
     : side === 'SELL'
       ? btcT5 !== 'BULL' && btcT15 !== 'BULL'
       : false;
   const rsiOk = strategy === 'MOMENTUM'
-    ? (side === 'BUY' ? r >= 54 && r <= 68 : side === 'SELL' ? r >= 32 && r <= 46 : false)
-    : (side === 'BUY' ? r >= 52 && r <= 72 && price >= vw : side === 'SELL' ? r >= 28 && r <= 48 && price <= vw : false);
+    ? (side === 'BUY' ? r >= 52 && r <= 72 : side === 'SELL' ? r >= 28 && r <= 48 : false)
+    : (side === 'BUY' ? r >= 50 && r <= 74 && price >= vw : side === 'SELL' ? r >= 26 && r <= 50 && price <= vw : false);
   const stopMin = (cfg.minStopPct / 100);
   const atrPct = a5 > 0 ? 1.25 * a5 / Math.max(price, 1) : 0;
   const stopPct = Math.max(stopMin, atrPct);
@@ -207,29 +207,35 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
   const tp = side === 'BUY' ? roundToTick(price + riskDistance * cfg.rr, tick) : side === 'SELL' ? roundToTick(price - riskDistance * cfg.rr, tick) : 0;
   const fee = n(product.taker_commission_rate);
   const feeRiskRatio = riskDistance > 0 ? (2 * fee * price + spreadPct / 100 * price) / riskDistance : 99;
-  const costGateRatio = strategy === 'MOMENTUM' ? 0.15 : 0.20;
+  const volumeMin = n(cfg.volumeMin || 1.25);
+  const antiChaseMax = n(cfg.antiChasePct || 15);
+  const rangeMax = n(cfg.rangeAtrMax || 3.0);
+  const emaMax = n(cfg.emaDistanceMax || 2.5);
+  const spreadMax = n(cfg.spreadMaxPct || 0.35);
+  const costGateRatio = n(cfg.costGateRatio || (strategy === 'MOMENTUM' ? 0.20 : 0.25));
+  const trendAligned = (bullish || bearish);
   const score = Math.min(100, Math.round(
-    (bullish || bearish ? 20 : 0) +
-    (t5 === t15 && t5 !== 'FLAT' ? 20 : 0) +
-    (vr >= 1.6 ? 15 : Math.min(vr / 1.6, 1) * 15) +
+    (trendAligned ? 20 : 0) +
+    (t5 === t15 && t5 !== 'FLAT' ? 20 : trendAligned ? 10 : 0) +
+    (vr >= volumeMin ? 15 : Math.min(vr / volumeMin, 1) * 15) +
     (rsiOk ? 15 : 0) +
-    (emaDistanceAtr <= 1.75 ? 10 : 0) +
-    (rangeAtr <= 2.25 ? 5 : 0) +
+    (emaDistanceAtr <= emaMax ? 10 : 0) +
+    (rangeAtr <= rangeMax ? 5 : 0) +
     (antiChase ? 5 : 0) +
     (btcOk ? 5 : 0) +
-    (spreadPct <= 0.25 ? 5 : 0)
+    (spreadPct <= spreadMax ? 5 : 0)
   ));
-  const stage = score >= cfg.scoreMin && side && vr >= 1.6 && rsiOk ? 'CONFIRMED'
-    : (score >= 50 || side ? 'SETUP' : 'WATCH');
+  const stage = score >= cfg.scoreMin && side && vr >= volumeMin && rsiOk ? 'CONFIRMED'
+    : (score >= 45 || side ? 'SETUP' : 'WATCH');
   const blocked = [];
   if (stage !== 'CONFIRMED') blocked.push('Signal not CONFIRMED / score below threshold');
   if (!rsiOk) blocked.push('RSI/VWAP');
-  if (vr < 1.6) blocked.push('Volume spike < 1.60x');
+  if (vr < volumeMin) blocked.push('Volume spike < ' + volumeMin.toFixed(2) + 'x');
   if (!antiChase) blocked.push('24h anti-chase');
-  if (rangeAtr > 2.25) blocked.push('5m range > 2.25x ATR');
-  if (emaDistanceAtr > 1.75) blocked.push('Price > 1.75x ATR from EMA21');
+  if (rangeAtr > rangeMax) blocked.push('5m range > ' + rangeMax.toFixed(2) + 'x ATR');
+  if (emaDistanceAtr > emaMax) blocked.push('Price > ' + emaMax.toFixed(2) + 'x ATR from EMA21');
   if (!btcOk) blocked.push('BTC regime');
-  if (spreadPct > 0.25) blocked.push('Spread > 0.25%');
+  if (spreadPct > spreadMax) blocked.push('Spread > ' + spreadMax.toFixed(2) + '%');
   if (feeRiskRatio > costGateRatio) blocked.push('Fee + spread > allowed 1R cost');
   if (!price || !riskDistance || !sl) blocked.push('Invalid price/stop');
   const rawCandleTs = Number(closedEntry.at(-1)?.time ?? closedEntry.at(-1)?.timestamp ?? closedEntry.at(-1)?.t ?? 0);
