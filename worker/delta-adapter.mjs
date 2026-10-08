@@ -115,12 +115,22 @@ export class DeltaAdapter {
     const start = end - seconds * ((limit || 120) + 3);
     return this.request('GET', '/v2/history/candles', { resolution, symbol, start, end }, null, false);
   }
-  positions() { return this.request('GET', '/v2/positions', { contract_types: 'perpetual_futures' }, null, true); }
-  marginedPositions() { return this.request('GET', '/v2/positions/margined', { contract_types: 'perpetual_futures' }, null, true); }
-  openOrders() { return this.request('GET', '/v2/orders', { contract_types: 'perpetual_futures', state: 'open', page_size: 100 }, null, true); }
-  historyOrders() { return this.request('GET', '/v2/orders/history', { contract_types: 'perpetual_futures', page_size: 100 }, null, true); }
+  positions(contractTypes = 'perpetual_futures,call_options,put_options') {
+    return this.request('GET', '/v2/positions', { contract_types: contractTypes }, null, true);
+  }
+  marginedPositions(contractTypes = 'perpetual_futures,call_options,put_options') {
+    return this.request('GET', '/v2/positions/margined', { contract_types: contractTypes }, null, true);
+  }
+  openOrders(contractTypes = 'perpetual_futures,call_options,put_options') {
+    return this.request('GET', '/v2/orders', { contract_types: contractTypes, state: 'open', page_size: 100 }, null, true);
+  }
+  historyOrders(contractTypes = 'perpetual_futures,call_options,put_options') {
+    return this.request('GET', '/v2/orders/history', { contract_types: contractTypes, page_size: 100 }, null, true);
+  }
   clientOrder(clientId) { return this.request('GET', '/v2/orders/client_order_id/' + encodeURIComponent(clientId), {}, null, true); }
-  fills() { return this.request('GET', '/v2/fills', { contract_types: 'perpetual_futures', page_size: 100 }, null, true); }
+  fills(contractTypes = 'perpetual_futures,call_options,put_options') {
+    return this.request('GET', '/v2/fills', { contract_types: contractTypes, page_size: 100 }, null, true);
+  }
   wallet() { return this.request('GET', '/v2/wallet/balances', {}, null, true); }
   heartbeatCreate(body) { return this.request('POST', '/v2/heartbeat/create', {}, body, true); }
   heartbeat(body) { return this.request('POST', '/v2/heartbeat', {}, body, true); }
