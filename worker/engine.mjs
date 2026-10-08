@@ -1644,16 +1644,36 @@ export class DeltaEngine {
       });
 
       const maxPositions = CONFIG.signalOnly ? Number.POSITIVE_INFINITY : Math.max(1, n(settings.max_open_positions || 3));
-      const maxBridgeSignalsPerCycle = CONFIG.signalOnly ? 2 : Number.POSITIVE_INFINITY;
-      let bridgeSignalsThisCycle = 0;
+
+      // Signal-only mode intentionally has no position-count cap. It does,
+      // however, need a global bridge rate guard so the 15s scanner loop does
+      // not emit dozens of independent Tradetron signals during the same
+      // market window. Limit accepted bridge entries to 2 per rolling 5m.
+      // Per-symbol/candle idempotency still runs inside openTrade().
+      let bridgeSignalsInWindow = 0;
+      if (CONFIG.signalOnly) {
+        const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+        try {
+          const recent = await db.select(
+            'dd_orders',
+            'order_type=eq.tradetron_signal&created_at=gte.' + encodeURIComponent(cutoff) +
+            '&select=id&limit=10'
+          );
+          bridgeSignalsInWindow = Array.isArray(recent) ? recent.length : 0;
+        } catch (e) {
+          await this.log('WARN', 'Bridge rate guard lookup failed; cycle remains fail-safe', { error: e.message });
+          bridgeSignalsInWindow = 2;
+        }
+      }
+
       for (const c of candidates) {
-        if (CONFIG.signalOnly && bridgeSignalsThisCycle >= maxBridgeSignalsPerCycle) break;
+        if (CONFIG.signalOnly && bridgeSignalsInWindow >= 2) break;
         const freshAccount = await this.accountSnapshot(settings);
         const freshPositions = CONFIG.signalOnly ? [] : await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
         if ((freshPositions || []).length >= maxPositions) break;
         const opened = await this.openTrade(c.item, c.strategy, c.signal, freshAccount, settings, freshPositions || [], trades);
         if (opened) {
-          if (CONFIG.signalOnly) bridgeSignalsThisCycle++;
+          if (CONFIG.signalOnly) bridgeSignalsInWindow++;
           await sleep(250);
         }
       }
