@@ -4,11 +4,17 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const clean = v => String(v ?? '').trim();
 
 export class TradetronBridge {
-  constructor({ enabled = CONFIG.tradetronBridgeEnabled, authToken = CONFIG.tradetronAuthToken } = {}) {
+  constructor({
+    enabled = CONFIG.tradetronBridgeEnabled,
+    authToken = CONFIG.tradetronAuthToken,
+    supportedSymbols = CONFIG.tradetronSupportedSymbols
+  } = {}) {
     this.enabled = !!enabled;
     this.dynamicEnabled = CONFIG.tradetronDynamicBridgeEnabled;
     this.baseUrl = CONFIG.tradetronBaseUrl.replace(/\/$/, '');
     this.authToken = clean(authToken);
+    this.supportedSymbols = [...new Set((Array.isArray(supportedSymbols) ? supportedSymbols : [])
+      .map(x => clean(x).toUpperCase()).filter(x => /^[A-Z0-9]+USD$/.test(x) && x !== 'USD'))];
     this.timeoutMs = Math.max(2000, Number(CONFIG.tradetronTimeoutMs) || 10000);
   }
 
@@ -18,8 +24,7 @@ export class TradetronBridge {
 
   supportsFuturesSymbol(symbol) {
     const selected = clean(symbol).toUpperCase();
-    return Array.isArray(CONFIG.tradetronSupportedSymbols) &&
-      CONFIG.tradetronSupportedSymbols.includes(selected);
+    return this.supportedSymbols.includes(selected);
   }
 
   async sendPairs(pairs) {
