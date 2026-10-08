@@ -539,9 +539,10 @@ export class DeltaEngine {
 
   async waitPosition(symbol) {
     for (let i = 0; i < 12; i++) {
-      const rows = await this.adapter.positions();
-      const p = (Array.isArray(rows) ? rows : []).find(x =>
-        String(x.product_symbol || x.symbol).toUpperCase() === symbol.toUpperCase() &&
+      const rows = await this.adapter.positions(symbol);
+      const list = Array.isArray(rows) ? rows : (rows && typeof rows === 'object' ? [rows] : []);
+      const p = list.find(x =>
+        String(x.product_symbol || x.symbol || '').toUpperCase() === symbol.toUpperCase() &&
         Math.abs(n(x.size)) > 0
       );
       if (p) return p;
