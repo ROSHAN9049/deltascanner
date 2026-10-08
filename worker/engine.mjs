@@ -952,7 +952,7 @@ export class DeltaEngine {
     await this.acquireLease();
     const settings = { ...{
       enabled: true, auto_trade: true, emergency_stop: false, continuous_mode: true,
-      max_open_positions: 20, risk_pct: 1, max_leverage: 3, score_min: 80,
+      max_open_positions: 2, risk_pct: 0.3, max_leverage: 3, score_min: 70,
       momentum_sl_min_pct: 0.95, scalping_sl_min_pct: 0.75, momentum_rr: 2.5,
       scalping_rr: 2.5, tp1_pct: 33, max_hold_minutes: 240
     }, ...(await this.loadSettings()) };
