@@ -152,6 +152,53 @@ export class TradetronBridge {
     };
   }
 
+  async emitOptionSpread({ symbol, hedgeSymbol, side, qty, entryPrice, sl, tp1, tp, underlying, optionType, expiryMs, executionId }) {
+    if (!this.isConfigured()) {
+      return { ok: false, skipped: true, reason: this.enabled ? 'TRADETRON_AUTH_TOKEN missing' : 'bridge disabled' };
+    }
+    const selected = clean(symbol).toUpperCase();
+    const hedge = clean(hedgeSymbol).toUpperCase();
+    const normalizedSide = clean(side).toUpperCase();
+    const asset = clean(underlying).toUpperCase();
+    if (!/^[CP]-[A-Z0-9]+-[0-9.]+-\d{6}$/.test(selected) || !/^[CP]-[A-Z0-9]+-[0-9.]+-\d{6}$/.test(hedge)) {
+      throw new Error('Invalid Tradetron option spread symbol');
+    }
+    if (normalizedSide !== 'SELL') throw new Error('Tradetron option spread side must be SELL');
+    const quantity = Math.max(1, Math.floor(Number(qty) || 0));
+    if (!Number.isFinite(Number(entryPrice))) throw new Error('Tradetron option spread entry is invalid');
+    const execution = clean(executionId);
+    const writes = [
+      ['tt_option_short_symbol', selected],
+      ['tt_option_hedge_symbol', hedge],
+      ['tt_option_side', 'SELL'],
+      ['tt_option_qty', quantity],
+      ['tt_option_ep', Number(entryPrice)],
+      ['tt_option_sl', Number(sl) || 0],
+      ['tt_option_tp1', Number(tp1) || 0],
+      ['tt_option_tp', Number(tp) || 0],
+      ['tt_option_underlying', asset],
+      ['tt_option_type', clean(optionType).toUpperCase()],
+      ['tt_option_expiry', Math.round(Number(expiryMs) || 0)],
+      ['tt_option_exec_id', execution],
+      ['tt_option_buy', 0],
+      ['tt_option_sell', 1],
+      ['tt_option_spread', 1]
+    ];
+    const result = await this.sendPairs(writes);
+    return {
+      ok: !!result.ok,
+      symbol: selected,
+      hedgeSymbol: hedge,
+      side: 'SELL',
+      qty: quantity,
+      executionId: execution,
+      triggerKey: 'tt_option_sell',
+      response: result.body,
+      option: true,
+      spread: true
+    };
+  }
+
   async emitOptionEntry({ symbol, side, qty, entryPrice, sl, tp1, tp, underlying, optionType, expiryMs, executionId }) {
     if (!this.isConfigured()) {
       return { ok: false, skipped: true, reason: this.enabled ? 'TRADETRON_AUTH_TOKEN missing' : 'bridge disabled' };
