@@ -10,8 +10,8 @@ function safeSecretEqual(candidate, expected) {
   return left.length > 0 && left.length === right.length && crypto.timingSafeEqual(left, right);
 }
 
-function isAuthenticatedWebhookRequest(req) {
-  const expected = clean(CONFIG.tradetronWebhookSecret);
+export function isAuthenticatedWebhookRequest(req, configuredSecret = CONFIG.tradetronWebhookSecret) {
+  const expected = clean(configuredSecret);
   if (!expected) return false;
 
   const headers = req.headers || {};
