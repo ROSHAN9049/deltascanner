@@ -16,7 +16,7 @@ function isAuthenticatedWebhookRequest(req) {
 
   const headers = req.headers || {};
   const authorization = clean(headers.authorization || headers.Authorization);
-  const bearer = authorization.match(/^Bearer\\s+(.+)$/i)?.[1] || '';
+  const bearer = authorization.match(/^Bearer\s+(.+)$/i)?.[1] || '';
   const headerSecret = clean(headers['x-tradetron-webhook-secret'] || headers['X-Tradetron-Webhook-Secret']);
   let querySecret = '';
   if (typeof req.query?.secret === 'string') {
