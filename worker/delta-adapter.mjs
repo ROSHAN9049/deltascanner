@@ -99,6 +99,14 @@ export class DeltaAdapter {
   async health() { return this.request('GET', '/v2/tickers', { contract_types: 'perpetual_futures' }, null, false); }
   products() { return this.request('GET', '/v2/products', { contract_types: 'perpetual_futures', states: 'live', page_size: 50 }, null, false); }
   tickers() { return this.request('GET', '/v2/tickers', { contract_types: 'perpetual_futures' }, null, false); }
+  optionTickers(underlying) {
+    const asset = String(underlying || '').trim().toUpperCase();
+    if (!/^[A-Z0-9]+$/.test(asset)) throw new Error('Invalid option underlying');
+    return this.request('GET', '/v2/tickers', {
+      contract_types: 'call_options,put_options',
+      underlying_asset_symbols: asset
+    }, null, false);
+  }
   candles(symbol, resolution, limit) {
     const seconds = ({ '1m': 60, '5m': 300, '15m': 900 })[resolution] || 300;
     const end = Math.floor((Date.now() + this.offsetMs) / 1000);
