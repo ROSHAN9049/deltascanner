@@ -4,7 +4,7 @@ import { CONFIG } from '../server/config.js';
 import { DeltaAdapter } from './delta-adapter.mjs';
 import { analyse, analyseOption } from './strategy.mjs';
 import * as db from '../server/db.js';
-import { TradetronBridge } from '../server/tradetron.js';
+import { TradetronBridge, withSignalReservations } from '../server/tradetron.js';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const n = v => Number.isFinite(+v) ? +v : 0;
@@ -264,7 +264,9 @@ export class DeltaEngine {
     if (settings.emergency_stop) reasons.push('Emergency Stop');
     if (!settings.enabled || !settings.auto_trade) reasons.push('Auto OFF');
     if (openPositions.some(p => String(p.symbol) === String(signal.symbol) && n(p.qty) > 0)) reasons.push('Duplicate symbol');
-    if (openPositions.length >= Math.max(1, n(settings.max_open_positions || 3))) reasons.push('Max open positions');
+    const requestedPositionCap = Math.max(1, n(settings.max_open_positions || (CONFIG.signalOnly ? 2 : 3)));
+    const activePositionCap = CONFIG.signalOnly ? Math.min(2, requestedPositionCap) : requestedPositionCap;
+    if (openPositions.length >= activePositionCap) reasons.push('Max open positions');
     if (!signal.candlesFresh && strategy !== 'OPTIONS_BUY') reasons.push('Fresh closed candles unavailable');
     if (n(account.equity) <= 0) reasons.push('Account equity unavailable');
 
@@ -1593,6 +1595,25 @@ export class DeltaEngine {
     return this.tradetron.supportsFuturesSymbol(selected) ? this.tradetron : null;
   }
 
+  async getSignalOnlyPositions(openRows) {
+    const positions = Array.isArray(openRows) ? openRows : [];
+    if (!CONFIG.signalOnly || !CONFIG.tradetronBridgeEnabled) return positions;
+    try {
+      const pendingSignals = await db.select(
+        'dd_orders',
+        'order_type=eq.tradetron_signal&state=in.(PENDING,SIGNAL_SENT)' +
+        '&select=symbol,side,strategy,size,execution_id,client_order_id,created_at,state' +
+        '&order=created_at.desc&limit=500'
+      );
+      return withSignalReservations(positions, pendingSignals || []);
+    } catch (error) {
+      await this.log('ERROR', 'Tradetron slot reservation lookup failed; new entries blocked', {
+        error: error.message
+      });
+      return null;
+    }
+  }
+
   async manageTradetronPositions(rows, settings = {}) {
     if (!CONFIG.signalOnly || !CONFIG.tradetronBridgeEnabled) return;
     const marketAge = Date.now() - Math.max(this.lastTickerFetch || 0, this.lastTickAt || 0);
@@ -1683,7 +1704,7 @@ export class DeltaEngine {
     await this.acquireLease();
     const settings = { ...{
       enabled: true, auto_trade: true, emergency_stop: false, continuous_mode: true,
-      max_open_positions: 3, risk_pct: 0.3, max_leverage: 3, score_min: 65,
+      max_open_positions: 2, risk_pct: 0.3, max_leverage: 3, score_min: 65,
       options_underlyings: 'BTC,ETH,XAUT',
       momentum_sl_min_pct: 0.95, scalping_sl_min_pct: 0.75, momentum_rr: 2.5,
       scalping_rr: 2.5, tp1_pct: 33, max_hold_minutes: 240
@@ -1725,12 +1746,19 @@ export class DeltaEngine {
     // futures positions materialized by the outbound activity webhook. This
     // does not submit any direct Delta Exchange order.
     if (CONFIG.signalOnly) await this.manageTradetronPositions(openRows || [], settings);
+    let riskPositions = openRows || [];
+    let reservationLookupFailed = false;
+    if (CONFIG.signalOnly) {
+      const merged = await this.getSignalOnlyPositions(openRows || []);
+      if (Array.isArray(merged)) riskPositions = merged;
+      else reservationLookupFailed = true;
+    }
     const trades = await this.recentTrades();
     if (Date.now() - this.lastAnalysis > 55000 || !this.lastSignals.length) {
-      await this.analyseUniverse(account, settings, openRows || [], trades || []);
+      await this.analyseUniverse(account, settings, riskPositions, trades || []);
       this.lastAnalysis = Date.now();
     }
-    const positions = openRows || [];
+    const positions = riskPositions;
     if (settings.enabled && settings.auto_trade && !settings.emergency_stop) {
       const candidates = [];
       for (const item of this.lastSignals) {
@@ -1757,7 +1785,8 @@ export class DeltaEngine {
         return (rank[b.strategy] || 0) - (rank[a.strategy] || 0);
       });
 
-      const maxPositions = CONFIG.signalOnly ? Number.POSITIVE_INFINITY : Math.max(1, n(settings.max_open_positions || 3));
+      const configuredMaxPositions = Math.max(1, n(settings.max_open_positions || (CONFIG.signalOnly ? 2 : 3)));
+      const maxPositions = CONFIG.signalOnly ? Math.min(2, configuredMaxPositions) : configuredMaxPositions;
 
       // Signal-only mode is execution-routed through Tradetron. Keep a small
       // rolling guard so the 15s scanner loop cannot flood the external API,
@@ -1780,11 +1809,16 @@ export class DeltaEngine {
       }
 
       for (const c of candidates) {
-        if (CONFIG.signalOnly && bridgeSignalsInWindow >= 3) break;
+        if (CONFIG.signalOnly && (reservationLookupFailed || bridgeSignalsInWindow >= 3)) break;
         const freshAccount = await this.accountSnapshot(settings);
-        const freshPositions = CONFIG.signalOnly ? await db.select('dd_positions', 'origin=eq.TRADETRON&qty=gt.0&order=updated_at.desc') : await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
-        if ((freshPositions || []).length >= maxPositions) break;
-        const opened = await this.openTrade(c.item, c.strategy, c.signal, freshAccount, settings, freshPositions || [], trades);
+        const storedPositions = CONFIG.signalOnly ? await db.select('dd_positions', 'origin=eq.TRADETRON&qty=gt.0&order=updated_at.desc') : await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
+        const freshPositions = CONFIG.signalOnly ? await this.getSignalOnlyPositions(storedPositions || []) : (storedPositions || []);
+        if (!Array.isArray(freshPositions)) {
+          reservationLookupFailed = true;
+          break;
+        }
+        if (freshPositions.length >= maxPositions) break;
+        const opened = await this.openTrade(c.item, c.strategy, c.signal, freshAccount, settings, freshPositions, trades);
         if (opened) {
           if (CONFIG.signalOnly) bridgeSignalsInWindow++;
           await sleep(250);
