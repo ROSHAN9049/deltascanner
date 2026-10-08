@@ -36,7 +36,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       success: true,
       environment: CONFIG.environment,
-      exchange: 'Delta Exchange India Demo',
+      exchange: CONFIG.signalOnly ? 'Delta Exchange India · Production Market Feed' : 'Delta Exchange India Demo',
       exchangeHealthy,
       timeDriftMs: null,
       lastTickAt: settings.last_tick_at || null,
