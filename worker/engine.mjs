@@ -291,7 +291,10 @@ export class DeltaEngine {
     };
     const chains = new Map();
     for (const ticker of this.optionTickerMap.values()) {
-      const asset = String(ticker.underlying || ticker.symbol || '').toUpperCase().split('-')[1] || '';
+      const rawAsset = String(ticker.underlying || '').toUpperCase();
+      const optionSymbol = String(ticker.symbol || '').toUpperCase();
+      const parts = optionSymbol.split('-');
+      const asset = rawAsset || parts[1] || optionSymbol;
       if (!asset) continue;
       if (!chains.has(asset)) chains.set(asset, []);
       chains.get(asset).push(ticker);
