@@ -302,7 +302,6 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
   const volumeFallback =
     !!side &&
     vr < volumeMin &&
-    scoreMin <= 65 &&
     localScore >= 85 &&
     spreadPct <= 0.20 &&
     antiChase &&
@@ -350,7 +349,6 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
     if (score < scoreMin) blocked.push('Signal score below ' + scoreMin);
     if (!rsiOk) blocked.push('RSI/VWAP');
     if (vr < volumeMin && !volumeFallback) blocked.push('Volume spike < ' + volumeMin.toFixed(2) + 'x');
-    if (volumeFallback) blocked.push('Volume fallback: high-conviction sparse feed');
     if (!antiChase) blocked.push('24h anti-chase');
     if (rangeAtr > rangeMax) blocked.push('Entry candle range > ' + rangeMax.toFixed(2) + 'x ATR');
     if (emaDistanceAtr > emaMax) blocked.push('Price > ' + emaMax.toFixed(2) + 'x ATR from entry EMA21');
