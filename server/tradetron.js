@@ -118,38 +118,23 @@ export class TradetronBridge {
         ['api_sell', 0]
       ];
     } else {
-      // Standard Signal Bridge basket contract. Each symbol is represented by
-      // its own runtime flag plus _qty/_ep/_sl/_tp values, while api_buy/api_sell
-      // acts as the global trigger. This lets the scanner drive any symbol that
-      // already exists in the user's deployed Signal Bridge strategy without
-      // changing that Tradetron strategy.
+      // Existing deployed Signal Bridge basket contract.
+      // The deployed strategy is driven by a global api_buy/api_sell trigger,
+      // plus the selected symbol runtime flag and its sizing/price variables.
+      // Keep this exact legacy contract so the existing Tradetron strategy can
+      // consume scanner signals without any strategy-side edits.
       if (!/^[A-Z0-9]+USD$/.test(selected) || selected === 'USD') {
         throw new Error('Tradetron Signal Bridge symbol is invalid: ' + selected);
       }
 
-      // Tradetron Signal Bridge convention: the instrument runtime variable
-      // receives an action code: 1 = BUY/LONG entry, 3 = SELL/SHORT entry.
-      // Keep the richer tt_* values as metadata for bridge variants, but reset
-      // their old dynamic triggers so an older signal cannot fire accidentally.
-      const actionCode = normalizedSide === 'BUY' ? 1 : 3;
       writes = [
-        [selected, actionCode],
+        [triggerKey, 1],
+        [resetKey, 0],
+        [selected, 1],
         [selected + '_qty', quantity],
         [selected + '_ep', prices.entryPrice],
         [selected + '_sl', prices.sl],
-        [selected + '_tp', prices.tp],
-        ['tt_symbol', selected],
-        ['tt_side', normalizedSide],
-        ['tt_qty', quantity],
-        ['tt_ep', prices.entryPrice],
-        ['tt_sl', prices.sl],
-        ['tt_tp1', prices.tp1],
-        ['tt_tp', prices.tp],
-        ['tt_exec_id', execution],
-        ['tt_buy', 0],
-        ['tt_sell', 0],
-        ['api_buy', 0],
-        ['api_sell', 0]
+        [selected + '_tp', prices.tp]
       ];
     }
 
