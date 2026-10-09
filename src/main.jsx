@@ -90,7 +90,7 @@ function App() {
         <div className="sub">DELTA INDIA · PERPETUAL FUTURES COMMAND CENTER</div>
       </div>
       <div className="headerRight">
-        <span>BUILD v2.0.20261009.01</span>
+        <span>BUILD v2.0.20261009.02</span>
         <span>UTC {new Date(clock).toISOString().slice(11,19)}</span>
         <span>LOCAL {new Date(clock).toLocaleTimeString('en-IN')}</span>
         <b className="badge test">LIVE MARKET · SIGNAL ONLY</b>
@@ -104,7 +104,7 @@ function App() {
     {error ? <div className="error">{error}</div> : null}
     <nav>{tabs.map(([id,label]) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}{id === 'live' ? ' 🔒' : ''}</button>)}</nav>
 
-    {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} trades={trades} positions={positions} signals={signals} signalOrders={state?.signalOrders || []} tradetronEvents={state?.tradetronEvents || []} onInspect={setInspect} inspect={selected} logs={state?.logs || []} />}
+    {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} trades={trades} positions={positions} signals={signals} signalOrders={state?.signalOrders || []} tradetronEvents={state?.tradetronEvents || []} executionCoverage={state?.executionCoverage || null} onInspect={setInspect} inspect={selected} logs={state?.logs || []} />}
     {tab === 'rotation' && <Rotation ledger={state?.ledger || []} />}
     {tab === 'momentum' && <EngineView engine="MOMENTUM" signals={signals} />}
     {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" />}
@@ -129,7 +129,7 @@ function Panel({ title, children }) {
 function Card({ label, value, sub }) {
   return <div className="card"><small>{label}</small><strong>{value}</strong><span>{sub}</span></div>;
 }
-function Dashboard({ market, settings, health, trades, positions, signals, signalOrders = [], tradetronEvents = [], onInspect, inspect, logs }) {
+function Dashboard({ market, settings, health, trades, positions, signals, signalOrders = [], tradetronEvents = [], executionCoverage = null, onInspect, inspect, logs }) {
   const today = new Date().toISOString().slice(0,10);
   const todayTrades = trades.filter(t => String(t.closed_at || '').slice(0,10) === today);
   const wins = todayTrades.filter(t => num(t.net_pnl) > 0).length;
@@ -153,6 +153,14 @@ function Dashboard({ market, settings, health, trades, positions, signals, signa
     <Panel title={'Full Delta Market Scanner · ' + (market?.length || 0) + ' live perpetuals · Signal Only'}>
       <MarketTable market={market} signals={signals}/>
     </Panel>
+    <Panel title="Tradetron Execution Coverage">
+      <section className="cards">
+        <Card label="LIVE FUTURES SCANNED" value={market?.length || 0} sub="Delta India perpetual tickers" />
+        <Card label="FUTURES SYMBOLS ROUTED" value={executionCoverage ? (executionCoverage.routedFuturesSymbols + ' / ' + (market?.length || 0)) : '—'} sub={(executionCoverage?.configuredFuturesRoutes ?? 0) + ' configured futures bridge(s)'} />
+        <Card label="OPTIONS UNDERLYINGS" value="BTC · ETH · GOLD" sub="Gold contract symbol: XAUT" />
+        <Card label="OPTIONS EXECUTION" value={executionCoverage?.optionsRouteConfigured ? 'CONFIGURED' : 'LOCKED'} sub={executionCoverage?.optionsRouteConfigured ? 'Dedicated options route detected; still validate in Live Offline' : 'Dedicated Tradetron Options bridge + token required'} />
+      </section>
+    </Panel>
     <section className="grid2">
       <RiskGovernor signals={signals} health={health} positions={positions} onInspect={onInspect} inspect={inspect}/>
       <Panel title="Signal Stages · WATCH → SETUP → CONFIRMED"><div className="tablewrap"><table><thead><tr><th>COIN</th><th>ENG</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>QTY</th><th>NOTIONAL</th><th>RISK</th><th>READY</th><th>WHY BLOCKED</th></tr></thead><tbody>{signals.map(s => <tr key={s.symbol + s.strategy}><td className="symbol">{s.symbol}</td><td>{s.strategy === 'MOMENTUM' ? 'MOM' : 'SCALP'}</td><td>{s.stage}</td><td className={s.side === 'BUY' ? 'up' : s.side === 'SELL' ? 'down' : 'muted'}>{s.side || '—'}</td><td><b>{num(s.score).toFixed(0)}</b>/100</td><td>{fmtQty(s.qty_contracts)}</td><td>{money(s.notional)}</td><td>{money(s.risk_usd)}</td><td className={s.ready ? 'up' : 'down'}>{s.ready ? 'YES' : 'NO'}</td><td className="muted">{fmtReasons(s.blocked_reasons)}</td></tr>)}</tbody></table></div></Panel>
@@ -174,6 +182,11 @@ function fmtReasons(v) {
   if (!v) return '—';
   return String(v);
 }
+function formatUnderlying(value) {
+  const symbol = String(value || '').toUpperCase().replace(/USD$/, '');
+  if (symbol === 'XAUT') return 'GOLD (XAUT)';
+  return symbol || '—';
+}
 function fmtQty(v) {
   return num(v) === 0 ? '—' : num(v).toLocaleString('en-IN', { maximumFractionDigits: 0 });
 }
@@ -191,14 +204,17 @@ function MarketTable({ market, signals }) {
   })}</tbody></table></div>;
 }
 
-function RiskGovernor({ signals, health, positions, onInspect, inspect }) {
+function RiskGovernor({ signals, health, positions, onInspect, inspect, scoreMin = 80 }) {
   const selected = inspect;
   if (!selected) return <Panel title="Risk Governor"><div className="lockedText">No signal selected yet.</div></Panel>;
   const details = typeof selected.details === 'string' ? (() => { try { return JSON.parse(selected.details); } catch { return {}; } })() : (selected.details || {});
-  const gate = reason => !(selected.blocked_reasons || []).join(' · ').toLowerCase().includes(reason.toLowerCase());
+  const blockedText = Array.isArray(selected.blocked_reasons) ? selected.blocked_reasons.join(' · ') : String(selected.blocked_reasons || '');
+  const gate = reason => !blockedText.toLowerCase().includes(reason.toLowerCase());
+  const minimumScore = Math.max(80, num(scoreMin) || 80);
   const btcOverride = details.btcRegimeOverride === true;
   const gates = [
-    ['Signal CONFIRMED', selected.stage === 'CONFIRMED' && num(selected.score) >= 70, selected.stage],
+    ['Signal CONFIRMED', selected.stage === 'CONFIRMED' && num(selected.score) >= minimumScore, selected.stage + ' · min ' + minimumScore],
+    ['Tradetron futures route', !blockedText.toLowerCase().includes('tradetron route unavailable'), blockedText.toLowerCase().includes('tradetron route unavailable') ? 'BLOCKED · symbol not mapped' : 'PASS'],
     ['Fee + spread vs 1R', num(selected.fee_risk_ratio) <= (selected.strategy === 'SCALPING' ? 0.25 : 0.20), (num(selected.fee_risk_ratio)*100).toFixed(1)+'% of 1R'],
     ['24h anti-chase', !selected.change_24h || (selected.side === 'BUY' ? num(selected.change_24h) <= 15 : selected.side === 'SELL' ? num(selected.change_24h) >= -15 : false), pct(selected.change_24h)],
     ['5m range <= 3.00 ATR', num(selected.atr_5m) > 0 && gate('5m range'), 'range gate'],
@@ -228,7 +244,7 @@ function OptionsView({ signals, settings, optionCache = [] }) {
   const sells = rows.filter(x => x.strategy === 'OPTIONS_SELL');
   return <>
     <section className="cards">
-      <Card label="OPTIONS ENGINE" value={settings.options_enabled === false ? 'OFF' : 'ON'} sub="BTC / ETH / XAUT option-chain scanner"/>
+      <Card label="OPTIONS ENGINE" value={settings.options_enabled === false ? 'OFF' : 'ON'} sub="BTC / ETH / GOLD (XAUT) only"/>
       <Card label="BUY" value={settings.options_buy_enabled === false ? 'OFF' : 'ON'} sub="ATM / near-ITM · Δ 0.45–0.65"/>
       <Card label="SELL" value={settings.options_sell_enabled === false ? 'OFF' : 'ON'} sub="defined-risk spread only"/>
       <Card label="EXECUTION" value="TRADETRON" sub="signal-only · Live Offline"/>
@@ -250,7 +266,7 @@ function OptionTable({ rows, type }) {
     if (typeof d === 'string') { try { d = JSON.parse(d); } catch {} }
     return <tr key={s.id || s.symbol + s.strategy + s.captured_at}>
       <td>{s.cached_at ? new Date(s.cached_at).toLocaleTimeString('en-IN') : (s.captured_at ? new Date(s.captured_at).toLocaleTimeString('en-IN') : '—')}</td>
-      <td className="symbol">{d.underlyingSymbol || '—'}</td>
+      <td className="symbol">{formatUnderlying(d.underlyingSymbol || s.underlying)}</td>
       <td className="symbol">{s.symbol}</td>
       <td>{d.optionType || '—'} / {type}</td>
       <td>{num(d.strike).toLocaleString('en-IN',{maximumFractionDigits:2})}</td>
@@ -263,7 +279,7 @@ function OptionTable({ rows, type }) {
       <td>{num(d.volume).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
       <td><b>{num(s.score).toFixed(0)}</b>/100</td>
       <td>{s.stage}</td>
-      <td className={s.ready ? 'up' : 'down'}>{s.ready ? 'READY' : (String(s.blocked_reasons || '').includes('execution') || String(s.blocked_reasons || '').includes('spread') ? 'LOCKED' : 'WAIT')}</td>
+      <td className={s.ready ? 'up' : 'down'}>{s.ready ? 'READY' : (fmtReasons(s.blocked_reasons).toLowerCase().includes('route unavailable') || fmtReasons(s.blocked_reasons).toLowerCase().includes('execution') ? 'LOCKED' : 'WAIT')}</td>
     </tr>;
   })}</tbody></table></div>;
 }
