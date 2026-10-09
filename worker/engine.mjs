@@ -19,6 +19,13 @@ const roundDown = (v, step) => {
 const roundTick = (v, tick) => tick > 0 ? Math.round(v / tick) * tick : v;
 export const OPTION_UNDERLYINGS = Object.freeze(['BTC', 'ETH', 'XAUT']);
 
+export function duplicatePositionBlocker(openPositions, symbol) {
+  const selected = String(symbol || '').toUpperCase();
+  return (Array.isArray(openPositions) ? openPositions : []).some(position =>
+    String(position?.symbol || '').toUpperCase() === selected && n(position?.qty) > 0
+  ) ? 'Duplicate symbol' : '';
+}
+
 export function tradetronRouteBlocker({ signalOnly, bridgeEnabled, strategy, signal, bridge }) {
   const engine = String(strategy || '').toUpperCase();
   if (!signalOnly || !['MOMENTUM', 'SCALPING'].includes(engine)) return '';
@@ -294,10 +301,11 @@ export class DeltaEngine {
       bridge: this.getTradetronBridgeForSymbol(signal.symbol)
     });
     if (routeBlock) reasons.push(routeBlock);
-    if (openPositions.some(p => String(p.symbol) === String(signal.symbol) && n(p.qty) > 0)) reasons.push('Duplicate symbol');
-    const requestedPositionCap = Math.max(1, n(settings.max_open_positions || (CONFIG.signalOnly ? 2 : 3)));
-    const activePositionCap = CONFIG.signalOnly ? Math.min(2, requestedPositionCap) : requestedPositionCap;
-    if (openPositions.length >= activePositionCap) reasons.push('Max open positions');
+    const duplicateBlocker = duplicatePositionBlocker(openPositions, signal.symbol);
+    if (duplicateBlocker) reasons.push(duplicateBlocker);
+    // There is deliberately no scanner-side global, per-engine, or total-open-position cap.
+    // Actual platform/product/margin limits are still validated, and duplicate-symbol
+    // protection prevents repeated same-instrument entries while a position is open.
     if (!signal.candlesFresh && strategy !== 'OPTIONS_BUY') reasons.push('Fresh closed candles unavailable');
     if (n(account.equity) <= 0) reasons.push('Account equity unavailable');
 
@@ -322,13 +330,12 @@ export class DeltaEngine {
     // Tradetron route readiness is enforced above so a technical CONFIRMED
     // setup outside a configured bridge basket is never marked READY.
 
-    const todayNet = trades.filter(t => String(t.closed_at || '').slice(0, 10) === today()).reduce((s, t) => s + n(t.net_pnl), 0);
-    if (todayNet <= -n(account.equity) * 0.01) reasons.push('Daily loss 1% hard stop');
+    // Scanner-side daily loss and daily trade-count quotas are disabled by request.
+    // Keep emergency stop, per-trade sizing, margin, fee/slippage and signal-quality gates.
 
     if (!continuous) {
-      const engineCap = strategy === 'MOMENTUM' ? 3 : 3;
-      if (openPositions.filter(p => p.strategy === strategy).length >= engineCap) reasons.push(strategy + ' cap');
-      if (openPositions.length >= 6) reasons.push('Total cap 6');
+      // No fixed per-engine or total position cap. The non-continuous mode may
+      // still apply signal-quality cooldown/expectancy throttles below.
       const symbolTrades = trades.filter(t => t.symbol === signal.symbol);
       const last = symbolTrades[0];
       if (last && Date.now() - new Date(last.closed_at || 0).getTime() < 15 * 60 * 1000) reasons.push('15m cooldown');
@@ -453,13 +460,10 @@ export class DeltaEngine {
           const s = best.signal;
           const q = this.optionQuantity({ ...s, ticker: best.ticker }, account, settings);
           const duplicate = (openPositions || []).some(p => String(p.symbol) === s.symbol && n(p.qty) > 0);
-          const optionOpenCount = (openPositions || []).filter(p => String(p.strategy || '').startsWith('OPTIONS_') && n(p.qty) > 0).length;
-          const optionCap = Math.max(1, n(settings.options_max_open_positions || 1));
           const executionLocked = !CONFIG.tradetronOptionsBridgeEnabled || !this.tradetronOptions.isConfigured();
           const blocked = [...s.blocked];
           if (q < 1) blocked.push('Risk budget below 1 contract');
           if (duplicate) blocked.push('Duplicate option position');
-          if (optionOpenCount >= optionCap && !duplicate) blocked.push('Options position cap ' + optionCap);
           if (executionLocked) blocked.push('Tradetron option signal route unavailable');
           const ready = s.ready && q >= 1 && !duplicate && !executionLocked;
           const cv = Math.max(1e-9, n(best.ticker.contract_value) || 1);
@@ -511,9 +515,6 @@ export class DeltaEngine {
           const budget = this.optionRiskBudget(account, settings);
           const q = maxRiskPerSpread > 0 ? Math.floor(budget / maxRiskPerSpread) : 0;
           const blocked = [...s.blocked];
-          const optionOpenCount = (openPositions || []).filter(p => String(p.strategy || '').startsWith('OPTIONS_') && n(p.qty) > 0).length;
-          const optionCap = Math.max(1, n(settings.options_max_open_positions || 1));
-          if (optionOpenCount >= optionCap) blocked.push('Options position cap ' + optionCap);
           if (!hedge) blocked.push('Defined-risk hedge unavailable');
           if (!(credit > 0)) blocked.push('Net credit <= 0');
           if (q < 1) blocked.push('Spread risk exceeds option risk budget');
@@ -1815,31 +1816,11 @@ export class DeltaEngine {
         return (rank[b.strategy] || 0) - (rank[a.strategy] || 0);
       });
 
-      const configuredMaxPositions = Math.max(1, n(settings.max_open_positions || (CONFIG.signalOnly ? 2 : 3)));
-      const maxPositions = CONFIG.signalOnly ? Math.min(2, configuredMaxPositions) : configuredMaxPositions;
-
-      // Signal-only mode is execution-routed through Tradetron. Keep a small
-      // rolling guard so the 15s scanner loop cannot flood the external API,
-      // while allowing Momentum + Scalping + one Options opportunity through.
-      // Per-symbol/candle idempotency still runs inside openTrade().
-      let bridgeSignalsInWindow = 0;
-      if (CONFIG.signalOnly) {
-        const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-        try {
-          const recent = await db.select(
-            'dd_orders',
-            'order_type=eq.tradetron_signal&created_at=gte.' + encodeURIComponent(cutoff) +
-            '&select=id&limit=10'
-          );
-          bridgeSignalsInWindow = Array.isArray(recent) ? recent.length : 0;
-        } catch (e) {
-          await this.log('WARN', 'Bridge rate guard lookup failed; cycle remains fail-safe', { error: e.message });
-          bridgeSignalsInWindow = 3;
-        }
-      }
-
+      // Route every qualifying opportunity; no arbitrary max-open-position or
+      // rolling signal-count quota is applied. Idempotency, per-symbol duplicate
+      // checks, platform API responses, and fail-closed database lookups remain active.
       for (const c of candidates) {
-        if (CONFIG.signalOnly && (reservationLookupFailed || bridgeSignalsInWindow >= 3)) break;
+        if (CONFIG.signalOnly && reservationLookupFailed) break;
         const freshAccount = await this.accountSnapshot(settings);
         const storedPositions = CONFIG.signalOnly ? await db.select('dd_positions', 'origin=eq.TRADETRON&qty=gt.0&order=updated_at.desc') : await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
         const freshPositions = CONFIG.signalOnly ? await this.getSignalOnlyPositions(storedPositions || []) : (storedPositions || []);
@@ -1847,12 +1828,8 @@ export class DeltaEngine {
           reservationLookupFailed = true;
           break;
         }
-        if (freshPositions.length >= maxPositions) break;
         const opened = await this.openTrade(c.item, c.strategy, c.signal, freshAccount, settings, freshPositions, trades);
-        if (opened) {
-          if (CONFIG.signalOnly) bridgeSignalsInWindow++;
-          await sleep(250);
-        }
+        if (opened) await sleep(1000);
       }
     }
 
@@ -1886,7 +1863,8 @@ export class DeltaEngine {
     await this.log('INFO', 'Worker heartbeat scan', {
       lastTickAt: this.lastTickAt,
       signals: this.lastSignals.length,
-      positions: positions.length,
+      positions: positions.filter(position => position.origin === 'TRADETRON' && n(position.qty) > 0).length,
+      reservedSignals: positions.filter(position => position.origin === 'SIGNAL_RESERVATION').length,
       tradetronRouting: {
         bridgeConfigured,
         configuredRoutes: configuredBridgeCount,
