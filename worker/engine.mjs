@@ -1867,7 +1867,30 @@ export class DeltaEngine {
       last_tick_at: new Date(this.lastTickAt || Date.now()).toISOString(),
       worker_started_at: new Date(this.startedAt).toISOString(), idle_reason: idle
     });
-    await this.log('INFO', 'Worker heartbeat scan', { lastTickAt: this.lastTickAt, signals: this.lastSignals.length, positions: positions.length });
+    const bridgeRoutes = Array.isArray(CONFIG.tradetronBridgeRoutes) ? CONFIG.tradetronBridgeRoutes : [];
+    const bridgeConfigured = !!CONFIG.tradetronBridgeEnabled && (
+      bridgeRoutes.length
+        ? bridgeRoutes.some(route => !!route.authToken && (this.tradetronRouteBridges.get(route.id)?.isConfigured() || false))
+        : this.tradetron.isConfigured()
+    );
+    const supportedSymbols = !bridgeConfigured ? [] : (bridgeRoutes.length
+      ? [...new Set(bridgeRoutes.filter(route => route.authToken && this.tradetronRouteBridges.get(route.id)?.isConfigured()).flatMap(route => route.symbols))]
+      : [...new Set(CONFIG.tradetronSupportedSymbols)]);
+    const configuredBridgeCount = !bridgeConfigured ? 0 : (bridgeRoutes.length
+      ? bridgeRoutes.filter(route => route.authToken && this.tradetronRouteBridges.get(route.id)?.isConfigured()).length
+      : 1);
+    const optionsRouteConfigured = !!CONFIG.tradetronOptionsBridgeEnabled && this.tradetronOptions.isConfigured();
+    await this.log('INFO', 'Worker heartbeat scan', {
+      lastTickAt: this.lastTickAt,
+      signals: this.lastSignals.length,
+      positions: positions.length,
+      tradetronRouting: {
+        bridgeConfigured,
+        configuredRoutes: configuredBridgeCount,
+        supportedSymbols,
+        optionsRouteConfigured
+      }
+    });
   }
 
   async run() {
