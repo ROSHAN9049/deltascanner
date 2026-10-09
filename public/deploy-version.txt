@@ -6,3 +6,5 @@ Testnet-only execution remains enforced.
 Build v2.0.20261008.09: full Delta perpetual universe scan/cache, WebSocket candle cache warmup, and BTC/ETH/XAUT option signal cache with Gold settlement timing.
 
 Build v2.0.20261008.11: production Delta market signal-only; legacy Signal Bridge contract; Tradetron Offline activity ingestion; no direct Delta orders.
+
+Build v2.0.20261009.02: align READY with Tradetron route availability, clean inactive universe cache rows, paginate the dashboard products API, enforce minimum score 80, and restrict Options to BTC/ETH/Gold (XAUT).
