@@ -31,3 +31,30 @@ nav{display:flex;gap:5px;overflow:auto;padding:9px 0}nav button{border:1px solid
 footer{color:#526177;text-align:center;font-size:9px;padding-top:12px}
 @media(max-width:1000px){.cards{grid-template-columns:repeat(2,1fr)}.grid2,.settings,.ruleGrid,.engineStats{grid-template-columns:1fr}}
 @media(max-width:620px){.terminal{padding:7px}.topbar{flex-direction:column}.headerRight{justify-content:flex-start}.cards{grid-template-columns:1fr}.card{min-height:76px}.inspectRow{align-items:flex-start;flex-direction:column}.settings{grid-template-columns:1fr}}
+
+
+/* Independent grid mean-reversion simulator */
+.gridConfig{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:11px;margin-bottom:12px}
+.gridConfig label{display:flex;flex-direction:column;gap:6px;color:#8797ad;font-size:10px;font-weight:800}
+.gridConfig input,.gridConfig select{width:100%;min-width:0;background:#09111c;color:#e7edf5;border:1px solid #2b3a4e;padding:10px;border-radius:6px;font:inherit}
+.gridConfig input:disabled,.gridConfig select:disabled{opacity:.6}
+.gridCheck{display:flex;align-items:center;gap:9px;margin:10px 0 13px;color:#95a5ba;font-size:10px}
+.gridCheck input{accent-color:#2de3a0;width:16px;height:16px}
+.gridButtons{display:flex;gap:7px;flex-wrap:wrap;margin:8px 0 13px}
+.gridButtons button{min-height:35px}
+.gridButtons .gridStart{border-color:#17664d;background:#09251d;color:#2de3a0}
+.errorText{padding:10px 12px;margin:8px 0;color:#ff9ca9;border:1px solid #703043;border-radius:6px;background:#250e15;font-size:10px}
+.gridMeta{display:flex;gap:18px;flex-wrap:wrap;padding:3px 0 11px;color:#8090a6;font-size:10px}
+.gridMeta b{color:#dce7f4}
+.gridLevelsTable{min-width:720px}
+.gridLockRow{display:flex;justify-content:space-between;gap:12px;padding:9px 1px;border-bottom:1px solid #1b2635;font-size:10px}
+.gridLockRow b{color:#8898ad}
+.gridLockRow span{text-align:right;color:#d4deec}
+.gridEvents{max-height:240px;overflow:auto;margin-top:8px}
+.gridEvents>div{display:grid;grid-template-columns:68px 48px minmax(0,1fr);gap:7px;align-items:start;padding:8px 0;border-bottom:1px solid #1b2635;font-size:9px}
+.gridEvents small{color:#65758a}
+.gridEvents b{color:#9eafc5}
+.gridEvents span{color:#91a1b5;overflow-wrap:anywhere}
+.gridTestNotice{padding:12px;border:1px solid #5c491a;background:#211a0b;color:#e5c86e;border-radius:7px;font-size:10px;line-height:1.55;margin:5px 0 12px}
+@media(max-width:1000px){.gridConfig{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:620px){.gridConfig{grid-template-columns:1fr}.gridButtons{display:grid;grid-template-columns:1fr 1fr}.gridButtons button{margin:0}.gridMeta{gap:9px;flex-direction:column}.gridLockRow{align-items:flex-start;flex-direction:column}.gridLockRow span{text-align:left}.gridEvents>div{grid-template-columns:57px 42px minmax(0,1fr)}}
