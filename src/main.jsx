@@ -84,6 +84,26 @@ function App() {
 
   const selectedScalp = selected ? signals.find(x => x.symbol === selected.symbol && x.strategy === 'SCALPING') : null;
   const stale = !health?.tickFresh;
+  // The dashboard API and Railway worker have separate environment variables.
+  // Prefer the actual worker's heartbeat telemetry over Vercel's local config,
+  // which may not contain the Railway-only Tradetron token or allowlist.
+  const workerRoutingLog = (state?.logs || []).find(row =>
+    row?.message === 'Worker heartbeat scan' && row?.data?.tradetronRouting
+  );
+  const workerRouting = workerRoutingLog?.data?.tradetronRouting || null;
+  const executionCoverage = workerRouting ? {
+    ...(state?.executionCoverage || {}),
+    routedFuturesSymbols: Array.isArray(workerRouting.supportedSymbols)
+      ? [...new Set(workerRouting.supportedSymbols.map(symbol => String(symbol || '').toUpperCase()).filter(Boolean))].length
+      : 0,
+    routedSymbols: Array.isArray(workerRouting.supportedSymbols)
+      ? [...new Set(workerRouting.supportedSymbols.map(symbol => String(symbol || '').toUpperCase()).filter(Boolean))]
+      : [],
+    configuredFuturesRoutes: Number(workerRouting.configuredRoutes) || 0,
+    optionsRouteConfigured: workerRouting.optionsRouteConfigured === true,
+    routingStatusSource: 'worker-heartbeat',
+    routingObservedAt: workerRoutingLog?.created_at || null
+  } : (state?.executionCoverage || null);
   return <div className="terminal">
     <header className="topbar">
       <div>
@@ -105,7 +125,7 @@ function App() {
     {error ? <div className="error">{error}</div> : null}
     <nav>{tabs.map(([id,label]) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}{id === 'live' ? ' 🔒' : ''}</button>)}</nav>
 
-    {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} trades={trades} positions={positions} signals={signals} signalOrders={state?.signalOrders || []} signalOrderCount={state?.signalOrderCount ?? null} tradetronEvents={state?.tradetronEvents || []} executionCoverage={state?.executionCoverage || null} onInspect={setInspect} inspect={selected} logs={state?.logs || []} />}
+    {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} trades={trades} positions={positions} signals={signals} signalOrders={state?.signalOrders || []} signalOrderCount={state?.signalOrderCount ?? null} tradetronEvents={state?.tradetronEvents || []} executionCoverage={executionCoverage} onInspect={setInspect} inspect={selected} logs={state?.logs || []} />}
     {tab === 'rotation' && <Rotation ledger={state?.ledger || []} />}
     {tab === 'momentum' && <EngineView engine="MOMENTUM" signals={signals} />}
     {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" />}
@@ -159,7 +179,7 @@ function Dashboard({ market, settings, health, trades, positions, signals, signa
     <Panel title="Tradetron Execution Coverage">
       <section className="cards">
         <Card label="LIVE FUTURES SCANNED" value={market?.length || 0} sub="Delta India perpetual tickers" />
-        <Card label="FUTURES SYMBOLS ROUTED" value={activeRoutedCount + ' / ' + (market?.length || 0)} sub={(executionCoverage?.configuredFuturesRoutes ?? 0) + ' configured bridge(s); instrument list still applies'} />
+        <Card label="FUTURES SYMBOLS ROUTED" value={activeRoutedCount + ' / ' + (market?.length || 0)} sub={(executionCoverage?.configuredFuturesRoutes ?? 0) + ' worker-confirmed bridge(s); ' + (executionCoverage?.routingStatusSource === 'worker-heartbeat' ? 'live worker telemetry' : 'API config fallback')} />
         <Card label="SCAN-ONLY SYMBOLS" value={unroutedCount} sub="No Tradetron entry can be routed for these symbols" />
         <Card label="OPTIONS UNDERLYINGS" value="BTC · ETH · GOLD" sub="Gold contract symbol: XAUT" />
         <Card label="OPTIONS EXECUTION" value={executionCoverage?.optionsRouteConfigured ? 'CONFIGURED' : 'LOCKED'} sub={executionCoverage?.optionsRouteConfigured ? 'Dedicated options route detected; validate in Live Offline' : 'Options bridge and its Tradetron token are not configured'} />
