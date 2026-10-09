@@ -3,17 +3,59 @@ import { CONFIG } from './config.js';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const clean = v => String(v ?? '').trim();
 
+// Treat unconfirmed Tradetron entry signals as reserved slots until a matching
+// fill/position event arrives. This keeps SIGNAL_ONLY from opening unlimited
+// simulated positions when activity delivery is delayed or unavailable.
+export function withSignalReservations(openPositions, pendingSignals) {
+  const positions = [...(Array.isArray(openPositions) ? openPositions : [])];
+  const occupied = new Set(positions
+    .filter(row => Math.abs(Number(row?.qty) || 0) > 0)
+    .map(row => clean(row?.symbol).toUpperCase())
+    .filter(Boolean));
+
+  for (const row of Array.isArray(pendingSignals) ? pendingSignals : []) {
+    const state = clean(row?.state).toUpperCase();
+    if (!['PENDING', 'SIGNAL_SENT'].includes(state)) continue;
+    const symbol = clean(row?.symbol).toUpperCase();
+    if (!symbol || occupied.has(symbol)) continue;
+    occupied.add(symbol);
+    const rawSide = clean(row?.side).toUpperCase();
+    positions.push({
+      symbol,
+      side: ['BUY', 'LONG'].includes(rawSide) ? 'BUY' : 'SELL',
+      qty: Math.max(1, Math.abs(Number(row?.size) || 1)),
+      strategy: clean(row?.strategy).toUpperCase(),
+      origin: 'SIGNAL_RESERVATION',
+      execution_id: clean(row?.execution_id || row?.client_order_id) || null,
+      opened_at: row?.created_at || null,
+      reservation_state: state
+    });
+  }
+  return positions;
+}
+
 export class TradetronBridge {
-  constructor() {
-    this.enabled = CONFIG.tradetronBridgeEnabled;
+  constructor({
+    enabled = CONFIG.tradetronBridgeEnabled,
+    authToken = CONFIG.tradetronAuthToken,
+    supportedSymbols = CONFIG.tradetronSupportedSymbols
+  } = {}) {
+    this.enabled = !!enabled;
     this.dynamicEnabled = CONFIG.tradetronDynamicBridgeEnabled;
     this.baseUrl = CONFIG.tradetronBaseUrl.replace(/\/$/, '');
-    this.authToken = clean(CONFIG.tradetronAuthToken);
+    this.authToken = clean(authToken);
+    this.supportedSymbols = [...new Set((Array.isArray(supportedSymbols) ? supportedSymbols : [])
+      .map(x => clean(x).toUpperCase()).filter(x => /^[A-Z0-9]+USD$/.test(x) && x !== 'USD'))];
     this.timeoutMs = Math.max(2000, Number(CONFIG.tradetronTimeoutMs) || 10000);
   }
 
   isConfigured() {
     return this.enabled && !!this.authToken;
+  }
+
+  supportsFuturesSymbol(symbol) {
+    const selected = clean(symbol).toUpperCase();
+    return this.supportedSymbols.includes(selected);
   }
 
   async sendPairs(pairs) {
@@ -76,20 +118,73 @@ export class TradetronBridge {
     if (!/^[A-Z0-9]+USD$/.test(selected)||selected==='USD') throw new Error('Tradetron futures bridge symbol is invalid: '+selected);
 
     const execution=clean(executionId), triggerKey=normalizedSide==='BUY'?'api_buy':'api_sell';
+    // Tradetron's existing Signal Bridge reads <SYMBOL>_q (not only
+    // <SYMBOL>_qty). Set quantity and price metadata before raising any entry
+    // trigger so the strategy cannot consume stale runtime values.
     const writes=[
       [selected,normalizedSide==='BUY'?1:3],
-      [selected+'_el',normalizedSide==='BUY'?1:0],
-      [selected+'_es',normalizedSide==='SELL'?1:0],
       [selected+'_xl',0],[selected+'_xs',0],
-      [selected+'_qty',quantity],[selected+'_ep',prices.entryPrice],[selected+'_sl',prices.sl],[selected+'_tp',prices.tp],
+      [selected+'_q',quantity],[selected+'_qty',quantity],
+      [selected+'_ep',prices.entryPrice],[selected+'_sl',prices.sl],[selected+'_tp',prices.tp],
       ['tt_engine',engine],['tt_symbol',selected],['tt_side',normalizedSide],['tt_qty',quantity],
       ['tt_ep',prices.entryPrice],['tt_sl',prices.sl],['tt_tp1',Number.isFinite(prices.tp1)?prices.tp1:0],['tt_tp',prices.tp],
-      ['tt_exec_id',execution],['tt_buy',normalizedSide==='BUY'?1:0],['tt_sell',normalizedSide==='SELL'?1:0],
-      [triggerKey,1],[normalizedSide==='BUY'?'api_sell':'api_buy',0]
+      ['tt_exec_id',execution],
+      [normalizedSide==='BUY'?'api_sell':'api_buy',0],
+      [selected+'_el',normalizedSide==='BUY'?1:0],
+      [selected+'_es',normalizedSide==='SELL'?1:0],
+      ['tt_buy',normalizedSide==='BUY'?1:0],
+      ['tt_sell',normalizedSide==='SELL'?1:0],
+      [triggerKey,1]
     ];
     const result=await this.sendPairs(writes);
     setTimeout(()=>this.sendPairs([[selected+'_el',0],[selected+'_es',0],[triggerKey,0],['tt_buy',0],['tt_sell',0]]).catch(()=>{}),3000);
     return {ok:!!result.ok,symbol:selected,side:normalizedSide,qty:quantity,executionId:execution,triggerKey,actionCode:normalizedSide==='BUY'?1:3,response:result.body,dynamic:true,engine,contract:'legacy_symbol_el_es+dynamic_tt_v3'};
+  }
+
+  async emitExit({ symbol, side, reason, executionId }) {
+    if (!this.isConfigured()) {
+      return { ok: false, skipped: true, reason: this.enabled ? 'TRADETRON_AUTH_TOKEN missing' : 'bridge disabled' };
+    }
+    const selected = clean(symbol).toUpperCase();
+    const normalizedSide = clean(side).toUpperCase();
+    const exitReason = clean(reason).toUpperCase() || 'SCANNER_EXIT';
+    if (!/^[A-Z0-9]+USD$/.test(selected) || selected === 'USD') {
+      throw new Error('Tradetron futures exit symbol is invalid: ' + selected);
+    }
+    if (!['BUY','SELL','LONG','SHORT'].includes(normalizedSide)) {
+      throw new Error('Tradetron exit side is invalid: ' + normalizedSide);
+    }
+    const isLong = normalizedSide === 'BUY' || normalizedSide === 'LONG';
+    const execution = clean(executionId);
+    const longExit = selected + '_xl';
+    const shortExit = selected + '_xs';
+    // Existing Signal Bridge uses _xl for closing a long and _xs for closing
+    // a short. Raise the appropriate exit flag last, after clearing entry flags.
+    const writes = [
+      [selected + '_el', 0],
+      [selected + '_es', 0],
+      ['api_buy', 0],
+      ['api_sell', 0],
+      ['tt_buy', 0],
+      ['tt_sell', 0],
+      ['tt_symbol', selected],
+      ['tt_side', isLong ? 'BUY' : 'SELL'],
+      ['tt_exit_reason', exitReason],
+      ['tt_exec_id', execution],
+      [longExit, isLong ? 1 : 0],
+      [shortExit, isLong ? 0 : 1]
+    ];
+    const result = await this.sendPairs(writes);
+    setTimeout(() => this.sendPairs([[longExit, 0], [shortExit, 0]]).catch(() => {}), 3000);
+    return {
+      ok: !!result.ok,
+      symbol: selected,
+      side: isLong ? 'BUY' : 'SELL',
+      reason: exitReason,
+      executionId: execution,
+      triggerKey: isLong ? longExit : shortExit,
+      response: result.body
+    };
   }
 
   async emitOptionSpread({ symbol, hedgeSymbol, side, qty, entryPrice, sl, tp1, tp, underlying, optionType, expiryMs, executionId }) {

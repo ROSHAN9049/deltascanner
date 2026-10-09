@@ -4,6 +4,32 @@ import * as db from '../../server/db.js';
 
 const clean = v => String(v ?? '').trim();
 
+function safeSecretEqual(candidate, expected) {
+  const left = Buffer.from(String(candidate || ''), 'utf8');
+  const right = Buffer.from(String(expected || ''), 'utf8');
+  return left.length > 0 && left.length === right.length && crypto.timingSafeEqual(left, right);
+}
+
+export function isAuthenticatedWebhookRequest(req, configuredSecret = CONFIG.tradetronWebhookSecret) {
+  const expected = clean(configuredSecret);
+  if (!expected) return false;
+
+  const headers = req.headers || {};
+  const authorization = clean(headers.authorization || headers.Authorization);
+  const bearer = authorization.match(/^Bearer\s+(.+)$/i)?.[1] || '';
+  const headerSecret = clean(headers['x-tradetron-webhook-secret'] || headers['X-Tradetron-Webhook-Secret']);
+  let querySecret = '';
+  if (typeof req.query?.secret === 'string') {
+    querySecret = req.query.secret;
+  } else {
+    try { querySecret = new URL(String(req.url || '/'), 'http://localhost').searchParams.get('secret') || ''; } catch {}
+  }
+
+  // Header authentication is preferred. The query parameter is supported for
+  // senders that cannot set headers, but should be avoided where possible.
+  return [bearer, headerSecret, querySecret].some(candidate => safeSecretEqual(candidate, expected));
+}
+
 function asObject(value) {
   if (value && typeof value === 'object') return value;
   if (typeof value !== 'string') return {};
@@ -229,6 +255,14 @@ async function recordClosedTrade(row, context, exitPrice, pnl, fees, reason) {
   }).catch(() => {});
 }
 
+async function markSignalOrderState(executionId, state) {
+  const id = clean(executionId);
+  if (!id) return;
+  await db.update('dd_orders', 'execution_id=eq.' + encodeURIComponent(id), {
+    state, updated_at: new Date().toISOString()
+  }).catch(() => {});
+}
+
 async function syncPosition({ symbol, side, qty, price, pnl, fees, eventType, status, executionId, candidates, exitReason, snapshot, context, eventId }) {
   if (!symbol) return { synced: false, reason: 'symbol_missing' };
 
@@ -240,9 +274,17 @@ async function syncPosition({ symbol, side, qty, price, pnl, fees, eventType, st
     numberValue(candidates, ['product_id','productId','instrument_id','instrumentId']) ||
     context.order?.product_id || context.signal?.product_id || context.market?.product_id
   ) || 0;
-  const strategy = clean(pick(candidates,
+  const eventStrategy = clean(pick(candidates,
     ['strategy','strategy_name','strategyName','engine','engine_name','engineName'], ''
-  )) || clean(context.order?.strategy) || clean(context.signal?.strategy) || 'TRADETRON';
+  ));
+  const linkedStrategy = clean(context.order?.strategy) || clean(context.signal?.strategy);
+  const knownEngine = value => ['MOMENTUM','SCALPING','OPTIONS_BUY','OPTIONS_SELL'].includes(clean(value).toUpperCase());
+  // Tradetron events often report the bridge/template name rather than the
+  // scanner engine. Prefer a linked scanner order/signal when it identifies
+  // a known engine so position management can apply the correct safeguards.
+  const strategy = knownEngine(linkedStrategy) ? linkedStrategy
+    : knownEngine(eventStrategy) ? eventStrategy
+    : eventStrategy || linkedStrategy || 'TRADETRON';
   const raw = context.order?.raw && typeof context.order.raw === 'object' ? context.order.raw : {};
   const stop = Number(context.signal?.stop_price || raw.stop_price || raw.stopPrice || 0);
   const tp1 = Number(context.signal?.tp1_price || raw.tp1_price || raw.tp1 || 0);
@@ -260,6 +302,7 @@ async function syncPosition({ symbol, side, qty, price, pnl, fees, eventType, st
         'execution_id=eq.' + encodeURIComponent(current.execution_id),
         { qty: 0, current_price: mark || current.current_price, requested_exit_reason: exitReason || 'MANUAL', updated_at: new Date().toISOString() }
       );
+      await markSignalOrderState(current.execution_id, 'CLOSED');
       return { synced: true, action: 'closed', executionId: current.execution_id };
     }
 
@@ -270,6 +313,8 @@ async function syncPosition({ symbol, side, qty, price, pnl, fees, eventType, st
         'execution_id=eq.' + encodeURIComponent(current.execution_id),
         { qty: nextQty, initial_qty: Math.max(Number(current.initial_qty) || 0, nextQty), current_price: mark || current.current_price, updated_at: new Date().toISOString() }
       );
+      await markSignalOrderState(context.order?.execution_id || context.order?.client_order_id, 'ACTIVE');
+      await markSignalOrderState(current.execution_id, 'ACTIVE');
       return { synced: true, action: 'updated', executionId: current.execution_id };
     }
     if (current) {
@@ -278,9 +323,10 @@ async function syncPosition({ symbol, side, qty, price, pnl, fees, eventType, st
         'execution_id=eq.' + encodeURIComponent(current.execution_id),
         { qty: 0, current_price: mark || current.current_price, requested_exit_reason: exitReason || 'MANUAL', updated_at: new Date().toISOString() }
       );
+      await markSignalOrderState(current.execution_id, 'CLOSED');
     }
     if (!productId) return { synced: false, reason: 'product_id_missing' };
-    const exec = clean(executionId) || ('TT-POS-' + symbol + '-' + Date.now().toString(36));
+    const exec = clean(context.order?.execution_id || context.order?.client_order_id || executionId) || ('TT-POS-' + symbol + '-' + Date.now().toString(36));
     await db.insert('dd_positions', {
       symbol, product_id: productId, side: nextSide, qty: nextQty,
       entry_price: entry, current_price: mark,
@@ -292,6 +338,7 @@ async function syncPosition({ symbol, side, qty, price, pnl, fees, eventType, st
       opened_at: context.order?.created_at || new Date().toISOString(),
       updated_at: new Date().toISOString()
     });
+    await markSignalOrderState(context.order?.execution_id || context.order?.client_order_id || exec, 'ACTIVE');
     return { synced: true, action: 'created', executionId: exec };
   }
 
@@ -302,7 +349,7 @@ async function syncPosition({ symbol, side, qty, price, pnl, fees, eventType, st
   if (!current) {
     if (exitReason) return { synced: false, reason: 'exit_without_open_position' };
     if (!productId) return { synced: false, reason: 'product_id_missing' };
-    const exec = clean(executionId) || ('TT-FILL-' + eventId.slice(0, 40));
+    const exec = clean(context.order?.execution_id || context.order?.client_order_id || executionId) || ('TT-FILL-' + eventId.slice(0, 40));
     await db.insert('dd_positions', {
       symbol, product_id: productId, side, qty: eventQty,
       entry_price: entry, current_price: mark || entry,
@@ -314,6 +361,7 @@ async function syncPosition({ symbol, side, qty, price, pnl, fees, eventType, st
       opened_at: context.order?.created_at || new Date().toISOString(),
       updated_at: new Date().toISOString()
     });
+    await markSignalOrderState(context.order?.execution_id || context.order?.client_order_id || exec, 'ACTIVE');
     return { synced: true, action: 'created_from_fill', executionId: exec };
   }
 
@@ -323,6 +371,8 @@ async function syncPosition({ symbol, side, qty, price, pnl, fees, eventType, st
       'execution_id=eq.' + encodeURIComponent(current.execution_id),
       { qty: nextQty, initial_qty: Math.max(Number(current.initial_qty) || 0, nextQty), current_price: mark || current.current_price, updated_at: new Date().toISOString() }
     );
+    await markSignalOrderState(context.order?.execution_id || context.order?.client_order_id, 'ACTIVE');
+    await markSignalOrderState(current.execution_id, 'ACTIVE');
     return { synced: true, action: 'increased', executionId: current.execution_id };
   }
 
@@ -332,6 +382,8 @@ async function syncPosition({ symbol, side, qty, price, pnl, fees, eventType, st
       'execution_id=eq.' + encodeURIComponent(current.execution_id),
       { qty: remaining, current_price: mark || current.current_price, requested_exit_reason: exitReason || current.requested_exit_reason || null, updated_at: new Date().toISOString() }
     );
+    await markSignalOrderState(current.execution_id, 'ACTIVE');
+    await markSignalOrderState(context.order?.execution_id || context.order?.client_order_id, 'ACTIVE');
     return { synced: true, action: 'reduced', executionId: current.execution_id };
   }
 
@@ -340,6 +392,8 @@ async function syncPosition({ symbol, side, qty, price, pnl, fees, eventType, st
     'execution_id=eq.' + encodeURIComponent(current.execution_id),
     { qty: 0, current_price: mark || current.current_price, requested_exit_reason: exitReason || 'MANUAL', updated_at: new Date().toISOString() }
   );
+  await markSignalOrderState(current.execution_id, 'CLOSED');
+  await markSignalOrderState(context.order?.execution_id || context.order?.client_order_id, 'CLOSED');
   return { synced: true, action: 'closed', executionId: current.execution_id };
 }
 
@@ -358,6 +412,12 @@ export default async function handler(req, res) {
   }
 
   if (req.method !== 'POST') return res.status(405).json({ success: false, error: 'Method not allowed' });
+  if (!CONFIG.tradetronWebhookSecret) {
+    return res.status(503).json({ success: false, error: 'Tradetron webhook authentication is not configured' });
+  }
+  if (!isAuthenticatedWebhookRequest(req)) {
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
+  }
 
   try {
     const payload = parseRequestBody(req);

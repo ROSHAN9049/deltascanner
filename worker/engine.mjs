@@ -4,7 +4,7 @@ import { CONFIG } from '../server/config.js';
 import { DeltaAdapter } from './delta-adapter.mjs';
 import { analyse, analyseOption } from './strategy.mjs';
 import * as db from '../server/db.js';
-import { TradetronBridge } from '../server/tradetron.js';
+import { TradetronBridge, withSignalReservations } from '../server/tradetron.js';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const n = v => Number.isFinite(+v) ? +v : 0;
@@ -27,6 +27,12 @@ export class DeltaEngine {
   constructor() {
     this.adapter = new DeltaAdapter();
     this.tradetron = new TradetronBridge();
+    this.tradetronOptions = new TradetronBridge({ enabled: CONFIG.tradetronOptionsBridgeEnabled, authToken: CONFIG.tradetronOptionsAuthToken });
+    this.tradetronRouteBridges = new Map((CONFIG.tradetronBridgeRoutes || []).map(route => [
+      route.id,
+      new TradetronBridge({ enabled: CONFIG.tradetronBridgeEnabled, authToken: route.authToken, supportedSymbols: route.symbols })
+    ]));
+    this.unsupportedBridgeWarnings = new Set();
     this.leaseId = crypto.randomUUID();
     this.startedAt = Date.now();
     this.lastTickAt = 0;
@@ -258,7 +264,9 @@ export class DeltaEngine {
     if (settings.emergency_stop) reasons.push('Emergency Stop');
     if (!settings.enabled || !settings.auto_trade) reasons.push('Auto OFF');
     if (openPositions.some(p => String(p.symbol) === String(signal.symbol) && n(p.qty) > 0)) reasons.push('Duplicate symbol');
-    if (openPositions.length >= Math.max(1, n(settings.max_open_positions || 3))) reasons.push('Max open positions');
+    const requestedPositionCap = Math.max(1, n(settings.max_open_positions || (CONFIG.signalOnly ? 2 : 3)));
+    const activePositionCap = CONFIG.signalOnly ? Math.min(2, requestedPositionCap) : requestedPositionCap;
+    if (openPositions.length >= activePositionCap) reasons.push('Max open positions');
     if (!signal.candlesFresh && strategy !== 'OPTIONS_BUY') reasons.push('Fresh closed candles unavailable');
     if (n(account.equity) <= 0) reasons.push('Account equity unavailable');
 
@@ -418,7 +426,7 @@ export class DeltaEngine {
           const duplicate = (openPositions || []).some(p => String(p.symbol) === s.symbol && n(p.qty) > 0);
           const optionOpenCount = (openPositions || []).filter(p => String(p.strategy || '').startsWith('OPTIONS_') && n(p.qty) > 0).length;
           const optionCap = Math.max(1, n(settings.options_max_open_positions || 1));
-          const executionLocked = !CONFIG.tradetronBridgeEnabled || !this.tradetron.isConfigured();
+          const executionLocked = !CONFIG.tradetronOptionsBridgeEnabled || !this.tradetronOptions.isConfigured();
           const blocked = [...s.blocked];
           if (q < 1) blocked.push('Risk budget below 1 contract');
           if (duplicate) blocked.push('Duplicate option position');
@@ -480,7 +488,7 @@ export class DeltaEngine {
           if (!hedge) blocked.push('Defined-risk hedge unavailable');
           if (!(credit > 0)) blocked.push('Net credit <= 0');
           if (q < 1) blocked.push('Spread risk exceeds option risk budget');
-          const optionRouteReady = CONFIG.tradetronBridgeEnabled && this.tradetron.isConfigured();
+          const optionRouteReady = CONFIG.tradetronOptionsBridgeEnabled && this.tradetronOptions.isConfigured();
           if (!optionRouteReady) blocked.push('Tradetron option signal route unavailable');
           const ready = s.ready && q >= 1 && !!hedge && credit > 0 && optionRouteReady;
           const row = { ...s, ticker: best.ticker, strategy: 'OPTIONS_SELL', qty: q,
@@ -702,7 +710,7 @@ export class DeltaEngine {
   }
 
   async openTrade(item, strategy, signal, account, settings, openPositions, trades) {
-    if (strategy === 'OPTIONS_BUY') return this.openOptionTrade(item, signal, account, settings, openPositions, trades);
+    if (strategy === 'OPTIONS_BUY' || strategy === 'OPTIONS_SELL') return this.openOptionTrade(item, signal, account, settings, openPositions, trades);
     if (signal.stage !== 'CONFIRMED' || signal.score < n(settings.score_min || 80)) return false;
     const gate = await this.riskGate(signal, strategy, account, settings, openPositions, trades);
     if (gate.reasons.length || !gate.size) return false;
@@ -711,10 +719,20 @@ export class DeltaEngine {
     // Never fall through to direct Delta order placement, which would create
     // duplicate execution paths.
     if (CONFIG.tradetronBridgeEnabled) {
-      if (!this.tradetron.isConfigured()) {
-        await this.log('ERROR', 'Tradetron bridge enabled but auth token is missing; entry blocked', {
-          symbol: signal.symbol, strategy, side: signal.side
-        });
+      const bridge = this.getTradetronBridgeForSymbol(signal.symbol);
+      if (!bridge || !bridge.isConfigured()) {
+        const warningKey = String(signal.symbol || '').toUpperCase();
+        if (!this.unsupportedBridgeWarnings.has(warningKey)) {
+          this.unsupportedBridgeWarnings.add(warningKey);
+          const configuredSymbols = Array.isArray(CONFIG.tradetronBridgeRoutes) && CONFIG.tradetronBridgeRoutes.length
+            ? CONFIG.tradetronBridgeRoutes.flatMap(route => route.symbols)
+            : CONFIG.tradetronSupportedSymbols;
+          await this.log('WARN', 'Tradetron entry blocked: no configured bridge route or API token for symbol', {
+            symbol: warningKey,
+            strategy,
+            configuredSymbols
+          });
+        }
         return false;
       }
       // One bridge execution per signal candle. This is stable across the
@@ -765,7 +783,7 @@ export class DeltaEngine {
           }
         }, 'client_order_id');
 
-        const result = await this.tradetron.emitEntry({
+        const result = await bridge.emitEntry({
           symbol: signal.symbol,
           side: signal.side,
           qty: gate.size.qty,
@@ -929,7 +947,7 @@ export class DeltaEngine {
 
   async openOptionTrade(item, signal, account, settings, openPositions, trades) {
     if (signal.stage !== 'CONFIRMED' || !signal.ready) return false;
-    if (!CONFIG.tradetronBridgeEnabled || !this.tradetron.isConfigured()) return false;
+    if (!CONFIG.tradetronOptionsBridgeEnabled || !this.tradetronOptions.isConfigured()) return false;
 
     const executionId = 'TT-OPT-' + String(signal.strategy) + '-' +
       String(signal.symbol).replace(/[^A-Z0-9]/g, '').slice(0, 18) + '-' +
@@ -939,7 +957,7 @@ export class DeltaEngine {
 
     try {
       const result = signal.strategy === 'OPTIONS_SELL'
-        ? await this.tradetron.emitOptionSpread({
+        ? await this.tradetronOptions.emitOptionSpread({
             symbol: signal.symbol,
             hedgeSymbol: signal.hedgeSymbol,
             side: 'SELL',
@@ -953,7 +971,7 @@ export class DeltaEngine {
             expiryMs: signal.expiryMs,
             executionId
           })
-        : await this.tradetron.emitOptionEntry({
+        : await this.tradetronOptions.emitOptionEntry({
             symbol: signal.symbol,
             side: 'BUY',
             qty: signal.qty,
@@ -1567,11 +1585,126 @@ export class DeltaEngine {
     }
   }
 
+  getTradetronBridgeForSymbol(symbol) {
+    const selected = String(symbol || '').toUpperCase();
+    const configuredRoutes = Array.isArray(CONFIG.tradetronBridgeRoutes) ? CONFIG.tradetronBridgeRoutes : [];
+    if (configuredRoutes.length) {
+      const route = configuredRoutes.find(item => item.symbols.includes(selected));
+      return route ? this.tradetronRouteBridges.get(route.id) || null : null;
+    }
+    return this.tradetron.supportsFuturesSymbol(selected) ? this.tradetron : null;
+  }
+
+  async getSignalOnlyPositions(openRows) {
+    const positions = Array.isArray(openRows) ? openRows : [];
+    if (!CONFIG.signalOnly || !CONFIG.tradetronBridgeEnabled) return positions;
+    try {
+      const pendingSignals = await db.select(
+        'dd_orders',
+        'order_type=eq.tradetron_signal&state=in.(PENDING,SIGNAL_SENT)' +
+        '&select=symbol,side,strategy,size,execution_id,client_order_id,created_at,state' +
+        '&order=created_at.desc&limit=500'
+      );
+      return withSignalReservations(positions, pendingSignals || []);
+    } catch (error) {
+      await this.log('ERROR', 'Tradetron slot reservation lookup failed; new entries blocked', {
+        error: error.message
+      });
+      return null;
+    }
+  }
+
+  async manageTradetronPositions(rows, settings = {}) {
+    if (!CONFIG.signalOnly || !CONFIG.tradetronBridgeEnabled) return;
+    const marketAge = Date.now() - Math.max(this.lastTickerFetch || 0, this.lastTickAt || 0);
+    if (marketAge > 90000) {
+      await this.log('WARN', 'Tradetron exit monitor skipped because market data is stale', { marketAgeMs: marketAge });
+      return;
+    }
+
+    const now = Date.now();
+    const timeoutMs = Math.max(1, n(settings.max_hold_minutes || 240)) * 60000;
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const symbol = String(row.symbol || '').toUpperCase();
+      const strategy = String(row.strategy || '').toUpperCase();
+      const qty = Math.abs(n(row.qty));
+      const sideValue = String(row.side || '').toUpperCase();
+      const side = ['BUY', 'LONG'].includes(sideValue) ? 'BUY'
+        : ['SELL', 'SHORT'].includes(sideValue) ? 'SELL' : '';
+      // This manager intentionally handles only the existing fixed futures
+      // Signal Bridge. Options have separate instrument/hedge semantics.
+      if (row.origin !== 'TRADETRON' || qty <= 0 ||
+          !/^[A-Z0-9]+USD$/.test(symbol) || symbol === 'USD' ||
+          !['MOMENTUM', 'SCALPING'].includes(strategy) || !side) continue;
+
+      const existingReason = String(row.requested_exit_reason || '').toUpperCase();
+      const updatedAt = Date.parse(row.updated_at || 0) || 0;
+      if (existingReason.startsWith('BRIDGE_EXIT:')) continue;
+      if (existingReason && !existingReason.startsWith('BRIDGE_EXIT_PENDING:')) continue;
+      if (existingReason.startsWith('BRIDGE_EXIT_PENDING:') && now - updatedAt < 120000) continue;
+
+      const ticker = this.tickerMap.get(symbol);
+      const mark = n(ticker?.mark_price || ticker?.close || ticker?.price);
+      if (!(mark > 0)) continue;
+      const stop = n(row.stop_price);
+      const target = n(row.tp_price);
+      let reason = '';
+
+      if (side === 'BUY') {
+        if (stop > 0 && mark <= stop) reason = 'STOP_LOSS';
+        else if (target > 0 && mark >= target) reason = 'TAKE_PROFIT';
+      } else {
+        if (stop > 0 && mark >= stop) reason = 'STOP_LOSS';
+        else if (target > 0 && mark <= target) reason = 'TAKE_PROFIT';
+      }
+
+      const openedAt = Date.parse(row.opened_at || 0) || 0;
+      if (!reason && openedAt > 0 && now - openedAt >= timeoutMs) reason = 'TIMEOUT';
+      if (!reason) continue;
+
+      const bridge = this.getTradetronBridgeForSymbol(symbol);
+      if (!bridge || !bridge.isConfigured()) continue;
+      const executionId = String(row.execution_id || row.client_order_id || '');
+      try {
+        await db.update('dd_positions',
+          'execution_id=eq.' + encodeURIComponent(executionId),
+          { requested_exit_reason: 'BRIDGE_EXIT_PENDING:' + reason, current_price: mark, updated_at: iso() }
+        );
+        const result = await bridge.emitExit({ symbol, side, reason, executionId });
+        if (!result.ok) {
+          // A confirmed non-success can be retried on the next loop.
+          await db.update('dd_positions',
+            'execution_id=eq.' + encodeURIComponent(executionId),
+            { requested_exit_reason: null, updated_at: iso() }
+          ).catch(() => {});
+          await this.log('ERROR', 'Tradetron exit signal was not accepted', {
+            symbol, side, qty, reason, executionId, response: result.response || null
+          });
+          continue;
+        }
+        await db.update('dd_positions',
+          'execution_id=eq.' + encodeURIComponent(executionId),
+          { requested_exit_reason: 'BRIDGE_EXIT:' + reason, current_price: mark, updated_at: iso() }
+        );
+        await this.log('INFO', 'Tradetron exit trigger sent from scanner risk monitor', {
+          symbol, side, qty, mark, stop, target, reason, executionId,
+          triggerKey: result.triggerKey || null
+        });
+      } catch (error) {
+        // Leave the pending marker for two minutes: the request may have
+        // reached Tradetron even if the network response was lost.
+        await this.log('ERROR', 'Tradetron exit monitor failed closed', {
+          symbol, side, qty, reason, executionId, error: error.message
+        });
+      }
+    }
+  }
+
   async scanOnce() {
     await this.acquireLease();
     const settings = { ...{
       enabled: true, auto_trade: true, emergency_stop: false, continuous_mode: true,
-      max_open_positions: 3, risk_pct: 0.3, max_leverage: 3, score_min: 65,
+      max_open_positions: 2, risk_pct: 0.3, max_leverage: 3, score_min: 65,
       options_underlyings: 'BTC,ETH,XAUT',
       momentum_sl_min_pct: 0.95, scalping_sl_min_pct: 0.75, momentum_rr: 2.5,
       scalping_rr: 2.5, tp1_pct: 33, max_hold_minutes: 240
@@ -1609,12 +1742,23 @@ export class DeltaEngine {
       }
       openRows = await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
     }
+    // In production SIGNAL_ONLY mode, manage exits only for verified Tradetron
+    // futures positions materialized by the outbound activity webhook. This
+    // does not submit any direct Delta Exchange order.
+    if (CONFIG.signalOnly) await this.manageTradetronPositions(openRows || [], settings);
+    let riskPositions = openRows || [];
+    let reservationLookupFailed = false;
+    if (CONFIG.signalOnly) {
+      const merged = await this.getSignalOnlyPositions(openRows || []);
+      if (Array.isArray(merged)) riskPositions = merged;
+      else reservationLookupFailed = true;
+    }
     const trades = await this.recentTrades();
     if (Date.now() - this.lastAnalysis > 55000 || !this.lastSignals.length) {
-      await this.analyseUniverse(account, settings, openRows || [], trades || []);
+      await this.analyseUniverse(account, settings, riskPositions, trades || []);
       this.lastAnalysis = Date.now();
     }
-    const positions = openRows || [];
+    const positions = riskPositions;
     if (settings.enabled && settings.auto_trade && !settings.emergency_stop) {
       const candidates = [];
       for (const item of this.lastSignals) {
@@ -1641,7 +1785,8 @@ export class DeltaEngine {
         return (rank[b.strategy] || 0) - (rank[a.strategy] || 0);
       });
 
-      const maxPositions = CONFIG.signalOnly ? Number.POSITIVE_INFINITY : Math.max(1, n(settings.max_open_positions || 3));
+      const configuredMaxPositions = Math.max(1, n(settings.max_open_positions || (CONFIG.signalOnly ? 2 : 3)));
+      const maxPositions = CONFIG.signalOnly ? Math.min(2, configuredMaxPositions) : configuredMaxPositions;
 
       // Signal-only mode is execution-routed through Tradetron. Keep a small
       // rolling guard so the 15s scanner loop cannot flood the external API,
@@ -1664,11 +1809,16 @@ export class DeltaEngine {
       }
 
       for (const c of candidates) {
-        if (CONFIG.signalOnly && bridgeSignalsInWindow >= 3) break;
+        if (CONFIG.signalOnly && (reservationLookupFailed || bridgeSignalsInWindow >= 3)) break;
         const freshAccount = await this.accountSnapshot(settings);
-        const freshPositions = CONFIG.signalOnly ? await db.select('dd_positions', 'origin=eq.TRADETRON&qty=gt.0&order=updated_at.desc') : await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
-        if ((freshPositions || []).length >= maxPositions) break;
-        const opened = await this.openTrade(c.item, c.strategy, c.signal, freshAccount, settings, freshPositions || [], trades);
+        const storedPositions = CONFIG.signalOnly ? await db.select('dd_positions', 'origin=eq.TRADETRON&qty=gt.0&order=updated_at.desc') : await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
+        const freshPositions = CONFIG.signalOnly ? await this.getSignalOnlyPositions(storedPositions || []) : (storedPositions || []);
+        if (!Array.isArray(freshPositions)) {
+          reservationLookupFailed = true;
+          break;
+        }
+        if (freshPositions.length >= maxPositions) break;
+        const opened = await this.openTrade(c.item, c.strategy, c.signal, freshAccount, settings, freshPositions, trades);
         if (opened) {
           if (CONFIG.signalOnly) bridgeSignalsInWindow++;
           await sleep(250);
