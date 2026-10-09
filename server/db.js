@@ -36,12 +36,16 @@ export async function count(table, query) {
   };
   if (!key.startsWith('sb_secret_')) headers.Authorization = 'Bearer ' + key;
   const path = table + '?' + (query || 'select=id');
-  const res = await fetch(CONFIG.supabaseUrl.replace(/\\/$/, '') + '/rest/v1/' + path, { headers });
+  const baseUrl = CONFIG.supabaseUrl.replace(/\/$/, '');
+  const res = await fetch(baseUrl + '/rest/v1/' + path, { headers });
   const txt = await res.text();
   if (!res.ok) throw new Error('Supabase count ' + res.status + ': ' + txt.slice(0, 500));
   const range = res.headers.get('content-range') || '';
-  const total = range.match(/\\/(\\d+|\\*)$/);
-  if (total && total[1] !== '*') return Number(total[1]);
+  const totalText = range.split('/').at(-1);
+  if (totalText && totalText !== '*') {
+    const total = Number(totalText);
+    if (Number.isSafeInteger(total) && total >= 0) return total;
+  }
   const rows = txt ? JSON.parse(txt) : [];
   return Array.isArray(rows) ? rows.length : 0;
 }
