@@ -17,6 +17,16 @@ const roundDown = (v, step) => {
   return Math.floor(v / s) * s;
 };
 const roundTick = (v, tick) => tick > 0 ? Math.round(v / tick) * tick : v;
+export const OPTION_UNDERLYINGS = Object.freeze(['BTC', 'ETH', 'XAUT']);
+
+export function tradetronRouteBlocker({ signalOnly, bridgeEnabled, strategy, signal, bridge }) {
+  const engine = String(strategy || '').toUpperCase();
+  if (!signalOnly || !['MOMENTUM', 'SCALPING'].includes(engine)) return '';
+  if (String(signal?.stage || '').toUpperCase() !== 'CONFIRMED' || !signal?.side) return '';
+  if (bridgeEnabled && bridge && typeof bridge.isConfigured === 'function' && bridge.isConfigured()) return '';
+  return 'Tradetron route unavailable: ' + String(signal?.symbol || '').toUpperCase();
+}
+
 const cleanPrice = v => {
   const x = n(v);
   if (!(x > 0)) return String(v);
@@ -161,8 +171,21 @@ export class DeltaEngine {
         };
       });
     await db.upsertMany('dd_market_cache', rows, 'symbol');
+    await this.removeStaleUniverseRows('dd_market_cache', rows.map(row => row.symbol));
     this.lastMarketCacheWrite = Date.now();
     await this.log('INFO', 'Full Delta market cache refreshed', { perpetuals: rows.length });
+  }
+
+  async removeStaleUniverseRows(table, symbols) {
+    const keep = [...new Set((Array.isArray(symbols) ? symbols : [])
+      .map(value => String(value || '').toUpperCase())
+      .filter(value => /^[A-Z0-9]+USD$/.test(value)))];
+    if (!keep.length) return; // Fail closed: never delete cache rows when the active universe is empty.
+    try {
+      await db.remove(table, 'symbol=not.in.(' + keep.join(',') + ')');
+    } catch (error) {
+      await this.log('WARN', 'Stale market-universe cache cleanup failed', { table, error: error.message });
+    }
   }
 
   async refreshCandle(symbol, resolution) {
@@ -263,6 +286,14 @@ export class DeltaEngine {
 
     if (settings.emergency_stop) reasons.push('Emergency Stop');
     if (!settings.enabled || !settings.auto_trade) reasons.push('Auto OFF');
+    const routeBlock = tradetronRouteBlocker({
+      signalOnly: CONFIG.signalOnly,
+      bridgeEnabled: CONFIG.tradetronBridgeEnabled,
+      strategy,
+      signal,
+      bridge: this.getTradetronBridgeForSymbol(signal.symbol)
+    });
+    if (routeBlock) reasons.push(routeBlock);
     if (openPositions.some(p => String(p.symbol) === String(signal.symbol) && n(p.qty) > 0)) reasons.push('Duplicate symbol');
     const requestedPositionCap = Math.max(1, n(settings.max_open_positions || (CONFIG.signalOnly ? 2 : 3)));
     const activePositionCap = CONFIG.signalOnly ? Math.min(2, requestedPositionCap) : requestedPositionCap;
@@ -288,9 +319,8 @@ export class DeltaEngine {
       if (n(signal.feeRiskRatio) > n(signal.costGateRatio)) reasons.push('Fee + spread exceeds 1R cost budget');
     }
 
-    // Standard Tradetron Signal Bridge is basket-based. Any Delta futures
-    // symbol is eligible here as long as the already-deployed Tradetron
-    // strategy exposes that symbol's bridge variables.
+    // Tradetron route readiness is enforced above so a technical CONFIRMED
+    // setup outside a configured bridge basket is never marked READY.
 
     const todayNet = trades.filter(t => String(t.closed_at || '').slice(0, 10) === today()).reduce((s, t) => s + n(t.net_pnl), 0);
     if (todayNet <= -n(account.equity) * 0.01) reasons.push('Daily loss 1% hard stop');
@@ -320,11 +350,9 @@ export class DeltaEngine {
   }
 
   async refreshOptionTickers() {
-    const configured = String(this.currentSettings?.options_underlyings || 'BTC,ETH,XAUT')
-      .split(',')
-      .map(x => x.trim().toUpperCase())
-      .filter(x => /^[A-Z0-9]+$/.test(x));
-    const underlyings = [...new Set(configured.length ? configured : ['BTC', 'ETH', 'XAUT'])];
+    // Options trading is intentionally limited to BTC, ETH and Gold (Delta symbol XAUT).
+    // This allowlist is independent of the much larger perpetual-futures scan universe.
+    const underlyings = [...OPTION_UNDERLYINGS];
     const results = await Promise.all(underlyings.map(async underlying => {
       try {
         const rows = await this.adapter.optionTickers(underlying);
@@ -391,7 +419,7 @@ export class DeltaEngine {
       maxSpreadPct: settings.options_max_spread_pct,
       minDays: settings.options_min_days_to_expiry,
       maxDays: settings.options_max_days_to_expiry,
-      scoreMin: settings.score_min,
+      scoreMin: Math.max(80, n(settings.score_min || 80)),
       buyStopPct: settings.options_buy_stop_pct,
       buyTp1Pct: settings.options_buy_tp1_pct,
       buyTpPct: settings.options_buy_tp_pct
@@ -411,6 +439,7 @@ export class DeltaEngine {
     for (const item of futuresItems || []) {
       const underlying = [item.mom, item.scalp].filter(Boolean).sort((a, b) => n(b.score) - n(a.score))[0];
       const asset = String(item.ticker?.symbol || '').toUpperCase().replace(/USD$/, '');
+      if (!OPTION_UNDERLYINGS.includes(asset)) continue;
       const chain = chains.get(asset) || [];
       if (!underlying || !chain.length) continue;
 
@@ -542,7 +571,7 @@ export class DeltaEngine {
       const mom = analyse(ticker, p, c1, c5, c15, btc5, btc15, 'MOMENTUM', {
         minStopPct: n(settings.momentum_sl_min_pct || 0.95),
         rr: n(settings.momentum_rr || 2.0),
-        scoreMin: n(settings.score_min || 65),
+        scoreMin: Math.max(80, n(settings.score_min || 80)),
         volumeMin: n(settings.volume_min || 0.75),
         antiChasePct: n(settings.anti_chase_pct || 15),
         rangeAtrMax: n(settings.range_atr_max || 4.0),
@@ -555,7 +584,7 @@ export class DeltaEngine {
       const scalp = analyse(ticker, p, c1, c5, c15, btc5, btc15, 'SCALPING', {
         minStopPct: n(settings.scalping_sl_min_pct || 0.75),
         rr: n(settings.scalping_rr || 2.0),
-        scoreMin: n(settings.score_min || 70),
+        scoreMin: Math.max(80, n(settings.score_min || 80)),
         volumeMin: n(settings.volume_min || 1.25),
         antiChasePct: n(settings.anti_chase_pct || 15),
         rangeAtrMax: n(settings.range_atr_max || 3.0),
@@ -623,6 +652,7 @@ export class DeltaEngine {
       item.options = byUnderlying.get(key) || {};
     }
     await db.upsertMany('dd_signal_cache', signalCacheRows, 'cache_key');
+    await this.removeStaleUniverseRows('dd_signal_cache', signalCacheRows.map(row => row.symbol));
 
     const optionCache = new Map();
     for (const s of optionSignals) {

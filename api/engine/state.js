@@ -19,8 +19,24 @@ export default async function handler(req, res) {
       select('dd_orders', 'order_type=eq.tradetron_signal&order=created_at.desc&limit=200'),
       select('dd_tradetron_events', 'order=created_at.desc&limit=200')
     ]);
+    const routeTable = Array.isArray(CONFIG.tradetronBridgeRoutes) ? CONFIG.tradetronBridgeRoutes : [];
+    const legacyFuturesConfigured = CONFIG.tradetronBridgeEnabled && !!CONFIG.tradetronAuthToken;
+    const routedFuturesSymbols = routeTable.length
+      ? [...new Set(routeTable.filter(route => route.authToken).flatMap(route => route.symbols))]
+      : (legacyFuturesConfigured ? [...new Set(CONFIG.tradetronSupportedSymbols)] : []);
+    const configuredFuturesRoutes = routeTable.length
+      ? routeTable.filter(route => route.authToken).length
+      : (legacyFuturesConfigured ? 1 : 0);
+
     return res.status(200).json({
       success: true, environment: CONFIG.environment,
+      executionCoverage: {
+        routedFuturesSymbols: routedFuturesSymbols.length,
+        configuredFuturesRoutes,
+        optionsUnderlyings: ['BTC', 'ETH', 'XAUT'],
+        optionsRouteConfigured: CONFIG.tradetronOptionsBridgeEnabled && !!CONFIG.tradetronOptionsAuthToken,
+        directDeltaExecutionEnabled: false
+      },
       settings: settings?.[0] || null,
       positions: positions || [], signals: signals || [],
       signalCache: signalCache || [], marketCache: marketCache || [], optionCache: optionCache || [],

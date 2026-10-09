@@ -31,7 +31,7 @@ Production public WebSocket: wss://public-socket.india.delta.exchange
 Authentication uses HMAC-SHA256 over HTTP method + Unix timestamp + request path + query string + JSON body. client_order_id is limited to 32 characters. Products expose contract_value, tick_size, leverage/notional limits and maker/taker commission rates. Wallet balances are available at /v2/wallet/balances, positions at /v2/positions and /v2/positions/margined, fills at /v2/fills, orders at /v2/orders, and bracket protection at /v2/orders/bracket.
 
 ## Strategy
-Two closed-candle engines: MOMENTUM and SCALPING. Both use trend/RSI/volume/ATR/anti-chase/BTC-regime/spread/cost gates and require score >= 80 for CONFIRMED. Quantity is integer contracts sized from equity risk and product contract_value, capped by configured 3x notional.
+Two closed-candle engines: MOMENTUM and SCALPING. Both use trend/RSI/volume/ATR/anti-chase/BTC-regime/spread/cost gates and enforce a hard minimum score of 80 for CONFIRMED. A confirmed futures signal is not marked READY unless its symbol maps to a configured Tradetron route. Quantity is integer contracts sized from equity risk and product contract_value, capped by configured 3x notional.
 
 Continuous Mode is ON by default on TESTNET. It removes automatic loss pauses/cooldowns/throttles/daily limit while keeping technical safeguards and a configurable max-open-position cap (default 2). Turning it OFF restores the conservative 3-per-engine / 6-total / 15m cooldown / 90m losing-symbol / 2-loss pause / 3% daily loss / expectancy throttle rules.
 
@@ -60,7 +60,7 @@ Optional:
 - `TRADETRON_BASE_URL=https://api.tradetron.tech`
 - `TRADETRON_TIMEOUT_MS=10000`
 
-A separate Options route is disabled by default. Only after creating and verifying a dedicated Options strategy in Tradetron, configure:
+A separate Options route is disabled by default. The Options scanner is hard-limited to BTC, ETH and Gold (Delta underlying symbol XAUT); it never scans/options-routes the full perpetual-futures universe. Only after creating and verifying a dedicated Options strategy in Tradetron, configure:
 - `TRADETRON_OPTIONS_BRIDGE_ENABLED=true`
 - `TRADETRON_OPTIONS_AUTH_TOKEN=<token linked to that separate Options strategy>`
 

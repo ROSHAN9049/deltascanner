@@ -10,5 +10,5 @@ export async function publicGet(path, params) {
   if (!response.ok) throw new Error('Delta public ' + response.status + ': ' + text.slice(0, 300));
   const data = JSON.parse(text);
   if (data.success === false) throw new Error('Delta public API error');
-  return { result: data.result, date: response.headers.get('date') };
+  return { result: data.result, meta: data.meta || {}, date: response.headers.get('date') };
 }
