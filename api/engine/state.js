@@ -18,7 +18,10 @@ export default async function handler(req, res) {
       select('dd_daily_pnl', 'order=trade_date.desc&limit=1'),
       select('dd_orders', 'order_type=eq.tradetron_signal&order=created_at.desc&limit=200'),
       select('dd_tradetron_events', 'order=created_at.desc&limit=200'),
-      count('dd_orders', 'order_type=eq.tradetron_signal&select=id')
+      count('dd_orders', 'order_type=eq.tradetron_signal&select=id').catch(error => {
+        console.error('[engine/state] exact Tradetron signal count unavailable:', error.message);
+        return null;
+      })
     ]);
     const routeTable = Array.isArray(CONFIG.tradetronBridgeRoutes) ? CONFIG.tradetronBridgeRoutes : [];
     const legacyFuturesConfigured = CONFIG.tradetronBridgeEnabled && !!CONFIG.tradetronAuthToken;
@@ -44,7 +47,8 @@ export default async function handler(req, res) {
       positions: positions || [], signals: signals || [],
       signalCache: signalCache || [], marketCache: marketCache || [], optionCache: optionCache || [],
       trades: trades || [], logs: logs || [], ledger: ledger || [], counters: counters?.[0] || null,
-      daily: daily?.[0] || null, signalOrders: signalOrders || [], signalOrderCount: Number(signalOrderCount) || 0,
+      daily: daily?.[0] || null, signalOrders: signalOrders || [],
+      signalOrderCount: signalOrderCount == null ? null : Number(signalOrderCount),
       tradetronEvents: tradetronEvents || []
     });
   } catch (e) {
