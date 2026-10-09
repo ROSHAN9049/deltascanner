@@ -5,6 +5,7 @@ import { DeltaAdapter } from './delta-adapter.mjs';
 import { analyse, analyseOption } from './strategy.mjs';
 import * as db from '../server/db.js';
 import { TradetronBridge, withSignalReservations } from '../server/tradetron.js';
+import { createGridState, evaluateGridTick } from './grid-strategy.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const n = v => Number.isFinite(+v) ? +v : 0;
@@ -59,6 +60,8 @@ export class DeltaEngine {
     this.lastAnalysis = 0;
     this.lastReconcile = 0;
     this.lastAccount = 0;
+    this.lastGridCandleRefresh = 0;
+    this.gridCandleSymbol = '';
     this.lastSignals = [];
     this.lastOptionSignals = [];
     this.optionTickerMap = new Map();
@@ -100,6 +103,66 @@ export class DeltaEngine {
 
   async updateEngineState(patch) {
     try { await db.update('dd_settings', 'id=eq.1', { ...patch, updated_at: iso() }); } catch (e) { await this.log('ERROR', 'State persistence failed', { error: e.message }); }
+  }
+
+  async manageGridStrategy(settings, account) {
+    let priorState = settings.grid_state;
+    if (typeof priorState === 'string') {
+      try { priorState = JSON.parse(priorState); } catch { priorState = null; }
+    }
+    if (!priorState || typeof priorState !== 'object' || Array.isArray(priorState)) priorState = createGridState();
+    const symbol = ['BTCUSD', 'ETHUSD'].includes(String(settings.grid_symbol || '').toUpperCase())
+      ? String(settings.grid_symbol || 'ETHUSD').toUpperCase() : 'ETHUSD';
+    const ticker = this.tickerMap.get(symbol);
+    const product = this.productMap.get(symbol) || {};
+    const mark = n(ticker?.mark_price || ticker?.close);
+    if (!(mark > 0)) {
+      await this.log('WARN', 'Grid strategy waiting for selected symbol price', { symbol });
+      return;
+    }
+
+    let dataFresh = settings.grid_enabled !== true;
+    if (settings.grid_enabled === true || (Array.isArray(priorState.positions) && priorState.positions.length > 0)) {
+      const needsRefresh = this.gridCandleSymbol !== symbol || Date.now() - this.lastGridCandleRefresh >= 15000;
+      if (needsRefresh) {
+        try {
+          await this.refreshCandle(symbol, '1m');
+          this.gridCandleSymbol = symbol;
+          this.lastGridCandleRefresh = Date.now();
+        } catch (error) {
+          await this.log('WARN', 'Grid candle refresh failed; new entries remain blocked', { symbol, error: error.message });
+        }
+      }
+      dataFresh = this.gridCandleSymbol === symbol &&
+        Date.now() - this.lastGridCandleRefresh < 60000 &&
+        this.getCandles(symbol, '1m').length >= 6;
+    }
+
+    const result = evaluateGridTick({
+      settings: { ...settings, grid_symbol: symbol },
+      state: priorState,
+      price: mark,
+      equity: n(account?.equity),
+      available: n(account?.available),
+      contractValue: n(product.contract_value) || 1,
+      makerFeeRate: Number.isFinite(Number(product.maker_commission_rate)) ? Number(product.maker_commission_rate) : 0.0002,
+      slippagePct: 0.02,
+      candles: this.getCandles(symbol, '1m'),
+      dataFresh,
+      emergencyStop: settings.emergency_stop === true,
+      timestamp: Date.now(),
+      maxLeverage: n(settings.max_leverage) || 3
+    });
+    await db.update('dd_settings', 'id=eq.1', { grid_state: result.state, updated_at: iso() });
+
+    const eventTime = result.state.lastTickAt;
+    const newEvents = (result.state.events || []).filter(event => event.at === eventTime);
+    for (const event of newEvents) {
+      if (!['ENTRY', 'EXIT', 'HALT', 'PAUSE', 'BLOCK'].includes(event.type)) continue;
+      await this.log(event.type === 'HALT' ? 'WARN' : event.type === 'BLOCK' ? 'WARN' : 'INFO',
+        'Grid strategy ' + event.type,
+        { symbol, ...event, simulatorOnly: true, liveOrdersSent: false });
+    }
   }
 
   async refreshProducts() {
@@ -1752,6 +1815,13 @@ export class DeltaEngine {
     if (settings.options_enabled !== false && (Date.now() - this.lastOptionTickerFetch > 60000 || !this.optionTickerMap.size)) await this.refreshOptionTickers();
 
     const account = await this.accountSnapshot(settings);
+    try {
+      await this.manageGridStrategy(settings, account);
+    } catch (error) {
+      await this.log('ERROR', 'Grid strategy cycle failed without affecting the main scanner', {
+        error: error.message, symbol: settings.grid_symbol || 'ETHUSD'
+      });
+    }
     // In production SIGNAL_ONLY mode, dd_positions are legacy scanner-owned
     // execution records and must never be treated as live positions. Tradetron
     // owns execution; actual Offline positions arrive through the Tradetron

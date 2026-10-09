@@ -381,3 +381,18 @@ alter table public.dd_daily_pnl enable row level security;
 alter table public.dd_rotation_ledger enable row level security;
 alter table public.dd_counters enable row level security;
 alter table public.dd_engine_logs enable row level security;
+
+-- Dedicated Grid Strategy controls/state. The simulator stores its ledger in dd_settings
+-- and remains isolated from Tradetron and direct Delta order execution by default.
+alter table public.dd_settings add column if not exists grid_enabled boolean not null default false;
+alter table public.dd_settings add column if not exists grid_symbol text not null default 'ETHUSD';
+alter table public.dd_settings add column if not exists grid_upper_price numeric not null default 0;
+alter table public.dd_settings add column if not exists grid_lower_price numeric not null default 0;
+alter table public.dd_settings add column if not exists grid_levels_count integer not null default 10;
+alter table public.dd_settings add column if not exists grid_max_positions integer not null default 4;
+alter table public.dd_settings add column if not exists grid_risk_per_trade_pct numeric not null default 1;
+alter table public.dd_settings add column if not exists grid_daily_loss_pct numeric not null default 2;
+alter table public.dd_settings add column if not exists grid_max_drawdown_pct numeric not null default 5;
+alter table public.dd_settings add column if not exists grid_momentum_pause_pct numeric not null default 2.5;
+alter table public.dd_settings add column if not exists grid_reduce_after_losses boolean not null default true;
+alter table public.dd_settings add column if not exists grid_state jsonb not null default '{"version":1,"status":"OFF","positions":[],"trades":[],"events":[],"realizedPnl":0,"dayPnl":0,"dayStartEquity":0,"strategyStartEquity":0,"highWaterEquity":0,"consecutiveLosses":0,"pausedReason":null,"lastPrice":0,"currentPrice":0,"unrealizedPnl":0,"currentEquity":0,"drawdownPct":0,"openRiskUsd":0,"tradeDate":null,"lastTickAt":null,"wasEnabled":false,"momentum":{"paused":false,"direction":"NONE","movePct":0,"retracementPct":0}}'::jsonb;
