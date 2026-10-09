@@ -115,10 +115,12 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
         <button className="action" disabled={busy || !readyToStart} onClick={save}>Save Configuration</button>
         <button className="action gridStart" disabled={busy || !readyToStart || settings.grid_enabled === true || !!gridState.pausedReason} onClick={start}>Start Offline Test</button>
         <button className="action" disabled={busy || settings.grid_enabled !== true} onClick={pause}>Pause New Entries</button>
-        <button className="dangerBtn" disabled={busy || lockedConfig || !gridState.pausedReason} onClick={reset}>Reset Hard Stop</button>
+        <button className="dangerBtn" disabled={busy || lockedConfig || !gridState.pausedReason || settings.emergency_stop === true || ['DAILY_LOSS_LIMIT','OVERALL_DRAWDOWN_STOP'].includes(gridState.pausedReason)} onClick={reset}>Reset Range / E-Stop</button>
       </div>
       {!valid ? <div className="errorText">Set a valid lower and upper price and choose 8–12 grid levels before starting. Upper must be greater than lower.</div> : null}
       {lockedConfig ? <div className="lockedText">Grid range and instrument edits are locked while a simulated position is open. Pause entries and let positions exit or reset only after positions are closed.</div> : null}
+      {gridState.pausedReason === 'DAILY_LOSS_LIMIT' ? <div className="errorText">Daily stop reached. It cannot be reset during the same India trading day; it will clear on the next trading day after a fresh engine tick.</div> : null}
+      {gridState.pausedReason === 'OVERALL_DRAWDOWN_STOP' ? <div className="errorText">The 5% overall drawdown stop is terminal for this grid run. Keep this run halted; do not reset its capital baseline to resume.</div> : null}
       <div className="lockedText">
         <b>Risk sizing guard:</b> The configured 1–1.5% is a target, not a promise. Actual per-position risk is capped at the smaller of that target or daily-loss limit ÷ max positions, and rounded down to whole contracts. If one contract exceeds its risk budget, the entry is skipped. The 5% strategy drawdown limit and 1.2% full-range break close all simulated positions and hard-stop the grid.
       </div>
