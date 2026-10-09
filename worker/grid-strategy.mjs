@@ -184,6 +184,13 @@ export function evaluateGridTick({
     trades: Array.isArray(prior.trades) ? [...prior.trades] : [],
     events: Array.isArray(prior.events) ? [...prior.events] : []
   };
+  const signature = [cfg.symbol, cfg.lowerPrice, cfg.upperPrice, cfg.levelCount].join('|');
+  if (state.configSignature && state.configSignature !== signature) {
+    state.lastPrice = 0;
+    state.wasEnabled = false;
+  }
+  state.configSignature = signature;
+  state.symbol = cfg.symbol;
   const currentPrice = n(price);
   const capital = n(equity);
   const cv = n(contractValue) > 0 ? n(contractValue) : 1;
