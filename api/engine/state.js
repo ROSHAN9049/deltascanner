@@ -23,14 +23,30 @@ export default async function handler(req, res) {
         return null;
       })
     ]);
+    // The Vercel API and Railway worker have separate environment variables.
+    // Prefer routing status reported by the live worker heartbeat; otherwise a
+    // Vercel-side missing token could incorrectly show zero routes while Railway
+    // is correctly configured.
+    const heartbeatLog = (logs || []).find(row =>
+      row?.message === 'Worker heartbeat scan' && row?.data?.tradetronRouting
+    );
+    const workerRouting = heartbeatLog?.data?.tradetronRouting || null;
     const routeTable = Array.isArray(CONFIG.tradetronBridgeRoutes) ? CONFIG.tradetronBridgeRoutes : [];
     const legacyFuturesConfigured = CONFIG.tradetronBridgeEnabled && !!CONFIG.tradetronAuthToken;
-    const routedFuturesSymbols = routeTable.length
+    const localSymbols = routeTable.length
       ? [...new Set(routeTable.filter(route => route.authToken).flatMap(route => route.symbols))]
       : (legacyFuturesConfigured ? [...new Set(CONFIG.tradetronSupportedSymbols)] : []);
-    const configuredFuturesRoutes = routeTable.length
-      ? routeTable.filter(route => route.authToken).length
-      : (legacyFuturesConfigured ? 1 : 0);
+    const routedFuturesSymbols = workerRouting && Array.isArray(workerRouting.supportedSymbols)
+      ? [...new Set(workerRouting.supportedSymbols.map(symbol => String(symbol || '').toUpperCase()).filter(Boolean))]
+      : localSymbols;
+    const configuredFuturesRoutes = workerRouting
+      ? Number(workerRouting.configuredRoutes) || 0
+      : (routeTable.length
+        ? routeTable.filter(route => route.authToken).length
+        : (legacyFuturesConfigured ? 1 : 0));
+    const optionsRouteConfigured = workerRouting
+      ? workerRouting.optionsRouteConfigured === true
+      : CONFIG.tradetronOptionsBridgeEnabled && !!CONFIG.tradetronOptionsAuthToken;
 
     return res.status(200).json({
       success: true, environment: CONFIG.environment,
@@ -39,8 +55,10 @@ export default async function handler(req, res) {
         routedSymbols: routedFuturesSymbols,
         configuredFuturesRoutes,
         optionsUnderlyings: ['BTC', 'ETH', 'XAUT'],
-        optionsRouteConfigured: CONFIG.tradetronOptionsBridgeEnabled && !!CONFIG.tradetronOptionsAuthToken,
+        optionsRouteConfigured,
         webhookSecretConfigured: !!CONFIG.tradetronWebhookSecret,
+        routingStatusSource: workerRouting ? 'worker-heartbeat' : 'vercel-config-fallback',
+        routingObservedAt: heartbeatLog?.created_at || null,
         directDeltaExecutionEnabled: false
       },
       settings: settings?.[0] || null,
