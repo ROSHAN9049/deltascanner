@@ -54,14 +54,31 @@ export default async function handler(req, res) {
       if (gridPositions.length > 0) {
         return res.status(409).json({ success: false, error: 'Close all grid positions before resetting a hard stop.' });
       }
+      if (current.emergency_stop === true) {
+        return res.status(409).json({ success: false, error: 'Turn off the global emergency stop before resetting the grid.' });
+      }
+      if (gridState.pausedReason === 'DAILY_LOSS_LIMIT') {
+        return res.status(409).json({ success: false, error: 'Daily loss lock is automatic and cannot be reset during the same India trading day.' });
+      }
+      if (gridState.pausedReason === 'OVERALL_DRAWDOWN_STOP') {
+        return res.status(409).json({ success: false, error: 'The 5% overall drawdown stop is terminal for this grid run. Do not restart this run with the same capital baseline.' });
+      }
       patch.grid_enabled = false;
       patch.grid_state = {
-        version: 1, status: 'OFF', positions: [], trades: [], events: [],
-        realizedPnl: 0, dayPnl: 0, dayStartEquity: 0, strategyStartEquity: 0,
-        highWaterEquity: 0, consecutiveLosses: 0, pausedReason: null, lastPrice: 0,
-        currentPrice: 0, unrealizedPnl: 0, currentEquity: 0, drawdownPct: 0,
-        openRiskUsd: 0, tradeDate: null, lastTickAt: null, wasEnabled: false,
-        momentum: { paused: false, direction: 'NONE', movePct: 0, retracementPct: 0 }
+        ...gridState,
+        status: 'OFF',
+        positions: [],
+        pausedReason: null,
+        lastPrice: 0,
+        wasEnabled: false,
+        lastTickAt: null,
+        unrealizedPnl: 0,
+        openRiskUsd: 0,
+        currentEquity: Math.max(0, Number(gridState.strategyStartEquity || 0) + Number(gridState.realizedPnl || 0)),
+        momentum: { paused: false, direction: 'NONE', movePct: 0, retracementPct: 0 },
+        events: [...(Array.isArray(gridState.events) ? gridState.events : []), {
+          type: 'RESET', reason: 'MANUAL_REVIEW_RESET', at: new Date().toISOString()
+        }].slice(-80)
       };
     } else {
       if (body.gridSymbol !== undefined) {
