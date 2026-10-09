@@ -31,7 +31,7 @@ Example only (replace placeholder tokens in Railway Variables; never paste actua
 
 Each route must have a unique ID, unique API token and non-overlapping symbol set. The router validates that every symbol belongs to only one bridge and routes both entry and exit triggers through the same bridge. This is only configuration support: it does not create the Tradetron strategies or add their position-builder legs. Do not configure it until all selected basket strategies and their tokens are verified in Tradetron Live Offline.
 
-Unsupported symbols are blocked before the scanner records a Tradetron signal as sent.
+Unsupported symbols are blocked before the scanner records a Tradetron signal as sent, and confirmed futures rows are marked `ready=false` with an explicit route blocker before the READY column. Dashboard execution coverage reports active ticker count versus mapped futures symbols without exposing credentials.
 
 ## Futures entry contract
 
@@ -72,7 +72,7 @@ This monitor does not claim exchange-side/Tradetron-side protection exists until
 
 ## Options are a separate route
 
-The existing futures basket has no Options legs. The scanner's `tt_option_*` variables are not consumed by the existing 13-symbol futures strategy.
+The existing futures basket has no Options legs. The Options scanner is hard-limited to exactly three underlyings: BTC, ETH and Gold (Delta symbol XAUT). It never expands to the 231+ perpetual-futures universe. The scanner's `tt_option_*` variables are not consumed by the existing 13-symbol futures strategy.
 
 Options routing is fail-closed unless these Railway variables are explicitly configured after a dedicated Tradetron Options strategy exists:
 
