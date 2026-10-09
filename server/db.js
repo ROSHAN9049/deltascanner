@@ -36,6 +36,7 @@ export const upsertMany = (table, rows, conflict) => {
   });
 };
 export const update = (table, query, row) => call(table + '?' + query, { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify(row) });
+export const remove = (table, query) => call(table + '?' + query, { method: 'DELETE', headers: { Prefer: 'return=minimal' } });
 export const rpc = (name, args) => call('rpc/' + name, { method: 'POST', headers: { Prefer: 'return=representation' }, body: JSON.stringify(args || {}) });
 export async function log(level, message, data) {
   try { await insert('dd_engine_logs', { level, message, data: data || null }); } catch {}
