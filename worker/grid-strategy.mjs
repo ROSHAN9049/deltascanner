@@ -96,7 +96,14 @@ export function detectOneWayMomentum(candles, thresholdPct = 2.5, maxReversalPct
 }
 
 function pushEvent(state, event, at) {
-  state.events = [...(Array.isArray(state.events) ? state.events : []), { ...event, at }].slice(-80);
+  const events = Array.isArray(state.events) ? state.events : [];
+  const last = events.at(-1);
+  const ageMs = last ? new Date(at).getTime() - new Date(last.at || 0).getTime() : Infinity;
+  const sameEvent = last && last.type === event.type &&
+    last.reason === event.reason &&
+    last.levelIndex === event.levelIndex;
+  if (sameEvent && ageMs >= 0 && ageMs < 60000) return;
+  state.events = [...events, { ...event, at }].slice(-80);
 }
 function openRisk(state) {
   return (state.positions || []).reduce((sum, position) => sum + Math.max(0, n(position.riskUsd)), 0);
@@ -166,7 +173,7 @@ function currentEquity(state, price, contractValue, makerFeeRate, slippageRate) 
 export function evaluateGridTick({
   settings = {}, state: priorState = null, price, equity = 0, available = 0,
   contractValue = 1, makerFeeRate = 0.0002, slippagePct = 0.02,
-  candles = [], emergencyStop = false, timestamp = Date.now(), maxLeverage = 3
+  candles = [], dataFresh = true, emergencyStop = false, timestamp = Date.now(), maxLeverage = 3
 } = {}) {
   const cfg = normalizeGridConfig(settings);
   const base = createGridState();
@@ -206,7 +213,7 @@ export function evaluateGridTick({
   const exited = [];
   const costArgs = { contractValue: cv, makerFeeRate: feeRate, slippageRate: slipRate, at, symbol: cfg.symbol };
 
-  if (cfg.valid && (cfg.enabled || state.positions.length > 0) &&
+  if (!state.pausedReason && cfg.valid && (cfg.enabled || state.positions.length > 0) &&
       (currentPrice < cfg.lowerPrice * (1 - cfg.breakoutExitPct / 100) ||
        currentPrice > cfg.upperPrice * (1 + cfg.breakoutExitPct / 100))) {
     closeAll(state, currentPrice, 'GRID_RANGE_BREAK', costArgs);
@@ -278,9 +285,12 @@ export function evaluateGridTick({
 
   const firstEnabledTick = cfg.enabled && !wasEnabled;
   const canEnter = cfg.enabled && cfg.valid && !state.pausedReason && !momentum.paused &&
-    previousPrice > 0 && !firstEnabledTick && !emergencyStop;
+    dataFresh && previousPrice > 0 && !firstEnabledTick && !emergencyStop;
   if (cfg.enabled && !cfg.valid) {
     pushEvent(state, { type: 'BLOCK', reason: 'SET_VALID_GRID_RANGE' }, at);
+  }
+  if (cfg.enabled && !dataFresh && !state.pausedReason) {
+    pushEvent(state, { type: 'BLOCK', reason: 'GRID_CANDLE_DATA_STALE' }, at);
   }
   if (cfg.enabled && momentum.paused && !state.pausedReason) {
     pushEvent(state, { type: 'PAUSE', reason: 'STRONG_ONE_WAY_MOMENTUM', direction: momentum.direction, movePct: momentum.movePct }, at);
