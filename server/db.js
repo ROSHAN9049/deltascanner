@@ -24,6 +24,27 @@ async function call(path, init) {
   return txt ? JSON.parse(txt) : null;
 }
 export const select = (table, query) => call(table + '?' + (query || ''));
+export async function count(table, query) {
+  assertDb();
+  const key = CONFIG.supabaseAdminKey;
+  const headers = {
+    apikey: key,
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+    Prefer: 'count=exact',
+    Range: '0-0'
+  };
+  if (!key.startsWith('sb_secret_')) headers.Authorization = 'Bearer ' + key;
+  const path = table + '?' + (query || 'select=id');
+  const res = await fetch(CONFIG.supabaseUrl.replace(/\\/$/, '') + '/rest/v1/' + path, { headers });
+  const txt = await res.text();
+  if (!res.ok) throw new Error('Supabase count ' + res.status + ': ' + txt.slice(0, 500));
+  const range = res.headers.get('content-range') || '';
+  const total = range.match(/\\/(\\d+|\\*)$/);
+  if (total && total[1] !== '*') return Number(total[1]);
+  const rows = txt ? JSON.parse(txt) : [];
+  return Array.isArray(rows) ? rows.length : 0;
+}
 export const insert = (table, row) => call(table, { method: 'POST', headers: { Prefer: 'return=minimal' }, body: JSON.stringify(row) });
 export const upsert = (table, row, conflict) => call(table + '?on_conflict=' + encodeURIComponent(conflict), { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify(row) });
 export const upsertMany = (table, rows, conflict) => {
