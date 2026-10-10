@@ -27,3 +27,12 @@ test('missing route data fails closed as scan-only', () => {
   assert.equal(routeStatusForSymbol('BTCUSD', { ready: true }).label, 'SCAN ONLY');
   assert.equal(routeStatusForSymbol('', null, ['BTCUSD']).label, 'SCAN ONLY');
 });
+
+test('any ready engine makes the routed symbol READY even if the other engine is not ready', () => {
+  const result = routeStatusForSymbol('BTCUSD', [
+    { score: 95, ready: false },
+    { score: 85, ready: true }
+  ], ['BTCUSD']);
+  assert.equal(result.label, 'READY');
+  assert.equal(result.tone, 'up');
+});
