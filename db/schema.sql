@@ -301,8 +301,14 @@ create table if not exists public.dd_tradetron_events (
   status text,
   event_at timestamptz,
   raw jsonb not null default '{}'::jsonb,
+  sync_status text not null default 'RECEIVED',
+  processing_started_at timestamptz,
+  processed_at timestamptz,
+  sync_result jsonb,
+  sync_error text,
   created_at timestamptz not null default now()
 );
+create index if not exists dd_tradetron_events_sync_status_created_idx on public.dd_tradetron_events(sync_status, created_at desc);
 create index if not exists dd_tradetron_events_created_idx on public.dd_tradetron_events(created_at desc);
 create index if not exists dd_tradetron_events_execution_idx on public.dd_tradetron_events(execution_id);
 
