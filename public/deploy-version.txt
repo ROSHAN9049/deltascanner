@@ -1,10 +1,7 @@
-Delta Scanner deployment refresh: 2026-10-08
-Build v2.0.20261008.06: confirmed-engine selection fix + route-aware TESTNET gating.
-Entry engine calibration: 1m scalping metrics, controlled pullback trigger, cost-aware stop sizing.
-Testnet-only execution remains enforced.
-\nBuild v2.0.20261008.07: runtime settings aligned with relaxed TESTNET entry gates.\n\nBuild v2.0.20261008.08: allow FLAT/confirmed-higher-timeframe trend entries with controlled pullback and RSI bands.\n
-Build v2.0.20261008.09: full Delta perpetual universe scan/cache, WebSocket candle cache warmup, and BTC/ETH/XAUT option signal cache with Gold settlement timing.
-
-Build v2.0.20261008.11: production Delta market signal-only; legacy Signal Bridge contract; Tradetron Offline activity ingestion; no direct Delta orders.
-
-Build v2.0.20261009.02: align READY with Tradetron route availability, clean inactive universe cache rows, paginate the dashboard products API, enforce minimum score 80, and restrict Options to BTC/ETH/Gold (XAUT).
+Delta Scanner deployment refresh: 2026-10-10
+Build v2.0.20261010.01: make worker-confirmed Tradetron routing visible per market row; distinguish SCAN ONLY, ROUTED and READY; correct stale strategy-rule labels.
+Build v2.0.20261010.00: make Tradetron webhook event processing idempotent and retryable; scope activity reconciliation to Tradetron-owned positions; guard missing numeric fields.
+Build v2.0.20261009.02: align READY with Tradetron route availability, clean inactive universe cache rows, paginate the dashboard products API, enforce a minimum score of 80, and restrict Options to BTC/ETH/Gold (XAUT).
+Build v2.0.20261008.11: production Delta India market feed in signal-only mode; legacy Signal Bridge contract; authenticated Tradetron activity ingestion; direct Delta orders hard-locked.
+Build v2.0.20261008.09: full live perpetual-universe scanner/cache, WebSocket candle-cache warmup, and BTC/ETH/XAUT option-signal cache with Gold settlement timing.
+Safety boundary: DeltaScanner never places direct Delta production orders. Tradetron routing is limited to symbols present in an actually configured futures basket; unsupported symbols remain scan-only. Options require a separately configured and verified Tradetron route.
