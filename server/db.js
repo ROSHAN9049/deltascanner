@@ -50,6 +50,18 @@ export async function count(table, query) {
   return Array.isArray(rows) ? rows.length : 0;
 }
 export const insert = (table, row) => call(table, { method: 'POST', headers: { Prefer: 'return=minimal' }, body: JSON.stringify(row) });
+// Insert a row once using the database's unique conflict target. The representation
+// is non-empty for a new row and empty when the unique event ID already exists.
+export const insertIgnore = (table, row, conflict) => call(table + '?on_conflict=' + encodeURIComponent(conflict), {
+  method: 'POST',
+  headers: { Prefer: 'resolution=ignore-duplicates,return=representation' },
+  body: JSON.stringify(row)
+});
+export const updateReturning = (table, query, row) => call(table + '?' + query, {
+  method: 'PATCH',
+  headers: { Prefer: 'return=representation' },
+  body: JSON.stringify(row)
+});
 export const upsert = (table, row, conflict) => call(table + '?on_conflict=' + encodeURIComponent(conflict), { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify(row) });
 export const upsertMany = (table, rows, conflict) => {
   const list = Array.isArray(rows) ? rows.filter(Boolean) : [];
