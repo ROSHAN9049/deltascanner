@@ -83,9 +83,21 @@ function pick(candidates, keys, fallback = null) {
   return fallback;
 }
 
-function numberValue(candidates, keys, fallback = null) {
-  const num = Number(pick(candidates, keys, null));
+export function numberValue(candidates, keys, fallback = null) {
+  const value = pick(candidates, keys, null);
+  if (value === null || value === undefined || String(value).trim() === '') return fallback;
+  const num = Number(value);
   return Number.isFinite(num) ? num : fallback;
+}
+
+export function resolveGrossPnl(pnl, calculatedGross) {
+  if (pnl === null || pnl === undefined || String(pnl).trim() === '') return calculatedGross;
+  const value = Number(pnl);
+  return Number.isFinite(value) ? value : calculatedGross;
+}
+
+export function tradetronOpenPositionQuery(symbol) {
+  return 'symbol=eq.' + encodeURIComponent(symbol) + '&origin=eq.TRADETRON&qty=gt.0&order=updated_at.desc&limit=1';
 }
 
 function boolValue(candidates, keys) {
@@ -228,7 +240,7 @@ async function recordClosedTrade(row, context, exitPrice, pnl, fees, reason) {
   const calculatedGross = row.side === 'BUY'
     ? exitNotional - entryNotional
     : entryNotional - exitNotional;
-  const gross = Number.isFinite(Number(pnl)) ? Number(pnl) : calculatedGross;
+  const gross = resolveGrossPnl(pnl, calculatedGross);
   const feeValue = Math.max(0, Number(fees) || 0);
   const net = gross - feeValue;
   const riskValue = Math.abs(entry - Number(row.stop_price || 0)) * contractValue * qty;
@@ -267,7 +279,7 @@ async function syncPosition({ symbol, side, qty, price, pnl, fees, eventType, st
   if (!symbol) return { synced: false, reason: 'symbol_missing' };
 
   const currentRows = await db.select('dd_positions',
-    'symbol=eq.' + encodeURIComponent(symbol) + '&qty=gt.0&order=updated_at.desc&limit=1'
+    tradetronOpenPositionQuery(symbol)
   ).catch(() => []);
   const current = currentRows?.[0] || null;
   const productId = Number(
@@ -419,6 +431,9 @@ export default async function handler(req, res) {
     return res.status(401).json({ success: false, error: 'Unauthorized' });
   }
 
+  let activeEventId = null;
+  let claimTimestamp = null;
+  let ownsEventClaim = false;
   try {
     const payload = parseRequestBody(req);
     const rawBody = typeof req.body === 'string' ? req.body : JSON.stringify(payload);
@@ -465,11 +480,55 @@ export default async function handler(req, res) {
       'event_at','eventAt','timestamp','time','created_at','createdAt','updated_at','updatedAt'
     ], null));
 
-    await db.upsert('dd_tradetron_events', {
+    activeEventId = eventId;
+    await db.insertIgnore('dd_tradetron_events', {
       event_id: eventId, event_type: eventType, deployment_id: deploymentId,
       execution_id: executionId, symbol, side, qty, price, pnl, status,
       event_at: eventAt, raw: payload
     }, 'event_id');
+
+    // Claim new/retryable events atomically. The unique event_id and conditional
+    // UPDATE make concurrent webhook retries unable to process the same event.
+    claimTimestamp = new Date().toISOString();
+    let claimRows = await db.updateReturning(
+      'dd_tradetron_events',
+      'event_id=eq.' + encodeURIComponent(eventId) + '&sync_status=in.(RECEIVED,ERROR)',
+      { sync_status: 'PROCESSING', processing_started_at: claimTimestamp, sync_error: null }
+    );
+    let claimed = Array.isArray(claimRows) && claimRows.length > 0;
+
+    // Recover a handler that died while processing. Only one request can claim
+    // the stale timestamp because the compare-and-set condition changes on claim.
+    if (!claimed) {
+      const staleBefore = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+      claimRows = await db.updateReturning(
+        'dd_tradetron_events',
+        'event_id=eq.' + encodeURIComponent(eventId) +
+          '&sync_status=eq.PROCESSING&processing_started_at=lt.' + encodeURIComponent(staleBefore),
+        { sync_status: 'PROCESSING', processing_started_at: claimTimestamp, sync_error: null }
+      );
+      claimed = Array.isArray(claimRows) && claimRows.length > 0;
+    }
+
+    if (!claimed) {
+      const previousRows = await db.select(
+        'dd_tradetron_events',
+        'event_id=eq.' + encodeURIComponent(eventId) + '&select=sync_status,processed_at,sync_result&limit=1'
+      );
+      const previous = previousRows?.[0] || {};
+      const alreadyProcessed = previous.sync_status === 'PROCESSED' || !!previous.processed_at;
+      return res.status(200).json({
+        success: true,
+        event_id: eventId,
+        stored: true,
+        duplicate: true,
+        position_sync: previous.sync_result || {
+          synced: false,
+          reason: alreadyProcessed ? 'already_processed' : 'event_processing_in_progress'
+        }
+      });
+    }
+    ownsEventClaim = true;
 
     let sync = { synced: false, reason: 'no_symbol' };
     if (symbol) {
@@ -482,12 +541,40 @@ export default async function handler(req, res) {
       });
     }
 
+    const completedRows = await db.updateReturning(
+      'dd_tradetron_events',
+      'event_id=eq.' + encodeURIComponent(eventId) + '&sync_status=eq.PROCESSING&processing_started_at=eq.' + encodeURIComponent(claimTimestamp),
+      {
+        sync_status: 'PROCESSED',
+        processed_at: new Date().toISOString(),
+        processing_started_at: null,
+        sync_result: sync,
+        sync_error: null
+      }
+    );
+    if (!Array.isArray(completedRows) || completedRows.length === 0) {
+      throw new Error('Tradetron event processing claim was lost before completion');
+    }
+    ownsEventClaim = false;
+
     await db.log('INFO', 'Tradetron outbound event received', {
       eventType, deploymentId, executionId, symbol, side, qty, price, pnl, status, sync
     });
 
     return res.status(200).json({ success: true, event_id: eventId, stored: true, position_sync: sync });
   } catch (e) {
+    if (ownsEventClaim && activeEventId && claimTimestamp) {
+      await db.updateReturning(
+        'dd_tradetron_events',
+        'event_id=eq.' + encodeURIComponent(activeEventId) +
+          '&sync_status=eq.PROCESSING&processing_started_at=eq.' + encodeURIComponent(claimTimestamp),
+        {
+          sync_status: 'ERROR',
+          processing_started_at: null,
+          sync_error: String(e?.message || e).slice(0, 500)
+        }
+      ).catch(() => []);
+    }
     await db.log('ERROR', 'Tradetron webhook ingest failed', { error: e.message }).catch(() => {});
     return res.status(400).json({ success: false, error: e.message });
   }
