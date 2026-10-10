@@ -14,7 +14,11 @@ export function routeStatusForSymbol(symbol, bestSignal, routedSymbols = []) {
     };
   }
 
-  if (bestSignal?.ready === true) {
+  const hasReadySignal = Array.isArray(bestSignal)
+    ? bestSignal.some(signal => signal?.ready === true)
+    : bestSignal?.ready === true;
+
+  if (hasReadySignal) {
     return {
       label: 'READY',
       tone: 'up',

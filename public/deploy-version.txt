@@ -1,4 +1,5 @@
 Delta Scanner deployment refresh: 2026-10-10
+Build v2.0.20261010.02: set route badge READY when either futures engine has a ready signal; show separate momentum/scalping ATR gates.
 Build v2.0.20261010.01: make worker-confirmed Tradetron routing visible per market row; distinguish SCAN ONLY, ROUTED and READY; correct stale strategy-rule labels.
 Build v2.0.20261010.00: make Tradetron webhook event processing idempotent and retryable; scope activity reconciliation to Tradetron-owned positions; guard missing numeric fields.
 Build v2.0.20261009.02: align READY with Tradetron route availability, clean inactive universe cache rows, paginate the dashboard products API, enforce a minimum score of 80, and restrict Options to BTC/ETH/Gold (XAUT).
