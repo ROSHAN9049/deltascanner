@@ -16,11 +16,12 @@ async function withoutThreeSecondReset(fn) {
   }
 }
 
-function makeBridge(supportedSymbols = ['BTCUSD', 'ETHUSD']) {
+function makeBridge(supportedSymbols = ['BTCUSD', 'ETHUSD'], dynamicUniverseEnabled = false) {
   const bridge = new TradetronBridge({
     enabled: true,
     authToken: 'unit-test-token',
-    supportedSymbols
+    supportedSymbols,
+    dynamicUniverseEnabled
   });
   let lastPairs = [];
   bridge.sendPairs = async pairs => {
@@ -75,6 +76,19 @@ test('fixed basket allowlist rejects symbols not actually configured', () => {
   const { bridge } = makeBridge(['BTCUSD']);
   assert.equal(bridge.supportsFuturesSymbol('BTCUSD'), true);
   assert.equal(bridge.supportsFuturesSymbol('UNLISTEDUSD'), false);
+});
+
+test('dynamic-universe routing is opt-in and still rejects malformed symbols', () => {
+  const fixed = makeBridge(['BTCUSD', 'ETHUSD']);
+  assert.equal(fixed.bridge.supportsFuturesSymbol('SOLUSD'), false);
+
+  const dynamic = makeBridge(['BTCUSD'], true);
+  assert.equal(dynamic.bridge.supportsFuturesSymbol('BTCUSD'), true);
+  assert.equal(dynamic.bridge.supportsFuturesSymbol('SOLUSD'), true);
+  assert.equal(dynamic.bridge.supportsFuturesSymbol('AVAXUSD'), true);
+  assert.equal(dynamic.bridge.supportsFuturesSymbol('USD'), false);
+  assert.equal(dynamic.bridge.supportsFuturesSymbol('SOL-PERP'), false);
+  assert.equal(dynamic.bridge.supportsFuturesSymbol(''), false);
 });
 
 test('unconfirmed Tradetron entry signals reserve slots until activity sync', () => {

@@ -38,10 +38,11 @@ export class TradetronBridge {
   constructor({
     enabled = CONFIG.tradetronBridgeEnabled,
     authToken = CONFIG.tradetronAuthToken,
-    supportedSymbols = CONFIG.tradetronSupportedSymbols
+    supportedSymbols = CONFIG.tradetronSupportedSymbols,
+    dynamicUniverseEnabled = CONFIG.tradetronDynamicUniverseEnabled
   } = {}) {
     this.enabled = !!enabled;
-    this.dynamicEnabled = CONFIG.tradetronDynamicBridgeEnabled;
+    this.dynamicUniverseEnabled = !!dynamicUniverseEnabled;
     this.baseUrl = CONFIG.tradetronBaseUrl.replace(/\/$/, '');
     this.authToken = clean(authToken);
     this.supportedSymbols = [...new Set((Array.isArray(supportedSymbols) ? supportedSymbols : [])
@@ -55,7 +56,11 @@ export class TradetronBridge {
 
   supportsFuturesSymbol(symbol) {
     const selected = clean(symbol).toUpperCase();
-    return this.supportedSymbols.includes(selected);
+    // Dynamic mode accepts only scanner-supplied USD perpetual-style symbols.
+    // The engine still chooses symbols from Delta's live market universe; malformed
+    // values and non-symbol sentinels are never routable.
+    if (!/^[A-Z0-9]+USD$/.test(selected) || selected === 'USD') return false;
+    return this.dynamicUniverseEnabled || this.supportedSymbols.includes(selected);
   }
 
   async sendPairs(pairs) {
