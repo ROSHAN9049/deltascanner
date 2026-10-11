@@ -1,4 +1,5 @@
-Delta Scanner deployment refresh: 2026-10-10
+Delta Scanner deployment refresh: 2026-10-12
+Build v2.0.20261012.01: display top 40 by 24h turnover while keeping the full futures universe in background analysis; render tickers independently of slower dashboard health/engine-state requests.
 Build v2.0.20261010.02: set route badge READY when either futures engine has a ready signal; show separate momentum/scalping ATR gates.
 Build v2.0.20261010.01: make worker-confirmed Tradetron routing visible per market row; distinguish SCAN ONLY, ROUTED and READY; correct stale strategy-rule labels.
 Build v2.0.20261010.00: make Tradetron webhook event processing idempotent and retryable; scope activity reconciliation to Tradetron-owned positions; guard missing numeric fields.
