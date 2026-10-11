@@ -114,7 +114,7 @@ function App() {
         <div className="sub">DELTA INDIA · PERPETUAL FUTURES COMMAND CENTER</div>
       </div>
       <div className="headerRight">
-        <span>BUILD v2.0.20261010.02</span>
+        <span>BUILD v2.0.20261011.01</span>
         <span>UTC {new Date(clock).toISOString().slice(11,19)}</span>
         <span>LOCAL {new Date(clock).toLocaleTimeString('en-IN')}</span>
         <b className="badge test">LIVE MARKET · SIGNAL ONLY</b>
