@@ -89,9 +89,13 @@ function App() {
   // The dashboard API and Railway worker have separate environment variables.
   // Prefer the actual worker's heartbeat telemetry over Vercel's local config,
   // which may not contain the Railway-only Tradetron token or allowlist.
-  const workerRoutingLog = (state?.logs || []).find(row =>
-    row?.message === 'Worker heartbeat scan' && row?.data?.tradetronRouting
-  );
+  const workerRoutingLog = (state?.logs || [])
+    .filter(row => row?.message === 'Worker heartbeat scan' && row?.data?.tradetronRouting)
+    .sort((a, b) => {
+      const aTime = Date.parse(a?.created_at || a?.timestamp || '') || 0;
+      const bTime = Date.parse(b?.created_at || b?.timestamp || '') || 0;
+      return bTime - aTime;
+    })[0] || null;
   const workerRouting = workerRoutingLog?.data?.tradetronRouting || null;
   const executionCoverage = workerRouting ? {
     ...(state?.executionCoverage || {}),
