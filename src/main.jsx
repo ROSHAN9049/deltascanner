@@ -134,7 +134,7 @@ function App() {
     {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" />}
     {tab === 'scalping' && <EngineView engine="SCALPING" signals={signals} />}
     {tab === 'grid' && <GridStrategy settings={settings} market={market} busy={busy} mutate={mutate} />}
-    {tab === 'options' && <OptionsView signals={signals} settings={settings} optionCache={state?.optionCache || []} />}
+    {tab === 'options' && <OptionsView signals={signals} settings={settings} optionCache={state?.optionCache || []} executionCoverage={state?.executionCoverage || null} />}
     {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" />}
     {tab === 'positions' && <Positions rows={positions} />}
     {tab === 'trade-history' && <TradeHistory trades={trades} title="Trade History · Real Fills Only" />}
@@ -271,7 +271,7 @@ function EngineView({ engine, signals }) {
   return <Panel title={engine + ' · Closed-Candle Signal Engine'}><div className="tablewrap"><table><thead><tr><th>COIN</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>RSI</th><th>VOL</th><th>EMA21</th><th>ATR</th><th>SL</th><th>TP1</th><th>TP</th><th>QTY</th><th>RISK</th><th>BLOCKED</th></tr></thead><tbody>{rows.map(x => <tr key={x.symbol}><td className="symbol">{x.symbol}</td><td>{x.stage}</td><td className={x.side==='BUY'?'up':x.side==='SELL'?'down':''}>{x.side || '—'}</td><td><b>{num(x.score).toFixed(0)}</b></td><td>{num(x.rsi).toFixed(1)}</td><td>{num(x.volume_spike).toFixed(2)}x</td><td>{price(x.ema21)}</td><td>{price(x.atr_5m)}</td><td>{price(x.stop_price)}</td><td>{price(x.tp1_price)}</td><td>{price(x.tp_price)}</td><td>{fmtQty(x.qty_contracts)}</td><td>{money(x.risk_usd)}</td><td className="muted">{fmtReasons(x.blocked_reasons)}</td></tr>)}</tbody></table></div></Panel>;
 }
 
-function OptionsView({ signals, settings, optionCache = [] }) {
+function OptionsView({ signals, settings, optionCache = [], executionCoverage = null }) {
   const rows = (optionCache.length ? optionCache : signals.filter(x => x.strategy === 'OPTIONS_BUY' || x.strategy === 'OPTIONS_SELL'))
     .sort((a,b) => num(b.score) - num(a.score));
   const buys = rows.filter(x => x.strategy === 'OPTIONS_BUY');
@@ -281,7 +281,7 @@ function OptionsView({ signals, settings, optionCache = [] }) {
       <Card label="OPTIONS ENGINE" value={settings.options_enabled === false ? 'OFF' : 'ON'} sub="BTC / ETH / GOLD (XAUT) only"/>
       <Card label="BUY" value={settings.options_buy_enabled === false ? 'OFF' : 'ON'} sub="ATM / near-ITM · Δ 0.45–0.65"/>
       <Card label="SELL" value={settings.options_sell_enabled === false ? 'OFF' : 'ON'} sub="defined-risk spread only"/>
-      <Card label="EXECUTION" value="TRADETRON" sub="signal-only · Live Offline"/>
+      <Card label="OPTIONS ROUTE" value={executionCoverage?.optionsRouteConfigured === true ? "CONFIGURED" : "LOCKED"} sub={executionCoverage?.optionsRouteConfigured === true ? "Dedicated Tradetron route reported by worker" : "Needs a dedicated Tradetron Options strategy and Railway token"}/>
     </section>
     <Panel title="Options BUY">
       <OptionTable rows={buys} type="BUY" />
