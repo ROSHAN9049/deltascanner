@@ -55,6 +55,9 @@ export const CONFIG = Object.freeze({
   workerId: process.env.WORKER_ID || ('delta-signal-worker-' + process.pid),
   tradetronBridgeEnabled: String(process.env.TRADETRON_BRIDGE_ENABLED || 'true').toLowerCase() === 'true',
   tradetronDynamicBridgeEnabled: signalOnly ? false : String(process.env.TRADETRON_DYNAMIC_BRIDGE_ENABLED || 'false').toLowerCase() === 'true',
+  // Explicitly opt into routing live-universe symbols through the generic Tradetron tt_* fields.
+  // Disabled by default; never applies when the scanner is configured with multiple fixed routes.
+  tradetronDynamicUniverseEnabled: signalOnly && String(process.env.TRADETRON_DYNAMIC_UNIVERSE_ENABLED || 'false').trim().toLowerCase() === 'true',
   // The currently confirmed Tradetron Signal Bridge is a fixed 13-symbol
   // basket. Explicitly opt symbols in after adding them to the real strategy;
   // do not report unsupported scanner symbols as successfully routed.
