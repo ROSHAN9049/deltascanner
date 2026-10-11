@@ -3,19 +3,36 @@ import { CONFIG } from './config.js';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const clean = v => String(v ?? '').trim();
 
-// Treat unconfirmed Tradetron entry signals as reserved slots until a matching
-// fill/position event arrives. This keeps SIGNAL_ONLY from opening unlimited
-// simulated positions when activity delivery is delayed or unavailable.
-export function withSignalReservations(openPositions, pendingSignals) {
+// SIGNAL_SENT means the bridge accepted a signal, not that Tradetron confirmed a fill.
+// Live Offline may not send activity callbacks, so reservations must have a finite
+// lifetime. The engine passes its configured max_hold_minutes as this TTL; after
+// that window, the signal is no longer treated as an open position. The original
+// dd_orders audit record is preserved and is never deleted by this helper.
+export const DEFAULT_SIGNAL_RESERVATION_TTL_MS = 4 * 60 * 60 * 1000;
+
+export function withSignalReservations(
+  openPositions,
+  pendingSignals,
+  { nowMs = Date.now(), reservationTtlMs = DEFAULT_SIGNAL_RESERVATION_TTL_MS } = {}
+) {
   const positions = [...(Array.isArray(openPositions) ? openPositions : [])];
   const occupied = new Set(positions
     .filter(row => Math.abs(Number(row?.qty) || 0) > 0)
     .map(row => clean(row?.symbol).toUpperCase())
     .filter(Boolean));
+  const ttlMs = Math.max(0, Number(reservationTtlMs) || DEFAULT_SIGNAL_RESERVATION_TTL_MS);
 
   for (const row of Array.isArray(pendingSignals) ? pendingSignals : []) {
     const state = clean(row?.state).toUpperCase();
     if (!['PENDING', 'SIGNAL_SENT'].includes(state)) continue;
+
+    // Missing/invalid timestamps and signals older than the TTL cannot reserve a
+    // symbol forever. They remain in the audit table for manual reconciliation.
+    const createdAt = Date.parse(row?.created_at || '');
+    if (!Number.isFinite(createdAt)) continue;
+    const ageMs = Number(nowMs) - createdAt;
+    if (!Number.isFinite(ageMs) || ageMs < -60_000 || ageMs > ttlMs) continue;
+
     const symbol = clean(row?.symbol).toUpperCase();
     if (!symbol || occupied.has(symbol)) continue;
     occupied.add(symbol);
