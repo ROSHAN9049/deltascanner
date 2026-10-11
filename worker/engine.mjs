@@ -1693,13 +1693,23 @@ export class DeltaEngine {
     const positions = Array.isArray(openRows) ? openRows : [];
     if (!CONFIG.signalOnly || !CONFIG.tradetronBridgeEnabled) return positions;
     try {
+      // Keep unconfirmed signal reservations only for the configured holding
+      // window. Live Offline may not deliver activity callbacks, so old
+      // SIGNAL_SENT audit rows must not permanently block a symbol.
+      const ttlMinutes = Math.min(24 * 60, Math.max(5, n(this.currentSettings?.max_hold_minutes) || 240));
+      const reservationTtlMs = ttlMinutes * 60 * 1000;
+      const cutoff = new Date(Date.now() - reservationTtlMs).toISOString();
       const pendingSignals = await db.select(
         'dd_orders',
         'order_type=eq.tradetron_signal&state=in.(PENDING,SIGNAL_SENT)' +
+        '&created_at=gte.' + encodeURIComponent(cutoff) +
         '&select=symbol,side,strategy,size,execution_id,client_order_id,created_at,state' +
         '&order=created_at.desc&limit=500'
       );
-      return withSignalReservations(positions, pendingSignals || []);
+      return withSignalReservations(positions, pendingSignals || [], {
+        nowMs: Date.now(),
+        reservationTtlMs
+      });
     } catch (error) {
       await this.log('ERROR', 'Tradetron slot reservation lookup failed; new entries blocked', {
         error: error.message
