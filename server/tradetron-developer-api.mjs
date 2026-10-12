@@ -137,14 +137,14 @@ export class TradetronDeveloperApi {
       throw new TradetronDeveloperApiError('Deployment ID is invalid', { code: 'INVALID_DEPLOYMENT_ID' });
     }
     const data = await this.get('/me/deployments/' + encodeURIComponent(id) + '/positions');
-    if (String(data.deployment_id ?? '') !== id || !Array.isArray(data.positions)) {
-      throw new TradetronDeveloperApiError('Position response did not match the verified deployment_id / positions[] shape', {
+    if (String(data.deployment_id ?? '') !== id || typeof data.positions_hidden !== 'boolean' || !Array.isArray(data.positions)) {
+      throw new TradetronDeveloperApiError('Position response did not match the verified deployment_id / positions_hidden boolean / positions[] shape', {
         code: 'INVALID_POSITIONS'
       });
     }
     return {
       deployment_id: Number(id),
-      positions_hidden: data.positions_hidden === true,
+      positions_hidden: data.positions_hidden,
       as_of: safeIso(data.as_of),
       positions: data.positions
     };
