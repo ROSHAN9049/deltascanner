@@ -50,6 +50,18 @@ export async function count(table, query) {
   return Array.isArray(rows) ? rows.length : 0;
 }
 export const insert = (table, row) => call(table, { method: 'POST', headers: { Prefer: 'return=minimal' }, body: JSON.stringify(row) });
+// Insert a list of history rows in one PostgREST request. Use for a complete
+// scanner analysis pass so hundreds of setup rows don't cause hundreds of
+// serial network round-trips before the signal cache/entry decisions complete.
+export const insertMany = (table, rows) => {
+  const list = Array.isArray(rows) ? rows.filter(Boolean) : [];
+  if (!list.length) return Promise.resolve([]);
+  return call(table, {
+    method: 'POST',
+    headers: { Prefer: 'return=minimal' },
+    body: JSON.stringify(list)
+  });
+};
 // Insert a row once using the database's unique conflict target. The representation
 // is non-empty for a new row and empty when the unique event ID already exists.
 export const insertIgnore = (table, row, conflict) => call(table + '?on_conflict=' + encodeURIComponent(conflict), {
