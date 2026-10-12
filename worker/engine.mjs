@@ -936,6 +936,7 @@ export class DeltaEngine {
     const btc15 = this.getCandles(btc, '15m');
     const out = [];
     const signalCacheRows = [];
+    const signalHistoryRows = [];
     const tickers = [...this.tickerMap.values()];
     for (let i = 0; i < tickers.length; i++) {
       const ticker = tickers[i], p = this.productMap.get(ticker.symbol);
@@ -996,7 +997,7 @@ export class DeltaEngine {
         // Keep durable signal history for actionable states only. WATCH states
         // remain in the low-cost cache and do not fill the history table every minute.
         if (s.stage !== 'WATCH' || cacheRow.ready) {
-          await db.insert('dd_signals', {
+          signalHistoryRows.push({
             symbol: s.symbol, product_id: s.productId, rank: i + 1,
             strategy: strategyName, price: s.price, change_24h: s.change,
             turnover_usd: s.turnover, spread_pct: s.spreadPct, volume_spike: s.volumeSpike,
@@ -1013,6 +1014,10 @@ export class DeltaEngine {
       }
       out.push({ ticker, product: p, mom, scalp });
     }
+    // Persist actionable history in one request before caching/routing signals.
+    // This keeps the 231-symbol scanner from spending hundreds of sequential
+    // HTTP round-trips on routine SETUP/CONFIRMED records.
+    if (signalHistoryRows.length) await db.insertMany('dd_signals', signalHistoryRows);
     const optionSignals = await this.analyseOptions(out, account, settings, openPositions || []);
     const byUnderlying = new Map();
     for (const s of optionSignals) {
