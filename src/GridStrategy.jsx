@@ -21,7 +21,7 @@ function parseDraft(settings) {
     gridUpperPrice: settings.grid_upper_price ? String(settings.grid_upper_price) : '',
     gridLevelsCount: Number(settings.grid_levels_count || 10),
     gridMaxPositions: Number(settings.grid_max_positions || 1),
-    gridRiskPerTradePct: Number(settings.grid_risk_per_trade_pct || 1),
+    gridRiskPerTradePct: Number(settings.grid_risk_per_trade_pct ?? 0.3),
     gridDailyLossPct: Number(settings.grid_daily_loss_pct || 2),
     gridMomentumPausePct: Number(settings.grid_momentum_pause_pct || 2.5),
     gridReduceAfterLosses: settings.grid_reduce_after_losses !== false
@@ -106,7 +106,7 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
         <label>Upper Price<input type="number" inputMode="decimal" min="0" step="any" placeholder="Set upper grid boundary" value={draft.gridUpperPrice} onChange={e => update('gridUpperPrice', e.target.value)} disabled={lockedConfig}/></label>
         <label>Grid Levels<select value={draft.gridLevelsCount} onChange={e => update('gridLevelsCount', Number(e.target.value))} disabled={lockedConfig}>{[8,9,10,11,12].map(v => <option key={v} value={v}>{v} levels</option>)}</select></label>
         <label>Max Open Positions<select value={draft.gridMaxPositions} onChange={e => update('gridMaxPositions', Number(e.target.value))} disabled={lockedConfig}><option value={1}>1 position · Tradetron safe mode</option></select></label>
-        <label>Target Risk / Trade<select value={draft.gridRiskPerTradePct} onChange={e => update('gridRiskPerTradePct', Number(e.target.value))}><option value={1}>1.0% target</option><option value={1.25}>1.25% target</option><option value={1.5}>1.5% target</option></select></label>
+        <label>Target Risk / Trade<select value={draft.gridRiskPerTradePct} onChange={e => update('gridRiskPerTradePct', Number(e.target.value))}><option value={0.3}>0.30% · same as Momentum/Scalping</option><option value={0.5}>0.50% target</option><option value={0.75}>0.75% target</option><option value={1}>1.0% target</option></select></label>
         <label>Daily Loss Limit<select value={draft.gridDailyLossPct} onChange={e => update('gridDailyLossPct', Number(e.target.value))}><option value={2}>2.0%</option><option value={2.25}>2.25%</option><option value={2.5}>2.5%</option></select></label>
         <label>Momentum Pause<select value={draft.gridMomentumPausePct} onChange={e => update('gridMomentumPausePct', Number(e.target.value))}><option value={2.5}>2.5% one-way move</option><option value={2.75}>2.75% one-way move</option><option value={3}>3.0% one-way move</option></select></label>
       </div>
@@ -122,7 +122,7 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
       {gridState.pausedReason === 'DAILY_LOSS_LIMIT' ? <div className="errorText">Daily stop reached. It cannot be reset during the same India trading day; it will clear on the next trading day after a fresh engine tick.</div> : null}
       {gridState.pausedReason === 'OVERALL_DRAWDOWN_STOP' ? <div className="errorText">The 5% overall drawdown stop is terminal for this grid run. Keep this run halted; do not reset its capital baseline to resume.</div> : null}
       <div className="lockedText">
-        <b>Risk sizing guard:</b> The configured 1–1.5% is a target, not a promise. Actual per-position risk is capped at the smaller of that target or daily-loss limit ÷ max positions, and rounded down to whole contracts. If one contract exceeds its risk budget, the entry is skipped. The 5% strategy drawdown limit and 1.2% full-range break close all simulated positions and hard-stop the grid.
+        <b>Risk sizing guard:</b> The default target is 0.30%, matching Momentum/Scalping. Actual per-position risk is capped at the smaller of that target or daily-loss limit ÷ max positions, and rounded down to whole contracts. If one contract exceeds its risk budget, the entry is skipped. The 5% strategy drawdown limit and 1.2% full-range break close all simulated positions and hard-stop the grid.
       </div>
     </Panel>
 

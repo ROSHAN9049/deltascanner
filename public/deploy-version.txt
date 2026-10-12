@@ -1,4 +1,5 @@
 Delta Scanner deployment refresh: 2026-10-12
+Build v2.0.20261012.06: align default Grid trade risk with Momentum/Scalping at 0.30%, update the Grid risk selector, and add a whole-contract budget regression test.
 Build v2.0.20261012.05: calculate Grid risk against the actual rung stop, execute Grid stop exits, reject bottom-rung entries with poor reward/risk, and prevent same-tick re-entry after stop-outs.
 Build v2.0.20261012.02: limit visible market table to top 40 while preserving full universe; render ticker results independently; add optional read-only Tradetron Developer API position snapshots and sync health.
 Build v2.0.20261010.02: set route badge READY when either futures engine has a ready signal; show separate momentum/scalping ATR gates.
