@@ -974,6 +974,7 @@ export class DeltaEngine {
             entry_price: signal.price,
             stop_price: signal.sl,
             tp_price: signal.tp,
+            bridge_accepted: true,
             bridge_response: result.response || null,
             bridge_trigger_key: result.triggerKey || null,
             bridge_dynamic: result.dynamic === true
