@@ -2215,7 +2215,17 @@ export class DeltaEngine {
     const positions = riskPositions;
     if (settings.enabled && settings.auto_trade && !settings.emergency_stop) {
       const candidates = [];
+      const gridStateForRouting = settings.grid_state && typeof settings.grid_state === 'object'
+        ? settings.grid_state : {};
+      const gridSymbolForRouting = String(settings.grid_symbol || 'ETHUSD').toUpperCase();
+      const gridPositionOpen = CONFIG.signalOnly &&
+        (Array.isArray(gridStateForRouting.positions) ? gridStateForRouting.positions : [])
+          .some(position => !!position?.bridgeExecutionId);
       for (const item of this.lastSignals) {
+        // Momentum/Scalping may use the same Tradetron template, but must not
+        // race a Grid position on the same netted futures symbol.
+        if (CONFIG.signalOnly && String(item.symbol || '').toUpperCase() === gridSymbolForRouting &&
+            (gridPositionOpen || settings.grid_bridge_action_this_cycle === true)) continue;
         const futuresChoices = [
           { strategy: 'MOMENTUM', signal: item.mom },
           { strategy: 'SCALPING', signal: item.scalp }
