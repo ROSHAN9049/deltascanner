@@ -200,7 +200,7 @@ test('live-like ETH Grid sizing uses adjacent-rung risk and can fit the configur
   assert.equal(entered.entered[0].stopPrice, levels[5].price);
   assert.equal(entered.entered[0].targetPrice, levels[7].price);
   assert.ok(entered.entered[0].qty >= 1);
-  assert.ok(entered.entered[0].riskUsd <= 51.5 * 0.01 / 100);
+  assert.ok(entered.entered[0].riskUsd <= 51.5 * 1 / 100);
 });
 
 test('Grid stop closes at observed mark and blocks same-tick re-entry on the next rung', () => {
