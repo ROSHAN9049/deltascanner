@@ -38,7 +38,6 @@ test('short or empty candle responses can be retried after the cooldown', () => 
   const now = 5_000_000;
   const key = '5m:BTCUSD';
   const candles = new Map([[key, Array.from({ length: 8 }, () => ({ close: 1 }))]]);
-  const fetchedAt = new Map([[key, now]]);
 
   assert.equal(candleNeedsWarmup(candles.get(key), '5m', now, now + 10_000), false);
   assert.equal(candleNeedsWarmup(candles.get(key), '5m', now, now + CANDLE_WARMUP_RETRY_MS), true);
