@@ -314,6 +314,38 @@ create index if not exists dd_tradetron_events_execution_idx on public.dd_tradet
 
 alter table public.dd_tradetron_events enable row level security;
 
+create table if not exists public.dd_tradetron_developer_snapshots (
+  deployment_id bigint primary key,
+  deployment_name text not null,
+  deployment_type text,
+  status text,
+  broker text,
+  multiplier numeric,
+  capital numeric,
+  pnl numeric,
+  open_positions integer,
+  total_positions integer,
+  currency_code text,
+  deployed_on text,
+  positions_hidden boolean not null default false,
+  as_of timestamptz,
+  positions jsonb not null default '[]'::jsonb,
+  last_success_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create table if not exists public.dd_tradetron_developer_sync_state (
+  id integer primary key check (id = 1),
+  status text not null default 'NOT_CONFIGURED',
+  last_attempt_at timestamptz,
+  last_success_at timestamptz,
+  deployment_count integer not null default 0,
+  position_count integer not null default 0,
+  last_error text,
+  details jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now()
+);
+insert into public.dd_tradetron_developer_sync_state(id, status) values (1, 'NOT_CONFIGURED') on conflict (id) do nothing;
+
 create table if not exists public.dd_daily_pnl (
   trade_date date primary key,
   realized numeric not null default 0,
@@ -402,3 +434,10 @@ alter table public.dd_settings add column if not exists grid_max_drawdown_pct nu
 alter table public.dd_settings add column if not exists grid_momentum_pause_pct numeric not null default 2.5;
 alter table public.dd_settings add column if not exists grid_reduce_after_losses boolean not null default true;
 alter table public.dd_settings add column if not exists grid_state jsonb not null default '{"version":1,"status":"OFF","positions":[],"trades":[],"events":[],"realizedPnl":0,"dayPnl":0,"dayStartEquity":0,"strategyStartEquity":0,"highWaterEquity":0,"consecutiveLosses":0,"pausedReason":null,"lastPrice":0,"currentPrice":0,"unrealizedPnl":0,"currentEquity":0,"drawdownPct":0,"openRiskUsd":0,"tradeDate":null,"lastTickAt":null,"wasEnabled":false,"momentum":{"paused":false,"direction":"NONE","movePct":0,"retracementPct":0}}'::jsonb;
+
+alter table public.dd_tradetron_developer_snapshots enable row level security;
+alter table public.dd_tradetron_developer_sync_state enable row level security;
+revoke all on table public.dd_tradetron_developer_snapshots from anon, authenticated;
+revoke all on table public.dd_tradetron_developer_sync_state from anon, authenticated;
+grant all on table public.dd_tradetron_developer_snapshots to service_role;
+grant all on table public.dd_tradetron_developer_sync_state to service_role;
