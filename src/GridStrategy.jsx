@@ -96,7 +96,7 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
       <div className="card"><small>DAY PNL</small><strong className={n(gridState.dayPnl) >= 0 ? 'up' : 'down'}>{usd(gridState.dayPnl + n(gridState.unrealizedPnl))}</strong><span>Realized + mark-to-market; daily stop {Number(settings.grid_daily_loss_pct || 2).toFixed(1)}%.</span></div>
       <div className="card"><small>STRATEGY EQUITY</small><strong>{usd(gridState.currentEquity || gridState.strategyStartEquity)}</strong><span>Drawdown {n(gridState.drawdownPct).toFixed(2)}% · hard stop 5%.</span></div>
       <div className="card"><small>MOMENTUM FILTER</small><strong className={momentum.paused ? 'warn' : 'up'}>{momentum.paused ? 'PAUSED' : 'CLEAR'}</strong><span>{momentum.direction || 'NONE'} · {n(momentum.movePct).toFixed(2)}% move · reversal {n(momentum.retracementPct).toFixed(2)}%.</span></div>
-      <div className="card"><small>EXECUTION</small><strong>TRADETRON LIVE OFFLINE</strong><span>Grid entry/exit signals use the existing Tradetron bridge. Live Offline is simulated; no exchange orders are sent.</span></div>
+      <div className="card"><small>EXECUTION</small><strong>TRADETRON LIVE OFFLINE</strong><span>Next lower grid rung is the protective stop and next higher rung is the target. Live Offline is simulated; no exchange orders are sent.</span></div>
     </section>
 
     <Panel title="Grid Configuration · BTCUSD / ETHUSD">
