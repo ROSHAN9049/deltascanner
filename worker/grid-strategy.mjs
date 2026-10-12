@@ -220,6 +220,7 @@ export function evaluateGridTick({
   const wasEnabled = state.wasEnabled === true;
   const entered = [];
   const exited = [];
+  let protectiveStopHit = false;
   const costArgs = { contractValue: cv, makerFeeRate: feeRate, slippageRate: slipRate, at, symbol: cfg.symbol };
 
   if (!state.pausedReason && cfg.valid && (cfg.enabled || state.positions.length > 0) &&
@@ -265,7 +266,13 @@ export function evaluateGridTick({
   if (!state.pausedReason) {
     const remaining = [];
     for (const position of state.positions) {
-      if (currentPrice >= n(position.targetPrice)) {
+      if (n(position.stopPrice) > 0 && currentPrice <= n(position.stopPrice)) {
+        // Use the observed mark when a stop is crossed so the simulated exit
+        // does not overstate the stop fill if the market gaps through it.
+        const trade = closePosition(state, position, currentPrice, 'GRID_STOP', costArgs);
+        exited.push(trade);
+        protectiveStopHit = true;
+      } else if (currentPrice >= n(position.targetPrice)) {
         const trade = closePosition(state, position, n(position.targetPrice), 'NEXT_GRID_LEVEL', costArgs);
         exited.push(trade);
       } else remaining.push(position);
@@ -294,7 +301,7 @@ export function evaluateGridTick({
 
   const firstEnabledTick = cfg.enabled && !wasEnabled;
   const canEnter = cfg.enabled && cfg.valid && !state.pausedReason && !momentum.paused &&
-    dataFresh && previousPrice > 0 && !firstEnabledTick && !emergencyStop;
+    dataFresh && previousPrice > 0 && !firstEnabledTick && !emergencyStop && !protectiveStopHit;
   if (cfg.enabled && !cfg.valid) {
     pushEvent(state, { type: 'BLOCK', reason: 'SET_VALID_GRID_RANGE' }, at);
   }
@@ -319,8 +326,22 @@ export function evaluateGridTick({
       if (state.positions.length >= cfg.maxPositions) break;
       if (!(previousPrice > level.price && currentPrice <= level.price)) continue;
       if (occupied.has(level.index)) continue;
-      const stopPrice = cfg.lowerPrice * (1 - cfg.breakoutExitPct / 100);
-      const riskPerContract = Math.max(0, (level.price - stopPrice) * cv) +
+      // In one-position Tradetron mode, protect each non-bottom rung at the
+      // immediately lower rung. The bottom rung retains the global range-break
+      // stop because no lower grid level exists.
+      const globalStopPrice = cfg.lowerPrice * (1 - cfg.breakoutExitPct / 100);
+      const stopPrice = level.index > 0 ? levels[level.index - 1].price : globalStopPrice;
+      const targetPrice = levels[level.index + 1]?.price;
+      const stopDistance = level.price - stopPrice;
+      const rewardDistance = n(targetPrice) - level.price;
+      if (!(stopDistance > 0 && rewardDistance > 0)) continue;
+      // Reject the bottom rung when the global stop creates a worse gross
+      // reward/risk ratio than the next-grid-level target.
+      if (rewardDistance < stopDistance) {
+        pushEvent(state, { type: 'BLOCK', reason: 'GRID_RISK_REWARD_BELOW_MINIMUM', levelIndex: level.index, price: level.price }, at);
+        continue;
+      }
+      const riskPerContract = Math.max(0, stopDistance * cv) +
         level.price * cv * 2 * (feeRate + slipRate);
       if (!(riskPerContract > 0)) continue;
       const remainingRisk = dailyRiskLimit - Math.max(0, -n(state.dayPnl)) - openRisk(state);
@@ -346,7 +367,7 @@ export function evaluateGridTick({
         symbol: cfg.symbol,
         levelIndex: level.index,
         entryPrice: level.price,
-        targetPrice: levels[level.index + 1].price,
+        targetPrice,
         stopPrice,
         qty,
         riskUsd: positionRisk,

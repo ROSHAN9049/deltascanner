@@ -172,3 +172,90 @@ test('minimum lot size blocks any entry that would exceed its risk budget', () =
   assert.equal(result.entered.length, 0);
   assert.ok(result.state.events.some(event => event.reason === 'RISK_BUDGET_BELOW_MINIMUM' || event.reason === 'MINIMUM_CONTRACT_SIZE'));
 });
+
+
+test('live-like ETH Grid sizing uses adjacent-rung risk and can fit the configured 1% budget', () => {
+  const settings = {
+    ...baseSettings,
+    grid_lower_price: 2500,
+    grid_upper_price: 2610,
+    grid_levels_count: 10,
+    grid_max_positions: 1
+  };
+  const first = evaluateGridTick({
+    settings, state: createGridState(), price: 2580, equity: 51.5,
+    available: 51.5, contractValue: 0.01,
+    timestamp: Date.parse('2026-10-09T05:00:00Z')
+  });
+  const levels = buildGridLevels(2500, 2610, 10);
+  const level = levels[6];
+  const entered = evaluateGridTick({
+    settings, state: first.state, price: level.price, equity: 51.5,
+    available: 51.5, contractValue: 0.01,
+    timestamp: Date.parse('2026-10-09T05:00:15Z')
+  });
+
+  assert.equal(entered.entered.length, 1);
+  assert.equal(entered.entered[0].levelIndex, 6);
+  assert.equal(entered.entered[0].stopPrice, levels[5].price);
+  assert.equal(entered.entered[0].targetPrice, levels[7].price);
+  assert.ok(entered.entered[0].qty >= 1);
+  assert.ok(entered.entered[0].riskUsd <= 51.5 * 0.01 / 100);
+});
+
+test('Grid stop closes at observed mark and blocks same-tick re-entry on the next rung', () => {
+  const settings = {
+    ...baseSettings,
+    grid_lower_price: 2500,
+    grid_upper_price: 2610,
+    grid_levels_count: 10,
+    grid_max_positions: 1
+  };
+  const first = evaluateGridTick({
+    settings, state: createGridState(), price: 2580, equity: 51.5,
+    available: 51.5, contractValue: 0.01,
+    timestamp: Date.parse('2026-10-09T05:00:00Z')
+  });
+  const levels = buildGridLevels(2500, 2610, 10);
+  const level = levels[6];
+  const opened = evaluateGridTick({
+    settings, state: first.state, price: level.price, equity: 51.5,
+    available: 51.5, contractValue: 0.01,
+    timestamp: Date.parse('2026-10-09T05:00:15Z')
+  });
+  assert.equal(opened.entered.length, 1);
+
+  const mark = level.price - 13;
+  const stopped = evaluateGridTick({
+    settings, state: opened.state, price: mark,
+    equity: 51.5, available: 51.5, contractValue: 0.01,
+    timestamp: Date.parse('2026-10-09T05:00:30Z')
+  });
+  assert.equal(stopped.exited.length, 1);
+  assert.equal(stopped.exited[0].reason, 'GRID_STOP');
+  assert.equal(stopped.exited[0].exitPrice, mark);
+  assert.equal(stopped.state.positions.length, 0);
+  assert.equal(stopped.entered.length, 0);
+});
+
+test('bottom Grid rung remains blocked when its range-break stop produces poor reward/risk', () => {
+  const settings = {
+    ...baseSettings,
+    grid_lower_price: 2500,
+    grid_upper_price: 2610,
+    grid_levels_count: 10,
+    grid_max_positions: 1
+  };
+  const first = evaluateGridTick({
+    settings, state: createGridState(), price: 2501, equity: 51.5,
+    available: 51.5, contractValue: 0.01,
+    timestamp: Date.parse('2026-10-09T05:00:00Z')
+  });
+  const result = evaluateGridTick({
+    settings, state: first.state, price: 2500, equity: 51.5,
+    available: 51.5, contractValue: 0.01,
+    timestamp: Date.parse('2026-10-09T05:00:15Z')
+  });
+  assert.equal(result.entered.length, 0);
+  assert.ok(result.state.events.some(event => event.reason === 'GRID_RISK_REWARD_BELOW_MINIMUM'));
+});
