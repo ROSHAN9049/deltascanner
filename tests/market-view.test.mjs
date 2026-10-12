@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_VISIBLE_MARKET_LIMIT, selectVisibleMarketRows } from '../src/market-view.js';
+import { DEFAULT_VISIBLE_MARKET_LIMIT, selectVisibleMarketRows, selectVisibleSignalRows } from '../src/market-view.js';
 
 test('the visible list shows only the top 40 without changing the complete universe', () => {
   const market = Array.from({ length: 231 }, (_, i) => ({
@@ -29,4 +29,29 @@ test('invalid payloads fail safely and invalid limits use the default', () => {
   assert.deepEqual(selectVisibleMarketRows(null), []);
   assert.deepEqual(selectVisibleMarketRows({}), []);
   assert.equal(selectVisibleMarketRows(Array.from({ length: 50 }, (_, i) => i), Number.NaN).length, 40);
+});
+
+
+test('signal stage rows cover both engines for the same visible top-40 coin list', () => {
+  const market = [
+    { symbol: 'BTCUSD' },
+    { symbol: 'ETHUSD' },
+    { symbol: 'SOLUSD' }
+  ];
+  const signals = [
+    { symbol: 'BTCUSD', strategy: 'MOMENTUM', stage: 'SETUP', score: 82, captured_at: '2026-10-12T09:00:00Z' },
+    { symbol: 'BTCUSD', strategy: 'MOMENTUM', stage: 'CONFIRMED', score: 91, captured_at: '2026-10-12T09:01:00Z' },
+    { symbol: 'ETHUSD', strategy: 'SCALPING', stage: 'SETUP', score: 85, captured_at: '2026-10-12T09:01:00Z' },
+    { symbol: 'SOLUSD', strategy: 'MOMENTUM', stage: 'CONFIRMED', score: 99, captured_at: '2026-10-12T09:01:00Z' }
+  ];
+  const rows = selectVisibleSignalRows(market, signals, 2);
+
+  assert.equal(rows.length, 4);
+  assert.deepEqual(rows.map(row => row.symbol), ['BTCUSD', 'BTCUSD', 'ETHUSD', 'ETHUSD']);
+  assert.equal(rows.find(row => row.symbol === 'BTCUSD' && row.strategy === 'MOMENTUM').stage, 'CONFIRMED');
+  const missing = rows.find(row => row.symbol === 'BTCUSD' && row.strategy === 'SCALPING');
+  assert.equal(missing.stage, 'WATCH');
+  assert.equal(missing.snapshot_missing, true);
+  assert.equal(rows.find(row => row.symbol === 'ETHUSD' && row.strategy === 'SCALPING').stage, 'SETUP');
+  assert.equal(rows.some(row => row.symbol === 'SOLUSD'), false);
 });
