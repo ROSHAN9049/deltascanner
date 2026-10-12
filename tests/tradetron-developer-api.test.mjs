@@ -89,5 +89,16 @@ test('unsupported position payloads fail closed', async () => {
     apiKey: 'ttk_test_only',
     fetchImpl: async () => response({ success: true, data: { deployment_id: 12345, positions: {} } })
   });
-  await assert.rejects(api.deploymentPositions(12345), /verified deployment_id \/ positions\[\] shape/);
+  await assert.rejects(api.deploymentPositions(12345), /verified deployment_id \/ positions_hidden boolean \/ positions\[\] shape/);
+});
+
+test('missing positions_hidden flag fails closed instead of implying positions are visible', async () => {
+  const api = new TradetronDeveloperApi({
+    apiKey: 'ttk_test_only',
+    fetchImpl: async () => response({ success: true, data: {
+      deployment_id: 12345,
+      positions: []
+    } })
+  });
+  await assert.rejects(api.deploymentPositions(12345), /positions_hidden boolean/);
 });
