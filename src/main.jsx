@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import './style.css';
 import GridStrategy from './GridStrategy.jsx';
 import { routeStatusForSymbol } from './market-route-status.js';
+import { DEFAULT_VISIBLE_MARKET_LIMIT, selectVisibleMarketRows } from './market-view.js';
 
 const tabs = [
   ['dashboard','Dashboard'],['rotation','Profit Rotation'],['momentum','Momentum'],['momentum-history','Mom History'],
@@ -31,24 +32,37 @@ function App() {
   const [health, setHealth] = useState(null);
   const [secret, setSecret] = useState(sessionStorage.getItem('delta-engine-secret') || '');
   const [error, setError] = useState('');
+  const [marketError, setMarketError] = useState('');
   const [busy, setBusy] = useState(false);
   const [clock, setClock] = useState(Date.now());
   const [inspect, setInspect] = useState('');
 
   const load = async () => {
-    try {
-      const cacheBust = '?t=' + Date.now();
-      const results = await Promise.all([
-        fetch('/api/market' + cacheBust, { cache: 'no-store' }).then(r => r.json()),
+    const cacheBust = '?t=' + Date.now();
+    // Market rendering is independent of the slower health / engine-state requests.
+    const marketRequest = (async () => {
+      const response = await fetch('/api/market' + cacheBust, { cache: 'no-store' });
+      const result = await response.json();
+      if (!response.ok || !result.success) throw new Error(result.error || 'Market unavailable');
+      setMarket(Array.isArray(result.result) ? result.result : []);
+      setMarketError('');
+    })().catch(e => setMarketError(e.message || 'Market unavailable'));
+
+    const stateRequest = (async () => {
+      const responses = await Promise.all([
         fetch('/api/health' + cacheBust, { cache: 'no-store' }).then(r => r.json()),
         fetch('/api/engine/state' + cacheBust, { cache: 'no-store' }).then(r => r.json())
       ]);
-      if (!results[0].success) throw new Error(results[0].error || 'Market unavailable');
-      setMarket(results[0].result || []);
-      setHealth(results[1]);
-      if (results[2].success) setState(results[2]); else throw new Error(results[2].error || 'Engine state unavailable');
-      setError('');
-    } catch (e) { setError(e.message || 'Dashboard data unavailable'); }
+      setHealth(responses[0]);
+      if (responses[1].success) {
+        setState(responses[1]);
+        setError('');
+      } else {
+        throw new Error(responses[1].error || 'Engine state unavailable');
+      }
+    })().catch(e => setError(e.message || 'Dashboard data unavailable'));
+
+    await Promise.allSettled([marketRequest, stateRequest]);
   };
   useEffect(() => { load(); const id = setInterval(load, 10000); return () => clearInterval(id); }, []);
   useEffect(() => { const id = setInterval(() => setClock(Date.now()), 1000); return () => clearInterval(id); }, []);
@@ -125,10 +139,10 @@ function App() {
       </div>
     </header>
     {stale ? <div className="danger">⚠ WORKER HEARTBEAT / MARKET TICK STALE FOR MORE THAN 3 MINUTES. NEW ENTRIES MUST BE TREATED AS BLOCKED.</div> : null}
-    {error ? <div className="error">{error}</div> : null}
+    {error || marketError ? <div className="error">{error || marketError}</div> : null}
     <nav>{tabs.map(([id,label]) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}{id === 'live' ? ' 🔒' : ''}</button>)}</nav>
 
-    {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} trades={trades} positions={positions} signals={signals} signalOrders={state?.signalOrders || []} signalOrderCount={state?.signalOrderCount ?? null} tradetronEvents={state?.tradetronEvents || []} executionCoverage={executionCoverage} onInspect={setInspect} inspect={selected} logs={state?.logs || []} />}
+    {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} trades={trades} positions={positions} signals={signals} signalOrders={state?.signalOrders || []} signalOrderCount={state?.signalOrderCount ?? null} tradetronEvents={state?.tradetronEvents || []} executionCoverage={executionCoverage} developerSync={state?.tradetronDeveloperSync || null} developerSnapshots={state?.tradetronDeveloperSnapshots || []} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} onInspect={setInspect} inspect={selected} logs={state?.logs || []} />}
     {tab === 'rotation' && <Rotation ledger={state?.ledger || []} />}
     {tab === 'momentum' && <EngineView engine="MOMENTUM" signals={signals} />}
     {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" />}
@@ -136,7 +150,7 @@ function App() {
     {tab === 'grid' && <GridStrategy settings={settings} market={market} busy={busy} mutate={mutate} />}
     {tab === 'options' && <OptionsView signals={signals} settings={settings} optionCache={state?.optionCache || []} executionCoverage={state?.executionCoverage || null} />}
     {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" />}
-    {tab === 'positions' && <Positions rows={positions} />}
+    {tab === 'positions' && <><Positions rows={positions} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} /></>}
     {tab === 'trade-history' && <TradeHistory trades={trades} title="Trade History · Real Fills Only" />}
     {tab === 'pnl' && <PNL trades={trades} settings={settings} />}
     {tab === 'paper' && <Panel title="Paper Trading"><div className="lockedText">Scanner is signal-only. No Delta order is placed here; Tradetron Live Offline runs the simulated execution.</div></Panel>}
@@ -154,7 +168,7 @@ function Panel({ title, children }) {
 function Card({ label, value, sub }) {
   return <div className="card"><small>{label}</small><strong>{value}</strong><span>{sub}</span></div>;
 }
-function Dashboard({ market, settings, health, trades, positions, signals, signalOrders = [], signalOrderCount = null, tradetronEvents = [], executionCoverage = null, onInspect, inspect, logs }) {
+function Dashboard({ market, settings, health, trades, positions, signals, signalOrders = [], signalOrderCount = null, tradetronEvents = [], executionCoverage = null, developerSync = null, developerSnapshots = [], developerApiConfigured = false, onInspect, inspect, logs }) {
   const today = new Date().toISOString().slice(0,10);
   const configuredRouteSymbols = new Set(executionCoverage?.routedSymbols || []);
   const activeRoutedCount = configuredRouteSymbols.size
@@ -200,6 +214,7 @@ function Dashboard({ market, settings, health, trades, positions, signals, signa
     </section>
     <Panel title="Signal Mode"><div className="idle">SCANNER → TRADETRON → LIVE OFFLINE <span>No orders are sent by the scanner. Tradetron owns Live Offline execution and position management.</span></div></Panel>
     <TradetronActivity events={tradetronEvents} signals={signalOrders} webhookSecretConfigured={executionCoverage?.webhookSecretConfigured === true} />
+    <TradetronDeveloperApiPanel configured={developerApiConfigured} sync={developerSync} deployments={developerSnapshots} />
     <Panel title="Idle Reason"><div className="idle">{idleFromSignals(signals)} <span>Top blocks: {top || 'none recorded'}</span></div></Panel>
     <Panel title="Engine Log · last 200 lines"><Log rows={logs || []}/></Panel>
     <div className="micro"><span className={health?.workerLeaseActive ? 'up' : 'down'}>Worker {health?.workerLeaseActive ? 'ONLINE' : 'OFFLINE'}</span><span>Last tick {settings.last_tick_at ? new Date(settings.last_tick_at).toLocaleTimeString('en-IN') : '—'}</span><span>Time drift {health?.timeDriftMs == null ? '—' : Math.round(health.timeDriftMs) + ' ms'}</span><span>Auto {settings.auto_trade ? 'ON' : 'OFF'}</span><span>Continuous {settings.continuous_mode ? 'ON' : 'OFF'}</span></div>
@@ -225,17 +240,18 @@ function fmtQty(v) {
 }
 
 function MarketTable({ market, signals, routedSymbols = [] }) {
+  const visibleMarket = selectVisibleMarketRows(market, DEFAULT_VISIBLE_MARKET_LIMIT);
   const map = new Map();
   for (const s of signals || []) {
     if (!map.has(s.symbol)) map.set(s.symbol, {});
     map.get(s.symbol)[s.strategy] = s;
   }
-  return <div className="tablewrap"><table><thead><tr><th>#</th><th>COIN</th><th>PRICE</th><th>24H %</th><th>TURNOVER</th><th>VOL SPIKE</th><th>MOM</th><th>SCALP</th><th>TREND</th><th>SUPPORT</th><th>RESIST.</th><th>SIGNAL</th><th>TT ROUTE</th></tr></thead><tbody>{market.map((m,i) => {
+  return <><div className="marketCount">Showing {visibleMarket.length} of {(market || []).length} instruments · sorted by 24h turnover · full background scanner remains active.</div><div className="tablewrap"><table><thead><tr><th>#</th><th>COIN</th><th>PRICE</th><th>24H %</th><th>TURNOVER</th><th>VOL SPIKE</th><th>MOM</th><th>SCALP</th><th>TREND</th><th>SUPPORT</th><th>RESIST.</th><th>SIGNAL</th><th>TT ROUTE</th></tr></thead><tbody>{visibleMarket.map((m,i) => {
     const x = map.get(m.symbol) || {};
     const best = [x.MOMENTUM,x.SCALPING].filter(Boolean).sort((a,b) => num(b.score)-num(a.score))[0];
     const routeInfo = routeStatusForSymbol(m.symbol, [x.MOMENTUM, x.SCALPING], routedSymbols);
     return <tr key={m.symbol}><td>{i+1}</td><td className="symbol">{m.symbol}</td><td>{price(m.mark_price || m.close)}</td><td className={num(m.ltp_change_24h)>=0?'up':'down'}>{pct(m.ltp_change_24h)}</td><td>{money(m.turnover_usd)}</td><td>{best ? num(best.volume_spike).toFixed(2) + 'x' : '—'}</td><td><span className={x.MOMENTUM?.side==='BUY'?'up':x.MOMENTUM?.side==='SELL'?'down':''}>{x.MOMENTUM ? num(x.MOMENTUM.score).toFixed(0) + ' ' + (x.MOMENTUM.side || '') : '—'}</span></td><td><span className={x.SCALPING?.side==='BUY'?'up':x.SCALPING?.side==='SELL'?'down':''}>{x.SCALPING ? num(x.SCALPING.score).toFixed(0) + ' ' + (x.SCALPING.side || '') : '—'}</span></td><td>{best?.trend || '—'} / {best?.confirm_trend || '—'}</td><td>{price(best?.support)}</td><td>{price(best?.resistance)}</td><td><b className={best?.stage==='CONFIRMED'?'up':best?.stage==='SETUP'?'warn':'muted'}>{best?.stage || 'WATCH'}</b></td><td><button className={`tiny ${routeInfo.tone}`} disabled title={routeInfo.title}>{routeInfo.label}</button></td></tr>;
-  })}</tbody></table></div>;
+  })}</tbody></table></div></>;
 }
 
 function RiskGovernor({ signals, health, positions, onInspect, inspect, scoreMin = 80 }) {
@@ -365,6 +381,69 @@ function TradetronActivity({ events, signals, webhookSecretConfigured = false })
     <div className="micro"><span>Signals sent: {signals?.length || 0}</span><span>Tradetron events: {events?.length || 0}</span><span>Webhook secret: {webhookSecretConfigured ? 'CONFIGURED' : 'MISSING'}</span><span>Live Offline: ACTIVE on Tradetron</span></div>
   </Panel>;
 }
+
+function safeDeveloperApiValue(value) {
+  if (value === null || value === undefined) return '—';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
+  try {
+    const scrub = input => {
+      if (Array.isArray(input)) return input.map(scrub);
+      if (!input || typeof input !== 'object') return input;
+      return Object.fromEntries(Object.entries(input)
+        .filter(([key]) => !/(secret|token|password|authorization|api.?key)/i.test(key))
+        .map(([key, item]) => [key, scrub(item)]));
+    };
+    return JSON.stringify(scrub(value));
+  } catch {
+    return '[unavailable]';
+  }
+}
+
+function TradetronDeveloperApiPanel({ configured = false, sync = null, deployments = [] }) {
+  const stale = !!sync?.last_success_at && Date.now() - Date.parse(sync.last_success_at) > 180000;
+  const status = sync?.status || (configured ? 'WAITING FOR FIRST SYNC' : 'NOT CONFIGURED');
+  const statusClass = status === 'OK' && !stale ? 'apiStateOk' : (status === 'ERROR' || stale ? 'apiStateError' : 'apiStateWarn');
+  const positionRows = (deployments || []).flatMap(deployment =>
+    (Array.isArray(deployment.positions) ? deployment.positions : []).map((position, index) => ({
+      deployment: deployment.deployment_name || String(deployment.deployment_id),
+      index: index + 1,
+      position: position && typeof position === 'object' && !Array.isArray(position) ? position : { value: position }
+    }))
+  );
+  const positionKeys = [...new Set(positionRows.flatMap(row =>
+    Object.keys(row.position).filter(key => !/(secret|token|password|authorization|api.?key)/i.test(key))
+  ))].slice(0, 10);
+
+  return <Panel title="Tradetron Developer API · read-only position snapshot">
+    <div className="lockedText">
+      <b className={statusClass}>Status: {status}{stale ? ' · STALE' : ''}</b><br/>
+      <span>API key: {configured ? 'configured on the Railway worker' : 'not configured on the Railway worker'}</span><br/>
+      <span>Last successful sync: {sync?.last_success_at ? new Date(sync.last_success_at).toLocaleString('en-IN') : '—'}</span><br/>
+      <span>Deployments reported: {sync?.deployment_count ?? '—'} · Position rows returned: {sync?.position_count ?? '—'}</span>
+      {sync?.last_error ? <p className="apiStateError">Last sync warning/error: {sync.last_error}</p> : null}
+      {!configured ? <p>Add the read-only TRADETRON_DEVELOPER_API_KEY to the Railway worker, then apply the migration documented in db/migrations/20261012080000_tradetron_developer_api_sync.sql.</p> : null}
+      {configured && !sync ? <p>Waiting for the worker's first sync. If this persists, confirm the Supabase migration has been applied.</p> : null}
+    </div>
+    {deployments.length ? <div className="tablewrap"><table>
+      <thead><tr><th>DEPLOYMENT</th><th>STATUS</th><th>MODE</th><th>BROKER</th><th>POSITIONS REPORTED</th><th>P&amp;L</th><th>CURRENCY</th><th>AS OF</th></tr></thead>
+      <tbody>{deployments.map(row => <tr key={row.deployment_id}>
+        <td>{row.deployment_name || row.deployment_id}<br/><small className="muted">ID {row.deployment_id}</small></td>
+        <td>{row.status || '—'}</td><td>{row.deployment_type || '—'}</td><td>{row.broker || '—'}</td>
+        <td>{row.positions_hidden ? 'HIDDEN BY TRADETRON' : (Array.isArray(row.positions) ? row.positions.length : '—') + ' row(s)'}<br/><small className="muted">Summary open count: {row.open_positions ?? '—'}</small></td>
+        <td>{row.pnl == null ? '—' : safeDeveloperApiValue(row.pnl)}</td><td>{row.currency_code || '—'}</td>
+        <td>{row.as_of ? new Date(row.as_of).toLocaleString('en-IN') : (row.last_success_at ? new Date(row.last_success_at).toLocaleString('en-IN') : '—')}</td>
+      </tr>)}</tbody>
+    </table></div> : <div className="lockedText">No deployment snapshot is available yet. A successful API response with an empty positions array is reported as “no positions”; no dummy positions are created.</div>}
+    {positionRows.length ? <div className="tablewrap"><table>
+      <thead><tr><th>DEPLOYMENT</th><th>#</th>{positionKeys.map(key => <th key={key}>{key}</th>)}</tr></thead>
+      <tbody>{positionRows.map((row) => <tr key={row.deployment + ':' + row.index}>
+        <td>{row.deployment}</td><td>{row.index}</td>
+        {positionKeys.map(key => <td key={key}>{safeDeveloperApiValue(row.position[key])}</td>)}
+      </tr>)}</tbody>
+    </table></div> : (deployments.some(row => row.positions_hidden) ? <div className="lockedText">Tradetron marked positions as hidden for at least one deployment; an empty array must not be interpreted as zero.</div> : <div className="lockedText">Tradetron currently reports no position records for the listed deployments. This read-only API snapshot is separate from webhook-ingested positions above.</div>)}
+  </Panel>;
+}
+
 function Log({ rows }) {
   return <div className="log">{rows.length ? rows.map(x=><div key={x.id}><small>{new Date(x.created_at).toLocaleTimeString()}</small><b>{x.level}</b><span>{x.message}</span></div>) : <div className="muted">Open Dashboard state includes the last 200 engine logs when the database is connected.</div>}</div>;
 }
