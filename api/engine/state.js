@@ -31,6 +31,16 @@ export default async function handler(req, res) {
       row?.message === 'Worker heartbeat scan' && row?.data?.tradetronRouting
     );
     const workerRouting = heartbeatLog?.data?.tradetronRouting || null;
+    const workerTradetronDeveloperApi = heartbeatLog?.data?.tradetronDeveloperApi || null;
+    const [developerSyncRows, developerSnapshotRows] = await Promise.all([
+      select('dd_tradetron_developer_sync_state', 'id=eq.1&select=*').catch(() => []),
+      select('dd_tradetron_developer_snapshots', 'order=deployment_id.asc').catch(() => [])
+    ]);
+    const tradetronDeveloperSync = developerSyncRows?.[0] || null;
+    const knownDeploymentIds = tradetronDeveloperSync?.details?.deploymentIds;
+    const tradetronDeveloperSnapshots = Array.isArray(knownDeploymentIds)
+      ? (developerSnapshotRows || []).filter(row => knownDeploymentIds.includes(Number(row.deployment_id)))
+      : (developerSnapshotRows || []);
     const routeTable = Array.isArray(CONFIG.tradetronBridgeRoutes) ? CONFIG.tradetronBridgeRoutes : [];
     const legacyFuturesConfigured = CONFIG.tradetronBridgeEnabled && !!CONFIG.tradetronAuthToken;
     const localSymbols = routeTable.length
@@ -57,6 +67,8 @@ export default async function handler(req, res) {
         optionsUnderlyings: ['BTC', 'ETH', 'XAUT'],
         optionsRouteConfigured,
         webhookSecretConfigured: !!CONFIG.tradetronWebhookSecret,
+        tradetronDeveloperApiConfigured: workerTradetronDeveloperApi?.configured === true,
+        tradetronDeveloperApiStatus: workerTradetronDeveloperApi?.status || tradetronDeveloperSync?.status || 'NOT_CONFIGURED',
         routingStatusSource: workerRouting ? 'worker-heartbeat' : 'vercel-config-fallback',
         routingObservedAt: heartbeatLog?.created_at || null,
         directDeltaExecutionEnabled: false
@@ -67,7 +79,9 @@ export default async function handler(req, res) {
       trades: trades || [], logs: logs || [], ledger: ledger || [], counters: counters?.[0] || null,
       daily: daily?.[0] || null, signalOrders: signalOrders || [],
       signalOrderCount: signalOrderCount == null ? null : Number(signalOrderCount),
-      tradetronEvents: tradetronEvents || []
+      tradetronEvents: tradetronEvents || [],
+      tradetronDeveloperSync,
+      tradetronDeveloperSnapshots
     });
   } catch (e) {
     return res.status(503).json({ success: false, environment: CONFIG.environment, error: e.message });
