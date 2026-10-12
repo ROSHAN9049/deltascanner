@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { TradetronBridge, withSignalReservations } from '../server/tradetron.js';
+import { SIGNAL_RESERVATION_TTL_MS, TradetronBridge, withSignalReservations } from '../server/tradetron.js';
 import { isAuthenticatedWebhookRequest } from '../api/tradetron/webhook.js';
 
 async function withoutThreeSecondReset(fn) {
@@ -103,7 +103,6 @@ test('only fresh unconfirmed Tradetron signals reserve symbols', () => {
 
 test('signal reservations expire at the TTL boundary instead of persisting forever', () => {
   const now = Date.now();
-  const { SIGNAL_RESERVATION_TTL_MS } = { SIGNAL_RESERVATION_TTL_MS: 15 * 60 * 1000 };
   const rows = withSignalReservations([], [
     { symbol: 'BTCUSD', side: 'buy', state: 'SIGNAL_SENT', updated_at: new Date(now - SIGNAL_RESERVATION_TTL_MS + 1).toISOString() },
     { symbol: 'ETHUSD', side: 'buy', state: 'SIGNAL_SENT', updated_at: new Date(now - SIGNAL_RESERVATION_TTL_MS).toISOString() }
