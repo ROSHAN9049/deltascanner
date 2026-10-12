@@ -4,7 +4,7 @@ import { CONFIG } from '../server/config.js';
 import { DeltaAdapter } from './delta-adapter.mjs';
 import { analyse, analyseOption } from './strategy.mjs';
 import * as db from '../server/db.js';
-import { TradetronBridge, withSignalReservations } from '../server/tradetron.js';
+import { SIGNAL_RESERVATION_TTL_MS, TradetronBridge, withSignalReservations } from '../server/tradetron.js';
 import { TradetronDeveloperApi } from '../server/tradetron-developer-api.mjs';
 import { createGridState, evaluateGridTick } from './grid-strategy.mjs';
 
@@ -48,6 +48,7 @@ export class DeltaEngine {
     this.tradetron = new TradetronBridge();
     this.tradetronDeveloperApi = new TradetronDeveloperApi();
     this.lastTradetronDeveloperSyncAt = 0;
+    this.lastSignalReservationExpiryAt = 0;
     this.tradetronDeveloperSyncInFlight = null;
     this.tradetronDeveloperApiStatus = CONFIG.tradetronDeveloperApiKey ? 'WAITING_FOR_FIRST_SYNC' : 'NOT_CONFIGURED';
     this.tradetronOptions = new TradetronBridge({ enabled: CONFIG.tradetronOptionsBridgeEnabled, authToken: CONFIG.tradetronOptionsAuthToken });
@@ -973,6 +974,7 @@ export class DeltaEngine {
             entry_price: signal.price,
             stop_price: signal.sl,
             tp_price: signal.tp,
+            bridge_accepted: true,
             bridge_response: result.response || null,
             bridge_trigger_key: result.triggerKey || null,
             bridge_dynamic: result.dynamic === true
@@ -1755,15 +1757,50 @@ export class DeltaEngine {
     return this.tradetron.supportsFuturesSymbol(selected) ? this.tradetron : null;
   }
 
+  async expireStaleSignalReservations() {
+    if (!CONFIG.signalOnly || !CONFIG.tradetronBridgeEnabled) return;
+    const nowMs = Date.now();
+    if (nowMs - this.lastSignalReservationExpiryAt < 60000) return;
+    this.lastSignalReservationExpiryAt = nowMs;
+    const cutoff = new Date(nowMs - SIGNAL_RESERVATION_TTL_MS).toISOString();
+    try {
+      const expired = await db.updateReturning(
+        'dd_orders',
+        'order_type=eq.tradetron_signal&state=in.(PENDING,SIGNAL_SENT)' +
+          '&updated_at=lt.' + encodeURIComponent(cutoff) +
+          '&select=id,symbol,state',
+        { state: 'EXPIRED', updated_at: new Date(nowMs).toISOString() }
+      );
+      const rows = Array.isArray(expired) ? expired : [];
+      if (rows.length) {
+        await this.log('INFO', 'Stale Tradetron signal reservations expired', {
+          count: rows.length,
+          ttlMs: SIGNAL_RESERVATION_TTL_MS,
+          symbols: [...new Set(rows.map(row => String(row.symbol || '').toUpperCase()).filter(Boolean))],
+          note: 'No authenticated activity confirmation arrived before TTL; expiry is not a fill/close event'
+        });
+      }
+    } catch (error) {
+      // The in-memory age filter below still prevents old records from reserving
+      // symbols if this best-effort persistence update temporarily fails.
+      await this.log('WARN', 'Stale Tradetron reservation cleanup failed; age filter remains active', {
+        ttlMs: SIGNAL_RESERVATION_TTL_MS,
+        error: error.message
+      });
+    }
+  }
+
   async getSignalOnlyPositions(openRows) {
     const positions = Array.isArray(openRows) ? openRows : [];
     if (!CONFIG.signalOnly || !CONFIG.tradetronBridgeEnabled) return positions;
     try {
+      const cutoff = new Date(Date.now() - SIGNAL_RESERVATION_TTL_MS).toISOString();
       const pendingSignals = await db.select(
         'dd_orders',
         'order_type=eq.tradetron_signal&state=in.(PENDING,SIGNAL_SENT)' +
-        '&select=symbol,side,strategy,size,execution_id,client_order_id,created_at,state' +
-        '&order=created_at.desc&limit=500'
+          '&updated_at=gte.' + encodeURIComponent(cutoff) +
+          '&select=symbol,side,strategy,size,execution_id,client_order_id,created_at,updated_at,state' +
+          '&order=updated_at.desc&limit=500'
       );
       return withSignalReservations(positions, pendingSignals || []);
     } catch (error) {
@@ -1862,6 +1899,7 @@ export class DeltaEngine {
 
   async scanOnce() {
     await this.acquireLease();
+    await this.expireStaleSignalReservations();
     const settings = { ...{
       enabled: true, auto_trade: true, emergency_stop: false, continuous_mode: true,
       max_open_positions: 2, risk_pct: 0.3, max_leverage: 3, score_min: 65,
@@ -2006,6 +2044,7 @@ export class DeltaEngine {
       signals: this.lastSignals.length,
       positions: positions.filter(position => position.origin === 'TRADETRON' && n(position.qty) > 0).length,
       reservedSignals: positions.filter(position => position.origin === 'SIGNAL_RESERVATION').length,
+      signalReservationTtlMs: SIGNAL_RESERVATION_TTL_MS,
       tradetronRouting: {
         bridgeConfigured,
         configuredRoutes: configuredBridgeCount,

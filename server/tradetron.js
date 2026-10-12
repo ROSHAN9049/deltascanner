@@ -3,10 +3,22 @@ import { CONFIG } from './config.js';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const clean = v => String(v ?? '').trim();
 
-// Treat unconfirmed Tradetron entry signals as reserved slots until a matching
-// fill/position event arrives. This keeps SIGNAL_ONLY from opening unlimited
-// simulated positions when activity delivery is delayed or unavailable.
-export function withSignalReservations(openPositions, pendingSignals) {
+// An entry trigger is momentary. If Tradetron sends no authenticated activity
+// confirmation, do not let the reservation block the symbol indefinitely.
+// This TTL is not evidence of a fill or a close; only a matching activity event
+// can establish an actual position in the dashboard's position ledger.
+export const SIGNAL_RESERVATION_TTL_MS = 15 * 60 * 1000;
+
+function reservationTimestamp(row) {
+  const value = row?.updated_at || row?.created_at;
+  const timestamp = Date.parse(value || '');
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+export function withSignalReservations(openPositions, pendingSignals, {
+  now = Date.now(),
+  ttlMs = SIGNAL_RESERVATION_TTL_MS
+} = {}) {
   const positions = [...(Array.isArray(openPositions) ? openPositions : [])];
   const occupied = new Set(positions
     .filter(row => Math.abs(Number(row?.qty) || 0) > 0)
@@ -16,6 +28,10 @@ export function withSignalReservations(openPositions, pendingSignals) {
   for (const row of Array.isArray(pendingSignals) ? pendingSignals : []) {
     const state = clean(row?.state).toUpperCase();
     if (!['PENDING', 'SIGNAL_SENT'].includes(state)) continue;
+    const timestamp = reservationTimestamp(row);
+    const ageMs = timestamp === null ? Infinity : now - timestamp;
+    if (ageMs < 0 || ageMs >= ttlMs) continue;
+
     const symbol = clean(row?.symbol).toUpperCase();
     if (!symbol || occupied.has(symbol)) continue;
     occupied.add(symbol);
@@ -27,7 +43,7 @@ export function withSignalReservations(openPositions, pendingSignals) {
       strategy: clean(row?.strategy).toUpperCase(),
       origin: 'SIGNAL_RESERVATION',
       execution_id: clean(row?.execution_id || row?.client_order_id) || null,
-      opened_at: row?.created_at || null,
+      opened_at: row?.created_at || row?.updated_at || null,
       reservation_state: state
     });
   }

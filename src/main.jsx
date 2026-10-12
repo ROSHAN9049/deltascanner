@@ -119,7 +119,10 @@ function App() {
       : [],
     configuredFuturesRoutes: Number(workerRouting.configuredRoutes) || 0,
     optionsRouteConfigured: workerRouting.optionsRouteConfigured === true,
-    reservedSignals: Number(workerRouting.reservedSignals) || 0,
+    reservedSignals: Number(workerRoutingLog?.data?.reservedSignals) || 0,
+    signalReservationTtlMinutes: Number(workerRoutingLog?.data?.signalReservationTtlMs) > 0
+      ? Math.round(Number(workerRoutingLog.data.signalReservationTtlMs) / 60000)
+      : 15,
     routingStatusSource: 'worker-heartbeat',
     routingObservedAt: workerRoutingLog?.created_at || null
   } : (state?.executionCoverage || null);
@@ -130,7 +133,7 @@ function App() {
         <div className="sub">DELTA INDIA · PERPETUAL FUTURES COMMAND CENTER</div>
       </div>
       <div className="headerRight">
-        <span>BUILD v2.0.20261011.01</span>
+        <span>BUILD v2.0.20261012.01</span>
         <span>UTC {new Date(clock).toISOString().slice(11,19)}</span>
         <span>LOCAL {new Date(clock).toLocaleTimeString('en-IN')}</span>
         <b className="badge test">LIVE MARKET · SIGNAL ONLY</b>
@@ -144,7 +147,7 @@ function App() {
     {error || marketError ? <div className="error">{error || marketError}</div> : null}
     <nav>{tabs.map(([id,label]) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}{id === 'live' ? ' 🔒' : ''}</button>)}</nav>
 
-    {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} trades={trades} positions={positions} signals={signals} signalOrders={state?.signalOrders || []} signalOrderCount={state?.signalOrderCount ?? null} tradetronEvents={state?.tradetronEvents || []} executionCoverage={executionCoverage} developerSync={state?.tradetronDeveloperSync || null} developerSnapshots={state?.tradetronDeveloperSnapshots || []} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} developerDataProtected={state?.tradetronDeveloperDataProtected === true} onInspect={setInspect} inspect={selected} logs={state?.logs || []} />}
+    {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} trades={trades} positions={positions} signals={signals} signalOrderStats={state?.signalOrderStats || null} tradetronEvents={state?.tradetronEvents || []} executionCoverage={executionCoverage} developerSync={state?.tradetronDeveloperSync || null} developerSnapshots={state?.tradetronDeveloperSnapshots || []} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} developerDataProtected={state?.tradetronDeveloperDataProtected === true} onInspect={setInspect} inspect={selected} logs={state?.logs || []} />}
     {tab === 'rotation' && <Rotation ledger={state?.ledger || []} />}
     {tab === 'momentum' && <EngineView engine="MOMENTUM" signals={signals} />}
     {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" />}
@@ -170,7 +173,7 @@ function Panel({ title, children }) {
 function Card({ label, value, sub }) {
   return <div className="card"><small>{label}</small><strong>{value}</strong><span>{sub}</span></div>;
 }
-function Dashboard({ market, settings, health, trades, positions, signals, signalOrders = [], signalOrderCount = null, tradetronEvents = [], executionCoverage = null, developerSync = null, developerSnapshots = [], developerApiConfigured = false, developerDataProtected = false, onInspect, inspect, logs }) {
+function Dashboard({ market, settings, health, trades, positions, signals, signalOrderStats = null, tradetronEvents = [], executionCoverage = null, developerSync = null, developerSnapshots = [], developerApiConfigured = false, developerDataProtected = false, onInspect, inspect, logs }) {
   const today = new Date().toISOString().slice(0,10);
   const configuredRouteSymbols = new Set(executionCoverage?.routedSymbols || []);
   const activeRoutedCount = configuredRouteSymbols.size
@@ -192,15 +195,16 @@ function Dashboard({ market, settings, health, trades, positions, signals, signa
       <Card label="TOTAL PNL" value={money(num(settings.realized_pnl)+num(settings.unrealized_pnl))} sub="realized + unrealized"/>
       <Card label="FEES TODAY" value={money(settings.fees_today)} sub="real fill commissions"/>
       <Card label="OPEN POSITIONS" value={positions.length} sub="Tradetron positions synced by webhook"/>
-      <Card label="TT SIGNALS" value={signalOrderCount == null ? signalOrders.length : signalOrderCount} sub="accepted signal records · not fills"/>
-      <Card label="TT EVENTS" value={tradetronEvents.length} sub="Tradetron activity received"/>
+      <Card label="TT SIGNAL RECORDS" value={signalOrderStats?.total ?? '—'} sub="all states including expired; not fills"/>
+      <Card label="TT SENT" value={signalOrderStats?.sent ?? '—'} sub="API accepted historically; may now be expired; not fills"/>
+      <Card label="TT EVENTS" value={signalOrderStats?.events ?? '—'} sub="authenticated activity events received"/>
       <Card label="TODAY" value={todayTrades.length} sub={wins + ' wins / ' + loss + ' losses · ' + (todayTrades.length ? (wins/todayTrades.length*100).toFixed(1) : '0.0') + '% WR'}/>
     </section>
     <Panel title="Tradetron Execution Coverage">
       <section className="cards">
         <Card label="LIVE FUTURES SCANNED" value={market?.length || 0} sub="Delta India perpetual tickers" />
         <Card label="FUTURES SYMBOLS ROUTED" value={activeRoutedCount + ' / ' + (market?.length || 0)} sub={(executionCoverage?.configuredFuturesRoutes ?? 0) + ' worker-confirmed bridge(s); ' + (executionCoverage?.routingStatusSource === 'worker-heartbeat' ? 'live worker telemetry' : 'API config fallback')} />
-        <Card label="PENDING SIGNAL RESERVATIONS" value={executionCoverage?.reservedSignals ?? '—'} sub="not confirmed open positions" />
+        <Card label="PENDING SIGNAL RESERVATIONS" value={executionCoverage?.reservedSignals ?? '—'} sub={'unconfirmed signals within ' + (executionCoverage?.signalReservationTtlMinutes || 15) + 'm; not open positions'} />
         <Card label="SCAN-ONLY SYMBOLS" value={unroutedCount} sub="No Tradetron entry can be routed for these symbols" />
         <Card label="OPTIONS UNDERLYINGS" value="BTC · ETH · GOLD" sub="Gold contract symbol: XAUT" />
         <Card label="OPTIONS EXECUTION" value={executionCoverage?.optionsRouteConfigured ? 'CONFIGURED' : 'LOCKED'} sub={executionCoverage?.optionsRouteConfigured ? 'Dedicated options route detected; validate in Live Offline' : 'Options bridge and its Tradetron token are not configured'} />
@@ -215,7 +219,7 @@ function Dashboard({ market, settings, health, trades, positions, signals, signa
       <Panel title="Signal Stages · WATCH → SETUP → CONFIRMED"><div className="tablewrap"><table><thead><tr><th>COIN</th><th>ENG</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>QTY</th><th>NOTIONAL</th><th>RISK</th><th>READY</th><th>WHY BLOCKED</th></tr></thead><tbody>{signals.map(s => <tr key={s.symbol + s.strategy}><td className="symbol">{s.symbol}</td><td>{s.strategy === 'MOMENTUM' ? 'MOM' : 'SCALP'}</td><td>{s.stage}</td><td className={s.side === 'BUY' ? 'up' : s.side === 'SELL' ? 'down' : 'muted'}>{s.side || '—'}</td><td><b>{num(s.score).toFixed(0)}</b>/100</td><td>{fmtQty(s.qty_contracts)}</td><td>{money(s.notional)}</td><td>{money(s.risk_usd)}</td><td className={s.ready ? 'up' : 'down'}>{s.ready ? 'YES' : 'NO'}</td><td className="muted">{fmtReasons(s.blocked_reasons)}</td></tr>)}</tbody></table></div></Panel>
     </section>
     <Panel title="Signal Mode"><div className="idle">SCANNER → TRADETRON → LIVE OFFLINE <span>No orders are sent by the scanner. Tradetron owns Live Offline execution and position management.</span></div></Panel>
-    <TradetronActivity events={tradetronEvents} signals={signalOrders} webhookSecretConfigured={executionCoverage?.webhookSecretConfigured === true} />
+    <TradetronActivity events={tradetronEvents} signalStats={signalOrderStats} webhookSecretConfigured={executionCoverage?.webhookSecretConfigured === true} />
     <TradetronDeveloperApiPanel configured={developerApiConfigured} sync={developerSync} deployments={developerSnapshots} privateDataProtected={developerDataProtected} />
     <Panel title="Idle Reason"><div className="idle">{idleFromSignals(signals)} <span>Top blocks: {top || 'none recorded'}</span></div></Panel>
     <Panel title="Engine Log · last 200 lines"><Log rows={logs || []}/></Panel>
@@ -371,16 +375,16 @@ function Testnet({ settings, health, busy, mutate, positions }) {
 function Settings({ settings, secret, setSecret, busy, mutate }) {
   return <><Panel title="Server Controls"><div className="settings"><label>ENGINE_SECRET<input type="password" value={secret} onChange={e=>setSecret(e.target.value)} placeholder="Stored in this browser session only"/></label><label>Risk % per trade<input type="number" step="0.1" value={settings.risk_pct ?? 0.3} onChange={e=>mutate({riskPct:Number(e.target.value)})} disabled={busy}/></label><div className="lockedText"><b>Global scanner position cap: DISABLED.</b> Entries still require a valid signal, an available Tradetron route, acceptable margin and duplicate-symbol checks.</div><label>Momentum RR<input type="number" step="0.1" value={settings.momentum_rr ?? 2.0} onChange={e=>mutate({momentumRr:Number(e.target.value)})} disabled={busy}/></label><label>Scalping RR<input type="number" step="0.1" value={settings.scalping_rr ?? 2.0} onChange={e=>mutate({scalpingRr:Number(e.target.value)})} disabled={busy}/></label><label>TP1 %<input type="number" value={settings.tp1_pct ?? 33} onChange={e=>mutate({tp1Pct:Number(e.target.value)})} disabled={busy}/></label><label>Max hold minutes<input type="number" value={settings.max_hold_minutes ?? 240} onChange={e=>mutate({maxHoldMinutes:Number(e.target.value)})} disabled={busy}/></label></div></Panel><Panel title="Strategy / Safety Defaults"><div className="ruleGrid"><span>Momentum: EMA9/21/50 + RSI 54–68 / 32–46 + adaptive volume gate + ATR stop ≥0.95%</span><span>Scalping: 1m/5m EMA + RSI + VWAP + adaptive volume gate + stop ≥0.75%</span><span>Confirmed score: ≥80 (hard floor)</span><span>Volume qualification: momentum default 0.75x with controlled sparse-volume fallback; scalping default 1.25x</span><span>Entry candle-range gate: Momentum ≤4.00x ATR; Scalping ≤3.00x ATR</span><span>Price-to-EMA21 distance: Momentum ≤3.50x ATR; Scalping ≤2.50x ATR</span><span>BTC regime: FLAT/mixed is neutral; only fully opposing BTC 5m+15m blocks; extreme opposing regimes can use the strong-local override</span><span>Fee + spread budget: 20% of 1R Momentum / 25% Scalping</span><span>Risk sizing: configurable per-trade equity risk (database default 1%), whole contracts, max 3x configurable notional cap</span><span>BTC override still respects spread, cost, stop, margin and duplicate-symbol prevention; scanner daily loss / trade-count quotas are disabled</span><span>Exits: TP1 33% at 1R, BE+fees, trail 1R, final TP default 2.5R</span></div></Panel><Panel title="Environment Lock"><div className="liveLock">PRODUCTION MARKET · SIGNAL ONLY. The scanner reads Delta India production market data and sends signals only; direct Delta order APIs are hard-locked.</div></Panel></>;
 }
-function TradetronActivity({ events, signals, webhookSecretConfigured = false }) {
+function TradetronActivity({ events, signalStats = null, webhookSecretConfigured = false }) {
   const rows = (events || []).slice(0, 30);
   const webhookUrl = typeof window !== 'undefined'
     ? window.location.origin + '/api/tradetron/webhook'
     : '/api/tradetron/webhook';
   return <Panel title="Tradetron Offline Activity · actual events received">
-    <div className="lockedText"><b>Outbound webhook:</b> <span className="mono">{webhookUrl}</span><br/><small>Tradetron → scanner: send fill/position/exit activity here. Configure the same value as TRADETRON_WEBHOOK_SECRET in the X-Tradetron-Webhook-Secret header. Events will remain at zero until Tradetron sends authenticated callbacks.</small></div>
+    <div className="lockedText"><b>Outbound webhook:</b> <span className="mono">{webhookUrl}</span><br/><small>{webhookSecretConfigured ? 'Webhook secret is configured in Vercel. Confirm Tradetron or a supported relay sends authenticated fill/position/exit callbacks to this URL.' : 'WEBHOOK SECRET MISSING in Vercel. Set TRADETRON_WEBHOOK_SECRET there, redeploy Vercel, and configure Tradetron or a supported relay to send it in the X-Tradetron-Webhook-Secret header. Until then, activity events cannot authenticate.'}</small></div>
     {rows.length ? <div className="tablewrap"><table><thead><tr><th>TIME</th><th>EVENT</th><th>SYMBOL</th><th>SIDE</th><th>QTY</th><th>PRICE</th><th>PNL</th><th>STATUS</th><th>EXECUTION</th></tr></thead><tbody>{rows.map(e => <tr key={e.event_id}><td>{e.event_at ? new Date(e.event_at).toLocaleTimeString('en-IN') : new Date(e.created_at).toLocaleTimeString('en-IN')}</td><td>{e.event_type || 'UNKNOWN'}</td><td className="symbol">{e.symbol || '—'}</td><td className={e.side==='BUY'?'up':e.side==='SELL'?'down':''}>{e.side || '—'}</td><td>{fmtQty(e.qty)}</td><td>{price(e.price)}</td><td className={num(e.pnl)>=0?'up':'down'}>{e.pnl == null ? '—' : money(e.pnl)}</td><td>{e.status || '—'}</td><td className="mono">{e.execution_id || '—'}</td></tr>)}</tbody></table></div>
     : <div className="lockedText">No Tradetron outbound activity has reached the scanner yet. Scanner signals are accepted separately; once Tradetron posts activity/fills/errors to the webhook above, they will appear here.</div>}
-    <div className="micro"><span>Signals sent: {signals?.length || 0}</span><span>Tradetron events: {events?.length || 0}</span><span>Webhook secret: {webhookSecretConfigured ? 'CONFIGURED' : 'MISSING'}</span><span>Live Offline: ACTIVE on Tradetron</span></div>
+    <div className="micro"><span>Signal records: {signalStats?.total ?? '—'}</span><span>API-accepted sent total: {signalStats?.sent ?? '—'} (not fills)</span><span>Current state · Pending: {signalStats?.pending ?? '—'} · Expired: {signalStats?.expired ?? '—'} · Failed: {signalStats?.failed ?? '—'}</span><span>Activity events: {signalStats?.events ?? '—'}</span><span>Webhook secret: {webhookSecretConfigured ? 'CONFIGURED' : 'MISSING'}</span><span>Live Offline: ACTIVE on Tradetron</span></div>
   </Panel>;
 }
 
