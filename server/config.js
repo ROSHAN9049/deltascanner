@@ -71,6 +71,10 @@ export const CONFIG = Object.freeze({
   tradetronOptionsAuthToken: process.env.TRADETRON_OPTIONS_AUTH_TOKEN || '',
   tradetronWebhookSecret: process.env.TRADETRON_WEBHOOK_SECRET || '',
   tradetronBaseUrl: process.env.TRADETRON_BASE_URL || 'https://api.tradetron.tech',
+  // Read-only Developer API is separate from the signal-submission API base.
+  tradetronDeveloperApiKey: String(process.env.TRADETRON_DEVELOPER_API_KEY || '').trim(),
+  tradetronDeveloperApiBaseUrl: String(process.env.TRADETRON_DEVELOPER_API_BASE_URL || 'https://tradetron.tech/api/v1').replace(/\/+$/, ''),
+  tradetronDeveloperApiTimeoutMs: Number(process.env.TRADETRON_DEVELOPER_API_TIMEOUT_MS || 8000),
   tradetronAuthToken: process.env.TRADETRON_AUTH_TOKEN || '',
   tradetronTimeoutMs: Number(process.env.TRADETRON_TIMEOUT_MS || 10000),
   // Risk/sizing capital is denominated in USD. Default ~USD 51.5 corresponds to the project's INR 5,000 planning capital at ~INR 97/USD; override explicitly in USD when capital changes.

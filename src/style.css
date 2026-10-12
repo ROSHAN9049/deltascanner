@@ -58,3 +58,6 @@ footer{color:#526177;text-align:center;font-size:9px;padding-top:12px}
 .gridTestNotice{padding:12px;border:1px solid #5c491a;background:#211a0b;color:#e5c86e;border-radius:7px;font-size:10px;line-height:1.55;margin:5px 0 12px}
 @media(max-width:1000px){.gridConfig{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:620px){.gridConfig{grid-template-columns:1fr}.gridButtons{display:grid;grid-template-columns:1fr 1fr}.gridButtons button{margin:0}.gridMeta{gap:9px;flex-direction:column}.gridLockRow{align-items:flex-start;flex-direction:column}.gridLockRow span{text-align:left}.gridEvents>div{grid-template-columns:57px 42px minmax(0,1fr)}}
+
+.marketCount{font-size:11px;color:#96a5bb;margin:0 0 8px;padding:7px 10px;border:1px solid #243349;border-radius:7px;background:#0c1420}
+.apiStateOk{color:#68d7a3}.apiStateWarn{color:#f2c879}.apiStateError{color:#ff8d9b}.apiJson{white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;max-width:100%;margin:0;padding:10px;background:#0b111b;border:1px solid #243349;border-radius:7px}

@@ -81,3 +81,20 @@ Set `TRADETRON_WEBHOOK_SECRET` as a **sensitive Production environment variable 
 Tradetron's current public integrations page advertises outbound webhooks for fills, errors, and kill-switch events to HTTPS endpoints. That confirms the platform advertises an outbound-webhook capability, but the account-specific configuration and payload fields still need a Live Offline test. Confirm that the chosen event type can call `/api/tradetron/webhook` with the configured authentication header. **TT SIGNALS** means the scanner sent a signal to Tradetron; it does not prove a fill occurred. **TT EVENTS** only increases after an authenticated event is received. Keep the Tradetron deployment in **Live Offline** until the signal → execution → event → dashboard round-trip is verified.
 
 The parser accepts JSON and form-encoded payloads and normalizes common event/side field shapes.
+
+
+## Read-only Tradetron Developer API position snapshot
+
+The worker can optionally poll Tradetron's documented read-only Developer API. This is separate from the existing signal bridge token and from the authenticated outbound webhook.
+
+1. Create a read-only key in Tradetron → Developer API. Enable only the permissions needed to read your deployments, their positions/P&L, and optionally notifications.
+2. In the Railway worker service, add the sensitive variable `TRADETRON_DEVELOPER_API_KEY`. Never add this key to Vercel browser variables, React code, Git, logs, or chat.
+3. Keep `TRADETRON_DEVELOPER_API_BASE_URL` at `https://tradetron.tech/api/v1` unless Tradetron documents a different URL for your account. The separate `TRADETRON_BASE_URL` used for signal submission is not the same configuration.
+4. Apply `db/migrations/20261012080000_tradetron_developer_api_sync.sql` in the Supabase SQL editor before relying on the snapshot panel. The tables have RLS enabled and direct anon/authenticated access revoked; the worker writes them using the server-side service key.
+5. The single leased Railway worker polls no more than once per minute and reads deployment summaries plus each deployment's positions endpoint. The sync limits a cycle to eight deployments and two deployment-list pages. This keeps the normal single-deployment account far below Tradetron's documented per-key rate limit; a partial result is visibly marked.
+6. The dashboard displays the API's position records separately from webhook-ingested `dd_positions`. It does not manufacture `dd_positions` or pretend an accepted signal was filled. Tradetron's position record schema needs a non-empty real sample before any automatic mapping into the webhook position ledger can responsibly be enabled. For privacy, these account snapshots are returned by the dashboard API only with a valid `ENGINE_SECRET`; configure that existing control secret in Vercel and enter it in the dashboard Settings panel to view the private snapshots. Keep `TRADETRON_DEVELOPER_API_KEY` exclusively on the Railway worker.
+7. If `positions_hidden` is true, an empty array is not treated as a zero-position confirmation. If Tradetron returns an empty array with `positions_hidden:false`, the panel reports no records returned.
+8. For the market table, only the frontend's visible rows are limited to 40 by turnover ranking. The API and worker universe remain untrimmed; Momentum/Scalping analysis continues across all products with the existing candle-warm-up schedule.
+9. Keep the scanner in SIGNAL_ONLY, Options execution locked, and Grid simulator-only. The read-only Developer API integration does not enable order placement.
+
+The account's Developer API interface showed Bearer authentication and these tested endpoints: `GET /api/v1/me/deployments`, `GET /api/v1/me/deployments/{id}/positions`, and `GET /api/v1/me/notifications`. The positions response tested during setup had `positions_hidden:false` and an empty `positions[]`; no position rows could therefore be schema-mapped or used as a fill test yet.
