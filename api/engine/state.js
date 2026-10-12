@@ -22,7 +22,7 @@ export default async function handler(req, res) {
         console.error('[engine/state] exact Tradetron signal count unavailable:', error.message);
         return null;
       }),
-      count('dd_orders', 'order_type=eq.tradetron_signal&state=eq.SIGNAL_SENT&select=id').catch(error => {
+      count('dd_orders', 'order_type=eq.tradetron_signal&or=(raw->>bridge_accepted.eq.true,raw->>bridge_response.eq.Ok)&select=id').catch(error => {
         console.error('[engine/state] Tradetron sent-signal count unavailable:', error.message);
         return null;
       }),
