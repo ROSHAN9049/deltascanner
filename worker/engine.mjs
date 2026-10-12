@@ -7,6 +7,7 @@ import * as db from '../server/db.js';
 import { SIGNAL_RESERVATION_TTL_MS, TradetronBridge, withSignalReservations } from '../server/tradetron.js';
 import { TradetronDeveloperApi } from '../server/tradetron-developer-api.mjs';
 import { createGridState, evaluateGridTick } from './grid-strategy.mjs';
+import { CANDLE_WARMUP_BATCH_SIZE, CANDLE_WARMUP_RETRY_MS, planCandleWarmup } from './candle-warmup.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const n = v => Number.isFinite(+v) ? +v : 0;
@@ -82,6 +83,8 @@ export class DeltaEngine {
     this.privateExecutionAvailable = false;
     this.lastMarketCacheWrite = 0;
     this.candleWarmCursor = 0;
+    this.candleFetchAt = new Map();
+    this.lastLeaseContentionLogAt = 0;
   }
 
   async log(level, message, data) {
@@ -327,6 +330,9 @@ export class DeltaEngine {
 
   async refreshCandle(symbol, resolution) {
     const key = resolution + ':' + symbol;
+    // Track attempts even when the API fails or returns a partial series so a
+    // deficient response is retried after the cooldown instead of every cycle.
+    this.candleFetchAt.set(key, Date.now());
     const value = await this.adapter.candles(symbol, resolution, 100);
     this.candles.set(key, Array.isArray(value) ? value : []);
     return this.candles.get(key);
@@ -336,32 +342,48 @@ export class DeltaEngine {
     const ranked = [...this.tickerMap.values()]
       .sort((a, b) => n(b.turnover_usd || b.turnover) - n(a.turnover_usd || a.turnover));
     if (!ranked.length) return;
-    const batchSize = 8;
-    const total = ranked.length;
-    const work = [];
-    let scanned = 0;
-    while (scanned < Math.min(batchSize, total)) {
-      const symbol = ranked[(this.candleWarmCursor + scanned) % total].symbol;
-      for (const resolution of ['1m', '5m', '15m']) {
-        if (!this.candles.has(resolution + ':' + symbol)) work.push([symbol, resolution]);
-      }
-      scanned++;
-    }
-    this.candleWarmCursor = (this.candleWarmCursor + scanned) % total;
+
+    const plan = planCandleWarmup(
+      ranked.map(row => row.symbol),
+      this.candles,
+      this.candleFetchAt,
+      this.candleWarmCursor,
+      CANDLE_WARMUP_BATCH_SIZE,
+      Date.now(),
+      CANDLE_WARMUP_RETRY_MS
+    );
+    this.candleWarmCursor = plan.nextCursor;
+    if (!plan.work.length) return;
 
     let cursor = 0;
+    let warmed = 0;
+    let failed = 0;
     const runner = async () => {
-      while (cursor < work.length) {
-        const [symbol, resolution] = work[cursor++];
+      while (cursor < plan.work.length) {
+        const [symbol, resolution] = plan.work[cursor++];
         try {
-          await this.refreshCandle(symbol, resolution);
+          const rows = await this.refreshCandle(symbol, resolution);
+          const minimumRows = resolution === '1m' ? 21 : 31;
+          if (rows.length >= minimumRows) warmed++;
         } catch (e) {
+          failed++;
           await this.log('WARN', 'Candle warmup failed', { symbol, resolution, error: e.message });
         }
       }
     };
+    // Keep a bounded six-request concurrency while warming three resolutions
+    // for 24 symbols per cycle. This covers the complete 231-symbol universe
+    // in about 10 cycles instead of about 29, absent API retries/failures.
     await Promise.all([runner(), runner(), runner(), runner(), runner(), runner()]);
     this.lastCandleRefresh = Date.now();
+    await this.log('INFO', 'Candle warm-up batch finished', {
+      symbolsQueued: plan.symbols.length,
+      seriesQueued: plan.work.length,
+      seriesReady: warmed,
+      seriesFailed: failed,
+      nextCursor: plan.nextCursor,
+      universe: ranked.length
+    });
   }
 
   getCandles(symbol, resolution) {
@@ -2067,9 +2089,23 @@ export class DeltaEngine {
     while (this.running) {
       try { await this.scanOnce(); }
       catch (e) {
-        await this.log('ERROR', 'Engine failed closed for cycle', {
-          error: e.message, code: e.code || null, status: e.status || null, details: e.details || null
-        });
+        const message = String(e?.message || e);
+        if (message.includes('Trading lease is held by another worker')) {
+          // Expected during a rolling Railway deployment: the old replica may
+          // retain the lease briefly while the replacement starts. Never loosen
+          // the lease or scan without it; report the skipped cycle as INFO.
+          if (Date.now() - this.lastLeaseContentionLogAt >= 60_000) {
+            this.lastLeaseContentionLogAt = Date.now();
+            await this.log('INFO', 'Worker cycle skipped safely: trading lease is held by another worker', {
+              workerId: CONFIG.workerId,
+              reason: 'Lease contention during worker overlap; no scan or entry attempted'
+            });
+          }
+        } else {
+          await this.log('ERROR', 'Engine failed closed for cycle', {
+            error: message, code: e?.code || null, status: e?.status || null, details: e?.details || null
+          });
+        }
       }
       await sleep(15000);
     }
