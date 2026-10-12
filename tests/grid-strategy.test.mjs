@@ -174,9 +174,10 @@ test('minimum lot size blocks any entry that would exceed its risk budget', () =
 });
 
 
-test('live-like ETH Grid sizing uses adjacent-rung risk and can fit the configured 1% budget', () => {
+test('live-like ETH Grid sizing fits the shared 0.30% risk budget with a whole contract', () => {
   const settings = {
     ...baseSettings,
+    grid_risk_per_trade_pct: 0.3,
     grid_lower_price: 2500,
     grid_upper_price: 2610,
     grid_levels_count: 10,
@@ -200,7 +201,8 @@ test('live-like ETH Grid sizing uses adjacent-rung risk and can fit the configur
   assert.equal(entered.entered[0].stopPrice, levels[5].price);
   assert.equal(entered.entered[0].targetPrice, levels[7].price);
   assert.ok(entered.entered[0].qty >= 1);
-  assert.ok(entered.entered[0].riskUsd <= 51.5 * 1 / 100);
+  assert.equal(entered.entered[0].qty, 1);
+  assert.ok(entered.entered[0].riskUsd <= 51.5 * 0.3 / 100);
 });
 
 test('Grid stop closes at observed mark and blocks same-tick re-entry on the next rung', () => {
@@ -258,4 +260,15 @@ test('bottom Grid rung remains blocked when its range-break stop produces poor r
   });
   assert.equal(result.entered.length, 0);
   assert.ok(result.state.events.some(event => event.reason === 'GRID_RISK_REWARD_BELOW_MINIMUM'));
+});
+
+
+test('Grid default risk matches the futures scanner base risk and never clamps below 0.30%', () => {
+  const config = normalizeGridConfig({ grid_lower_price: 2500, grid_upper_price: 2610, grid_levels_count: 10 });
+  assert.equal(config.riskPerTradePct, 0.3);
+  const low = normalizeGridConfig({
+    grid_lower_price: 2500, grid_upper_price: 2610, grid_levels_count: 10,
+    grid_risk_per_trade_pct: 0.1
+  });
+  assert.equal(low.riskPerTradePct, 0.3);
 });
