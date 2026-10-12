@@ -4,7 +4,7 @@ import { count, select } from '../../server/db.js';
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate');
   try {
-    const [settings, positions, signals, signalCache, marketCache, optionCache, trades, logs, ledger, counters, daily, signalOrders, tradetronEvents, signalOrderCount] = await Promise.all([
+    const [settings, positions, signals, signalCache, marketCache, optionCache, trades, logs, ledger, counters, daily, signalOrders, tradetronEvents, signalOrderCount, signalSentCount, signalPendingCount, signalExpiredCount, signalFailedCount, tradetronEventCount] = await Promise.all([
       select('dd_settings', 'id=eq.1&select=*'),
       CONFIG.signalOnly ? select('dd_positions', 'origin=eq.TRADETRON&qty=gt.0&order=updated_at.desc') : select('dd_positions', 'qty=gt.0&order=updated_at.desc'),
       select('dd_signals', 'order=captured_at.desc&limit=200'),
@@ -20,6 +20,26 @@ export default async function handler(req, res) {
       select('dd_tradetron_events', 'order=created_at.desc&limit=200'),
       count('dd_orders', 'order_type=eq.tradetron_signal&select=id').catch(error => {
         console.error('[engine/state] exact Tradetron signal count unavailable:', error.message);
+        return null;
+      }),
+      count('dd_orders', 'order_type=eq.tradetron_signal&state=eq.SIGNAL_SENT&select=id').catch(error => {
+        console.error('[engine/state] Tradetron sent-signal count unavailable:', error.message);
+        return null;
+      }),
+      count('dd_orders', 'order_type=eq.tradetron_signal&state=eq.PENDING&select=id').catch(error => {
+        console.error('[engine/state] Tradetron pending-signal count unavailable:', error.message);
+        return null;
+      }),
+      count('dd_orders', 'order_type=eq.tradetron_signal&state=eq.EXPIRED&select=id').catch(error => {
+        console.error('[engine/state] Tradetron expired-signal count unavailable:', error.message);
+        return null;
+      }),
+      count('dd_orders', 'order_type=eq.tradetron_signal&state=in.(FAILED,DB_ERROR)&select=id').catch(error => {
+        console.error('[engine/state] Tradetron failed-signal count unavailable:', error.message);
+        return null;
+      }),
+      count('dd_tradetron_events', 'select=event_id').catch(error => {
+        console.error('[engine/state] exact Tradetron event count unavailable:', error.message);
         return null;
       })
     ]);
@@ -85,6 +105,14 @@ export default async function handler(req, res) {
       trades: trades || [], logs: logs || [], ledger: ledger || [], counters: counters?.[0] || null,
       daily: daily?.[0] || null, signalOrders: signalOrders || [],
       signalOrderCount: signalOrderCount == null ? null : Number(signalOrderCount),
+      signalOrderStats: {
+        total: signalOrderCount == null ? null : Number(signalOrderCount),
+        sent: signalSentCount == null ? null : Number(signalSentCount),
+        pending: signalPendingCount == null ? null : Number(signalPendingCount),
+        expired: signalExpiredCount == null ? null : Number(signalExpiredCount),
+        failed: signalFailedCount == null ? null : Number(signalFailedCount),
+        events: tradetronEventCount == null ? null : Number(tradetronEventCount)
+      },
       tradetronEvents: tradetronEvents || [],
       tradetronDeveloperDataProtected: !privateDataAuthorized,
       tradetronDeveloperSync,
