@@ -119,7 +119,10 @@ function App() {
       : [],
     configuredFuturesRoutes: Number(workerRouting.configuredRoutes) || 0,
     optionsRouteConfigured: workerRouting.optionsRouteConfigured === true,
-    reservedSignals: Number(workerRouting.reservedSignals) || 0,
+    reservedSignals: Number(workerRoutingLog?.data?.reservedSignals) || 0,
+    signalReservationTtlMinutes: Number(workerRoutingLog?.data?.signalReservationTtlMs) > 0
+      ? Math.round(Number(workerRoutingLog.data.signalReservationTtlMs) / 60000)
+      : 15,
     routingStatusSource: 'worker-heartbeat',
     routingObservedAt: workerRoutingLog?.created_at || null
   } : (state?.executionCoverage || null);
@@ -204,7 +207,7 @@ function Dashboard({ market, settings, health, trades, positions, signals, signa
       <section className="cards">
         <Card label="LIVE FUTURES SCANNED" value={market?.length || 0} sub="Delta India perpetual tickers" />
         <Card label="FUTURES SYMBOLS ROUTED" value={activeRoutedCount + ' / ' + (market?.length || 0)} sub={(executionCoverage?.configuredFuturesRoutes ?? 0) + ' worker-confirmed bridge(s); ' + (executionCoverage?.routingStatusSource === 'worker-heartbeat' ? 'live worker telemetry' : 'API config fallback')} />
-        <Card label="PENDING SIGNAL RESERVATIONS" value={executionCoverage?.reservedSignals ?? '—'} sub="not confirmed open positions" />
+        <Card label="PENDING SIGNAL RESERVATIONS" value={executionCoverage?.reservedSignals ?? '—'} sub={'unconfirmed signals within ' + (executionCoverage?.signalReservationTtlMinutes || 15) + 'm; not open positions'} />
         <Card label="SCAN-ONLY SYMBOLS" value={unroutedCount} sub="No Tradetron entry can be routed for these symbols" />
         <Card label="OPTIONS UNDERLYINGS" value="BTC · ETH · GOLD" sub="Gold contract symbol: XAUT" />
         <Card label="OPTIONS EXECUTION" value={executionCoverage?.optionsRouteConfigured ? 'CONFIGURED' : 'LOCKED'} sub={executionCoverage?.optionsRouteConfigured ? 'Dedicated options route detected; validate in Live Offline' : 'Options bridge and its Tradetron token are not configured'} />
