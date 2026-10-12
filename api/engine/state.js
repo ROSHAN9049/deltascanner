@@ -32,10 +32,16 @@ export default async function handler(req, res) {
     );
     const workerRouting = heartbeatLog?.data?.tradetronRouting || null;
     const workerTradetronDeveloperApi = heartbeatLog?.data?.tradetronDeveloperApi || null;
-    const [developerSyncRows, developerSnapshotRows] = await Promise.all([
-      select('dd_tradetron_developer_sync_state', 'id=eq.1&select=*').catch(() => []),
-      select('dd_tradetron_developer_snapshots', 'order=deployment_id.asc').catch(() => [])
-    ]);
+    // Tradetron positions/P&L are account-private. Do not query or serialize
+    // the private snapshot tables for unauthenticated dashboard requests.
+    const privateDataAuthorized = Boolean(CONFIG.engineSecret) &&
+      req.headers['x-engine-secret'] === CONFIG.engineSecret;
+    const [developerSyncRows, developerSnapshotRows] = privateDataAuthorized
+      ? await Promise.all([
+          select('dd_tradetron_developer_sync_state', 'id=eq.1&select=*').catch(() => []),
+          select('dd_tradetron_developer_snapshots', 'order=deployment_id.asc').catch(() => [])
+        ])
+      : [[], []];
     const tradetronDeveloperSync = developerSyncRows?.[0] || null;
     const knownDeploymentIds = tradetronDeveloperSync?.details?.deploymentIds;
     const tradetronDeveloperSnapshots = Array.isArray(knownDeploymentIds)
@@ -80,6 +86,7 @@ export default async function handler(req, res) {
       daily: daily?.[0] || null, signalOrders: signalOrders || [],
       signalOrderCount: signalOrderCount == null ? null : Number(signalOrderCount),
       tradetronEvents: tradetronEvents || [],
+      tradetronDeveloperDataProtected: !privateDataAuthorized,
       tradetronDeveloperSync,
       tradetronDeveloperSnapshots
     });
