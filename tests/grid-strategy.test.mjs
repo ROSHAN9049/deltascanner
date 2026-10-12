@@ -35,6 +35,11 @@ test('grid configuration fails closed for invalid range and clamps user inputs',
   assert.equal(cfg.maxPositions, 4);
 });
 
+test('grid configuration supports a single-position Tradetron netting mode', () => {
+  const cfg = normalizeGridConfig({ ...baseSettings, grid_max_positions: 1 });
+  assert.equal(cfg.maxPositions, 1);
+});
+
 test('first enabled tick establishes a baseline; a later downward cross enters one level', () => {
   const first = evaluateGridTick({
     settings: baseSettings, state: createGridState(), price: 111, equity: 5000,
