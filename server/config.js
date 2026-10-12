@@ -73,7 +73,7 @@ export const CONFIG = Object.freeze({
   tradetronBaseUrl: process.env.TRADETRON_BASE_URL || 'https://api.tradetron.tech',
   // Read-only Developer API is separate from the signal-submission API base.
   tradetronDeveloperApiKey: String(process.env.TRADETRON_DEVELOPER_API_KEY || '').trim(),
-  tradetronDeveloperApiBaseUrl: String(process.env.TRADETRON_DEVELOPER_API_BASE_URL || 'https://tradetron.tech/api/v1').replace(/\\/+$/, ''),
+  tradetronDeveloperApiBaseUrl: String(process.env.TRADETRON_DEVELOPER_API_BASE_URL || 'https://tradetron.tech/api/v1').replace(/\/+$/, ''),
   tradetronDeveloperApiTimeoutMs: Number(process.env.TRADETRON_DEVELOPER_API_TIMEOUT_MS || 8000),
   tradetronAuthToken: process.env.TRADETRON_AUTH_TOKEN || '',
   tradetronTimeoutMs: Number(process.env.TRADETRON_TIMEOUT_MS || 10000),
