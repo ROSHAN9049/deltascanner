@@ -127,7 +127,7 @@ export class TradetronBridge {
 
     const selected=clean(symbol).toUpperCase(), normalizedSide=clean(side).toUpperCase(), engine=clean(strategy).toUpperCase()||'MOMENTUM';
     if (!['BUY','SELL'].includes(normalizedSide)) throw new Error('Tradetron bridge side must be BUY or SELL');
-    if (!['MOMENTUM','SCALPING'].includes(engine)) throw new Error('Tradetron futures bridge strategy is invalid: '+engine);
+    if (!['MOMENTUM','SCALPING','GRID'].includes(engine)) throw new Error('Tradetron futures bridge strategy is invalid: '+engine);
     const quantity=Math.max(1,Math.floor(Number(qty)||0));
     const prices={entryPrice:Number(entryPrice),sl:Number(sl),tp1:Number(tp1),tp:Number(tp)};
     if (!Number.isFinite(prices.entryPrice)||!Number.isFinite(prices.sl)||!Number.isFinite(prices.tp)||quantity<1) throw new Error('Tradetron bridge entry payload is invalid');

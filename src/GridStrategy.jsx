@@ -20,7 +20,7 @@ function parseDraft(settings) {
     gridLowerPrice: settings.grid_lower_price ? String(settings.grid_lower_price) : '',
     gridUpperPrice: settings.grid_upper_price ? String(settings.grid_upper_price) : '',
     gridLevelsCount: Number(settings.grid_levels_count || 10),
-    gridMaxPositions: Number(settings.grid_max_positions || 4),
+    gridMaxPositions: Number(settings.grid_max_positions || 1),
     gridRiskPerTradePct: Number(settings.grid_risk_per_trade_pct || 1),
     gridDailyLossPct: Number(settings.grid_daily_loss_pct || 2),
     gridMomentumPausePct: Number(settings.grid_momentum_pause_pct || 2.5),
@@ -92,11 +92,11 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
       <div className="card"><small>GRID ENGINE</small><strong>{stateStatus.replaceAll('_', ' ')}</strong><span>Dedicated BTC/ETH grid; independent from momentum/scalping.</span></div>
       <div className="card"><small>INSTRUMENT / LIVE PRICE</small><strong>{symbol}</strong><span>{currentPrice > 0 ? price(currentPrice) : 'Waiting for market price'} · Delta public market feed</span></div>
       <div className="card"><small>OPEN GRID POSITIONS</small><strong>{positions.length} / {Number(settings.grid_max_positions || 4)}</strong><span>{usd(openRisk)} estimated remaining-to-grid-stop risk.</span></div>
-      <div className="card"><small>GRID PNL · TEST LEDGER</small><strong className={n(gridState.realizedPnl) >= 0 ? 'up' : 'down'}>{usd(gridState.realizedPnl)}</strong><span>Realized after estimated maker fees and slippage; simulator only.</span></div>
+      <div className="card"><small>GRID PNL · LIVE OFFLINE MIRROR</small><strong className={n(gridState.realizedPnl) >= 0 ? 'up' : 'down'}>{usd(gridState.realizedPnl)}</strong><span>Realized after estimated maker fees and slippage; simulator only.</span></div>
       <div className="card"><small>DAY PNL</small><strong className={n(gridState.dayPnl) >= 0 ? 'up' : 'down'}>{usd(gridState.dayPnl + n(gridState.unrealizedPnl))}</strong><span>Realized + mark-to-market; daily stop {Number(settings.grid_daily_loss_pct || 2).toFixed(1)}%.</span></div>
       <div className="card"><small>STRATEGY EQUITY</small><strong>{usd(gridState.currentEquity || gridState.strategyStartEquity)}</strong><span>Drawdown {n(gridState.drawdownPct).toFixed(2)}% · hard stop 5%.</span></div>
       <div className="card"><small>MOMENTUM FILTER</small><strong className={momentum.paused ? 'warn' : 'up'}>{momentum.paused ? 'PAUSED' : 'CLEAR'}</strong><span>{momentum.direction || 'NONE'} · {n(momentum.movePct).toFixed(2)}% move · reversal {n(momentum.retracementPct).toFixed(2)}%.</span></div>
-      <div className="card"><small>EXECUTION</small><strong>OFFLINE TEST</strong><span>Worker simulation only; no Delta orders or Tradetron entries are sent by this module.</span></div>
+      <div className="card"><small>EXECUTION</small><strong>TRADETRON LIVE OFFLINE</strong><span>Grid entry/exit signals use the existing Tradetron bridge. Live Offline is simulated; no exchange orders are sent.</span></div>
     </section>
 
     <Panel title="Grid Configuration · BTCUSD / ETHUSD">
@@ -105,7 +105,7 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
         <label>Lower Price<input type="number" inputMode="decimal" min="0" step="any" placeholder="Set lower grid boundary" value={draft.gridLowerPrice} onChange={e => update('gridLowerPrice', e.target.value)} disabled={lockedConfig}/></label>
         <label>Upper Price<input type="number" inputMode="decimal" min="0" step="any" placeholder="Set upper grid boundary" value={draft.gridUpperPrice} onChange={e => update('gridUpperPrice', e.target.value)} disabled={lockedConfig}/></label>
         <label>Grid Levels<select value={draft.gridLevelsCount} onChange={e => update('gridLevelsCount', Number(e.target.value))} disabled={lockedConfig}>{[8,9,10,11,12].map(v => <option key={v} value={v}>{v} levels</option>)}</select></label>
-        <label>Max Open Positions<select value={draft.gridMaxPositions} onChange={e => update('gridMaxPositions', Number(e.target.value))}><option value={3}>3 positions</option><option value={4}>4 positions</option></select></label>
+        <label>Max Open Positions<select value={draft.gridMaxPositions} onChange={e => update('gridMaxPositions', Number(e.target.value))} disabled={lockedConfig}><option value={1}>1 position · Tradetron safe mode</option></select></label>
         <label>Target Risk / Trade<select value={draft.gridRiskPerTradePct} onChange={e => update('gridRiskPerTradePct', Number(e.target.value))}><option value={1}>1.0% target</option><option value={1.25}>1.25% target</option><option value={1.5}>1.5% target</option></select></label>
         <label>Daily Loss Limit<select value={draft.gridDailyLossPct} onChange={e => update('gridDailyLossPct', Number(e.target.value))}><option value={2}>2.0%</option><option value={2.25}>2.25%</option><option value={2.5}>2.5%</option></select></label>
         <label>Momentum Pause<select value={draft.gridMomentumPausePct} onChange={e => update('gridMomentumPausePct', Number(e.target.value))}><option value={2.5}>2.5% one-way move</option><option value={2.75}>2.75% one-way move</option><option value={3}>3.0% one-way move</option></select></label>
@@ -113,7 +113,7 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
       <label className="gridCheck"><input type="checkbox" checked={draft.gridReduceAfterLosses} onChange={e => update('gridReduceAfterLosses', e.target.checked)}/> Reduce position sizing by 50% after 2 consecutive losses</label>
       <div className="gridButtons">
         <button className="action" disabled={busy || !readyToStart} onClick={save}>Save Configuration</button>
-        <button className="action gridStart" disabled={busy || !readyToStart || settings.grid_enabled === true || !!gridState.pausedReason} onClick={start}>Start Offline Test</button>
+        <button className="action gridStart" disabled={busy || !readyToStart || settings.grid_enabled === true || !!gridState.pausedReason} onClick={start}>Start Tradetron Live Offline</button>
         <button className="action" disabled={busy || settings.grid_enabled !== true} onClick={pause}>Pause New Entries</button>
         <button className="dangerBtn" disabled={busy || lockedConfig || !gridState.pausedReason || settings.emergency_stop === true || ['DAILY_LOSS_LIMIT','OVERALL_DRAWDOWN_STOP'].includes(gridState.pausedReason)} onClick={reset}>Reset Range / E-Stop</button>
       </div>
@@ -159,7 +159,7 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
       {trades.length ? <div className="tablewrap"><table className="gridLevelsTable"><thead><tr><th>CLOSED</th><th>LEVEL</th><th>ENTRY</th><th>EXIT</th><th>QTY</th><th>NET PNL</th><th>REASON</th></tr></thead><tbody>{trades.slice(0,20).map(trade => <tr key={trade.id}><td>{trade.closedAt ? new Date(trade.closedAt).toLocaleString('en-IN') : '—'}</td><td>G{Number(trade.levelIndex)+1}</td><td>{price(trade.entryPrice)}</td><td>{price(trade.exitPrice)}</td><td>{n(trade.qty)}</td><td className={n(trade.netPnl) >= 0 ? 'up' : 'down'}>{usd(trade.netPnl)}</td><td>{trade.reason}</td></tr>)}</tbody></table></div> : <div className="lockedText">No completed grid trades yet.</div>}
       {lastTrade ? <div className="statusLine">Last trade: {lastTrade.reason} · net {usd(lastTrade.netPnl)} · {lastTrade.symbol}</div> : null}
     </Panel>
-    <div className="gridTestNotice">SAFETY MODE: this separate strategy runs only in the Railway worker's simulated ledger. It does not place Delta orders or send Tradetron signals. After the offline ledger is verified, a dedicated Tradetron grid template and its entry/exit variable mapping must be wired and tested before any Live Offline deployment.</div>
+    <div className="gridTestNotice">TRADETRON SIGNAL MODE: Grid entry and exit triggers use the existing Momentum/Scalping Signal Bridge and its symbol-specific entry/exit variables. Only one grid position is allowed at a time because the current bridge has one net position/exit flag per symbol. Tradetron Live Offline simulates the trade; the scanner never places direct Delta orders.</div>
   </>;
 }
 

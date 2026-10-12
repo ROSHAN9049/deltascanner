@@ -191,6 +191,42 @@ export class DeltaEngine {
       return;
     }
 
+    // Production Grid signals reuse the already-configured futures Tradetron
+    // bridge. Its symbol-specific exit flag controls one net position, so Grid
+    // is deliberately limited to one open position in SIGNAL_ONLY mode.
+    const tradetronMode = CONFIG.signalOnly === true;
+    const bridge = tradetronMode ? this.getTradetronBridgeForSymbol(symbol) : null;
+    const bridgeReady = !tradetronMode || (
+      CONFIG.tradetronBridgeEnabled &&
+      bridge &&
+      bridge.isConfigured() &&
+      typeof bridge.supportsFuturesSymbol === 'function' &&
+      bridge.supportsFuturesSymbol(symbol)
+    );
+    if (tradetronMode && settings.grid_enabled === true && !bridgeReady) {
+      const warningKey = 'GRID:' + symbol;
+      if (!this.unsupportedBridgeWarnings.has(warningKey)) {
+        this.unsupportedBridgeWarnings.add(warningKey);
+        await this.log('WARN', 'Grid entry blocked: no configured Tradetron route for selected symbol', {
+          symbol,
+          configured: !!bridge?.isConfigured?.(),
+          note: 'Grid uses the existing Momentum/Scalping signal bridge; no direct Delta order fallback exists'
+        });
+      }
+    }
+    if (tradetronMode && Array.isArray(priorState.positions) &&
+        priorState.positions.some(position => position?.bridgeExecutionId) && !bridgeReady) {
+      priorState.pausedReason = 'GRID_BRIDGE_UNAVAILABLE';
+      priorState.status = 'HALTED';
+      priorState.lastTickAt = iso();
+      await db.update('dd_settings', 'id=eq.1', {
+        grid_state: priorState,
+        updated_at: iso()
+      });
+      settings.grid_state = priorState;
+      return;
+    }
+
     let dataFresh = settings.grid_enabled !== true;
     if (settings.grid_enabled === true || (Array.isArray(priorState.positions) && priorState.positions.length > 0)) {
       const needsRefresh = this.gridCandleSymbol !== symbol || Date.now() - this.lastGridCandleRefresh >= 15000;
@@ -208,8 +244,15 @@ export class DeltaEngine {
         this.getCandles(symbol, '1m').length >= 6;
     }
 
+    const effectiveEnabled = settings.grid_enabled === true && bridgeReady;
+    const evaluationSettings = {
+      ...settings,
+      grid_symbol: symbol,
+      grid_enabled: effectiveEnabled,
+      grid_max_positions: tradetronMode ? 1 : settings.grid_max_positions
+    };
     const result = evaluateGridTick({
-      settings: { ...settings, grid_symbol: symbol },
+      settings: evaluationSettings,
       state: priorState,
       price: mark,
       equity: n(account?.equity),
@@ -223,15 +266,194 @@ export class DeltaEngine {
       timestamp: Date.now(),
       maxLeverage: n(settings.max_leverage) || 3
     });
-    await db.update('dd_settings', 'id=eq.1', { grid_state: result.state, updated_at: iso() });
+    const gridState = result.state;
+    let bridgeActionThisCycle = false;
+
+    if (tradetronMode && bridgeReady) {
+      // Route exits first. A failed/ambiguous exit restores the local position
+      // and hard-stops the grid rather than pretending the Tradetron position closed.
+      for (const trade of result.exited) {
+        const parentExecutionId = String(trade.bridgeExecutionId || '');
+        if (!parentExecutionId) continue; // legacy local-only position; never invent an external exit
+        const exitExecutionId = parentExecutionId + '-X-' + Math.floor(Date.now() / 1000).toString(36);
+        const rawExit = {
+          source: 'tradetron_grid_bridge',
+          parent_execution_id: parentExecutionId,
+          grid_level: n(trade.levelIndex) + 1,
+          exit_price: n(trade.exitPrice),
+          reason: String(trade.reason || 'GRID_EXIT')
+        };
+        try {
+          await db.upsert('dd_orders', {
+            id: exitExecutionId,
+            product_id: n(product.id),
+            symbol,
+            side: 'sell',
+            order_type: 'tradetron_grid_exit',
+            size: n(trade.qty),
+            state: 'PENDING',
+            client_order_id: exitExecutionId,
+            role: 'EXIT',
+            strategy: 'GRID',
+            execution_id: exitExecutionId,
+            raw: rawExit
+          }, 'client_order_id');
+          const sent = await bridge.emitExit({
+            symbol,
+            side: 'BUY',
+            reason: trade.reason || 'GRID_TARGET',
+            executionId: exitExecutionId
+          });
+          if (!sent?.ok) throw new Error(sent?.reason || 'Tradetron Grid exit was not accepted');
+          await db.update('dd_orders', 'client_order_id=eq.' + encodeURIComponent(exitExecutionId), {
+            state: 'SIGNAL_SENT',
+            updated_at: iso(),
+            raw: { ...rawExit, bridge_accepted: true, bridge_response: sent.response || 'Ok', trigger_key: sent.triggerKey || null }
+          });
+          await db.update('dd_orders', 'client_order_id=eq.' + encodeURIComponent(parentExecutionId), {
+            state: 'EXITED',
+            updated_at: iso(),
+            raw: {
+              source: 'tradetron_grid_bridge',
+              bridge_accepted: true,
+              entry_price: n(trade.entryPrice),
+              stop_price: n(trade.stopPrice),
+              tp_price: n(trade.targetPrice),
+              exit_price: n(trade.exitPrice),
+              exit_reason: String(trade.reason || 'GRID_EXIT'),
+              closed_at: iso()
+            }
+          });
+          bridgeActionThisCycle = true;
+          await this.log('INFO', 'Tradetron Grid exit signal accepted; direct Delta order skipped', {
+            symbol, strategy: 'GRID', qty: n(trade.qty), exit: n(trade.exitPrice),
+            reason: trade.reason, executionId: exitExecutionId, parentExecutionId,
+            triggerKey: sent.triggerKey || null, tradetronMode: 'LIVE_OFFLINE'
+          });
+        } catch (error) {
+          const originalPosition = (priorState.positions || []).find(position => String(position.id) === String(trade.id));
+          if (originalPosition && !gridState.positions.some(position => String(position.id) === String(originalPosition.id))) {
+            gridState.positions.push({ ...originalPosition });
+          }
+          gridState.realizedPnl = n(gridState.realizedPnl) - n(trade.netPnl);
+          gridState.dayPnl = n(gridState.dayPnl) - n(trade.netPnl);
+          gridState.trades = (gridState.trades || []).filter(row => String(row.id) !== String(trade.id));
+          gridState.openRiskUsd = gridState.positions.reduce((sum, position) => sum + Math.max(0, n(position.riskUsd)), 0);
+          gridState.pausedReason = 'GRID_BRIDGE_EXIT_UNCONFIRMED';
+          gridState.status = 'HALTED';
+          gridState.events = [...(gridState.events || []), {
+            type: 'HALT', reason: gridState.pausedReason, symbol, at: iso(), price: mark
+          }].slice(-80);
+          await this.log('ERROR', 'Tradetron Grid exit unconfirmed; grid halted fail-closed', {
+            symbol, qty: n(trade.qty), reason: trade.reason, executionId: exitExecutionId,
+            parentExecutionId, error: error.message
+          });
+        }
+      }
+
+      // New entries are sent only after the target/range/stop logic passes.
+      // Store a PENDING reservation before calling Tradetron so another scanner
+      // strategy cannot race the same symbol while the API response is unknown.
+      for (const position of result.entered) {
+        const executionId = 'TTG-' + symbol + '-' + (n(position.levelIndex) + 1) + '-' + Date.now().toString(36);
+        position.bridgeExecutionId = executionId;
+        const rawEntry = {
+          source: 'tradetron_grid_bridge',
+          grid_level: n(position.levelIndex) + 1,
+          entry_price: n(position.entryPrice),
+          stop_price: n(position.stopPrice),
+          tp_price: n(position.targetPrice),
+          bridge_accepted: false
+        };
+        try {
+          await db.upsert('dd_orders', {
+            id: executionId,
+            product_id: n(product.id),
+            symbol,
+            side: 'buy',
+            order_type: 'tradetron_signal',
+            size: n(position.qty),
+            state: 'PENDING',
+            client_order_id: executionId,
+            role: 'ENTRY',
+            strategy: 'GRID',
+            execution_id: executionId,
+            raw: rawEntry
+          }, 'client_order_id');
+          const sent = await bridge.emitEntry({
+            symbol,
+            side: 'BUY',
+            qty: position.qty,
+            entryPrice: position.entryPrice,
+            sl: position.stopPrice,
+            tp1: position.targetPrice,
+            tp: position.targetPrice,
+            executionId,
+            strategy: 'GRID'
+          });
+          if (!sent?.ok) throw new Error(sent?.reason || 'Tradetron Grid entry was not accepted');
+          await db.update('dd_orders', 'client_order_id=eq.' + encodeURIComponent(executionId), {
+            state: 'SIGNAL_SENT',
+            updated_at: iso(),
+            raw: { ...rawEntry, bridge_accepted: true, bridge_response: sent.response || 'Ok', trigger_key: sent.triggerKey || null }
+          });
+          bridgeActionThisCycle = true;
+          await this.log('INFO', 'Tradetron Grid entry signal accepted; direct Delta order skipped', {
+            symbol, strategy: 'GRID', side: 'BUY', qty: n(position.qty),
+            entry: n(position.entryPrice), sl: n(position.stopPrice), tp: n(position.targetPrice),
+            gridLevel: n(position.levelIndex) + 1, executionId,
+            triggerKey: sent.triggerKey || null, tradetronMode: 'LIVE_OFFLINE'
+          });
+        } catch (error) {
+          // The request may have reached Tradetron even if the response was
+          // lost. Keep the pending reservation and position record, then stop
+          // rather than resubmit or accidentally overlap a Momentum/Scalping entry.
+          gridState.pausedReason = 'GRID_BRIDGE_ENTRY_UNCONFIRMED';
+          gridState.status = 'HALTED';
+          gridState.events = [...(gridState.events || []), {
+            type: 'HALT', reason: gridState.pausedReason, symbol, at: iso(), price: mark,
+            levelIndex: position.levelIndex
+          }].slice(-80);
+          await this.log('ERROR', 'Tradetron Grid entry unconfirmed; grid halted fail-closed', {
+            symbol, qty: n(position.qty), gridLevel: n(position.levelIndex) + 1,
+            executionId, error: error.message
+          });
+        }
+      }
+
+      // Keep the Grid entry reservation fresh while the single Tradetron net
+      // position is managed, so Momentum/Scalping cannot open a duplicate ETH/BTC position.
+      for (const position of gridState.positions || []) {
+        const executionId = String(position.bridgeExecutionId || '');
+        if (!executionId) continue;
+        try {
+          await db.update('dd_orders',
+            'client_order_id=eq.' + encodeURIComponent(executionId) + '&state=in.(PENDING,SIGNAL_SENT)',
+            { updated_at: iso() });
+        } catch (error) {
+          await this.log('WARN', 'Grid Tradetron reservation refresh failed', {
+            symbol, executionId, error: error.message
+          });
+        }
+      }
+    }
+
+    await db.update('dd_settings', 'id=eq.1', { grid_state: gridState, updated_at: iso() });
+    settings.grid_state = gridState;
+    settings.grid_bridge_action_this_cycle = bridgeActionThisCycle;
 
     const eventTime = result.state.lastTickAt;
-    const newEvents = (result.state.events || []).filter(event => event.at === eventTime);
+    const newEvents = (gridState.events || []).filter(event => event.at === eventTime);
     for (const event of newEvents) {
       if (!['ENTRY', 'EXIT', 'HALT', 'PAUSE', 'BLOCK'].includes(event.type)) continue;
       await this.log(event.type === 'HALT' ? 'WARN' : event.type === 'BLOCK' ? 'WARN' : 'INFO',
         'Grid strategy ' + event.type,
-        { symbol, ...event, simulatorOnly: true, liveOrdersSent: false });
+        {
+          symbol, ...event,
+          simulatorOnly: !tradetronMode,
+          tradetronSignalMode: tradetronMode,
+          liveOrdersSent: false
+        });
     }
   }
 
@@ -1993,7 +2215,17 @@ export class DeltaEngine {
     const positions = riskPositions;
     if (settings.enabled && settings.auto_trade && !settings.emergency_stop) {
       const candidates = [];
+      const gridStateForRouting = settings.grid_state && typeof settings.grid_state === 'object'
+        ? settings.grid_state : {};
+      const gridSymbolForRouting = String(settings.grid_symbol || 'ETHUSD').toUpperCase();
+      const gridPositionOpen = CONFIG.signalOnly &&
+        (Array.isArray(gridStateForRouting.positions) ? gridStateForRouting.positions : [])
+          .some(position => !!position?.bridgeExecutionId);
       for (const item of this.lastSignals) {
+        // Momentum/Scalping may use the same Tradetron template, but must not
+        // race a Grid position on the same netted futures symbol.
+        if (CONFIG.signalOnly && String(item.symbol || '').toUpperCase() === gridSymbolForRouting &&
+            (gridPositionOpen || settings.grid_bridge_action_this_cycle === true)) continue;
         const futuresChoices = [
           { strategy: 'MOMENTUM', signal: item.mom },
           { strategy: 'SCALPING', signal: item.scalp }

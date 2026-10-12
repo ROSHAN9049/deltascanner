@@ -54,6 +54,26 @@ test('futures entry writes the expected legacy quantity before raising its trigg
   assert.equal(pairs.at(-1)?.[1], 1);
 });
 
+test('Grid entry uses the existing futures signal bridge and stamps GRID engine metadata', async () => {
+  const { bridge, getPairs } = makeBridge();
+  const result = await withoutThreeSecondReset(() => bridge.emitEntry({
+    symbol: 'ETHUSD',
+    side: 'BUY',
+    qty: 1,
+    entryPrice: 2550,
+    sl: 2470,
+    tp1: 2560,
+    tp: 2560,
+    executionId: 'TTG-ETHUSD-6-test',
+    strategy: 'GRID'
+  }));
+  assert.equal(result.ok, true);
+  assert.equal(getPairs().find(pair => pair[0] === 'tt_engine')?.[1], 'GRID');
+  assert.equal(getPairs().find(pair => pair[0] === 'ETHUSD_q')?.[1], 1);
+  assert.equal(getPairs().at(-1)?.[0], 'api_buy');
+  assert.equal(getPairs().at(-1)?.[1], 1);
+});
+
 test('long and short exits map to the existing symbol-specific exit flags', async () => {
   const { bridge, getPairs } = makeBridge();
   const long = await withoutThreeSecondReset(() => bridge.emitExit({
