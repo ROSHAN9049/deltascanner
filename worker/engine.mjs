@@ -5,6 +5,7 @@ import { DeltaAdapter } from './delta-adapter.mjs';
 import { analyse, analyseOption } from './strategy.mjs';
 import * as db from '../server/db.js';
 import { TradetronBridge, withSignalReservations } from '../server/tradetron.js';
+import { TradetronDeveloperApi } from '../server/tradetron-developer-api.mjs';
 import { createGridState, evaluateGridTick } from './grid-strategy.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -45,6 +46,10 @@ export class DeltaEngine {
   constructor() {
     this.adapter = new DeltaAdapter();
     this.tradetron = new TradetronBridge();
+    this.tradetronDeveloperApi = new TradetronDeveloperApi();
+    this.lastTradetronDeveloperSyncAt = 0;
+    this.tradetronDeveloperSyncInFlight = null;
+    this.tradetronDeveloperApiStatus = CONFIG.tradetronDeveloperApiKey ? 'WAITING_FOR_FIRST_SYNC' : 'NOT_CONFIGURED';
     this.tradetronOptions = new TradetronBridge({ enabled: CONFIG.tradetronOptionsBridgeEnabled, authToken: CONFIG.tradetronOptionsAuthToken });
     this.tradetronRouteBridges = new Map((CONFIG.tradetronBridgeRoutes || []).map(route => [
       route.id,
@@ -103,6 +108,67 @@ export class DeltaEngine {
 
   async updateEngineState(patch) {
     try { await db.update('dd_settings', 'id=eq.1', { ...patch, updated_at: iso() }); } catch (e) { await this.log('ERROR', 'State persistence failed', { error: e.message }); }
+  }
+
+  async syncTradetronDeveloperApi() {
+    if (!this.tradetronDeveloperApi.isConfigured()) return;
+    if (this.tradetronDeveloperSyncInFlight) return this.tradetronDeveloperSyncInFlight;
+    if (Date.now() - this.lastTradetronDeveloperSyncAt < 60000) return;
+    this.lastTradetronDeveloperSyncAt = Date.now();
+    const attemptedAt = iso();
+
+    this.tradetronDeveloperSyncInFlight = (async () => {
+      try {
+        const result = await this.tradetronDeveloperApi.fetchSnapshot();
+        // Save the verified read-only snapshot separately from webhook dd_positions.
+        // Do not create fills or convert these records into trade-ledger rows.
+        if (Array.isArray(result.snapshots) && result.snapshots.length) {
+          await db.upsertMany('dd_tradetron_developer_snapshots', result.snapshots, 'deployment_id');
+        }
+        const stateRow = {
+          id: 1,
+          status: result.status,
+          last_attempt_at: attemptedAt,
+          deployment_count: result.deploymentCount,
+          position_count: result.positionCount,
+          last_error: result.error,
+          details: {
+            deploymentIds: result.deploymentIds,
+            failedDeploymentIds: result.failedDeploymentIds,
+            lastPage: result.lastPage,
+            source: 'Tradetron Developer API read-only'
+          },
+          updated_at: iso()
+        };
+        if (result.status === 'OK') stateRow.last_success_at = result.lastSuccessAt || attemptedAt;
+        await db.upsert('dd_tradetron_developer_sync_state', stateRow, 'id');
+        this.tradetronDeveloperApiStatus = result.status;
+        await this.log(result.status === 'OK' ? 'INFO' : 'WARN', 'Tradetron Developer API read-only sync', {
+          status: result.status,
+          deploymentCount: result.deploymentCount,
+          positionCount: result.positionCount,
+          failedDeploymentIds: result.failedDeploymentIds,
+          error: result.error
+        });
+      } catch (error) {
+        this.tradetronDeveloperApiStatus = 'ERROR';
+        const cleanMessage = String(error?.message || 'Tradetron Developer API sync failed').slice(0, 300);
+        await db.update('dd_tradetron_developer_sync_state', 'id=eq.1', {
+          status: 'ERROR',
+          last_attempt_at: attemptedAt,
+          last_error: cleanMessage,
+          updated_at: iso()
+        }).catch(() => {});
+        await this.log('WARN', 'Tradetron Developer API sync failed', {
+          code: error?.code || null,
+          status: error?.status || null,
+          error: cleanMessage
+        });
+      }
+    })();
+
+    try { await this.tradetronDeveloperSyncInFlight; }
+    finally { this.tradetronDeveloperSyncInFlight = null; }
   }
 
   async manageGridStrategy(settings, account) {
@@ -1804,6 +1870,11 @@ export class DeltaEngine {
       scalping_rr: 2.5, tp1_pct: 33, max_hold_minutes: 240
     }, ...(await this.loadSettings()) };
     this.currentSettings = settings;
+    // Optional read-only account sync runs off the scanner's critical path. The
+    // single leased worker coordinates it to at most one run per minute.
+    if (CONFIG.tradetronDeveloperApiKey && Date.now() - this.lastTradetronDeveloperSyncAt >= 60000) {
+      void this.syncTradetronDeveloperApi();
+    }
     if (Date.now() - this.lastUniverseRefresh > 15 * 60 * 1000 || !this.products.length) await this.refreshProducts();
     if (Date.now() - this.lastTickerFetch > 30000 || !this.tickerMap.size) {
       await this.refreshTickers();
@@ -1940,6 +2011,11 @@ export class DeltaEngine {
         configuredRoutes: configuredBridgeCount,
         supportedSymbols,
         optionsRouteConfigured
+      },
+      tradetronDeveloperApi: {
+        configured: this.tradetronDeveloperApi.isConfigured(),
+        status: this.tradetronDeveloperApiStatus,
+        lastAttemptAt: this.lastTradetronDeveloperSyncAt ? new Date(this.lastTradetronDeveloperSyncAt).toISOString() : null
       }
     });
   }
