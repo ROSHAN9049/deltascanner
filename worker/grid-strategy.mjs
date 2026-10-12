@@ -21,7 +21,7 @@ export function normalizeGridConfig(settings = {}) {
   const lowerPrice = n(settings.grid_lower_price);
   const upperPrice = n(settings.grid_upper_price);
   const levelCount = Math.round(clamp(settings.grid_levels_count || 10, 8, 12));
-  const maxPositions = Math.round(clamp(settings.grid_max_positions || 4, 3, 4));
+  const maxPositions = Math.round(clamp(settings.grid_max_positions || 1, 1, 4));
   const riskPerTradePct = clamp(settings.grid_risk_per_trade_pct || 1, 1, 1.5);
   const dailyLossPct = clamp(settings.grid_daily_loss_pct || 2, 2, 2.5);
   const maxDrawdownPct = clamp(settings.grid_max_drawdown_pct || 5, 0.5, 5);
@@ -131,6 +131,8 @@ function closePosition(state, position, exitPrice, reason, {
     entryPrice,
     exitPrice,
     targetPrice: position.targetPrice,
+    stopPrice: n(position.stopPrice),
+    bridgeExecutionId: position.bridgeExecutionId || null,
     qty,
     grossPnl,
     feesAndSlippage,
