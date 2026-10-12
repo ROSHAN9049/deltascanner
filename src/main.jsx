@@ -197,9 +197,6 @@ function Dashboard({ market, settings, health, trades, positions, signals, signa
       <Card label="OPEN POSITIONS" value={positions.length} sub="Tradetron positions synced by webhook"/>
       <Card label="TT SIGNAL RECORDS" value={signalOrderStats?.total ?? '—'} sub="all states including expired; not fills"/>
       <Card label="TT SENT" value={signalOrderStats?.sent ?? '—'} sub="API accepted historically; may now be expired; not fills"/>
-      <Card label="TT PENDING" value={signalOrderStats?.pending ?? '—'} sub="current unresolved submission state"/>
-      <Card label="TT EXPIRED" value={signalOrderStats?.expired ?? '—'} sub="current expired state; does not imply fill or close"/>
-      <Card label="TT FAILED" value={signalOrderStats?.failed ?? '—'} sub="current FAILED / DB_ERROR rows"/>
       <Card label="TT EVENTS" value={signalOrderStats?.events ?? '—'} sub="authenticated activity events received"/>
       <Card label="TODAY" value={todayTrades.length} sub={wins + ' wins / ' + loss + ' losses · ' + (todayTrades.length ? (wins/todayTrades.length*100).toFixed(1) : '0.0') + '% WR'}/>
     </section>
@@ -387,7 +384,7 @@ function TradetronActivity({ events, signalStats = null, webhookSecretConfigured
     <div className="lockedText"><b>Outbound webhook:</b> <span className="mono">{webhookUrl}</span><br/><small>{webhookSecretConfigured ? 'Webhook secret is configured in Vercel. Confirm Tradetron or a supported relay sends authenticated fill/position/exit callbacks to this URL.' : 'WEBHOOK SECRET MISSING in Vercel. Set TRADETRON_WEBHOOK_SECRET there, redeploy Vercel, and configure Tradetron or a supported relay to send it in the X-Tradetron-Webhook-Secret header. Until then, activity events cannot authenticate.'}</small></div>
     {rows.length ? <div className="tablewrap"><table><thead><tr><th>TIME</th><th>EVENT</th><th>SYMBOL</th><th>SIDE</th><th>QTY</th><th>PRICE</th><th>PNL</th><th>STATUS</th><th>EXECUTION</th></tr></thead><tbody>{rows.map(e => <tr key={e.event_id}><td>{e.event_at ? new Date(e.event_at).toLocaleTimeString('en-IN') : new Date(e.created_at).toLocaleTimeString('en-IN')}</td><td>{e.event_type || 'UNKNOWN'}</td><td className="symbol">{e.symbol || '—'}</td><td className={e.side==='BUY'?'up':e.side==='SELL'?'down':''}>{e.side || '—'}</td><td>{fmtQty(e.qty)}</td><td>{price(e.price)}</td><td className={num(e.pnl)>=0?'up':'down'}>{e.pnl == null ? '—' : money(e.pnl)}</td><td>{e.status || '—'}</td><td className="mono">{e.execution_id || '—'}</td></tr>)}</tbody></table></div>
     : <div className="lockedText">No Tradetron outbound activity has reached the scanner yet. Scanner signals are accepted separately; once Tradetron posts activity/fills/errors to the webhook above, they will appear here.</div>}
-    <div className="micro"><span>Signal records: {signalStats?.total ?? '—'}</span><span>Sent: {signalStats?.sent ?? '—'} · Expired: {signalStats?.expired ?? '—'}</span><span>Activity events: {signalStats?.events ?? '—'}</span><span>Webhook secret: {webhookSecretConfigured ? 'CONFIGURED' : 'MISSING'}</span><span>Live Offline: ACTIVE on Tradetron</span></div>
+    <div className="micro"><span>Signal records: {signalStats?.total ?? '—'}</span><span>API-accepted sent total: {signalStats?.sent ?? '—'} (not fills)</span><span>Current state · Pending: {signalStats?.pending ?? '—'} · Expired: {signalStats?.expired ?? '—'} · Failed: {signalStats?.failed ?? '—'}</span><span>Activity events: {signalStats?.events ?? '—'}</span><span>Webhook secret: {webhookSecretConfigured ? 'CONFIGURED' : 'MISSING'}</span><span>Live Offline: ACTIVE on Tradetron</span></div>
   </Panel>;
 }
 
