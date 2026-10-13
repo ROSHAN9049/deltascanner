@@ -1,5 +1,5 @@
 import { CONFIG } from '../../server/config.js';
-import { select, update } from '../../server/db.js';
+import { select, updateReturning } from '../../server/db.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ success: false, error: 'POST only' });
@@ -160,8 +160,23 @@ export default async function handler(req, res) {
       }
     }
     if (!Object.keys(patch).length) return res.status(400).json({ success: false, error: 'No supported setting supplied' });
-    await update('dd_settings', 'id=eq.1', { ...patch, updated_at: new Date().toISOString() });
-    return res.status(200).json({ success: true, changed: patch, previous: current });
+    const updatedRows = await updateReturning(
+      'dd_settings',
+      'id=eq.1&select=*',
+      { ...patch, updated_at: new Date().toISOString() }
+    );
+    if (!Array.isArray(updatedRows) || updatedRows.length === 0) {
+      return res.status(409).json({
+        success: false,
+        error: 'Settings were not saved: the dd_settings row with id=1 was not updated. Verify the settings row exists.'
+      });
+    }
+    const persisted = Object.fromEntries(
+      Object.keys(patch)
+        .filter(key => key !== 'grid_state')
+        .map(key => [key, updatedRows[0][key]])
+    );
+    return res.status(200).json({ success: true, changed: patch, persisted, previous: current });
   } catch (e) {
     return res.status(503).json({ success: false, error: e.message });
   }
