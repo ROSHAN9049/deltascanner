@@ -79,7 +79,7 @@ function App() {
   const losses = todayTrades.filter(t => num(t.net_pnl) < 0).length;
 
   const mutate = async patch => {
-    if (!secret) { setTab('settings'); setError('ENGINE_SECRET is required for control actions.'); return; }
+    if (!secret) { setTab('settings'); setError('ENGINE_SECRET is required for control actions.'); return false; }
     setBusy(true);
     try {
       const res = await fetch('/api/engine/toggle', {
@@ -88,10 +88,15 @@ function App() {
         body: JSON.stringify(patch)
       });
       const data = await res.json();
-      if (!data.success) throw new Error(data.error || 'Control failed');
+      if (!res.ok || !data.success) throw new Error(data.error || 'Control failed');
       await load();
-    } catch (e) { setError(e.message || 'Control failed'); }
-    finally { setBusy(false); }
+      return true;
+    } catch (e) {
+      setError(e.message || 'Control failed');
+      return false;
+    } finally {
+      setBusy(false);
+    }
   };
 
   const selected = useMemo(() => {
@@ -133,7 +138,7 @@ function App() {
         <div className="sub">DELTA INDIA · PERPETUAL FUTURES COMMAND CENTER</div>
       </div>
       <div className="headerRight">
-        <span>BUILD v2.0.20261012.07</span>
+        <span>BUILD v2.0.20261013.01</span>
         <span>UTC {new Date(clock).toISOString().slice(11,19)}</span>
         <span>LOCAL {new Date(clock).toLocaleTimeString('en-IN')}</span>
         <b className="badge test">LIVE MARKET · SIGNAL ONLY</b>
@@ -378,7 +383,89 @@ function Testnet({ settings, health, busy, mutate, positions }) {
   return <><section className="cards"><Card label="ENVIRONMENT" value="SIGNAL ONLY" sub="production market feed"/><Card label="AUTO" value="BRIDGE ON" sub="Tradetron signal route"/><Card label="CONTINUOUS MODE" value="NO POSITION CAP" sub="scanner opportunity routing"/><Card label="VERIFIED OPEN POSITIONS" value={positions.length} sub="from synchronized position records"/></section><Panel title="Testnet Controls"><div className="lockedText">Direct Delta execution is disabled. Tradetron Live Offline is the only execution/simulation layer.</div><div className="statusLine">Worker {health?.workerLeaseActive?'ONLINE':'OFFLINE'} · Tick {health?.tickFresh?'FRESH':'STALE'} · Exchange {health?.exchangeHealthy?'HEALTHY':'DOWN'}</div><p className="muted">No scanner-side global position or rolling signal-count cap. Same-symbol duplicate protection, signal idempotency, technical-quality checks, per-trade sizing, route readiness and emergency stop remain active.</p></Panel></>;
 }
 function Settings({ settings, secret, setSecret, busy, mutate }) {
-  return <><Panel title="Server Controls"><div className="settings"><label>ENGINE_SECRET<input type="password" value={secret} onChange={e=>setSecret(e.target.value)} placeholder="Stored in this browser session only"/></label><label>Risk % per trade<input type="number" step="0.1" value={settings.risk_pct ?? 0.3} onChange={e=>mutate({riskPct:Number(e.target.value)})} disabled={busy}/></label><div className="lockedText"><b>Global scanner position cap: DISABLED.</b> Entries still require a valid signal, an available Tradetron route, acceptable margin and duplicate-symbol checks.</div><label>Momentum RR<input type="number" step="0.1" value={settings.momentum_rr ?? 2.0} onChange={e=>mutate({momentumRr:Number(e.target.value)})} disabled={busy}/></label><label>Scalping RR<input type="number" step="0.1" value={settings.scalping_rr ?? 2.0} onChange={e=>mutate({scalpingRr:Number(e.target.value)})} disabled={busy}/></label><label>TP1 %<input type="number" value={settings.tp1_pct ?? 33} onChange={e=>mutate({tp1Pct:Number(e.target.value)})} disabled={busy}/></label><label>Max hold minutes<input type="number" value={settings.max_hold_minutes ?? 240} onChange={e=>mutate({maxHoldMinutes:Number(e.target.value)})} disabled={busy}/></label></div></Panel><Panel title="Strategy / Safety Defaults"><div className="ruleGrid"><span>Momentum: EMA9/21/50 + RSI 54–68 / 32–46 + adaptive volume gate + ATR stop ≥0.95%</span><span>Scalping: 1m/5m EMA + RSI + VWAP + adaptive volume gate + stop ≥0.75%</span><span>Confirmed score: ≥80 (hard floor)</span><span>Volume qualification: momentum default 0.75x with controlled sparse-volume fallback; scalping default 1.25x</span><span>Entry candle-range gate: Momentum ≤4.00x ATR; Scalping ≤3.00x ATR</span><span>Price-to-EMA21 distance: Momentum ≤3.50x ATR; Scalping ≤2.50x ATR</span><span>BTC regime: FLAT/mixed is neutral; only fully opposing BTC 5m+15m blocks; extreme opposing regimes can use the strong-local override</span><span>Fee + spread budget: 20% of 1R Momentum / 25% Scalping</span><span>Risk sizing: configurable per-trade equity risk (database default 1%), whole contracts, max 3x configurable notional cap</span><span>BTC override still respects spread, cost, stop, margin and duplicate-symbol prevention; scanner daily loss / trade-count quotas are disabled</span><span>Exits: TP1 33% at 1R, BE+fees, trail 1R, final TP default 2.5R</span></div></Panel><Panel title="Environment Lock"><div className="liveLock">PRODUCTION MARKET · SIGNAL ONLY. The scanner reads Delta India production market data and sends signals only; direct Delta order APIs are hard-locked.</div></Panel></>;
+  const serverValues = useMemo(() => ({
+    riskPct: settings.risk_pct ?? 0.3,
+    momentumRr: settings.momentum_rr ?? 2.0,
+    scalpingRr: settings.scalping_rr ?? 2.0,
+    tp1Pct: settings.tp1_pct ?? 33,
+    maxHoldMinutes: settings.max_hold_minutes ?? 240
+  }), [settings.risk_pct, settings.momentum_rr, settings.scalping_rr, settings.tp1_pct, settings.max_hold_minutes]);
+  const [draft, setDraft] = useState(serverValues);
+  const [dirty, setDirty] = useState(false);
+  const dirtyRef = useRef(false);
+  const [saveState, setSaveState] = useState('');
+
+  useEffect(() => {
+    if (!dirtyRef.current) setDraft(serverValues);
+  }, [serverValues]);
+
+  const changeDraft = (key, value) => {
+    setDraft(current => ({ ...current, [key]: value }));
+    dirtyRef.current = true;
+    setDirty(true);
+    setSaveState('Unsaved changes');
+  };
+  const discardChanges = () => {
+    dirtyRef.current = false;
+    setDraft(serverValues);
+    setDirty(false);
+    setSaveState('Changes discarded');
+  };
+  const saveSettings = async event => {
+    event.preventDefault();
+    const patch = {
+      riskPct: Number(draft.riskPct),
+      momentumRr: Number(draft.momentumRr),
+      scalpingRr: Number(draft.scalpingRr),
+      tp1Pct: Number(draft.tp1Pct),
+      maxHoldMinutes: Number(draft.maxHoldMinutes)
+    };
+    if (!Object.values(patch).every(Number.isFinite)) {
+      setSaveState('Enter a valid number in every field.');
+      return;
+    }
+    if (patch.riskPct < 0.1 || patch.riskPct > 5 ||
+        patch.momentumRr < 1 || patch.momentumRr > 5 ||
+        patch.scalpingRr < 1 || patch.scalpingRr > 5 ||
+        patch.tp1Pct < 1 || patch.tp1Pct > 99 ||
+        patch.maxHoldMinutes < 1 || patch.maxHoldMinutes > 1440) {
+      setSaveState('Please check the allowed range for each setting.');
+      return;
+    }
+    setSaveState('Saving settings…');
+    const saved = await mutate(patch);
+    if (saved) {
+      setDraft({
+        riskPct: patch.riskPct,
+        momentumRr: patch.momentumRr,
+        scalpingRr: patch.scalpingRr,
+        tp1Pct: patch.tp1Pct,
+        maxHoldMinutes: patch.maxHoldMinutes
+      });
+      dirtyRef.current = false;
+      setDirty(false);
+      setSaveState('Settings saved to server.');
+    } else {
+      setSaveState('Save failed. Check the error message above and retry.');
+    }
+  };
+
+  const statusClass = dirty ? 'pending' : saveState === 'Settings saved to server.' ? 'saved' : '';
+  return <><Panel title="Server Controls"><div className="padSettings"><form className="settingsForm" onSubmit={saveSettings}>
+    <div className="settings">
+      <label>ENGINE_SECRET<input type="password" value={secret} onChange={e=>setSecret(e.target.value)} placeholder="Stored in this browser session only" autoComplete="current-password"/><small className="settingHint">This key stays in this browser session; it is not saved to scanner settings.</small></label>
+      <label>Risk % per trade<input type="number" min="0.1" max="5" step="0.1" value={draft.riskPct} onChange={e=>changeDraft('riskPct',e.target.value)} disabled={busy} required/></label>
+      <div className="lockedText"><b>Global scanner position cap: DISABLED.</b> Entries still require a valid signal, an available Tradetron route, acceptable margin and duplicate-symbol checks.</div>
+      <label>Momentum RR<input type="number" min="1" max="5" step="0.1" value={draft.momentumRr} onChange={e=>changeDraft('momentumRr',e.target.value)} disabled={busy} required/></label>
+      <label>Scalping RR<input type="number" min="1" max="5" step="0.1" value={draft.scalpingRr} onChange={e=>changeDraft('scalpingRr',e.target.value)} disabled={busy} required/></label>
+      <label>TP1 %<input type="number" min="1" max="99" step="1" value={draft.tp1Pct} onChange={e=>changeDraft('tp1Pct',e.target.value)} disabled={busy} required/></label>
+      <label>Max hold minutes<input type="number" min="1" max="1440" step="1" value={draft.maxHoldMinutes} onChange={e=>changeDraft('maxHoldMinutes',e.target.value)} disabled={busy} required/></label>
+    </div>
+    <div className="settingsActions">
+      <span className={`saveStatus ${statusClass}`} aria-live="polite">{saveState || 'Change a value and press Save Settings to apply it on the server.'}</span>
+      <div className="settingsButtons"><button className="action" type="button" onClick={discardChanges} disabled={busy || !dirty}>Discard</button><button className="saveSettings" type="submit" disabled={busy || !dirty}>{busy ? 'Saving…' : 'Save Settings'}</button></div>
+    </div>
+  </form></div></Panel><Panel title="Strategy / Safety Defaults"><div className="ruleGrid"><span>Momentum: EMA9/21/50 + RSI 54–68 / 32–46 + adaptive volume gate + ATR stop ≥0.95%</span><span>Scalping: 1m/5m EMA + RSI + VWAP + adaptive volume gate + stop ≥0.75%</span><span>Confirmed score: ≥80 (hard floor)</span><span>Volume qualification: momentum default 0.75x with controlled sparse-volume fallback; scalping default 1.25x</span><span>Entry candle-range gate: Momentum ≤4.00x ATR; Scalping ≤3.00x ATR</span><span>Price-to-EMA21 distance: Momentum ≤3.50x ATR; Scalping ≤2.50x ATR</span><span>BTC regime: FLAT/mixed is neutral; only fully opposing BTC 5m+15m blocks; extreme opposing regimes can use the strong-local override</span><span>Fee + spread budget: 20% of 1R Momentum / 25% Scalping</span><span>Risk sizing: configurable per-trade equity risk (database default 1%), whole contracts, max 3x configurable notional cap</span><span>BTC override still respects spread, cost, stop, margin and duplicate-symbol prevention; scanner daily loss / trade-count quotas are disabled</span><span>Exits: TP1 33% at 1R, BE+fees, trail 1R, final TP default 2.5R</span></div></Panel><Panel title="Environment Lock"><div className="liveLock">PRODUCTION MARKET · SIGNAL ONLY. The scanner reads Delta India production market data and sends signals only; direct Delta order APIs are hard-locked.</div></Panel></>;
 }
 function TradetronActivity({ events, signalStats = null, webhookSecretConfigured = false }) {
   const rows = (events || []).slice(0, 30);
