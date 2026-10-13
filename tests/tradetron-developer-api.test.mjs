@@ -172,3 +172,25 @@ test('P&L history uses stable five-minute buckets and never changes unknown P&L 
   assert.equal(second[0].reported_pnl, -28.25);
   assert.equal(buildTradetronPnlHistoryRows([{ deployment_id: 'invalid', pnl: 2 }], '2026-10-13T04:07:31.000Z').length, 0);
 });
+
+
+test('maps Tradetron notification at, sub_category, and module fields', async () => {
+  const api = new TradetronDeveloperApi({
+    apiKey: 'ttk_test_only',
+    fetchImpl: async () => response({ success: true, data: { notifications: [{
+      at: '2026-10-13 04:21:29',
+      category: 'Notification',
+      deployment_id: 999273394,
+      message: 'Status changed from Live-Tranching To Live-Entered',
+      module: 'Status',
+      sub_category: 'Status Change'
+    }] } })
+  });
+  const listed = await api.listNotifications();
+  assert.equal(listed.notifications.length, 1);
+  assert.equal(listed.notifications[0].event_at, '2026-10-13T04:21:29.000Z');
+  assert.equal(listed.notifications[0].notification_type, 'Status Change');
+  assert.equal(listed.notifications[0].title, 'Status');
+  assert.equal(listed.notifications[0].description, 'Status changed from Live-Tranching To Live-Entered');
+  assert.equal(listed.notifications[0].deployment_id, '999273394');
+});
