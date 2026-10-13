@@ -121,12 +121,36 @@ test('futures entry writes the expected legacy quantity before raising its trigg
   const pairs = getPairs();
   const indexOf = key => pairs.findIndex(pair => pair[0] === key);
   assert.equal(result.ok, true);
+  assert.equal(result.entryVariableKey, 'BTCUSD_el');
+  assert.equal(result.globalTriggerKey, 'api_buy');
+  assert.equal(result.triggerKey, 'api_buy');
+  assert.equal(result.payloadVariableCount, pairs.length);
+  assert.deepEqual(result.payloadVariableKeys, pairs.map(([key]) => key));
   assert.equal(pairs.find(pair => pair[0] === 'BTCUSD_q')?.[1], 3);
   assert.equal(pairs.find(pair => pair[0] === 'BTCUSD_qty')?.[1], 3);
   assert.ok(indexOf('BTCUSD_q') < indexOf('BTCUSD_el'));
   assert.ok(indexOf('BTCUSD_ep') < indexOf('BTCUSD_el'));
   assert.equal(pairs.at(-1)?.[0], 'api_buy');
   assert.equal(pairs.at(-1)?.[1], 1);
+});
+
+test('short entry diagnostics identify the symbol-specific short trigger', async () => {
+  const { bridge } = makeBridge();
+  const result = await withoutThreeSecondReset(() => bridge.emitEntry({
+    symbol: 'BTCUSD',
+    side: 'SELL',
+    qty: 2,
+    entryPrice: 100,
+    sl: 105,
+    tp1: 95,
+    tp: 90,
+    executionId: 'TEST-SHORT-ENTRY',
+    strategy: 'MOMENTUM'
+  }));
+  assert.equal(result.entryVariableKey, 'BTCUSD_es');
+  assert.equal(result.globalTriggerKey, 'api_sell');
+  assert.ok(result.payloadVariableKeys.includes('BTCUSD_es'));
+  assert.equal(result.payloadVariableCount, result.payloadVariableKeys.length);
 });
 
 test('Grid entry uses the existing futures signal bridge and stamps GRID engine metadata', async () => {
