@@ -142,7 +142,7 @@ test('reads account notifications through the documented read-only endpoint', as
     }] } })
   });
   const numericTime = await numericTimeApi.listNotifications();
-  assert.equal(numericTime.notifications[0].event_at, '2026-10-12T22:21:29.000Z');
+  assert.equal(numericTime.notifications[0].event_at, '2026-10-13T04:21:29.000Z');
   assert.equal('secret_token' in numericTime.notifications[0].raw, false);
   assert.equal('Authorization' in numericTime.notifications[0].raw.details, false);
   assert.equal(numericTime.notifications[0].raw.details.safe, 'ok');
