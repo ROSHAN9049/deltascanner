@@ -61,3 +61,16 @@ footer{color:#526177;text-align:center;font-size:9px;padding-top:12px}
 
 .marketCount{font-size:11px;color:#96a5bb;margin:0 0 8px;padding:7px 10px;border:1px solid #243349;border-radius:7px;background:#0c1420}
 .apiStateOk{color:#68d7a3}.apiStateWarn{color:#f2c879}.apiStateError{color:#ff8d9b}.apiJson{white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;max-width:100%;margin:0;padding:10px;background:#0b111b;border:1px solid #243349;border-radius:7px}
+
+.padSettings{padding:12px}
+.settingsForm{display:flex;flex-direction:column;gap:13px}
+.settingHint{font-size:9px;font-weight:500;color:#687b92;line-height:1.4}
+.settingsActions{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;border-top:1px solid #1b2635;padding-top:12px}
+.settingsButtons{display:flex;gap:7px;align-items:center}
+.settingsButtons .action{margin:0}
+.saveSettings{border:1px solid #17664d;background:#09261e;color:#6bf0bd;border-radius:6px;padding:9px 14px;font-size:10px;font-weight:900;cursor:pointer}
+.saveSettings:disabled,.settingsButtons .action:disabled{opacity:.45;cursor:not-allowed}
+.saveStatus{font-size:10px;color:#94a4ba;line-height:1.45}
+.saveStatus.pending{color:#f0b90b}
+.saveStatus.saved{color:#2de3a0}
+@media(max-width:620px){.settingsActions{align-items:stretch;flex-direction:column}.settingsButtons{width:100%}.settingsButtons button{flex:1}}
