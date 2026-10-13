@@ -1,7 +1,9 @@
+import crypto from 'node:crypto';
 import { CONFIG } from './config.js';
 
 const MAX_DEPLOYMENT_PAGES = 2;
 const MAX_DEPLOYMENTS_PER_SYNC = 8;
+const MAX_NOTIFICATIONS_PER_SYNC = 100;
 
 export class TradetronDeveloperApiError extends Error {
   constructor(message, { status = null, code = 'API_ERROR', retryable = false } = {}) {
@@ -47,7 +49,12 @@ export class TradetronDeveloperApi {
         code: 'NOT_CONFIGURED'
       });
     }
-    if (!String(path).startsWith('/me/deployments')) {
+    const requestedPath = String(path);
+    const allowedPath = requestedPath === '/me/notifications' ||
+      requestedPath === '/me/deployments' ||
+      /^\/me\/deployments\?page=\d+$/.test(requestedPath) ||
+      /^\/me\/deployments\/\d+\/positions$/.test(requestedPath);
+    if (!allowedPath) {
       throw new TradetronDeveloperApiError('Unsupported Tradetron Developer API path', { code: 'INVALID_PATH' });
     }
 
@@ -108,6 +115,81 @@ export class TradetronDeveloperApi {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  async listNotifications() {
+    const data = await this.get('/me/notifications');
+    const notificationRows = [
+      Array.isArray(data) ? data : null,
+      Array.isArray(data?.notifications) ? data.notifications : null,
+      Array.isArray(data?.items) ? data.items : null,
+      Array.isArray(data?.results) ? data.results : null,
+      Array.isArray(data?.data) ? data.data : null,
+      Array.isArray(data?.data?.notifications) ? data.data.notifications : null,
+      Array.isArray(data?.data?.items) ? data.data.items : null,
+      Array.isArray(data?.result?.notifications) ? data.result.notifications : null
+    ].find(Array.isArray);
+
+    if (!notificationRows) {
+      throw new TradetronDeveloperApiError('Notification response did not contain a verified notifications array', {
+        code: 'INVALID_NOTIFICATIONS'
+      });
+    }
+
+    const capturedAt = new Date().toISOString();
+    const notifications = notificationRows
+      .slice(0, MAX_NOTIFICATIONS_PER_SYNC)
+      .filter(row => row && typeof row === 'object' && !Array.isArray(row))
+      .map(row => {
+        const records = [row, row.notification, row.data].filter(
+          value => value && typeof value === 'object' && !Array.isArray(value)
+        );
+        const pickText = keys => {
+          for (const record of records) {
+            for (const key of keys) {
+              const value = record?.[key];
+              if (['string', 'number', 'boolean'].includes(typeof value) && String(value).trim()) {
+                return String(value).trim();
+              }
+            }
+          }
+          return '';
+        };
+        const sourceId = pickText([
+          'notification_id', 'notificationId', 'event_id', 'eventId', 'id', 'uuid', 'guid'
+        ]);
+        const notificationId = (sourceId || 'hash-' + crypto.createHash('sha256')
+          .update(JSON.stringify(row))
+          .digest('hex')).slice(0, 180);
+        const eventTimeText = pickText([
+          'event_at', 'eventAt', 'created_at', 'createdAt', 'created', 'timestamp', 'time', 'date'
+        ]);
+        const eventTime = eventTimeText ? safeIso(eventTimeText) : null;
+        const deploymentId = pickText([
+          'deployment_id', 'deploymentId', 'deployed_strategy_id', 'deployedStrategyId'
+        ]);
+
+        return {
+          notification_id: notificationId,
+          deployment_id: deploymentId || null,
+          notification_type: pickText([
+            'notification_type', 'notificationType', 'event_type', 'eventType', 'type', 'category', 'action', 'status'
+          ]) || null,
+          title: pickText(['title', 'subject', 'heading', 'name']) || null,
+          description: pickText(['description', 'message', 'body', 'text', 'details', 'notification']) || null,
+          event_at: eventTime,
+          raw: row,
+          last_seen_at: capturedAt,
+          updated_at: capturedAt
+        };
+      });
+
+    return {
+      notifications,
+      returnedCount: notificationRows.length,
+      storedCount: notifications.length,
+      capturedAt
+    };
   }
 
   async listDeployments() {
