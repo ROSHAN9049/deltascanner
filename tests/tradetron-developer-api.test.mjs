@@ -148,6 +148,28 @@ test('reads account notifications through the documented read-only endpoint', as
   assert.equal(numericTime.notifications[0].raw.details.safe, 'ok');
 });
 
+test('normalizes Tradetron notification `at` and sub-category fields', async () => {
+  const api = new TradetronDeveloperApi({
+    apiKey: 'ttk_test_only',
+    fetchImpl: async () => response({ success: true, data: { notifications: [{
+      deployment_id: 999273394,
+      at: '2026-10-13 05:40:34',
+      category: 'Notification',
+      sub_category: 'Status Change',
+      module: 'Status',
+      message: 'Deployment status changed'
+    }] } })
+  });
+  const listed = await api.listNotifications();
+  assert.equal(listed.notifications.length, 1);
+  assert.match(listed.notifications[0].notification_id, /^hash-/);
+  assert.equal(listed.notifications[0].deployment_id, '999273394');
+  assert.equal(listed.notifications[0].notification_type, 'Status Change');
+  assert.equal(listed.notifications[0].title, 'Status Change');
+  assert.equal(listed.notifications[0].description, 'Deployment status changed');
+  assert.equal(listed.notifications[0].event_at, '2026-10-13T05:40:34.000Z');
+});
+
 test('notification polling fails closed when response has no known list shape', async () => {
   const api = new TradetronDeveloperApi({
     apiKey: 'ttk_test_only',
