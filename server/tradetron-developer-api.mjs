@@ -26,6 +26,40 @@ const safeIso = value => {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 };
 
+export function buildTradetronPnlHistoryRows(snapshots = [], capturedAt = new Date().toISOString()) {
+  const capturedMs = Date.parse(capturedAt);
+  if (!Number.isFinite(capturedMs)) return [];
+  // Store one observation per 5-minute bucket. Repeated one-minute polling
+  // refreshes the same bucket instead of producing an unbounded duplicate log.
+  const bucketMs = Math.floor(capturedMs / 300000) * 300000;
+  const bucketAt = new Date(bucketMs).toISOString();
+  return (Array.isArray(snapshots) ? snapshots : []).flatMap(snapshot => {
+    const id = finiteNumber(snapshot?.deployment_id);
+    if (!Number.isSafeInteger(id) || id <= 0) return [];
+    return [{
+      snapshot_id: id + ':' + bucketMs,
+      deployment_id: id,
+      deployment_name: String(snapshot.deployment_name || ('Deployment ' + id)).slice(0, 240),
+      captured_at: bucketAt,
+      reported_pnl: finiteNumber(snapshot.pnl),
+      open_positions: finiteNumber(snapshot.open_positions),
+      total_positions: finiteNumber(snapshot.total_positions),
+      currency_code: snapshot.currency_code == null ? null : String(snapshot.currency_code).slice(0, 12),
+      status: snapshot.status == null ? null : String(snapshot.status).slice(0, 80),
+      raw_summary: {
+        deployment_id: id,
+        deployment_name: String(snapshot.deployment_name || ('Deployment ' + id)).slice(0, 240),
+        pnl: finiteNumber(snapshot.pnl),
+        open_positions: finiteNumber(snapshot.open_positions),
+        total_positions: finiteNumber(snapshot.total_positions),
+        currency_code: snapshot.currency_code == null ? null : String(snapshot.currency_code).slice(0, 12),
+        status: snapshot.status == null ? null : String(snapshot.status).slice(0, 80),
+        as_of: safeIso(snapshot.as_of)
+      }
+    }];
+  });
+}
+
 export class TradetronDeveloperApi {
   constructor({
     apiKey = CONFIG.tradetronDeveloperApiKey,
