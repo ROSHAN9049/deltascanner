@@ -26,7 +26,9 @@ const safeIso = value => {
   const numeric = Number(text);
   const date = /^\d{10,13}$/.test(text) && Number.isFinite(numeric)
     ? new Date(numeric < 1e12 ? numeric * 1000 : numeric)
-    : new Date(value);
+    : /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(text)
+      ? new Date(text.replace(' ', 'T') + 'Z')
+      : new Date(value);
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 };
 
@@ -208,7 +210,7 @@ export class TradetronDeveloperApi {
           .update(JSON.stringify(row))
           .digest('hex')).slice(0, 180);
         const eventTimeText = pickText([
-          'event_at', 'eventAt', 'created_at', 'createdAt', 'created', 'timestamp', 'time', 'date'
+          'event_at', 'eventAt', 'created_at', 'createdAt', 'at', 'created', 'timestamp', 'time', 'date'
         ]);
         const eventTime = eventTimeText ? safeIso(eventTimeText) : null;
         const deploymentId = pickText([
@@ -219,9 +221,10 @@ export class TradetronDeveloperApi {
           notification_id: notificationId,
           deployment_id: deploymentId || null,
           notification_type: pickText([
-            'notification_type', 'notificationType', 'event_type', 'eventType', 'type', 'category', 'action', 'status'
+            'sub_category', 'subCategory', 'notification_type', 'notificationType',
+            'event_type', 'eventType', 'type', 'category', 'action', 'status'
           ]) || null,
-          title: pickText(['title', 'subject', 'heading', 'name']) || null,
+          title: pickText(['title', 'subject', 'heading', 'name', 'module']) || null,
           description: pickText(['description', 'message', 'body', 'text', 'details', 'notification']) || null,
           event_at: eventTime,
           raw: redactSensitiveFields(row),
