@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import './style.css';
 import GridStrategy from './GridStrategy.jsx';
 import { routeStatusForSymbol } from './market-route-status.js';
+import { getTradetronDiagnosticDetails } from './tradetron-diagnostics.js';
 import { DEFAULT_VISIBLE_MARKET_LIMIT, selectVisibleMarketRows, selectVisibleSignalRows } from './market-view.js';
 
 const tabs = [
@@ -114,14 +115,22 @@ function App() {
     row?.message === 'Worker heartbeat scan' && row?.data?.tradetronRouting
   );
   const workerRouting = workerRoutingLog?.data?.tradetronRouting || null;
+  const normalizeSymbols = value => Array.isArray(value)
+    ? [...new Set(value.map(symbol => String(symbol || '').trim().toUpperCase()).filter(Boolean))]
+    : [];
+  const workerSupportedSymbols = normalizeSymbols(workerRouting?.supportedSymbols);
+  const workerConfiguredSymbols = normalizeSymbols(workerRouting?.configuredSymbols);
+  const configuredRouteSymbols = workerConfiguredSymbols.length ? workerConfiguredSymbols : workerSupportedSymbols;
+  const unavailableMarketSymbols = Array.isArray(workerRouting?.unavailableMarketSymbols)
+    ? normalizeSymbols(workerRouting.unavailableMarketSymbols)
+    : configuredRouteSymbols.filter(symbol => !workerSupportedSymbols.includes(symbol));
   const executionCoverage = workerRouting ? {
     ...(state?.executionCoverage || {}),
-    routedFuturesSymbols: Array.isArray(workerRouting.supportedSymbols)
-      ? [...new Set(workerRouting.supportedSymbols.map(symbol => String(symbol || '').toUpperCase()).filter(Boolean))].length
-      : 0,
-    routedSymbols: Array.isArray(workerRouting.supportedSymbols)
-      ? [...new Set(workerRouting.supportedSymbols.map(symbol => String(symbol || '').toUpperCase()).filter(Boolean))]
-      : [],
+    routedFuturesSymbols: workerSupportedSymbols.length,
+    routedSymbols: workerSupportedSymbols,
+    configuredRouteSymbols,
+    unavailableMarketSymbols,
+    marketSymbolCount: Number(workerRouting.marketSymbolCount) || null,
     configuredFuturesRoutes: Number(workerRouting.configuredRoutes) || 0,
     optionsRouteConfigured: workerRouting.optionsRouteConfigured === true,
     reservedSignals: Number(workerRoutingLog?.data?.reservedSignals) || 0,
@@ -185,6 +194,13 @@ function Dashboard({ market, settings, health, trades, positions, signals, signa
     ? (market || []).filter(row => configuredRouteSymbols.has(String(row.symbol || '').toUpperCase())).length
     : Math.min(executionCoverage?.routedFuturesSymbols || 0, market?.length || 0);
   const unroutedCount = Math.max(0, (market?.length || 0) - activeRoutedCount);
+  const developerSnapshotRowCount = (developerSnapshots || []).reduce(
+    (count, deployment) => count + (Array.isArray(deployment?.positions) ? deployment.positions.length : 0), 0
+  );
+  const unavailableMarketSymbols = executionCoverage?.unavailableMarketSymbols || [];
+  const polReplacementAvailable = unavailableMarketSymbols.includes('MATICUSD') &&
+    (market || []).some(row => String(row.symbol || '').toUpperCase() === 'POLUSD') &&
+    !(executionCoverage?.configuredRouteSymbols || []).includes('POLUSD');
   const todayTrades = trades.filter(t => String(t.closed_at || '').slice(0,10) === today);
   const wins = todayTrades.filter(t => num(t.net_pnl) > 0).length;
   const loss = todayTrades.filter(t => num(t.net_pnl) < 0).length;
@@ -201,7 +217,8 @@ function Dashboard({ market, settings, health, trades, positions, signals, signa
       <Card label="UNREALIZED PNL" value={money(settings.unrealized_pnl)} sub="open positions"/>
       <Card label="TOTAL PNL" value={money(num(settings.realized_pnl)+num(settings.unrealized_pnl))} sub="realized + unrealized"/>
       <Card label="FEES TODAY" value={money(settings.fees_today)} sub="real fill commissions"/>
-      <Card label="OPEN POSITIONS" value={positions.length} sub="Tradetron positions synced by webhook"/>
+      <Card label="OPEN POSITIONS" value={positions.length} sub="webhook-ingested position ledger"/>
+      <Card label="TT SNAPSHOT ROWS" value={developerDataProtected ? 'LOCKED' : developerApiConfigured ? developerSnapshotRowCount : '—'} sub="read-only API snapshot; not fills or ledger positions"/>
       <Card label="TT SIGNAL RECORDS" value={signalOrderStats?.total ?? '—'} sub="all states including expired; not fills"/>
       <Card label="TT SENT" value={signalOrderStats?.sent ?? '—'} sub="API accepted historically; may now be expired; not fills"/>
       <Card label="TT EVENTS" value={signalOrderStats?.events ?? '—'} sub="authenticated activity events received"/>
@@ -217,6 +234,7 @@ function Dashboard({ market, settings, health, trades, positions, signals, signa
         <Card label="OPTIONS EXECUTION" value={executionCoverage?.optionsRouteConfigured ? 'CONFIGURED' : 'LOCKED'} sub={executionCoverage?.optionsRouteConfigured ? 'Dedicated options route detected; validate in Live Offline' : 'Options bridge and its Tradetron token are not configured'} />
       </section>
       <div className="lockedText"><b>Worker-confirmed futures basket:</b> {(executionCoverage?.routedSymbols || []).join(', ') || 'No worker-confirmed symbols yet'}<br/><small>Routing source: {executionCoverage?.routingStatusSource || 'API config fallback'}{executionCoverage?.routingObservedAt ? ' · heartbeat ' + new Date(executionCoverage.routingObservedAt).toLocaleTimeString('en-IN') : ''}. Unsupported symbols remain scan-only; direct Delta orders stay locked.</small></div>
+      {unavailableMarketSymbols.length ? <div className="lockedText"><b>Configured but absent from the current live Delta market:</b> {unavailableMarketSymbols.join(', ')}.<br/><small>These are not worker-confirmed routes and must stay scan-only until the exchange exposes a matching live contract. {polReplacementAvailable ? 'POLUSD is present in the live market feed but is not configured for this Tradetron basket; add matching POLUSD_el / POLUSD_es variables and entry conditions in the linked Tradetron strategy before adding POLUSD to the worker allowlist.' : 'Any replacement symbol must first be configured in the linked Tradetron strategy variables and entry conditions; do not force-route a stale symbol.'}</small></div> : null}
     </Panel>
     <Panel title={'Full Delta Market Scanner · ' + (market?.length || 0) + ' live perpetuals · Signal Only'}>
       <MarketTable market={market} signals={signals} routedSymbols={executionCoverage?.routedSymbols || []}/>
@@ -546,7 +564,25 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
 }
 
 function Log({ rows }) {
-  return <div className="log">{rows.length ? rows.map(x=><div key={x.id}><small>{new Date(x.created_at).toLocaleTimeString()}</small><b>{x.level}</b><span>{x.message}</span></div>) : <div className="muted">Open Dashboard state includes the last 200 engine logs when the database is connected.</div>}</div>;
+  return <div className="log">{rows.length ? rows.map(x => {
+    const diagnostic = getTradetronDiagnosticDetails(x.data);
+    return <div key={x.id}>
+      <small>{new Date(x.created_at).toLocaleTimeString()}</small>
+      <b>{x.level}</b>
+      <div className="logBody">
+        <span>{x.message}</span>
+        {diagnostic ? <div className="logDiagnostic">
+          {diagnostic.symbol ? <span><b>Symbol</b> {diagnostic.symbol}</span> : null}
+          {diagnostic.side ? <span><b>Side</b> {diagnostic.side}</span> : null}
+          {diagnostic.strategy ? <span><b>Strategy</b> {diagnostic.strategy}</span> : null}
+          {diagnostic.entryVariableKey ? <span><b>Entry key</b> <code>{diagnostic.entryVariableKey}</code></span> : null}
+          {diagnostic.globalTriggerKey ? <span><b>Global trigger</b> <code>{diagnostic.globalTriggerKey}</code></span> : null}
+          {diagnostic.payloadVariableCount !== null ? <span><b>Payload vars</b> {diagnostic.payloadVariableCount}</span> : null}
+          {diagnostic.payloadVariableKeys.length ? <details><summary>Payload keys ({diagnostic.payloadVariableKeys.length})</summary><code>{diagnostic.payloadVariableKeys.join(' · ')}</code></details> : null}
+        </div> : null}
+      </div>
+    </div>;
+  }) : <div className="muted">Open Dashboard state includes the last 200 engine logs when the database is connected.</div>}</div>;
 }
 
 createRoot(document.getElementById('root')).render(<App/>);
