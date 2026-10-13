@@ -170,7 +170,7 @@ function App() {
     {tab === 'grid' && <GridStrategy settings={settings} market={market} busy={busy} mutate={mutate} />}
     {tab === 'options' && <OptionsView signals={signals} settings={settings} optionCache={state?.optionCache || []} executionCoverage={state?.executionCoverage || null} />}
     {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" />}
-    {tab === 'positions' && <><Positions rows={positions} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
+    {tab === 'positions' && <><Positions rows={positions} tradetronDeployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} snapshotsLocked={state?.tradetronDeveloperDataProtected === true} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
     {tab === 'trade-history' && <><TradeHistory trades={trades} title="Trade History · Webhook-Synced Tradetron Records" /><TradetronActivity events={state?.tradetronEvents || []} signalStats={state?.signalOrderStats || null} webhookSecretConfigured={executionCoverage?.webhookSecretConfigured === true} /></>}
     {tab === 'pnl' && <><PNL trades={trades} settings={settings} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
     {tab === 'paper' && <Panel title="Paper Trading"><div className="lockedText">Scanner is signal-only. No Delta order is placed here; Tradetron Live Offline runs the simulated execution.</div></Panel>}
@@ -215,10 +215,10 @@ function Dashboard({ market, settings, health, trades, positions, signals, signa
     <section className="cards">
       <Card label="EQUITY" value={money(settings.equity)} sub={'USD ledger converted at approx ₹' + USD_INR_RATE.toFixed(2) + '/USD'}/>
       <Card label="AVAILABLE" value={money(settings.available_balance)} sub="signal sizing reference"/>
-      <Card label="REALIZED PNL" value={money(settings.realized_pnl)} sub="closed trades after fees"/>
-      <Card label="UNREALIZED PNL" value={money(settings.unrealized_pnl)} sub="open positions"/>
-      <Card label="TOTAL PNL" value={money(num(settings.realized_pnl)+num(settings.unrealized_pnl))} sub="realized + unrealized"/>
-      <Card label="FEES TODAY" value={money(settings.fees_today)} sub="fees reported by activity callbacks"/>
+      <Card label="REALIZED PNL" value={trades.length ? money(trades.reduce((sum, trade) => sum + num(trade.net_pnl), 0)) : '—'} sub={trades.length ? 'recorded closed-trade net P&L' : 'awaiting authenticated closed trades'}/>
+      <Card label="UNREALIZED PNL" value={positions.length ? money(settings.unrealized_pnl) : '—'} sub={positions.length ? 'engine/webhook position ledger' : 'no webhook-confirmed open positions'}/>
+      <Card label="TOTAL PNL" value={trades.length || positions.length ? money((trades.reduce((sum, trade) => sum + num(trade.net_pnl), 0)) + (positions.length ? num(settings.unrealized_pnl) : 0)) : '—'} sub="verified engine-ledger records only"/>
+      <Card label="FEES TODAY" value={trades.some(trade => String(trade.closed_at || '').slice(0,10) === new Date().toISOString().slice(0,10)) ? money(settings.fees_today) : '—'} sub="waiting for today's authenticated fill fees"/>
       <Card label="OPEN POSITIONS" value={positions.length} sub="webhook-confirmed position ledger"/>
       <Card label="TT OPEN LEGS" value={developerDataProtected ? 'LOCKED' : developerApiConfigured ? tradetronMirror.openCount : '—'} sub="current Tradetron Developer API snapshot"/>
       <Card label="TT P&L SNAPSHOT" value={developerDataProtected ? 'LOCKED' : (developerApiConfigured && tradetronMirror.reportedPnl !== null ? money(tradetronMirror.reportedPnl) : '—')} sub="reported deployment P&L; shown separately"/>
@@ -372,16 +372,98 @@ function OptionTable({ rows, type }) {
   })}</tbody></table></div>;
 }
 
-function Positions({ rows }) {
-  return <Panel title="Positions · Tradetron + Engine Origin"><div className="tablewrap"><table><thead><tr><th>TIME</th><th>COIN</th><th>STRATEGY</th><th>SIDE</th><th>QTY</th><th>ENTRY</th><th>MARK</th><th>SL</th><th>TP1</th><th>TP</th><th>PROTECTION</th><th>ORIGIN</th></tr></thead><tbody>{rows.map(p => <tr key={p.execution_id}><td>{new Date(p.opened_at).toLocaleTimeString('en-IN')}</td><td className="symbol">{p.symbol}</td><td>{p.strategy}</td><td className={p.side==='BUY'?'up':'down'}>{p.side}</td><td>{fmtQty(p.qty)}</td><td>{price(p.entry_price)}</td><td>{price(p.current_price)}</td><td>{price(p.stop_price)}</td><td>{price(p.tp1_price)}</td><td>{price(p.tp_price)}</td><td className={p.protection_verified || p.origin==='TRADETRON'?'up':'down'}>{p.origin==='TRADETRON'?'Tradetron-managed':(p.protection_verified?'VERIFIED':'UNPROTECTED')}</td><td>{p.origin || 'ENGINE'}</td></tr>)}</tbody></table></div></Panel>;
+function Positions({ rows = [], tradetronDeployments = [], snapshotsLocked = false }) {
+  const mirror = summarizeTradetronSnapshots(tradetronDeployments);
+  const pendingTradetronRows = mirror.openRows.map(position => ({
+    execution_id: 'tt-api:' + position.key,
+    opened_at: null,
+    symbol: position.symbol,
+    strategy: 'TT current snapshot',
+    side: position.side,
+    qty: position.quantity,
+    entry_price: position.entryPrice,
+    current_price: position.markPrice,
+    stop_price: null,
+    tp1_price: null,
+    tp_price: null,
+    origin: 'TRADETRON API',
+    snapshot_only: true,
+    snapshot_pnl: position.pnl,
+    snapshot_value: position.marketValue,
+    snapshot_status: position.status
+  }));
+
+  // Where an event-confirmed engine row matches a TT snapshot exactly, render
+  // one enriched row rather than double-counting the same symbol/side/quantity.
+  const matchKey = row => [
+    String(row.symbol || '').toUpperCase(),
+    String(row.side || '').toUpperCase(),
+    Math.abs(Number(row.qty ?? row.quantity ?? 0))
+  ].join('|');
+  const usedSnapshotIndexes = new Set();
+  const engineRows = (rows || []).map((position, index) => {
+    const matchIndex = pendingTradetronRows.findIndex((snapshot, snapshotIndex) =>
+      !usedSnapshotIndexes.has(snapshotIndex) && matchKey(snapshot) === matchKey(position)
+    );
+    const snapshot = matchIndex >= 0 ? pendingTradetronRows[matchIndex] : null;
+    if (snapshot) usedSnapshotIndexes.add(matchIndex);
+    return {
+      ...position,
+      execution_id: position.execution_id || 'engine:' + matchKey(position) + ':' + index,
+      display_origin: snapshot ? 'ENGINE + TT API MATCH' : (position.origin || 'ENGINE / EVENT LEDGER'),
+      snapshot_pnl: snapshot?.snapshot_pnl ?? null,
+      snapshot_value: snapshot?.snapshot_value ?? null,
+      current_price: snapshot?.current_price ?? position.current_price,
+      snapshot_only: false
+    };
+  });
+  const snapshotOnlyRows = pendingTradetronRows.filter((_, index) => !usedSnapshotIndexes.has(index));
+  const displayRows = [...engineRows, ...snapshotOnlyRows];
+  const matchedCount = usedSnapshotIndexes.size;
+
+  return <Panel title="Positions · Tradetron + Engine Origin">
+    <div className="lockedText">
+      <b>Engine/event-ledger positions:</b> {(rows || []).length} · <b>Tradetron API open legs:</b> {mirror.openCount} · <b>matched rows:</b> {matchedCount}
+      <p>Tradetron-only rows are read-only current-position snapshots. Entry price, market value, stop-loss and targets are shown only when a trusted source actually supplies them; the scanner does not estimate missing values.</p>
+      {snapshotsLocked ? <p className="apiStateWarn">Private Tradetron snapshot is locked. Enter the configured ENGINE_SECRET in Settings to load current Tradetron rows.</p> : null}
+    </div>
+    <div className="tablewrap"><table>
+      <thead><tr><th>TIME / SNAPSHOT</th><th>COIN</th><th>STRATEGY / SOURCE</th><th>SIDE</th><th>QTY</th><th>ENTRY</th><th>MARK</th><th>VALUE</th><th>M2M / P&amp;L</th><th>SL</th><th>TP1</th><th>TP</th><th>PROTECTION</th><th>ORIGIN</th></tr></thead>
+      <tbody>{displayRows.map((p, index) => {
+        const snapshotOnly = p.snapshot_only === true;
+        const protection = snapshotOnly ? 'NOT IN API' : (p.protection_verified ? 'VERIFIED' : (p.stop_price != null || p.tp_price != null ? 'LEVELS PRESENT' : 'NOT CONFIRMED'));
+        const when = p.opened_at ? new Date(p.opened_at).toLocaleTimeString('en-IN') : (snapshotOnly ? 'Current snapshot' : '—');
+        return <tr key={p.execution_id || 'position:' + index}>
+          <td>{when}</td>
+          <td className="symbol">{p.symbol || '—'}</td>
+          <td>{p.strategy || (snapshotOnly ? 'TT current snapshot' : 'Engine position')}</td>
+          <td className={p.side === 'BUY' ? 'up' : p.side === 'SELL' ? 'down' : 'muted'}>{p.side || '—'}</td>
+          <td>{p.qty == null ? '—' : fmtQty(p.qty)}</td>
+          <td>{p.entry_price == null ? '—' : price(p.entry_price)}</td>
+          <td>{p.current_price == null ? '—' : price(p.current_price)}</td>
+          <td>{p.snapshot_value == null ? '—' : money(p.snapshot_value)}</td>
+          <td>{p.snapshot_pnl == null ? '—' : money(p.snapshot_pnl)}</td>
+          <td>{p.stop_price == null ? '—' : price(p.stop_price)}</td>
+          <td>{p.tp1_price == null ? '—' : price(p.tp1_price)}</td>
+          <td>{p.tp_price == null ? '—' : price(p.tp_price)}</td>
+          <td className={protection === 'VERIFIED' ? 'up' : 'muted'}>{protection}</td>
+          <td>{p.display_origin || p.origin || 'TRADETRON API (READ-ONLY)'}</td>
+        </tr>;
+      })}{!displayRows.length ? <tr><td colSpan={14}>{snapshotsLocked ? 'No private snapshot rows are available while locked.' : 'No open positions are currently available from the engine ledger or the Tradetron snapshot.'}</td></tr> : null}</tbody>
+    </table></div>
+  </Panel>;
 }
-function TradeHistory({ trades, title }) {
-  return <Panel title={title}><div className="tablewrap"><table><thead><tr><th>TIME</th><th>COIN</th><th>MODE</th><th>STRATEGY</th><th>SIDE</th><th>ENTRY</th><th>EXIT</th><th>QTY</th><th>FEES</th><th>GROSS</th><th>NET</th><th>PNL%</th><th>R</th><th>EXIT REASON</th><th>RESULT</th></tr></thead><tbody>{trades.map(t => <tr key={t.execution_id}><td>{t.closed_at ? new Date(t.closed_at).toLocaleString('en-IN') : '—'}</td><td className="symbol">{t.symbol}</td><td>TRADetron OFFLINE</td><td>{t.strategy}</td><td className={t.side==='BUY'?'up':'down'}>{t.side}</td><td>{price(t.entry_price)}</td><td>{price(t.exit_price)}</td><td>{fmtQty(t.qty)}</td><td>{money(t.fees)}</td><td>{money(t.gross_pnl)}</td><td className={num(t.net_pnl)>=0?'up':'down'}>{money(t.net_pnl)}</td><td>{pct(t.pnl_pct)}</td><td>{num(t.r_multiple).toFixed(2)}</td><td>{t.exit_reason || '—'}</td><td>{t.result}</td></tr>)}</tbody></table></div></Panel>;
+function TradeHistory({ trades = [], title }) {
+  const emptyMessage = String(title || '').includes('Trade History')
+    ? 'No authenticated closed-trade records have reached the scanner yet. Tradetron status notifications and current-position snapshots are not treated as fills or exits.'
+    : 'No closed trades have been recorded for this strategy yet.';
+  return <Panel title={title}><div className="tablewrap"><table><thead><tr><th>TIME</th><th>COIN</th><th>MODE</th><th>STRATEGY</th><th>SIDE</th><th>ENTRY</th><th>EXIT</th><th>QTY</th><th>FEES</th><th>GROSS</th><th>NET</th><th>PNL%</th><th>R</th><th>EXIT REASON</th><th>RESULT</th></tr></thead><tbody>{trades.map(t => <tr key={t.execution_id}><td>{t.closed_at ? new Date(t.closed_at).toLocaleString('en-IN') : '—'}</td><td className="symbol">{t.symbol}</td><td>TRADetron OFFLINE</td><td>{t.strategy || '—'}</td><td className={t.side==='BUY'?'up':'down'}>{t.side || '—'}</td><td>{t.entry_price == null ? '—' : price(t.entry_price)}</td><td>{t.exit_price == null ? '—' : price(t.exit_price)}</td><td>{t.qty == null ? '—' : fmtQty(t.qty)}</td><td>{t.fees == null ? '—' : money(t.fees)}</td><td>{t.gross_pnl == null ? '—' : money(t.gross_pnl)}</td><td className={t.net_pnl == null ? 'muted' : num(t.net_pnl)>=0?'up':'down'}>{t.net_pnl == null ? '—' : money(t.net_pnl)}</td><td>{t.pnl_pct == null ? '—' : pct(t.pnl_pct)}</td><td>{t.r_multiple == null ? '—' : num(t.r_multiple).toFixed(2)}</td><td>{t.exit_reason || '—'}</td><td>{t.result || '—'}</td></tr>)}{!trades.length ? <tr><td colSpan={15}>{emptyMessage}</td></tr> : null}</tbody></table></div></Panel>;
 }
-function PNL({ trades, settings }) {
+function PNL({ trades = [], settings = {} }) {
+  const hasClosedTrades = trades.length > 0;
   const net = trades.reduce((s,t)=>s+num(t.net_pnl),0);
   const fees = trades.reduce((s,t)=>s+num(t.fees),0);
-  return <section className="cards"><Card label="REALIZED NET" value={money(net)} sub="Tradetron webhook-synced closed trades"/><Card label="FEES" value={money(fees)} sub="real fill commissions"/><Card label="EQUITY" value={money(settings.equity)} sub="current Demo equity"/><Card label="UNREALIZED" value={money(settings.unrealized_pnl)} sub="Tradetron activity feed"/></section>;
+  return <><section className="cards"><Card label="REALIZED NET" value={hasClosedTrades ? money(net) : '—'} sub={hasClosedTrades ? 'sum of recorded closed-trade net P&L' : 'waiting for authenticated closed-trade records'}/><Card label="FEES" value={hasClosedTrades ? money(fees) : '—'} sub="only shown from recorded trade rows"/><Card label="EQUITY" value={settings.equity == null ? '—' : money(settings.equity)} sub="configured scanner ledger balance"/><Card label="UNREALIZED" value={settings.unrealized_pnl == null ? '—' : money(settings.unrealized_pnl)} sub="webhook/engine ledger only; Tradetron snapshot shown separately"/></section>{!hasClosedTrades ? <div className="lockedText">Realized P&amp;L and fees are not confirmed as zero; the scanner has no authenticated closed-trade rows yet. Tradetron deployment snapshots are displayed separately and are not merged into this ledger.</div> : null}</>;
 }
 function Rotation({ ledger }) {
   const nowDay = new Date().toISOString().slice(0,10); const todayLedger = ledger.filter(x => String(x.created_at || '').slice(0,10) === nowDay); const released = todayLedger.reduce((s,x)=>s+num(x.released),0), retained = todayLedger.reduce((s,x)=>s+num(x.retained),0);
@@ -552,9 +634,10 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
     <section className="cards">
       <Card label="TT OPEN LEGS" value={configured ? mirror.openCount : '—'} sub={mirror.positionsHidden ? 'some position rows hidden by Tradetron' : 'reported by current API snapshot'} />
       <Card label="TT DEPLOYMENT P&L" value={mirror.reportedPnl === null ? '—' : money(mirror.reportedPnl)} sub="Tradetron-reported snapshot; not scanner ledger P&L" />
-      <Card label="TT OPEN P&L" value={mirror.openPnl === null ? '—' : money(mirror.openPnl)} sub="sum of recognized open-row M2M values only" />
+      <Card label="TT OPEN ROW P&L SUM" value={mirror.openPnl === null ? '—' : money(mirror.openPnl)} sub="unreconciled sum of per-row API values; not booked profit" />
       <Card label="TT DEPLOYMENTS" value={mirror.deployments} sub="returned by read-only API" />
     </section>
+    {mirror.openPnl !== null && mirror.reportedPnl !== null && Math.abs(mirror.openPnl - mirror.reportedPnl) > Math.max(1, Math.abs(mirror.reportedPnl) * 0.1) ? <div className="lockedText apiStateWarn"><b>P&amp;L reconciliation warning:</b> the sum of open-row P&amp;L values differs materially from the deployment aggregate. Both are preserved as separate read-only API figures; neither is merged into the scanner's realized-trade ledger.</div> : null}
     {deployments.length ? <div className="tablewrap"><table>
       <thead><tr><th>DEPLOYMENT</th><th>STATUS</th><th>MODE</th><th>BROKER</th><th>OPEN LEGS</th><th>REPORTED P&amp;L</th><th>CURRENCY</th><th>AS OF</th></tr></thead>
       <tbody>{deployments.map(row => <tr key={row.deployment_id}>
