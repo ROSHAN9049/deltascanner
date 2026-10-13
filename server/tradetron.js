@@ -3,6 +3,55 @@ import { CONFIG } from './config.js';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const clean = v => String(v ?? '').trim();
 
+export function buildTradetronPayload(authToken, pairs) {
+  const token = clean(authToken);
+  if (!token) throw new Error('Tradetron auth token is missing');
+  if (!Array.isArray(pairs) || pairs.length === 0) {
+    throw new Error('Tradetron request must contain at least one variable pair');
+  }
+
+  const payload = { 'auth-token': token };
+  pairs.forEach((pair, index) => {
+    if (!Array.isArray(pair) || pair.length < 2) {
+      throw new Error('Invalid Tradetron variable pair at index ' + index);
+    }
+    const key = clean(pair[0]);
+    if (!key) throw new Error('Tradetron variable key cannot be empty');
+    const suffix = index === 0 ? '' : String(index);
+    payload['key' + suffix] = key;
+    payload['value' + suffix] = String(pair[1] ?? '');
+  });
+  return payload;
+}
+
+export function isTradetronResponseAccepted(status, body) {
+  const httpStatus = Number(status);
+  if (!Number.isInteger(httpStatus) || httpStatus < 200 || httpStatus >= 300) return false;
+
+  const text = clean(body);
+  if (/^ok$/i.test(text)) return true;
+  if (!text) return false;
+
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed === true) return true;
+    if (parsed && typeof parsed === 'object') {
+      if (parsed.success === true || parsed.ok === true) return true;
+      const statusText = clean(parsed.status || parsed.result || parsed.message).toLowerCase();
+      return ['ok', 'success', 'accepted'].includes(statusText);
+    }
+  } catch {
+    // Tradetron's documented plain-text acknowledgement is "Ok".
+  }
+  return false;
+}
+
+function safeTradetronResponseBody(body, token) {
+  const text = String(body ?? '');
+  const secret = clean(token);
+  return (secret ? text.replaceAll(secret, '[REDACTED]') : text).slice(0, 240);
+}
+
 // An entry trigger is momentary. If Tradetron sends no authenticated activity
 // confirmation, do not let the reservation block the symbol indefinitely.
 // This TTL is not evidence of a fill or a close; only a matching activity event
@@ -79,13 +128,7 @@ export class TradetronBridge {
       return { ok: false, skipped: true, reason: this.enabled ? 'TRADETRON_AUTH_TOKEN missing' : 'bridge disabled' };
     }
 
-    const payload = { 'auth-token': this.authToken };
-    pairs.forEach(([key, value], index) => {
-      const suffix = index === 0 ? '' : String(index);
-      payload['key' + suffix] = key;
-      payload['value' + suffix] = String(value);
-    });
-
+    const payload = buildTradetronPayload(this.authToken, pairs);
     let lastError = null;
     for (let attempt = 0; attempt < 2; attempt++) {
       const controller = new AbortController();
@@ -103,18 +146,34 @@ export class TradetronBridge {
           signal: controller.signal
         });
         const body = (await response.text()).trim();
-        if (response.status === 429 && attempt === 0) {
-          await sleep(4000);
-          continue;
+        const safeBody = safeTradetronResponseBody(body, this.authToken);
+
+        if (response.status === 429) {
+          if (attempt === 0) {
+            await sleep(4000);
+            continue;
+          }
+          throw new Error('Tradetron API rate limit (HTTP 429): ' + safeBody);
         }
-        if (!response.ok) throw new Error('Tradetron API ' + response.status + ': ' + body.slice(0, 240));
-        return { ok: true, body: body.slice(0, 240) };
-      } catch (error) {
-        lastError = error;
-        if (attempt === 0) {
+        if (response.status >= 500 && attempt === 0) {
           await sleep(1500);
           continue;
         }
+        if (!response.ok) {
+          throw new Error('Tradetron API ' + response.status + ': ' + safeBody);
+        }
+        if (!isTradetronResponseAccepted(response.status, body)) {
+          throw new Error('Tradetron API did not confirm acceptance (HTTP ' + response.status + '): ' + safeBody);
+        }
+        return { ok: true, body: safeBody };
+      } catch (error) {
+        lastError = error;
+        const transientNetworkError = error?.name === 'AbortError' || error instanceof TypeError;
+        if (attempt === 0 && transientNetworkError) {
+          await sleep(1500);
+          continue;
+        }
+        throw error;
       } finally {
         clearTimeout(timer);
       }

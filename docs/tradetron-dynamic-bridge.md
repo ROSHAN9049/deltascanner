@@ -4,15 +4,15 @@
 
 The DeltaScanner worker reads live Delta Exchange India production market data and emits signals only. It does not place direct Delta production orders. Tradetron remains the intended execution / Live Offline layer.
 
-Keep the existing strategy `Signal Bridge - Delta Exchange India (13 symbols)` as a preserved reference until a replacement is validated.
+Keep the existing strategy `Signal Bridge - Delta Exchange India (34 symbols)` as a preserved reference until a replacement is validated.
 
 ## Existing futures bridge is static
 
-The inspected strategy has a fixed 13-symbol instrument basket; it cannot use an arbitrary `tt_symbol` runtime string as a Position Builder instrument. The worker must not claim that a signal for a coin outside that basket was routed successfully.
+The inspected strategy has a fixed 34-symbol instrument basket; it cannot use an arbitrary `tt_symbol` runtime string as a Position Builder instrument. The worker must not claim that a signal for a coin outside that basket was routed successfully.
 
 The default supported-symbol allowlist is:
 
-`BTCUSD,ETHUSD,AAPLXUSD,ADAUSD,ALGOUSD,AMDBUSD,AMZNXUSD,ATOMUSD,AVAXUSD,BCHUSD,BNBUSD,CBRSBUSD,COINXUSD`
+`AAPLXUSD, ADAUSD, ALGOUSD, AMDBUSD, AMZNXUSD, ATOMUSD, AVAXUSD, BCHUSD, BNBUSD, BTCUSD, CBRSBUSD, COINXUSD, CRCLXUSD, DOGEUSD, DRAMBUSD, ETHUSD, EWYBUSD, GOOGLXUSD, INTCBUSD, LINKUSD, LITEBUSD, LTCUSD, MATICUSD, METAXUSD, MSTRBUSD, MUBUSD, NBISBUSD, NEARUSD, PAXGUSD, SNDKBUSD, SOXLBUSD, SPCXXUSD, WDCBUSD, WIFUSD`
 
 To change the allowlist for a single strategy, set Railway variable `TRADETRON_SUPPORTED_SYMBOLS` to the comma-separated set of futures symbols actually configured in the linked Tradetron strategy. Adding a symbol to this variable does not add a leg to Tradetron; the strategy itself must be updated first.
 
@@ -45,7 +45,7 @@ For a supported coin, the worker writes quantity and price metadata before raisi
 - `<SYMBOL>_xl` — long exit trigger.
 - `<SYMBOL>_xs` — short exit trigger.
 - `api_buy` / `api_sell` — legacy global trigger.
-- `tt_engine`, `tt_symbol`, `tt_side`, `tt_qty`, `tt_ep`, `tt_sl`, `tt_tp1`, `tt_tp`, `tt_exec_id`, `tt_buy`, `tt_sell` — supplementary runtime metadata; the existing 13-symbol strategy does not dynamically select an instrument from `tt_symbol`.
+- `tt_engine`, `tt_symbol`, `tt_side`, `tt_qty`, `tt_ep`, `tt_sl`, `tt_tp1`, `tt_tp`, `tt_exec_id`, `tt_buy`, `tt_sell` — supplementary runtime metadata; the existing 34-symbol strategy does not dynamically select an instrument from `tt_symbol`.
 
 The strategy's own entry condition remains the final source of truth. Receiving an API variable is not proof of an executed simulated trade.
 
@@ -72,7 +72,7 @@ This monitor does not claim exchange-side/Tradetron-side protection exists until
 
 ## Options are a separate route
 
-The existing futures basket has no Options legs. The Options scanner is hard-limited to exactly three underlyings: BTC, ETH and Gold (Delta symbol XAUT). It never expands to the 231+ perpetual-futures universe. The scanner's `tt_option_*` variables are not consumed by the existing 13-symbol futures strategy.
+The existing futures basket has no Options legs. The Options scanner is hard-limited to exactly three underlyings: BTC, ETH and Gold (Delta symbol XAUT). It never expands to the 231+ perpetual-futures universe. The scanner's `tt_option_*` variables are not consumed by the existing 34-symbol futures strategy.
 
 Options routing is fail-closed unless these Railway variables are explicitly configured after a dedicated Tradetron Options strategy exists:
 
@@ -107,7 +107,7 @@ The scanner must not log token values.
 
 ## Known limitations
 
-- A single static 13-symbol Signal Bridge does not cover the full 231+ scanner universe.
+- A single static 34-symbol Signal Bridge does not cover the full 231+ scanner universe.
 - Runtime `tt_symbol` does not choose arbitrary instrument legs in the existing strategy.
 - Multiple futures bridges require a deterministic scanner-side symbol-to-bridge/API-token mapping and separate verification.
 - Options need a dedicated strategy and separate bridge credentials.

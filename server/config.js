@@ -55,12 +55,12 @@ export const CONFIG = Object.freeze({
   workerId: process.env.WORKER_ID || ('delta-signal-worker-' + process.pid),
   tradetronBridgeEnabled: String(process.env.TRADETRON_BRIDGE_ENABLED || 'true').toLowerCase() === 'true',
   tradetronDynamicBridgeEnabled: signalOnly ? false : String(process.env.TRADETRON_DYNAMIC_BRIDGE_ENABLED || 'false').toLowerCase() === 'true',
-  // The currently confirmed Tradetron Signal Bridge is a fixed 13-symbol
-  // basket. Explicitly opt symbols in after adding them to the real strategy;
-  // do not report unsupported scanner symbols as successfully routed.
+  // Fallback allowlist matches the reported 34-symbol Signal Bridge. An explicit
+  // TRADETRON_SUPPORTED_SYMBOLS environment value remains authoritative; only list
+  // symbols actually configured in the linked Tradetron strategy.
   tradetronSupportedSymbols: [...new Set(String(
     process.env.TRADETRON_SUPPORTED_SYMBOLS ||
-    'BTCUSD,ETHUSD,AAPLXUSD,ADAUSD,ALGOUSD,AMDBUSD,AMZNXUSD,ATOMUSD,AVAXUSD,BCHUSD,BNBUSD,CBRSBUSD,COINXUSD'
+    'AAPLXUSD,ADAUSD,ALGOUSD,AMDBUSD,AMZNXUSD,ATOMUSD,AVAXUSD,BCHUSD,BNBUSD,BTCUSD,CBRSBUSD,COINXUSD,CRCLXUSD,DOGEUSD,DRAMBUSD,ETHUSD,EWYBUSD,GOOGLXUSD,INTCBUSD,LINKUSD,LITEBUSD,LTCUSD,MATICUSD,METAXUSD,MSTRBUSD,MUBUSD,NBISBUSD,NEARUSD,PAXGUSD,SNDKBUSD,SOXLBUSD,SPCXXUSD,WDCBUSD,WIFUSD'
   ).split(',').map(x => x.trim().toUpperCase()).filter(x => /^[A-Z0-9]+USD$/.test(x)))],
   // If provided, this route table replaces the legacy single-token allowlist.
   // Each bridge id owns a distinct, fixed symbol set and linked API token.
