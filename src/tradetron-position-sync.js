@@ -103,7 +103,10 @@ export function normalizeTradetronPosition(position, deployment = {}) {
 
   const price = numericValue(firstValue(position, ENTRY_PRICE_KEYS));
   const markPrice = numericValue(firstValue(position, MARK_PRICE_KEYS));
-  const pnl = numericValue(firstValue(position, POSITION_PNL_KEYS));
+  const pnlSource = POSITION_PNL_KEYS.find(key =>
+    position[key] !== undefined && position[key] !== null && clean(position[key]) !== ''
+  ) || null;
+  const pnl = numericValue(pnlSource ? position[pnlSource] : null);
   const value = numericValue(firstValue(position, POSITION_VALUE_KEYS));
   const sideRaw = clean(firstValue(position, ['side', 'position_side', 'positionSide', 'direction'])).toUpperCase();
   const side = quantity !== null && quantity !== 0
@@ -127,6 +130,7 @@ export function normalizeTradetronPosition(position, deployment = {}) {
     markPrice,
     marketValue: value,
     pnl,
+    pnlSource,
     open,
     status: clean(firstValue(position, POSITION_STATUS_KEYS)) || (open ? 'Open' : 'Closed'),
     raw: position
@@ -157,7 +161,15 @@ export function summarizeTradetronSnapshots(deployments = []) {
   const reportedPnl = rows.length > 0 && pnlValues.length === rows.length
     ? pnlValues.reduce((total, value) => total + value, 0)
     : null;
-  const openPnlValues = openRows.map(row => row.pnl);
+  // Generic per-row "pnl" is not enough to claim open/unrealized P&L.
+  // Only sum fields explicitly named as mark-to-market/unrealized P&L.
+  const explicitOpenPnlSources = new Set([
+    'm2m', 'mtm', 'unrealized_pnl', 'unrealizedPnl',
+    'open_pnl', 'openPnl', 'mark_to_market', 'markToMarket'
+  ]);
+  const openPnlValues = openRows.map(row =>
+    explicitOpenPnlSources.has(row.pnlSource) ? row.pnl : null
+  );
   const openPnl = openPnlValues.length && openPnlValues.every(value => value !== null)
     ? openPnlValues.reduce((total, value) => total + value, 0)
     : null;
