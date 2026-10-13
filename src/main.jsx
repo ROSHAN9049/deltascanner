@@ -383,27 +383,30 @@ function Testnet({ settings, health, busy, mutate, positions }) {
   return <><section className="cards"><Card label="ENVIRONMENT" value="SIGNAL ONLY" sub="production market feed"/><Card label="AUTO" value="BRIDGE ON" sub="Tradetron signal route"/><Card label="CONTINUOUS MODE" value="NO POSITION CAP" sub="scanner opportunity routing"/><Card label="VERIFIED OPEN POSITIONS" value={positions.length} sub="from synchronized position records"/></section><Panel title="Testnet Controls"><div className="lockedText">Direct Delta execution is disabled. Tradetron Live Offline is the only execution/simulation layer.</div><div className="statusLine">Worker {health?.workerLeaseActive?'ONLINE':'OFFLINE'} · Tick {health?.tickFresh?'FRESH':'STALE'} · Exchange {health?.exchangeHealthy?'HEALTHY':'DOWN'}</div><p className="muted">No scanner-side global position or rolling signal-count cap. Same-symbol duplicate protection, signal idempotency, technical-quality checks, per-trade sizing, route readiness and emergency stop remain active.</p></Panel></>;
 }
 function Settings({ settings, secret, setSecret, busy, mutate }) {
-  const serverValues = {
+  const serverValues = useMemo(() => ({
     riskPct: settings.risk_pct ?? 0.3,
     momentumRr: settings.momentum_rr ?? 2.0,
     scalpingRr: settings.scalping_rr ?? 2.0,
     tp1Pct: settings.tp1_pct ?? 33,
     maxHoldMinutes: settings.max_hold_minutes ?? 240
-  };
+  }), [settings.risk_pct, settings.momentum_rr, settings.scalping_rr, settings.tp1_pct, settings.max_hold_minutes]);
   const [draft, setDraft] = useState(serverValues);
   const [dirty, setDirty] = useState(false);
+  const dirtyRef = useRef(false);
   const [saveState, setSaveState] = useState('');
 
   useEffect(() => {
-    if (!dirty) setDraft(serverValues);
-  }, [settings.risk_pct, settings.momentum_rr, settings.scalping_rr, settings.tp1_pct, settings.max_hold_minutes, dirty]);
+    if (!dirtyRef.current) setDraft(serverValues);
+  }, [serverValues]);
 
   const changeDraft = (key, value) => {
     setDraft(current => ({ ...current, [key]: value }));
+    dirtyRef.current = true;
     setDirty(true);
     setSaveState('Unsaved changes');
   };
   const discardChanges = () => {
+    dirtyRef.current = false;
     setDraft(serverValues);
     setDirty(false);
     setSaveState('Changes discarded');
@@ -432,6 +435,14 @@ function Settings({ settings, secret, setSecret, busy, mutate }) {
     setSaveState('Saving settings…');
     const saved = await mutate(patch);
     if (saved) {
+      setDraft({
+        riskPct: patch.riskPct,
+        momentumRr: patch.momentumRr,
+        scalpingRr: patch.scalpingRr,
+        tp1Pct: patch.tp1Pct,
+        maxHoldMinutes: patch.maxHoldMinutes
+      });
+      dirtyRef.current = false;
       setDirty(false);
       setSaveState('Settings saved to server.');
     } else {
