@@ -53,9 +53,10 @@ export function getTradetronDiagnosticDetails(value) {
     'globalTriggerKey', 'global_trigger_key', 'bridge_global_trigger_key',
     'bridgeGlobalTriggerKey', 'triggerKey', 'bridge_trigger_key'
   ]));
-  const rawCount = Number(pick([
+  const rawCountValue = pick([
     'payloadVariableCount', 'payload_variable_count', 'bridge_variable_count', 'bridgeVariableCount'
-  ]));
+  ]);
+  const rawCount = rawCountValue === null ? NaN : Number(rawCountValue);
   const payloadVariableCount = Number.isFinite(rawCount) && rawCount >= 0 ? Math.floor(rawCount) : null;
   const rawKeys = pick([
     'payloadVariableKeys', 'payload_variable_keys', 'bridge_variable_keys', 'bridgeVariableKeys'
