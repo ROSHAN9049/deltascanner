@@ -170,7 +170,7 @@ function App() {
     {tab === 'grid' && <GridStrategy settings={settings} market={market} busy={busy} mutate={mutate} />}
     {tab === 'options' && <OptionsView signals={signals} settings={settings} optionCache={state?.optionCache || []} executionCoverage={state?.executionCoverage || null} />}
     {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" />}
-    {tab === 'positions' && <><Positions rows={positions} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
+    {tab === 'positions' && <><Positions rows={positions} tradetronDeployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} snapshotsLocked={state?.tradetronDeveloperDataProtected === true} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
     {tab === 'trade-history' && <><TradeHistory trades={trades} title="Trade History · Webhook-Synced Tradetron Records" /><TradetronActivity events={state?.tradetronEvents || []} signalStats={state?.signalOrderStats || null} webhookSecretConfigured={executionCoverage?.webhookSecretConfigured === true} /></>}
     {tab === 'pnl' && <><PNL trades={trades} settings={settings} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
     {tab === 'paper' && <Panel title="Paper Trading"><div className="lockedText">Scanner is signal-only. No Delta order is placed here; Tradetron Live Offline runs the simulated execution.</div></Panel>}
@@ -372,8 +372,86 @@ function OptionTable({ rows, type }) {
   })}</tbody></table></div>;
 }
 
-function Positions({ rows }) {
-  return <Panel title="Positions · Tradetron + Engine Origin"><div className="tablewrap"><table><thead><tr><th>TIME</th><th>COIN</th><th>STRATEGY</th><th>SIDE</th><th>QTY</th><th>ENTRY</th><th>MARK</th><th>SL</th><th>TP1</th><th>TP</th><th>PROTECTION</th><th>ORIGIN</th></tr></thead><tbody>{rows.map(p => <tr key={p.execution_id}><td>{new Date(p.opened_at).toLocaleTimeString('en-IN')}</td><td className="symbol">{p.symbol}</td><td>{p.strategy}</td><td className={p.side==='BUY'?'up':'down'}>{p.side}</td><td>{fmtQty(p.qty)}</td><td>{price(p.entry_price)}</td><td>{price(p.current_price)}</td><td>{price(p.stop_price)}</td><td>{price(p.tp1_price)}</td><td>{price(p.tp_price)}</td><td className={p.protection_verified || p.origin==='TRADETRON'?'up':'down'}>{p.origin==='TRADETRON'?'Tradetron-managed':(p.protection_verified?'VERIFIED':'UNPROTECTED')}</td><td>{p.origin || 'ENGINE'}</td></tr>)}</tbody></table></div></Panel>;
+function Positions({ rows = [], tradetronDeployments = [], snapshotsLocked = false }) {
+  const mirror = summarizeTradetronSnapshots(tradetronDeployments);
+  const pendingTradetronRows = mirror.openRows.map(position => ({
+    execution_id: 'tt-api:' + position.key,
+    opened_at: null,
+    symbol: position.symbol,
+    strategy: 'TT current snapshot',
+    side: position.side,
+    qty: position.quantity,
+    entry_price: position.entryPrice,
+    current_price: position.markPrice,
+    stop_price: null,
+    tp1_price: null,
+    tp_price: null,
+    origin: 'TRADETRON API',
+    snapshot_only: true,
+    snapshot_pnl: position.pnl,
+    snapshot_value: position.marketValue,
+    snapshot_status: position.status
+  }));
+
+  // Where an event-confirmed engine row matches a TT snapshot exactly, render
+  // one enriched row rather than double-counting the same symbol/side/quantity.
+  const matchKey = row => [
+    String(row.symbol || '').toUpperCase(),
+    String(row.side || '').toUpperCase(),
+    Math.abs(Number(row.qty ?? row.quantity ?? 0))
+  ].join('|');
+  const usedSnapshotIndexes = new Set();
+  const engineRows = (rows || []).map((position, index) => {
+    const matchIndex = pendingTradetronRows.findIndex((snapshot, snapshotIndex) =>
+      !usedSnapshotIndexes.has(snapshotIndex) && matchKey(snapshot) === matchKey(position)
+    );
+    const snapshot = matchIndex >= 0 ? pendingTradetronRows[matchIndex] : null;
+    if (snapshot) usedSnapshotIndexes.add(matchIndex);
+    return {
+      ...position,
+      execution_id: position.execution_id || 'engine:' + matchKey(position) + ':' + index,
+      display_origin: snapshot ? 'ENGINE + TT API MATCH' : (position.origin || 'ENGINE / EVENT LEDGER'),
+      snapshot_pnl: snapshot?.snapshot_pnl ?? null,
+      snapshot_value: snapshot?.snapshot_value ?? null,
+      current_price: snapshot?.current_price ?? position.current_price,
+      snapshot_only: false
+    };
+  });
+  const snapshotOnlyRows = pendingTradetronRows.filter((_, index) => !usedSnapshotIndexes.has(index));
+  const displayRows = [...engineRows, ...snapshotOnlyRows];
+  const matchedCount = usedSnapshotIndexes.size;
+
+  return <Panel title="Positions · Tradetron + Engine Origin">
+    <div className="lockedText">
+      <b>Engine/event-ledger positions:</b> {(rows || []).length} · <b>Tradetron API open legs:</b> {mirror.openCount} · <b>matched rows:</b> {matchedCount}
+      <p>Tradetron-only rows are read-only current-position snapshots. Entry price, market value, stop-loss and targets are shown only when a trusted source actually supplies them; the scanner does not estimate missing values.</p>
+      {snapshotsLocked ? <p className="apiStateWarn">Private Tradetron snapshot is locked. Enter the configured ENGINE_SECRET in Settings to load current Tradetron rows.</p> : null}
+    </div>
+    <div className="tablewrap"><table>
+      <thead><tr><th>TIME / SNAPSHOT</th><th>COIN</th><th>STRATEGY / SOURCE</th><th>SIDE</th><th>QTY</th><th>ENTRY</th><th>MARK</th><th>VALUE</th><th>M2M / P&amp;L</th><th>SL</th><th>TP1</th><th>TP</th><th>PROTECTION</th><th>ORIGIN</th></tr></thead>
+      <tbody>{displayRows.map((p, index) => {
+        const snapshotOnly = p.snapshot_only === true;
+        const protection = snapshotOnly ? 'NOT IN API' : (p.protection_verified ? 'VERIFIED' : (p.stop_price != null || p.tp_price != null ? 'LEVELS PRESENT' : 'NOT CONFIRMED'));
+        const when = p.opened_at ? new Date(p.opened_at).toLocaleTimeString('en-IN') : (snapshotOnly ? 'Current snapshot' : '—');
+        return <tr key={p.execution_id || 'position:' + index}>
+          <td>{when}</td>
+          <td className="symbol">{p.symbol || '—'}</td>
+          <td>{p.strategy || (snapshotOnly ? 'TT current snapshot' : 'Engine position')}</td>
+          <td className={p.side === 'BUY' ? 'up' : p.side === 'SELL' ? 'down' : 'muted'}>{p.side || '—'}</td>
+          <td>{p.qty == null ? '—' : fmtQty(p.qty)}</td>
+          <td>{p.entry_price == null ? '—' : price(p.entry_price)}</td>
+          <td>{p.current_price == null ? '—' : price(p.current_price)}</td>
+          <td>{p.snapshot_value == null ? '—' : money(p.snapshot_value)}</td>
+          <td>{p.snapshot_pnl == null ? '—' : money(p.snapshot_pnl)}</td>
+          <td>{p.stop_price == null ? '—' : price(p.stop_price)}</td>
+          <td>{p.tp1_price == null ? '—' : price(p.tp1_price)}</td>
+          <td>{p.tp_price == null ? '—' : price(p.tp_price)}</td>
+          <td className={protection === 'VERIFIED' ? 'up' : 'muted'}>{protection}</td>
+          <td>{p.display_origin || p.origin || 'TRADETRON API (READ-ONLY)'}</td>
+        </tr>;
+      })}{!displayRows.length ? <tr><td colSpan={14}>{snapshotsLocked ? 'No private snapshot rows are available while locked.' : 'No open positions are currently available from the engine ledger or the Tradetron snapshot.'}</td></tr> : null}</tbody>
+    </table></div>
+  </Panel>;
 }
 function TradeHistory({ trades, title }) {
   return <Panel title={title}><div className="tablewrap"><table><thead><tr><th>TIME</th><th>COIN</th><th>MODE</th><th>STRATEGY</th><th>SIDE</th><th>ENTRY</th><th>EXIT</th><th>QTY</th><th>FEES</th><th>GROSS</th><th>NET</th><th>PNL%</th><th>R</th><th>EXIT REASON</th><th>RESULT</th></tr></thead><tbody>{trades.map(t => <tr key={t.execution_id}><td>{t.closed_at ? new Date(t.closed_at).toLocaleString('en-IN') : '—'}</td><td className="symbol">{t.symbol}</td><td>TRADetron OFFLINE</td><td>{t.strategy}</td><td className={t.side==='BUY'?'up':'down'}>{t.side}</td><td>{price(t.entry_price)}</td><td>{price(t.exit_price)}</td><td>{fmtQty(t.qty)}</td><td>{money(t.fees)}</td><td>{money(t.gross_pnl)}</td><td className={num(t.net_pnl)>=0?'up':'down'}>{money(t.net_pnl)}</td><td>{pct(t.pnl_pct)}</td><td>{num(t.r_multiple).toFixed(2)}</td><td>{t.exit_reason || '—'}</td><td>{t.result}</td></tr>)}</tbody></table></div></Panel>;
