@@ -428,7 +428,7 @@ function Positions({ rows = [], tradetronDeployments = [], snapshotsLocked = fal
       {snapshotsLocked ? <p className="apiStateWarn">Private Tradetron snapshot is locked. Enter the configured ENGINE_SECRET in Settings to load current Tradetron rows.</p> : null}
     </div>
     <div className="tablewrap"><table>
-      <thead><tr><th>TIME / SNAPSHOT</th><th>COIN</th><th>STRATEGY / SOURCE</th><th>SIDE</th><th>QTY</th><th>ENTRY</th><th>MARK</th><th>VALUE</th><th>M2M / P&amp;L</th><th>SL</th><th>TP1</th><th>TP</th><th>PROTECTION</th><th>ORIGIN</th></tr></thead>
+      <thead><tr><th>TIME / SNAPSHOT</th><th>COIN</th><th>STRATEGY / SOURCE</th><th>SIDE</th><th>QTY</th><th>ENTRY</th><th>MARK</th><th>VALUE</th><th>API P&amp;L RAW (UNIT UNVERIFIED)</th><th>SL</th><th>TP1</th><th>TP</th><th>PROTECTION</th><th>ORIGIN</th></tr></thead>
       <tbody>{displayRows.map((p, index) => {
         const snapshotOnly = p.snapshot_only === true;
         const protection = snapshotOnly ? 'NOT IN API' : (p.protection_verified ? 'VERIFIED' : (p.stop_price != null || p.tp_price != null ? 'LEVELS PRESENT' : 'NOT CONFIRMED'));
@@ -442,7 +442,7 @@ function Positions({ rows = [], tradetronDeployments = [], snapshotsLocked = fal
           <td>{p.entry_price == null ? '—' : price(p.entry_price)}</td>
           <td>{p.current_price == null ? '—' : price(p.current_price)}</td>
           <td>{p.snapshot_value == null ? '—' : money(p.snapshot_value)}</td>
-          <td>{p.snapshot_pnl == null ? '—' : money(p.snapshot_pnl)}</td>
+          <td>{p.snapshot_pnl == null ? '—' : price(p.snapshot_pnl)}</td>
           <td>{p.stop_price == null ? '—' : price(p.stop_price)}</td>
           <td>{p.tp1_price == null ? '—' : price(p.tp1_price)}</td>
           <td>{p.tp_price == null ? '—' : price(p.tp_price)}</td>
@@ -634,10 +634,10 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
     <section className="cards">
       <Card label="TT OPEN LEGS" value={configured ? mirror.openCount : '—'} sub={mirror.positionsHidden ? 'some position rows hidden by Tradetron' : 'reported by current API snapshot'} />
       <Card label="TT DEPLOYMENT P&L" value={mirror.reportedPnl === null ? '—' : money(mirror.reportedPnl)} sub="Tradetron-reported snapshot; not scanner ledger P&L" />
-      <Card label="TT OPEN ROW P&L SUM" value={mirror.openPnl === null ? '—' : money(mirror.openPnl)} sub="unreconciled sum of per-row API values; not booked profit" />
+      <Card label="TT OPEN P&L" value={mirror.openPnl === null ? '—' : money(mirror.openPnl)} sub="only when API exposes explicit open/M2M P&L fields" />
       <Card label="TT DEPLOYMENTS" value={mirror.deployments} sub="returned by read-only API" />
     </section>
-    {mirror.openPnl !== null && mirror.reportedPnl !== null && Math.abs(mirror.openPnl - mirror.reportedPnl) > Math.max(1, Math.abs(mirror.reportedPnl) * 0.1) ? <div className="lockedText apiStateWarn"><b>P&amp;L reconciliation warning:</b> the sum of open-row P&amp;L values differs materially from the deployment aggregate. Both are preserved as separate read-only API figures; neither is merged into the scanner's realized-trade ledger.</div> : null}
+    {mirror.openPnl !== null && mirror.reportedPnl !== null && Math.abs(mirror.openPnl - mirror.reportedPnl) > Math.max(1, Math.abs(mirror.reportedPnl) * 0.1) ? <div className="lockedText apiStateWarn"><b>P&amp;L reconciliation warning:</b> verified open/M2M rows and deployment aggregate differ materially. Both are preserved as separate read-only API figures; neither is merged into the scanner's realized-trade ledger.</div> : null}
     {deployments.length ? <div className="tablewrap"><table>
       <thead><tr><th>DEPLOYMENT</th><th>STATUS</th><th>MODE</th><th>BROKER</th><th>OPEN LEGS</th><th>REPORTED P&amp;L</th><th>CURRENCY</th><th>AS OF</th></tr></thead>
       <tbody>{deployments.map(row => <tr key={row.deployment_id}>
@@ -650,7 +650,7 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
     </table></div> : <div className="lockedText">No deployment snapshot is available yet. A successful API response with an empty positions array means no visible position rows; it does not create placeholder trades.</div>}
     <div className="panelTitle"><h3>Current Open Positions · Tradetron</h3></div>
     {mirror.openRows.length ? <div className="tablewrap"><table>
-      <thead><tr><th>DEPLOYMENT</th><th>SYMBOL</th><th>SIDE</th><th>QTY</th><th>ENTRY</th><th>LTP / MARK</th><th>VALUE</th><th>M2M / P&amp;L</th><th>STATUS</th></tr></thead>
+      <thead><tr><th>DEPLOYMENT</th><th>SYMBOL</th><th>SIDE</th><th>QTY</th><th>ENTRY</th><th>LTP / MARK</th><th>VALUE</th><th>API P&amp;L RAW (UNIT UNVERIFIED)</th><th>STATUS</th></tr></thead>
       <tbody>{mirror.openRows.map(row => <tr key={row.key}>
         <td>{row.deploymentName}<br/><small className="muted">ID {row.deploymentId ?? '—'}</small></td>
         <td className="symbol" title={row.rawSymbol}>{row.symbol}</td>
@@ -659,7 +659,7 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
         <td>{row.entryPrice === null ? '—' : price(row.entryPrice)}</td>
         <td>{row.markPrice === null ? '—' : price(row.markPrice)}</td>
         <td>{row.marketValue === null ? '—' : money(row.marketValue)}</td>
-        <td className={row.pnl === null ? 'muted' : num(row.pnl) >= 0 ? 'up' : 'down'}>{row.pnl === null ? '—' : money(row.pnl)}</td>
+        <td className={row.pnl === null ? 'muted' : 'mono'}>{row.pnl === null ? '—' : price(row.pnl)}</td>
         <td>{row.status}</td>
       </tr>)}</tbody>
     </table></div> : <div className="lockedText">
@@ -677,7 +677,7 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
         </tr>)}</tbody>
       </table></div>
     </details> : null}
-    <div className="lockedText"><b>Trade history / exit reconciliation:</b> {sync?.status === 'OK' ? 'position snapshot is syncing.' : 'position snapshot is not confirmed fresh.'} Developer API notifications below provide a read-only event timeline, but they are not converted to fill/trade rows. Actual per-trade entry/exit prices, fees and realized P&amp;L still require a verified trade-detail endpoint or authenticated fill data.</div>
+    <div className="lockedText"><b>Trade history / exit reconciliation:</b> {sync?.status === 'OK' ? 'position snapshot is syncing.' : 'position snapshot is not confirmed fresh.'} Developer API notifications below provide a read-only event timeline, but they are not converted to fill/trade rows. Actual per-trade entry/exit prices, fees and realized P&amp;L still require a verified trade-detail endpoint or authenticated fill data. Generic row-level “pnl” fields are displayed raw with no currency conversion and are not summed as open P&amp;L unless the API identifies them as M2M/unrealized P&amp;L.</div>
     <div className="panelTitle"><h3>Recent Tradetron P&amp;L History · 5-minute snapshots</h3></div>
     <div className="lockedText"><span>Stored separately from closed-trade ledger. Repeated polls update the same five-minute bucket; old snapshots are pruned after 90 days.</span></div>
     {pnlHistory.length ? <div className="tablewrap"><table><thead><tr><th>CAPTURED</th><th>DEPLOYMENT</th><th>REPORTED P&amp;L</th><th>OPEN / TOTAL</th><th>STATUS</th></tr></thead><tbody>{pnlHistory.slice(0, 36).map(row => <tr key={row.snapshot_id}><td>{row.captured_at ? new Date(row.captured_at).toLocaleString('en-IN') : '—'}</td><td>{row.deployment_name || row.deployment_id}<br/><small className="muted">ID {row.deployment_id}</small></td><td className={row.reported_pnl == null ? 'muted' : num(row.reported_pnl) >= 0 ? 'up' : 'down'}>{row.reported_pnl == null ? '—' : row.currency_code === 'USD' || !row.currency_code ? money(row.reported_pnl) : String(row.reported_pnl) + ' ' + row.currency_code}</td><td>{row.open_positions ?? '—'} / {row.total_positions ?? '—'}</td><td>{row.status || '—'}</td></tr>)}</tbody></table></div> : <div className="lockedText">No P&amp;L history snapshots recorded yet. The first bucket is written after the next successful Developer API sync once the new database migration is applied.</div>}
