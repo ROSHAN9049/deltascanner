@@ -21,10 +21,22 @@ const finiteNumber = value => {
   return Number.isFinite(result) ? result : null;
 };
 const safeIso = value => {
-  if (!value) return null;
-  const date = new Date(value);
+  if (value === null || value === undefined || String(value).trim() === '') return null;
+  const text = String(value).trim();
+  const numeric = Number(text);
+  const date = /^\d{10,13}$/.test(text) && Number.isFinite(numeric)
+    ? new Date(numeric < 1e12 ? numeric * 1000 : numeric)
+    : new Date(value);
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 };
+
+function redactSensitiveFields(value) {
+  if (Array.isArray(value)) return value.map(redactSensitiveFields);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => !/(secret|token|password|authorization|api.?key|credential)/i.test(key))
+    .map(([key, item]) => [key, redactSensitiveFields(item)]));
+}
 
 export function buildTradetronPnlHistoryRows(snapshots = [], capturedAt = new Date().toISOString()) {
   const capturedMs = Date.parse(capturedAt);
@@ -212,7 +224,7 @@ export class TradetronDeveloperApi {
           title: pickText(['title', 'subject', 'heading', 'name']) || null,
           description: pickText(['description', 'message', 'body', 'text', 'details', 'notification']) || null,
           event_at: eventTime,
-          raw: row,
+          raw: redactSensitiveFields(row),
           last_seen_at: capturedAt,
           updated_at: capturedAt
         };
