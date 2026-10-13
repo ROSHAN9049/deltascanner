@@ -66,13 +66,13 @@ function displaySymbol(value) {
   const raw = clean(value);
   if (!raw) return '';
 
-  // Tradetron Developer API rows use futures identifiers such as
-  // FUTCRYPTO_DIN-LINKUSD_31DEC2099_XX_0. Extract the exchange contract
-  // rather than displaying the full instrument identifier as the symbol.
-  const embeddedContract = raw.match(/(?:^|[_\\s-])DIN[-_]?([A-Z0-9]+)(?=[_\\s]|$)/i);
+  // Tradetron rows can identify futures with keys such as
+  // FUTCRYPTO_DIN-LINKUSD_31DEC2099_XX_0. Extract the Delta contract
+  // instead of showing the full futures identifier.
+  const embeddedContract = raw.match(/(?:^|[_ -])DIN[-_]?([A-Z0-9]+)(?=[_ ]|$)/i);
   if (embeddedContract) return embeddedContract[1].toUpperCase();
 
-  return raw.replace(/^DIN[-_]?/i, '').split(/[\\s_]/)[0].toUpperCase();
+  return raw.replace(/^DIN[-_]?/i, '').split(/[ _]/)[0].toUpperCase();
 }
 
 function hasPositionStatus(row) {
