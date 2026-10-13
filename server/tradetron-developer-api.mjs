@@ -24,9 +24,14 @@ const safeIso = value => {
   if (value === null || value === undefined || String(value).trim() === '') return null;
   const text = String(value).trim();
   const numeric = Number(text);
+  // Tradetron's `at` field is a UTC wall-clock string without a timezone.
+  // Make that assumption explicit rather than depending on the worker's TZ.
+  const explicitUtc = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(text)
+    ? text.replace(' ', 'T') + 'Z'
+    : value;
   const date = /^\d{10,13}$/.test(text) && Number.isFinite(numeric)
     ? new Date(numeric < 1e12 ? numeric * 1000 : numeric)
-    : new Date(value);
+    : new Date(explicitUtc);
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 };
 
@@ -208,7 +213,7 @@ export class TradetronDeveloperApi {
           .update(JSON.stringify(row))
           .digest('hex')).slice(0, 180);
         const eventTimeText = pickText([
-          'event_at', 'eventAt', 'created_at', 'createdAt', 'created', 'timestamp', 'time', 'date'
+          'event_at', 'eventAt', 'at', 'created_at', 'createdAt', 'created', 'timestamp', 'time', 'date'
         ]);
         const eventTime = eventTimeText ? safeIso(eventTimeText) : null;
         const deploymentId = pickText([
@@ -219,9 +224,9 @@ export class TradetronDeveloperApi {
           notification_id: notificationId,
           deployment_id: deploymentId || null,
           notification_type: pickText([
-            'notification_type', 'notificationType', 'event_type', 'eventType', 'type', 'category', 'action', 'status'
+            'notification_type', 'notificationType', 'event_type', 'eventType', 'type', 'sub_category', 'subCategory', 'category', 'action', 'status'
           ]) || null,
-          title: pickText(['title', 'subject', 'heading', 'name']) || null,
+          title: pickText(['title', 'subject', 'heading', 'name', 'sub_category', 'subCategory', 'module']) || null,
           description: pickText(['description', 'message', 'body', 'text', 'details', 'notification']) || null,
           event_at: eventTime,
           raw: redactSensitiveFields(row),
