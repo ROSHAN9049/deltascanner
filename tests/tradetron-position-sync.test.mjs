@@ -76,3 +76,12 @@ test('does not infer P&L by treating a missing value as zero', () => {
   assert.equal(summary.reportedPnl, null);
   assert.equal(summary.openPnl, null);
 });
+
+test('extracts Delta contract symbol from a Tradetron instrument identifier', () => {
+  const row = normalizeTradetronPosition({ instrument: 'FUTCRYPTO_DIN-LINKUSD_31DEC2099_XX_0', quantity: -1, ltp: 13.038, pnl: -0.04, open: true }, { deployment_id: 7 });
+  assert.equal(row.symbol, 'LINKUSD');
+  assert.equal(row.side, 'SELL');
+  assert.equal(row.open, true);
+  assert.equal(row.markPrice, 13.038);
+  assert.equal(row.pnl, -0.04);
+});
