@@ -56,17 +56,29 @@ export default async function handler(req, res) {
     // the private snapshot tables for unauthenticated dashboard requests.
     const privateDataAuthorized = Boolean(CONFIG.engineSecret) &&
       req.headers['x-engine-secret'] === CONFIG.engineSecret;
-    const [developerSyncRows, developerSnapshotRows] = privateDataAuthorized
+    const [
+      developerSyncRows,
+      developerSnapshotRows,
+      developerNotificationSyncRows,
+      developerNotificationRows,
+      developerPnlHistoryRows
+    ] = privateDataAuthorized
       ? await Promise.all([
           select('dd_tradetron_developer_sync_state', 'id=eq.1&select=*').catch(() => []),
-          select('dd_tradetron_developer_snapshots', 'order=deployment_id.asc').catch(() => [])
+          select('dd_tradetron_developer_snapshots', 'order=deployment_id.asc').catch(() => []),
+          select('dd_tradetron_developer_notification_sync_state', 'id=eq.1&select=*').catch(() => []),
+          select('dd_tradetron_developer_notifications', 'order=event_at.desc.nullslast,updated_at.desc&limit=200').catch(() => []),
+          select('dd_tradetron_developer_pnl_history', 'order=captured_at.desc&limit=200').catch(() => [])
         ])
-      : [[], []];
+      : [[], [], [], [], []];
     const tradetronDeveloperSync = developerSyncRows?.[0] || null;
     const knownDeploymentIds = tradetronDeveloperSync?.details?.deploymentIds;
     const tradetronDeveloperSnapshots = Array.isArray(knownDeploymentIds)
       ? (developerSnapshotRows || []).filter(row => knownDeploymentIds.includes(Number(row.deployment_id)))
       : (developerSnapshotRows || []);
+    const tradetronDeveloperNotificationSync = developerNotificationSyncRows?.[0] || null;
+    const tradetronDeveloperNotifications = developerNotificationRows || [];
+    const tradetronDeveloperPnlHistory = developerPnlHistoryRows || [];
     const routeTable = Array.isArray(CONFIG.tradetronBridgeRoutes) ? CONFIG.tradetronBridgeRoutes : [];
     const legacyFuturesConfigured = CONFIG.tradetronBridgeEnabled && !!CONFIG.tradetronAuthToken;
     const localSymbols = routeTable.length
@@ -116,7 +128,10 @@ export default async function handler(req, res) {
       tradetronEvents: tradetronEvents || [],
       tradetronDeveloperDataProtected: !privateDataAuthorized,
       tradetronDeveloperSync,
-      tradetronDeveloperSnapshots
+      tradetronDeveloperSnapshots,
+      tradetronDeveloperNotificationSync,
+      tradetronDeveloperNotifications,
+      tradetronDeveloperPnlHistory
     });
   } catch (e) {
     return res.status(503).json({ success: false, environment: CONFIG.environment, error: e.message });
