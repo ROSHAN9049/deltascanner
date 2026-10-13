@@ -2305,6 +2305,7 @@ export class DeltaEngine {
     // Only report contracts that are both configured on the Tradetron bridge
     // and present in the currently refreshed live market universe.
     const supportedSymbols = configuredSymbols.filter(symbol => this.tickerMap.has(symbol));
+    const unavailableMarketSymbols = configuredSymbols.filter(symbol => !this.tickerMap.has(symbol));
     const configuredBridgeCount = !bridgeConfigured ? 0 : (bridgeRoutes.length
       ? bridgeRoutes.filter(route => route.authToken && this.tradetronRouteBridges.get(route.id)?.isConfigured()).length
       : 1);
@@ -2318,7 +2319,10 @@ export class DeltaEngine {
       tradetronRouting: {
         bridgeConfigured,
         configuredRoutes: configuredBridgeCount,
+        configuredSymbols,
         supportedSymbols,
+        unavailableMarketSymbols,
+        marketSymbolCount: this.tickerMap.size,
         optionsRouteConfigured
       },
       tradetronDeveloperApi: {
