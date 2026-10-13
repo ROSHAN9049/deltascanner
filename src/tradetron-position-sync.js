@@ -142,11 +142,12 @@ export function summarizeTradetronSnapshots(deployments = []) {
   const reportedOpenCounts = rows
     .map(row => numericValue(row?.open_positions))
     .filter(value => value !== null && value >= 0);
-  const openCount = reportedOpenCounts.length
+  const reportedOpenCount = reportedOpenCounts.length
     ? reportedOpenCounts.reduce((total, value) => total + value, 0)
-    : openRows.length;
+    : 0;
+  const openCount = Math.max(reportedOpenCount, openRows.length);
   const pnlValues = rows.map(row => numericValue(row?.pnl)).filter(value => value !== null);
-  const reportedPnl = pnlValues.length === rows.filter(row => row?.pnl !== null && row?.pnl !== undefined).length && pnlValues.length
+  const reportedPnl = rows.length > 0 && pnlValues.length === rows.length
     ? pnlValues.reduce((total, value) => total + value, 0)
     : null;
   const openPnlValues = openRows.map(row => row.pnl);
