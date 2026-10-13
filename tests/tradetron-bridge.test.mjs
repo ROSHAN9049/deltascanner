@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { SIGNAL_RESERVATION_TTL_MS, TradetronBridge, withSignalReservations } from '../server/tradetron.js';
+import { buildTradetronPayload, isTradetronResponseAccepted, SIGNAL_RESERVATION_TTL_MS, TradetronBridge, withSignalReservations } from '../server/tradetron.js';
 import { isAuthenticatedWebhookRequest } from '../api/tradetron/webhook.js';
 
 async function withoutThreeSecondReset(fn) {
@@ -15,6 +15,81 @@ async function withoutThreeSecondReset(fn) {
     globalThis.setTimeout = originalSetTimeout;
   }
 }
+
+test('Tradetron request body uses the exact unnumbered and numbered key/value contract', () => {
+  assert.deepEqual(buildTradetronPayload('unit-test-token', [
+    ['AAPLXUSD_el', '1'],
+    ['AAPLXUSD_ep', 345],
+    ['AAPLXUSD_sl', 340],
+    ['AAPLXUSD_tp', 350]
+  ]), {
+    'auth-token': 'unit-test-token',
+    key: 'AAPLXUSD_el',
+    value: '1',
+    key1: 'AAPLXUSD_ep',
+    value1: '345',
+    key2: 'AAPLXUSD_sl',
+    value2: '340',
+    key3: 'AAPLXUSD_tp',
+    value3: '350'
+  });
+  assert.throws(() => buildTradetronPayload('', [['AAPLXUSD_el', '1']]), /auth token is missing/);
+  assert.throws(() => buildTradetronPayload('unit-test-token', []), /at least one variable pair/);
+});
+
+test('Tradetron response is successful only with an explicit acknowledgement', () => {
+  assert.equal(isTradetronResponseAccepted(200, 'Ok'), true);
+  assert.equal(isTradetronResponseAccepted(200, '{"success":true}'), true);
+  assert.equal(isTradetronResponseAccepted(200, 'Invalid token'), false);
+  assert.equal(isTradetronResponseAccepted(200, ''), false);
+  assert.equal(isTradetronResponseAccepted(429, 'Ok'), false);
+});
+
+test('sendPairs posts numbered JSON pairs and rejects HTTP 200 error text', async () => {
+  const bridge = new TradetronBridge({
+    enabled: true,
+    authToken: 'unit-test-token',
+    supportedSymbols: ['AAPLXUSD']
+  });
+  bridge.baseUrl = 'https://tradetron.test';
+  const originalFetch = globalThis.fetch;
+  let capturedPayload = null;
+  let calls = 0;
+  try {
+    globalThis.fetch = async (url, init) => {
+      calls += 1;
+      assert.equal(url, 'https://tradetron.test/api?');
+      capturedPayload = JSON.parse(init.body);
+      return { ok: true, status: 200, text: async () => 'Ok' };
+    };
+    const accepted = await bridge.sendPairs([['AAPLXUSD_el', '1'], ['AAPLXUSD_ep', 345]]);
+    assert.equal(accepted.ok, true);
+    assert.deepEqual(capturedPayload, {
+      'auth-token': 'unit-test-token',
+      key: 'AAPLXUSD_el',
+      value: '1',
+      key1: 'AAPLXUSD_ep',
+      value1: '345'
+    });
+
+    calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      return { ok: true, status: 200, text: async () => 'Request rejected: unit-test-token' };
+    };
+    await assert.rejects(
+      bridge.sendPairs([['AAPLXUSD_el', '1']]),
+      error => {
+        assert.match(error.message, /did not confirm acceptance/);
+        assert.equal(error.message.includes('unit-test-token'), false);
+        return true;
+      }
+    );
+    assert.equal(calls, 1, 'a 200 error response must not be retried as though it were transient');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 function makeBridge(supportedSymbols = ['BTCUSD', 'ETHUSD']) {
   const bridge = new TradetronBridge({
