@@ -1226,18 +1226,29 @@ export class DeltaEngine {
             bridge_accepted: true,
             bridge_response: result.response || null,
             bridge_trigger_key: result.triggerKey || null,
+            bridge_entry_variable_key: result.entryVariableKey || null,
+            bridge_global_trigger_key: result.globalTriggerKey || result.triggerKey || null,
+            bridge_variable_keys: Array.isArray(result.payloadVariableKeys) ? result.payloadVariableKeys : [],
+            bridge_variable_count: Number(result.payloadVariableCount) || null,
             bridge_dynamic: result.dynamic === true
           }
         });
 
         await this.log('INFO', 'Tradetron production signal emitted; Delta direct entry skipped', {
           symbol: signal.symbol, strategy, side: signal.side, qty: gate.size.qty,
-          entry: signal.price, sl: signal.sl, tp: signal.tp, executionId
+          entry: signal.price, sl: signal.sl, tp: signal.tp, executionId,
+          entryVariableKey: result.entryVariableKey || null,
+          globalTriggerKey: result.globalTriggerKey || result.triggerKey || null,
+          payloadVariableCount: Number(result.payloadVariableCount) || null,
+          payloadVariableKeys: Array.isArray(result.payloadVariableKeys) ? result.payloadVariableKeys : []
         });
         return true;
       } catch (e) {
         await this.log('ERROR', 'Tradetron bridge exception; direct Delta entry blocked', {
-          symbol: signal.symbol, strategy, side: signal.side, error: e.message
+          symbol: signal.symbol, strategy, side: signal.side,
+          entryVariableKey: String(signal.symbol || '').trim().toUpperCase() + (signal.side === 'BUY' ? '_el' : '_es'),
+          globalTriggerKey: signal.side === 'BUY' ? 'api_buy' : 'api_sell',
+          error: e.message
         });
         return false;
       }
