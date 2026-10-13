@@ -85,3 +85,35 @@ test('extracts Delta contract symbol from a Tradetron instrument identifier', ()
   assert.equal(row.markPrice, 13.038);
   assert.equal(row.pnl, -0.04);
 });
+
+test('generic row-level pnl is not treated as verified open M2M or summed into open P&L', () => {
+  const summary = summarizeTradetronSnapshots([{
+    deployment_id: 999273394,
+    positions_hidden: false,
+    open_positions: 2,
+    pnl: 19.58,
+    currency_code: 'USD',
+    positions: [
+      { instrument: 'FUTCRYPTO_DIN-AMDBUSD_31DEC2099_XX_0', quantity: -2, ltp: 588.4, pnl: 56.78, open: true },
+      { instrument: 'FUTCRYPTO_DIN-GOOGLXUSD_31DEC2099_XX_0', quantity: 5, ltp: 354.1, pnl: 18.25, open: true }
+    ]
+  }]);
+
+  assert.equal(summary.openRows.length, 2);
+  assert.equal(summary.openRows[0].pnl, 56.78);
+  assert.equal(summary.openRows[0].pnlSource, 'pnl');
+  assert.equal(summary.openPnl, null);
+  assert.equal(summary.reportedPnl, 19.58);
+});
+
+test('explicit M2M fields remain eligible for open P&L aggregation', () => {
+  const summary = summarizeTradetronSnapshots([{
+    deployment_id: 7,
+    open_positions: 2,
+    positions: [
+      { instrument: 'FUTCRYPTO_DIN-LINKUSD_31DEC2099_XX_0', quantity: -1, m2m: 1.5, open: true },
+      { instrument: 'FUTCRYPTO_DIN-NEARUSD_31DEC2099_XX_0', quantity: -3, unrealized_pnl: -0.5, open: true }
+    ]
+  }]);
+  assert.equal(summary.openPnl, 1);
+});
