@@ -213,7 +213,7 @@ export class TradetronBridge {
     ];
     const result=await this.sendPairs(writes);
     setTimeout(()=>this.sendPairs([[selected+'_el',0],[selected+'_es',0],[triggerKey,0],['tt_buy',0],['tt_sell',0]]).catch(()=>{}),3000);
-    return {ok:!!result.ok,symbol:selected,side:normalizedSide,qty:quantity,executionId:execution,triggerKey,actionCode:normalizedSide==='BUY'?1:3,response:result.body,dynamic:true,engine,contract:'legacy_symbol_el_es+dynamic_tt_v3'};
+    return {ok:!!result.ok,symbol:selected,side:normalizedSide,qty:quantity,executionId:execution,triggerKey,entryVariableKey:selected+(normalizedSide==='BUY'?'_el':'_es'),globalTriggerKey:triggerKey,actionCode:normalizedSide==='BUY'?1:3,response:result.body,payloadVariableKeys:writes.map(([key])=>key),payloadVariableCount:writes.length,dynamic:true,engine,contract:'legacy_symbol_el_es+dynamic_tt_v3'};
   }
 
   async emitExit({ symbol, side, reason, executionId }) {
