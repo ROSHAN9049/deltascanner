@@ -5,7 +5,7 @@ import { DeltaAdapter } from './delta-adapter.mjs';
 import { analyse, analyseOption } from './strategy.mjs';
 import * as db from '../server/db.js';
 import { SIGNAL_RESERVATION_TTL_MS, TradetronBridge, withSignalReservations } from '../server/tradetron.js';
-import { TradetronDeveloperApi } from '../server/tradetron-developer-api.mjs';
+import { buildTradetronPnlHistoryRows, TradetronDeveloperApi } from '../server/tradetron-developer-api.mjs';
 import { createGridState, evaluateGridTick } from './grid-strategy.mjs';
 import { CANDLE_WARMUP_BATCH_SIZE, CANDLE_WARMUP_RETRY_MS, planCandleWarmup } from './candle-warmup.mjs';
 
@@ -49,6 +49,7 @@ export class DeltaEngine {
     this.tradetron = new TradetronBridge();
     this.tradetronDeveloperApi = new TradetronDeveloperApi();
     this.lastTradetronDeveloperSyncAt = 0;
+    this.lastTradetronDeveloperPnlCleanupAt = 0;
     this.lastSignalReservationExpiryAt = 0;
     this.tradetronDeveloperSyncInFlight = null;
     this.tradetronDeveloperApiStatus = CONFIG.tradetronDeveloperApiKey ? 'WAITING_FOR_FIRST_SYNC' : 'NOT_CONFIGURED';
@@ -129,6 +130,23 @@ export class DeltaEngine {
         if (Array.isArray(result.snapshots) && result.snapshots.length) {
           await db.upsertMany('dd_tradetron_developer_snapshots', result.snapshots, 'deployment_id');
         }
+        // Keep an account-level P&L trail without inventing individual fills.
+        // Repeated polls within a five-minute window update one bucket per deployment.
+        try {
+          const historyRows = buildTradetronPnlHistoryRows(result.snapshots, attemptedAt);
+          if (historyRows.length) {
+            await db.upsertMany('dd_tradetron_developer_pnl_history', historyRows, 'snapshot_id');
+          }
+          if (Date.now() - this.lastTradetronDeveloperPnlCleanupAt > 86400000) {
+            this.lastTradetronDeveloperPnlCleanupAt = Date.now();
+            const cutoff = new Date(Date.now() - 90 * 86400000).toISOString();
+            await db.remove('dd_tradetron_developer_pnl_history', 'captured_at=lt.' + encodeURIComponent(cutoff));
+          }
+        } catch (historyError) {
+          await this.log('WARN', 'Tradetron P&L history sampling failed; current snapshots remain independent', {
+            error: String(historyError?.message || historyError).slice(0, 240)
+          });
+        }
         const stateRow = {
           id: 1,
           status: result.status,
@@ -154,6 +172,43 @@ export class DeltaEngine {
           failedDeploymentIds: result.failedDeploymentIds,
           error: result.error
         });
+
+        // The notifications endpoint is read-only and is persisted separately
+        // from authenticated fill events. Notification text is never promoted
+        // to a dd_positions/dd_trades ledger row.
+        try {
+          const notificationResult = await this.tradetronDeveloperApi.listNotifications();
+          if (notificationResult.notifications.length) {
+            await db.upsertMany('dd_tradetron_developer_notifications', notificationResult.notifications, 'notification_id');
+          }
+          await db.upsert('dd_tradetron_developer_notification_sync_state', {
+            id: 1,
+            status: 'OK',
+            last_attempt_at: attemptedAt,
+            last_success_at: notificationResult.capturedAt,
+            notification_count: notificationResult.returnedCount,
+            last_error: null,
+            updated_at: iso()
+          }, 'id');
+          await this.log('INFO', 'Tradetron Developer API notifications sync', {
+            returnedCount: notificationResult.returnedCount,
+            storedCount: notificationResult.storedCount
+          });
+        } catch (notificationError) {
+          const cleanMessage = String(notificationError?.message || 'Tradetron Developer API notifications sync failed').slice(0, 300);
+          await db.upsert('dd_tradetron_developer_notification_sync_state', {
+            id: 1,
+            status: 'ERROR',
+            last_attempt_at: attemptedAt,
+            last_error: cleanMessage,
+            updated_at: iso()
+          }, 'id').catch(() => {});
+          await this.log('WARN', 'Tradetron Developer API notifications sync failed', {
+            code: notificationError?.code || null,
+            status: notificationError?.status || null,
+            error: cleanMessage
+          });
+        }
       } catch (error) {
         this.tradetronDeveloperApiStatus = 'ERROR';
         const cleanMessage = String(error?.message || 'Tradetron Developer API sync failed').slice(0, 300);

@@ -1,7 +1,9 @@
+import crypto from 'node:crypto';
 import { CONFIG } from './config.js';
 
 const MAX_DEPLOYMENT_PAGES = 2;
 const MAX_DEPLOYMENTS_PER_SYNC = 8;
+const MAX_NOTIFICATIONS_PER_SYNC = 100;
 
 export class TradetronDeveloperApiError extends Error {
   constructor(message, { status = null, code = 'API_ERROR', retryable = false } = {}) {
@@ -19,10 +21,56 @@ const finiteNumber = value => {
   return Number.isFinite(result) ? result : null;
 };
 const safeIso = value => {
-  if (!value) return null;
-  const date = new Date(value);
+  if (value === null || value === undefined || String(value).trim() === '') return null;
+  const text = String(value).trim();
+  const numeric = Number(text);
+  const date = /^\d{10,13}$/.test(text) && Number.isFinite(numeric)
+    ? new Date(numeric < 1e12 ? numeric * 1000 : numeric)
+    : new Date(value);
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 };
+
+function redactSensitiveFields(value) {
+  if (Array.isArray(value)) return value.map(redactSensitiveFields);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => !/(secret|token|password|authorization|api.?key|credential)/i.test(key))
+    .map(([key, item]) => [key, redactSensitiveFields(item)]));
+}
+
+export function buildTradetronPnlHistoryRows(snapshots = [], capturedAt = new Date().toISOString()) {
+  const capturedMs = Date.parse(capturedAt);
+  if (!Number.isFinite(capturedMs)) return [];
+  // Store one observation per 5-minute bucket. Repeated one-minute polling
+  // refreshes the same bucket instead of producing an unbounded duplicate log.
+  const bucketMs = Math.floor(capturedMs / 300000) * 300000;
+  const bucketAt = new Date(bucketMs).toISOString();
+  return (Array.isArray(snapshots) ? snapshots : []).flatMap(snapshot => {
+    const id = finiteNumber(snapshot?.deployment_id);
+    if (!Number.isSafeInteger(id) || id <= 0) return [];
+    return [{
+      snapshot_id: id + ':' + bucketMs,
+      deployment_id: id,
+      deployment_name: String(snapshot.deployment_name || ('Deployment ' + id)).slice(0, 240),
+      captured_at: bucketAt,
+      reported_pnl: finiteNumber(snapshot.pnl),
+      open_positions: finiteNumber(snapshot.open_positions),
+      total_positions: finiteNumber(snapshot.total_positions),
+      currency_code: snapshot.currency_code == null ? null : String(snapshot.currency_code).slice(0, 12),
+      status: snapshot.status == null ? null : String(snapshot.status).slice(0, 80),
+      raw_summary: {
+        deployment_id: id,
+        deployment_name: String(snapshot.deployment_name || ('Deployment ' + id)).slice(0, 240),
+        pnl: finiteNumber(snapshot.pnl),
+        open_positions: finiteNumber(snapshot.open_positions),
+        total_positions: finiteNumber(snapshot.total_positions),
+        currency_code: snapshot.currency_code == null ? null : String(snapshot.currency_code).slice(0, 12),
+        status: snapshot.status == null ? null : String(snapshot.status).slice(0, 80),
+        as_of: safeIso(snapshot.as_of)
+      }
+    }];
+  });
+}
 
 export class TradetronDeveloperApi {
   constructor({
@@ -47,7 +95,12 @@ export class TradetronDeveloperApi {
         code: 'NOT_CONFIGURED'
       });
     }
-    if (!String(path).startsWith('/me/deployments')) {
+    const requestedPath = String(path);
+    const allowedPath = requestedPath === '/me/notifications' ||
+      requestedPath === '/me/deployments' ||
+      /^\/me\/deployments\?page=\d+$/.test(requestedPath) ||
+      /^\/me\/deployments\/\d+\/positions$/.test(requestedPath);
+    if (!allowedPath) {
       throw new TradetronDeveloperApiError('Unsupported Tradetron Developer API path', { code: 'INVALID_PATH' });
     }
 
@@ -108,6 +161,81 @@ export class TradetronDeveloperApi {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  async listNotifications() {
+    const data = await this.get('/me/notifications');
+    const notificationRows = [
+      Array.isArray(data) ? data : null,
+      Array.isArray(data?.notifications) ? data.notifications : null,
+      Array.isArray(data?.items) ? data.items : null,
+      Array.isArray(data?.results) ? data.results : null,
+      Array.isArray(data?.data) ? data.data : null,
+      Array.isArray(data?.data?.notifications) ? data.data.notifications : null,
+      Array.isArray(data?.data?.items) ? data.data.items : null,
+      Array.isArray(data?.result?.notifications) ? data.result.notifications : null
+    ].find(Array.isArray);
+
+    if (!notificationRows) {
+      throw new TradetronDeveloperApiError('Notification response did not contain a verified notifications array', {
+        code: 'INVALID_NOTIFICATIONS'
+      });
+    }
+
+    const capturedAt = new Date().toISOString();
+    const notifications = notificationRows
+      .slice(0, MAX_NOTIFICATIONS_PER_SYNC)
+      .filter(row => row && typeof row === 'object' && !Array.isArray(row))
+      .map(row => {
+        const records = [row, row.notification, row.data].filter(
+          value => value && typeof value === 'object' && !Array.isArray(value)
+        );
+        const pickText = keys => {
+          for (const record of records) {
+            for (const key of keys) {
+              const value = record?.[key];
+              if (['string', 'number', 'boolean'].includes(typeof value) && String(value).trim()) {
+                return String(value).trim();
+              }
+            }
+          }
+          return '';
+        };
+        const sourceId = pickText([
+          'notification_id', 'notificationId', 'event_id', 'eventId', 'id', 'uuid', 'guid'
+        ]);
+        const notificationId = (sourceId || 'hash-' + crypto.createHash('sha256')
+          .update(JSON.stringify(row))
+          .digest('hex')).slice(0, 180);
+        const eventTimeText = pickText([
+          'event_at', 'eventAt', 'created_at', 'createdAt', 'created', 'timestamp', 'time', 'date'
+        ]);
+        const eventTime = eventTimeText ? safeIso(eventTimeText) : null;
+        const deploymentId = pickText([
+          'deployment_id', 'deploymentId', 'deployed_strategy_id', 'deployedStrategyId'
+        ]);
+
+        return {
+          notification_id: notificationId,
+          deployment_id: deploymentId || null,
+          notification_type: pickText([
+            'notification_type', 'notificationType', 'event_type', 'eventType', 'type', 'category', 'action', 'status'
+          ]) || null,
+          title: pickText(['title', 'subject', 'heading', 'name']) || null,
+          description: pickText(['description', 'message', 'body', 'text', 'details', 'notification']) || null,
+          event_at: eventTime,
+          raw: redactSensitiveFields(row),
+          last_seen_at: capturedAt,
+          updated_at: capturedAt
+        };
+      });
+
+    return {
+      notifications,
+      returnedCount: notificationRows.length,
+      storedCount: notifications.length,
+      capturedAt
+    };
   }
 
   async listDeployments() {

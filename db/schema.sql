@@ -346,6 +346,57 @@ create table if not exists public.dd_tradetron_developer_sync_state (
 );
 insert into public.dd_tradetron_developer_sync_state(id, status) values (1, 'NOT_CONFIGURED') on conflict (id) do nothing;
 
+create table if not exists public.dd_tradetron_developer_notifications (
+  notification_id text primary key,
+  deployment_id text,
+  notification_type text,
+  title text,
+  description text,
+  event_at timestamptz,
+  raw jsonb not null default '{}'::jsonb,
+  last_seen_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists dd_tradetron_developer_notifications_event_idx on public.dd_tradetron_developer_notifications(event_at desc, updated_at desc);
+create index if not exists dd_tradetron_developer_notifications_deployment_idx on public.dd_tradetron_developer_notifications(deployment_id, event_at desc);
+
+create table if not exists public.dd_tradetron_developer_notification_sync_state (
+  id integer primary key check (id = 1),
+  status text not null default 'NOT_CONFIGURED',
+  last_attempt_at timestamptz,
+  last_success_at timestamptz,
+  notification_count integer not null default 0,
+  last_error text,
+  updated_at timestamptz not null default now()
+);
+insert into public.dd_tradetron_developer_notification_sync_state(id, status) values (1, 'NOT_CONFIGURED') on conflict (id) do nothing;
+
+create table if not exists public.dd_tradetron_developer_pnl_history (
+  snapshot_id text primary key,
+  deployment_id bigint not null,
+  deployment_name text not null,
+  captured_at timestamptz not null,
+  reported_pnl numeric,
+  open_positions integer,
+  total_positions integer,
+  currency_code text,
+  status text,
+  raw_summary jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+create index if not exists dd_tradetron_developer_pnl_history_capture_idx on public.dd_tradetron_developer_pnl_history(captured_at desc);
+create index if not exists dd_tradetron_developer_pnl_history_deployment_idx on public.dd_tradetron_developer_pnl_history(deployment_id, captured_at desc);
+
+alter table public.dd_tradetron_developer_notifications enable row level security;
+alter table public.dd_tradetron_developer_notification_sync_state enable row level security;
+alter table public.dd_tradetron_developer_pnl_history enable row level security;
+revoke all on table public.dd_tradetron_developer_notifications from anon, authenticated;
+revoke all on table public.dd_tradetron_developer_notification_sync_state from anon, authenticated;
+revoke all on table public.dd_tradetron_developer_pnl_history from anon, authenticated;
+grant all on table public.dd_tradetron_developer_notifications to service_role;
+grant all on table public.dd_tradetron_developer_notification_sync_state to service_role;
+grant all on table public.dd_tradetron_developer_pnl_history to service_role;
+
 create table if not exists public.dd_daily_pnl (
   trade_date date primary key,
   realized numeric not null default 0,
