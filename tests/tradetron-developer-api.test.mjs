@@ -130,6 +130,22 @@ test('reads account notifications through the documented read-only endpoint', as
   assert.equal(listed.notifications[0].notification_type, 'STATUS_CHANGE');
   assert.match(listed.notifications[0].description, /Live-Tranching to Exited/);
   assert.equal(listed.notifications[0].event_at, '2026-10-13T04:21:29.000Z');
+
+  const numericTimeApi = new TradetronDeveloperApi({
+    apiKey: 'ttk_test_only',
+    fetchImpl: async () => response({ success: true, data: { notifications: [{
+      id: 919,
+      created_at: 1791865289,
+      title: 'Status notice',
+      secret_token: 'must-not-be-persisted',
+      details: { Authorization: 'also-must-not-be-persisted', safe: 'ok' }
+    }] } })
+  });
+  const numericTime = await numericTimeApi.listNotifications();
+  assert.equal(numericTime.notifications[0].event_at, '2026-10-12T22:21:29.000Z');
+  assert.equal('secret_token' in numericTime.notifications[0].raw, false);
+  assert.equal('Authorization' in numericTime.notifications[0].raw.details, false);
+  assert.equal(numericTime.notifications[0].raw.details.safe, 'ok');
 });
 
 test('notification polling fails closed when response has no known list shape', async () => {
