@@ -1,6 +1,6 @@
 const POSITION_SYMBOL_KEYS = [
   'instrument_symbol', 'instrumentSymbol', 'trading_symbol', 'tradingSymbol',
-  'tradingsymbol', 'contract_symbol', 'contractSymbol', 'symbol', 'asset', 'name'
+  'tradingsymbol', 'contract_symbol', 'contractSymbol', 'instrument', 'symbol', 'asset', 'name'
 ];
 const POSITION_QTY_KEYS = [
   'net_quantity', 'netQuantity', 'net_qty', 'netQty', 'signed_position_size',
@@ -65,7 +65,14 @@ function booleanValue(value) {
 function displaySymbol(value) {
   const raw = clean(value);
   if (!raw) return '';
-  return raw.replace(/^DIN[-_]?/i, '').split(/\s+/)[0].toUpperCase();
+
+  // Tradetron Developer API rows use futures identifiers such as
+  // FUTCRYPTO_DIN-LINKUSD_31DEC2099_XX_0. Extract the exchange contract
+  // rather than displaying the full instrument identifier as the symbol.
+  const embeddedContract = raw.match(/(?:^|[_\\s-])DIN[-_]?([A-Z0-9]+)(?=[_\\s]|$)/i);
+  if (embeddedContract) return embeddedContract[1].toUpperCase();
+
+  return raw.replace(/^DIN[-_]?/i, '').split(/[\\s_]/)[0].toUpperCase();
 }
 
 function hasPositionStatus(row) {
