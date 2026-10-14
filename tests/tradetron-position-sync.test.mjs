@@ -222,6 +222,23 @@ test('hidden or unreconciled open position counts fail closed', () => {
   }).reason, 'OPEN_POSITION_COUNT_UNRECONCILED');
 });
 
+test('reported open-leg count must exactly match normalized open snapshot rows', () => {
+  const fixture = freshSnapshotFixture();
+  const oneOpenRow = fixture.deployments[0];
+  assert.equal(buildTradetronSnapshotRiskState({
+    ...fixture,
+    deployments: [{ ...oneOpenRow, open_positions: 0 }]
+  }).reason, 'OPEN_POSITION_COUNT_UNRECONCILED');
+  assert.equal(buildTradetronSnapshotRiskState({
+    ...fixture,
+    deployments: [{ ...oneOpenRow, open_positions: 2 }]
+  }).reason, 'OPEN_POSITION_COUNT_UNRECONCILED');
+  assert.equal(buildTradetronSnapshotRiskState({
+    ...fixture,
+    deployments: [{ ...oneOpenRow, open_positions: undefined }]
+  }).reason, 'OPEN_POSITION_COUNT_UNAVAILABLE');
+});
+
 test('an open API row without signed quantity or side is not treated as a verified blocker', () => {
   const fixture = freshSnapshotFixture({
     deployments: [{
