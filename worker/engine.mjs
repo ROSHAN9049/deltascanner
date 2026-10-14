@@ -57,6 +57,7 @@ export class DeltaEngine {
     this.lastTradetronSnapshotRiskStateAt = 0;
     this.tradetronSnapshotRiskStateInFlight = null;
     this.lastTradetronEntrySafetyLogAt = 0;
+    this.lastGridEntrySafety = null;
     this.lastSignalReservationExpiryAt = 0;
     this.tradetronDeveloperSyncInFlight = null;
     this.tradetronDeveloperApiStatus = CONFIG.tradetronDeveloperApiKey ? 'WAITING_FOR_FIRST_SYNC' : 'NOT_CONFIGURED';
@@ -315,6 +316,14 @@ export class DeltaEngine {
     const snapshotEntryBlocked = snapshotSafety.configured && (
       snapshotSafety.trusted !== true || (snapshotPositionOnGridSymbol && !localGridPositionOpen)
     );
+    this.lastGridEntrySafety = {
+      configured: snapshotSafety.configured === true,
+      trusted: typeof snapshotSafety.trusted === 'boolean' ? snapshotSafety.trusted : null,
+      blocked: snapshotEntryBlocked,
+      reason: !snapshotSafety.configured ? 'DEVELOPER_API_NOT_CONFIGURED'
+        : snapshotSafety.trusted !== true ? snapshotSafety.reason
+          : snapshotPositionOnGridSymbol && !localGridPositionOpen ? 'SAME_SYMBOL_OPEN_POSITION' : null
+    };
     if (settings.grid_enabled === true && snapshotEntryBlocked) {
       const safetyKey = 'GRID-SNAPSHOT:' + symbol + ':' + (snapshotSafety.reason || 'SAME_SYMBOL_OPEN');
       if (!this.unsupportedBridgeWarnings.has(safetyKey)) {
@@ -2492,6 +2501,7 @@ export class DeltaEngine {
         ageMs: Number.isFinite(this.lastTradetronEntrySafety?.ageMs) ? this.lastTradetronEntrySafety.ageMs : null,
         openPositionCount: this.lastTradetronEntrySafety?.trusted === true ? this.lastTradetronEntrySafety.positionCount : null
       },
+      gridEntrySafety: this.lastGridEntrySafety || null,
       tradetronRouting: {
         bridgeConfigured,
         configuredRoutes: configuredBridgeCount,
