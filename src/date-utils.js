@@ -1,6 +1,8 @@
 /** Return a YYYY-MM-DD date key in India Standard Time (Asia/Kolkata). */
-export function indiaDateKey(value = new Date()) {
-  const date = value instanceof Date ? value : new Date(value);
+export function indiaDateKey(value) {
+  const input = arguments.length === 0 ? new Date() : value;
+  if (input === null || input === undefined || input === '') return null;
+  const date = input instanceof Date ? input : new Date(input);
   if (!Number.isFinite(date.getTime())) return null;
 
   const parts = new Intl.DateTimeFormat('en-CA', {
