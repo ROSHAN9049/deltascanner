@@ -117,3 +117,31 @@ test('explicit M2M fields remain eligible for open P&L aggregation', () => {
   }]);
   assert.equal(summary.openPnl, 1);
 });
+
+
+test('does not aggregate deployment P&L across unknown or mixed currencies', () => {
+  const unknownCurrencies = summarizeTradetronSnapshots([
+    { deployment_id: 1, pnl: 2.5, positions: [{ instrument: 'FUTCRYPTO_DIN-BTCUSD_31DEC2099_XX_0', quantity: 1, m2m: 1.25, open: true }] },
+    { deployment_id: 2, pnl: 3.5, positions: [{ instrument: 'FUTCRYPTO_DIN-ETHUSD_31DEC2099_XX_0', quantity: 1, m2m: 2.25, open: true }] }
+  ]);
+  assert.equal(unknownCurrencies.reportedPnl, null);
+  assert.equal(unknownCurrencies.reportedPnlCurrencyCode, null);
+  assert.equal(unknownCurrencies.openPnl, null);
+
+  const mixedCurrencies = summarizeTradetronSnapshots([
+    { deployment_id: 1, currency_code: 'USD', pnl: 2.5, positions: [] },
+    { deployment_id: 2, currency_code: 'INR', pnl: 3.5, positions: [] }
+  ]);
+  assert.equal(mixedCurrencies.reportedPnl, null);
+  assert.equal(mixedCurrencies.reportedPnlCurrencyCode, null);
+});
+
+test('aggregates multiple deployment P&L values only when the API declares one common currency', () => {
+  const summary = summarizeTradetronSnapshots([
+    { deployment_id: 1, currency_code: 'USD', pnl: 2.5, positions: [{ instrument: 'FUTCRYPTO_DIN-BTCUSD_31DEC2099_XX_0', quantity: 1, m2m: 1.25, open: true }] },
+    { deployment_id: 2, currency_code: 'USD', pnl: 3.5, positions: [{ instrument: 'FUTCRYPTO_DIN-ETHUSD_31DEC2099_XX_0', quantity: 1, m2m: 2.25, open: true }] }
+  ]);
+  assert.equal(summary.reportedPnl, 6);
+  assert.equal(summary.reportedPnlCurrencyCode, 'USD');
+  assert.equal(summary.openPnl, 3.5);
+});
