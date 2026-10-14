@@ -55,6 +55,19 @@ test('closed zero-quantity snapshot rows do not become open positions', () => {
   assert.equal(summary.reportedPnl, -46.52);
 });
 
+test('explicit closed status overrides a nonzero historical quantity', () => {
+  const summary = summarizeTradetronSnapshots([{
+    deployment_id: 7,
+    open_positions: 0,
+    positions: [
+      { instrument_symbol: 'DIN-AMDBUSD 31 DEC 2099 XX 0', quantity: 2, status: 'Exited', open: true },
+      { instrument_symbol: 'DIN-LINKUSD 31 DEC 2099 XX 0', quantity: -1, position_status: 'Closed' }
+    ]
+  }]);
+  assert.equal(summary.openCount, 0);
+  assert.equal(summary.openRows.length, 0);
+});
+
 test('deployment open count remains visible if individual positions are hidden', () => {
   const summary = summarizeTradetronSnapshots([{
     deployment_id: 7,
