@@ -46,8 +46,8 @@ function sampleState() {
         }
       }
     ],
-    signals: [{ symbol: 'BTCUSD', score: 90 }],
-    signalCache: [{ symbol: 'BTCUSD', score: 90 }],
+    signals: [{ symbol: 'BTCUSD', score: 90, qty_contracts: 2, notional: 50, risk_usd: 0.3, ready: true }],
+    signalCache: [{ symbol: 'BTCUSD', score: 90, qty_contracts: 2, notional: 50, risk_usd: 0.3, ready: true }],
     marketCache: [{ symbol: 'BTCUSD' }],
     optionCache: [],
     tradetronDeveloperDataProtected: false,
@@ -81,7 +81,13 @@ test('unauthenticated state hides private ledger and marks it protected, not emp
   assert.deepEqual(state.tradetronDeveloperSnapshots, []);
   assert.equal(state.tradetronDeveloperSync, null);
   assert.equal(state.signals[0].symbol, 'BTCUSD');
+  assert.equal(state.signals[0].qty_contracts, null);
+  assert.equal(state.signals[0].notional, null);
+  assert.equal(state.signals[0].risk_usd, null);
+  assert.equal(state.signals[0].ready, false);
+  assert.ok(state.signals[0].blocked_reasons.includes('Account sizing hidden; enter ENGINE_SECRET'));
   assert.equal(state.signalCache[0].score, 90);
+  assert.equal(state.signalCache[0].qty_contracts, null);
   assert.equal(state.logs.length, 1);
   assert.equal(state.logs[0].message, 'Worker heartbeat scan');
   assert.deepEqual(state.logs[0].data.tradetronRouting.unavailableMarketSymbols, ['MATICUSD']);
