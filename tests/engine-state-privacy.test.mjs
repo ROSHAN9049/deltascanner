@@ -21,6 +21,8 @@ function sampleState() {
     daily: { trade_date: '2026-10-14', pnl: 5 },
     signalOrders: [{ raw: { private: true } }],
     signalOrderCount: 1,
+    tradeRowCount: 1,
+    ledgerRowCount: 1,
     signalOrderStats: { total: 1, sent: 1, pending: 0, expired: 0, failed: 0, events: 0 },
     tradetronEvents: [{ event_id: 'x' }],
     logs: [
@@ -66,6 +68,8 @@ test('unauthenticated state hides private ledger and marks it protected, not emp
   assert.deepEqual(state.ledger, []);
   assert.equal(state.counters, null);
   assert.equal(state.daily, null);
+  assert.equal(state.tradeRowCount, null);
+  assert.equal(state.ledgerRowCount, null);
   assert.equal(state.settings.equity, null);
   assert.equal(state.settings.available_balance, null);
   assert.equal(state.settings.realized_pnl, null);
