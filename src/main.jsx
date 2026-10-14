@@ -8,6 +8,7 @@ import { summarizeTradetronSnapshots } from './tradetron-position-sync.js';
 import { DEFAULT_VISIBLE_MARKET_LIMIT, selectVisibleMarketRows, selectVisibleSignalRows } from './market-view.js';
 import { assessDeltaRange, fmtMultiplier, fmtPrice as fmtRawPrice, fmtRsi, safeNum } from './formatters.js';
 import { blockersDisplay, gateTooltip } from './gate-result.js';
+import { buildRiskGovernorGates } from './risk-governor.js';
 
 const tabs = [
   ['dashboard','Dashboard'],['rotation','Profit Rotation'],['momentum','Momentum'],['momentum-history','Mom History'],
@@ -261,7 +262,7 @@ function Dashboard({ market, settings, health, trades, positions, signals, signa
       <MarketTable market={market} signals={signals} routedSymbols={executionCoverage?.routedSymbols || []}/>
     </Panel>
     <section className="grid2">
-      <RiskGovernor signals={signals} health={health} positions={positions} onInspect={onInspect} inspect={inspect}/>
+      <RiskGovernor signals={signals} health={health} positions={positions} onInspect={onInspect} inspect={inspect} routedSymbols={executionCoverage?.routedSymbols || []} routeDataVerified={executionCoverage?.routingStatusSource === 'worker-heartbeat'}/>
       <Panel title={'Signal Stages · ' + visibleStageCoinCount + ' coins · WATCH → SETUP → CONFIRMED'}>
         <div className="marketCount">Momentum and Scalping status for the same top {visibleStageCoinCount} coins shown in the market table. Missing snapshots are marked NO DATA; the full background scanner remains active.</div>
         <div className="tablewrap"><table><thead><tr><th>COIN</th><th>ENG</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>QTY</th><th>NOTIONAL</th><th>RISK</th><th>READY</th><th>WHY BLOCKED</th></tr></thead><tbody>{visibleSignalStages.map(s => <tr key={s.symbol + ':' + s.strategy}><td className="symbol">{s.symbol}</td><td>{s.strategy === 'MOMENTUM' ? 'MOM' : 'SCALP'}</td><td>{s.snapshot_missing ? 'WATCH · NO DATA' : s.stage}</td><td className={s.side === 'BUY' ? 'up' : s.side === 'SELL' ? 'down' : 'muted'}>{s.side || '—'}</td><td><b>{s.snapshot_missing ? '—' : num(s.score).toFixed(0) + '/100'}</b></td><td>{s.snapshot_missing ? '—' : fmtQty(s.qty_contracts)}</td><td>{s.snapshot_missing ? '—' : money(s.notional)}</td><td>{s.snapshot_missing ? '—' : money(s.risk_usd)}</td><td className={s.snapshot_missing ? 'muted' : s.ready ? 'up' : 'down'}>{s.snapshot_missing ? '—' : s.ready ? 'YES' : 'NO'}</td><td className="blocker" title={Array.isArray(s.gate_results) ? s.gate_results.map(gateTooltip).join('\n') : 'Structured gate results are not supplied by the current worker; existing block reasons shown.'}>{s.snapshot_missing ? 'No signal snapshot available' : (Array.isArray(s.gate_results) ? blockersDisplay(s.gate_results) : fmtReasons(s.blocked_reasons))}</td></tr>)}</tbody></table></div>
@@ -309,31 +310,25 @@ function MarketTable({ market, signals, routedSymbols = [] }) {
   })}</tbody></table></div></>;
 }
 
-function RiskGovernor({ signals, health, positions, onInspect, inspect, scoreMin = 80 }) {
+function RiskGovernor({ signals, health, positions, onInspect, inspect, scoreMin = 80, routedSymbols = [], routeDataVerified = false }) {
   const selected = inspect;
   if (!selected) return <Panel title="Risk Governor"><div className="lockedText">No signal selected yet.</div></Panel>;
-  const details = typeof selected.details === 'string' ? (() => { try { return JSON.parse(selected.details); } catch { return {}; } })() : (selected.details || {});
-  const blockedText = Array.isArray(selected.blocked_reasons) ? selected.blocked_reasons.join(' · ') : String(selected.blocked_reasons || '');
-  const gate = reason => !blockedText.toLowerCase().includes(reason.toLowerCase());
-  const minimumScore = Math.max(80, num(scoreMin) || 80);
-  const btcOverride = details.btcRegimeOverride === true;
-  const gates = [
-    ['Signal CONFIRMED', selected.stage === 'CONFIRMED' && num(selected.score) >= minimumScore, selected.stage + ' · min ' + minimumScore],
-    ['Tradetron futures route', !blockedText.toLowerCase().includes('tradetron route unavailable'), blockedText.toLowerCase().includes('tradetron route unavailable') ? 'BLOCKED · symbol not mapped' : 'PASS'],
-    ['Fee + spread vs 1R', num(selected.fee_risk_ratio) <= (selected.strategy === 'SCALPING' ? 0.25 : 0.20), (num(selected.fee_risk_ratio)*100).toFixed(1)+'% of 1R'],
-    ['24h anti-chase', !selected.change_24h || (selected.side === 'BUY' ? num(selected.change_24h) <= 15 : selected.side === 'SELL' ? num(selected.change_24h) >= -15 : false), pct(selected.change_24h)],
-    ['5m range <= 3.00 ATR', num(selected.atr_5m) > 0 && gate('5m range'), 'range gate'],
-    ['EMA21 distance <= 2.50 ATR', !gate('Price > 2.50'), (selected.ema21 ? price(selected.ema21) : '—')],
-    ['BTC regime', !gate('BTC regime') || btcOverride, btcOverride ? 'ADAPTIVE OVERRIDE · local ' + num(details.localScore).toFixed(0) + '/95' : (selected.btc_trend || '—')],
-    ['Spread', !gate('Spread >'), num(selected.spread_pct).toFixed(3)+'% (max 0.35%)'],
-    ['Fresh closed candles', !gate('Fresh closed candles'), details.candlesFresh === false ? 'STALE' : 'FRESH'],
-    ['API / worker healthy', !!health?.workerLeaseActive && !!health?.exchangeHealthy && !!health?.tickFresh, health?.tickFresh ? 'PASS' : 'BLOCK'],
-    ['Duplicate symbol', !positions.some(p => p.symbol === selected.symbol), positions.some(p => p.symbol === selected.symbol) ? 'BLOCK' : 'PASS'],
-    ['Margin / min size', num(selected.qty_contracts) >= 1 && num(selected.notional) > 0, num(selected.qty_contracts) >= 1 ? 'PASS' : 'below minimum']
-  ];
-  return <Panel title="Risk Governor">
-    <div className="inspectRow"><label>Inspect coin<select value={selected.symbol} onChange={e => onInspect(e.target.value)}>{[...new Set(signals.map(x=>x.symbol))].slice(0,50).map(x => <option key={x}>{x}</option>)}</select></label><span>{selected.strategy} · {selected.side || 'NO SIDE'} · {num(selected.score).toFixed(0)}/100</span></div>
-    <div className="gates">{gates.map(([name,ok,detail]) => <div key={name}><b className={isPass(ok)?'pass':'block'}>{isPass(ok)?'PASS':'BLOCK'}</b><span>{name}</span><em>{detail}</em></div>)}</div>
+  const gates = buildRiskGovernorGates({
+    selected,
+    health,
+    positions,
+    routedSymbols,
+    routeDataVerified,
+    scoreMin
+  });
+  return <Panel title="Risk Governor · Evidence-Based Status">
+    <div className="inspectRow"><label>Inspect coin<select value={selected.symbol} onChange={e => onInspect(e.target.value)}>{[...new Set(signals.map(x=>x.symbol))].slice(0,50).map(x => <option key={x}>{x}</option>)}</select></label><span>{selected.strategy} · {selected.side || 'NO SIDE'} · {safeNum(selected.score) === null ? 'NO SCORE DATA' : safeNum(selected.score).toFixed(0) + '/100'}</span></div>
+    <div className="lockedText">PASS means the required observation is available and meets the displayed test. UNKNOWN means this view lacks enough evidence; UNKNOWN must not be treated as a pass.</div>
+    <div className="gates">{gates.map(gate => <div key={gate.gate}>
+      <b className={gate.result === 'PASS' ? 'pass' : gate.result === 'BLOCK' ? 'block' : 'unknown'}>{gate.result}</b>
+      <span>{gate.gate}</span>
+      <em title={gateTooltip(gate)}>{gateTooltip(gate).replace(gate.gate + ': ', '')}</em>
+    </div>)}</div>
   </Panel>;
 }
 
