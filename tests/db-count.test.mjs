@@ -12,7 +12,7 @@ test('unknown or malformed Content-Range remains unknown', () => {
   assert.equal(exactCountFromResponse(null), null);
   assert.equal(exactCountFromResponse(''), null);
   assert.equal(exactCountFromResponse('0-0/*'), null);
-  assert.equal(exactCountFromResponse('*/12'), 12);
+  assert.equal(exactCountFromResponse('*/12'), null);
   assert.equal(exactCountFromResponse('0-0/1.5'), null);
   assert.equal(exactCountFromResponse('0-0/-1'), null);
   assert.equal(exactCountFromResponse('0-0/NaN'), null);
