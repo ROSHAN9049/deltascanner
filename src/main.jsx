@@ -124,6 +124,8 @@ function App() {
     row?.message === 'Worker heartbeat scan' && row?.data?.tradetronRouting
   );
   const workerRouting = workerRoutingLog?.data?.tradetronRouting || null;
+  const workerEntrySafety = workerRoutingLog?.data?.tradetronEntrySafety || null;
+  const workerGridEntrySafety = workerRoutingLog?.data?.gridEntrySafety || null;
   const normalizeSymbols = value => Array.isArray(value)
     ? [...new Set(value.map(symbol => String(symbol || '').trim().toUpperCase()).filter(Boolean))]
     : [];
@@ -147,7 +149,9 @@ function App() {
       ? Math.round(Number(workerRoutingLog.data.signalReservationTtlMs) / 60000)
       : 15,
     routingStatusSource: 'worker-heartbeat',
-    routingObservedAt: workerRoutingLog?.created_at || null
+    routingObservedAt: workerRoutingLog?.created_at || null,
+    tradetronEntrySafety: workerEntrySafety,
+    gridEntrySafety: workerGridEntrySafety
   } : (state?.executionCoverage || null);
   return <div className="terminal">
     <header className="topbar">
@@ -176,7 +180,7 @@ function App() {
     {tab === 'momentum' && <EngineView engine="MOMENTUM" signals={signals} />}
     {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'scalping' && <EngineView engine="SCALPING" signals={signals} />}
-    {tab === 'grid' && <GridStrategy settings={settings} market={market} busy={busy} mutate={mutate} accountDataProtected={accountDataProtected} />}
+    {tab === 'grid' && <GridStrategy settings={settings} market={market} busy={busy} mutate={mutate} accountDataProtected={accountDataProtected} gridEntrySafety={executionCoverage?.gridEntrySafety || null} />}
     {tab === 'options' && <OptionsView signals={signals} settings={settings} optionCache={state?.optionCache || []} executionCoverage={state?.executionCoverage || null} />}
     {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'positions' && <><Positions rows={positions} tradetronDeployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} snapshotsLocked={state?.tradetronDeveloperDataProtected === true} accountDataProtected={accountDataProtected} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
@@ -208,6 +212,15 @@ function Dashboard({ market, settings, health, trades, positions, accountDataPro
     (count, deployment) => count + (Array.isArray(deployment?.positions) ? deployment.positions.length : 0), 0
   );
   const tradetronMirror = summarizeTradetronSnapshots(developerSnapshots);
+  const routeSafetyBlocked = executionCoverage?.tradetronEntrySafety?.configured === true && executionCoverage?.tradetronEntrySafety?.trusted !== true;
+  const routeSafetyReason = executionCoverage?.tradetronEntrySafety?.reason || 'SNAPSHOT_NOT_VERIFIED';
+  const eventPositionSymbols = (positions || []).filter(position => Math.abs(Number(position?.qty) || 0) > 0).map(position => String(position?.symbol || '').toUpperCase());
+  const openPositionSymbols = new Set([...eventPositionSymbols, ...tradetronMirror.openRows.map(position => String(position.symbol || '').toUpperCase())].filter(Boolean));
+  const snapshotPositionRows = tradetronMirror.openRows.map(position => ({
+    symbol: position.symbol, side: position.side, qty: Math.abs(Number(position.quantity) || 0),
+    strategy: 'TT_API_SNAPSHOT', origin: 'TRADETRON_API_SNAPSHOT', snapshot_only: true
+  }));
+  const riskGovernorPositions = [...(positions || []), ...snapshotPositionRows.filter(snapshot => !eventPositionSymbols.includes(snapshot.symbol))];
   const unavailableMarketSymbols = executionCoverage?.unavailableMarketSymbols || [];
   const polReplacementAvailable = unavailableMarketSymbols.includes('MATICUSD') &&
     (market || []).some(row => String(row.symbol || '').toUpperCase() === 'POLUSD') &&
@@ -267,10 +280,10 @@ function Dashboard({ market, settings, health, trades, positions, accountDataPro
       {unavailableMarketSymbols.length ? <div className="lockedText"><b>Configured but absent from the current live Delta market:</b> {unavailableMarketSymbols.join(', ')}.<br/><small>These are not worker-confirmed routes and must stay scan-only until the exchange exposes a matching live contract. {polReplacementAvailable ? 'POLUSD is present in the live market feed but is not configured for this Tradetron basket; add matching POLUSD_el / POLUSD_es variables and entry conditions in the linked Tradetron strategy before adding POLUSD to the worker allowlist.' : 'Any replacement symbol must first be configured in the linked Tradetron strategy variables and entry conditions; do not force-route a stale symbol.'}</small></div> : null}
     </Panel>
     <Panel title={'Full Delta Market Scanner · ' + (market?.length || 0) + ' live perpetuals · Signal Only'}>
-      <MarketTable market={market} signals={signals} routedSymbols={executionCoverage?.routedSymbols || []}/>
+      <MarketTable market={market} signals={signals} routedSymbols={executionCoverage?.routedSymbols || []} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols}/>
     </Panel>
     <section className="grid2">
-      <RiskGovernor signals={signals} health={health} positions={accountDataProtected ? null : positions} onInspect={onInspect} inspect={inspect} routedSymbols={executionCoverage?.routedSymbols || []} routeDataVerified={executionCoverage?.routingStatusSource === 'worker-heartbeat'}/>
+      <RiskGovernor signals={signals} health={health} positions={accountDataProtected || routeSafetyBlocked ? null : riskGovernorPositions} onInspect={onInspect} inspect={inspect} routedSymbols={executionCoverage?.routedSymbols || []} routeDataVerified={executionCoverage?.routingStatusSource === 'worker-heartbeat'} entrySafetyTrusted={executionCoverage?.tradetronEntrySafety?.configured === true ? executionCoverage.tradetronEntrySafety.trusted === true : null}/>
       <Panel title={'Signal Stages · ' + visibleStageCoinCount + ' coins · WATCH → SETUP → CONFIRMED'}>
         <div className="marketCount">Momentum and Scalping status for the same top {visibleStageCoinCount} coins shown in the market table. Missing snapshots are marked NO DATA; the full background scanner remains active.</div>
         <div className="tablewrap"><table><thead><tr><th>COIN</th><th>ENG</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>QTY</th><th>NOTIONAL</th><th>RISK</th><th>READY</th><th>WHY BLOCKED</th></tr></thead><tbody>{visibleSignalStages.map(s => <tr key={s.symbol + ':' + s.strategy}><td className="symbol">{s.symbol}</td><td>{s.strategy === 'MOMENTUM' ? 'MOM' : 'SCALP'}</td><td>{s.snapshot_missing ? 'WATCH · NO DATA' : s.stage}</td><td className={s.side === 'BUY' ? 'up' : s.side === 'SELL' ? 'down' : 'muted'}>{s.side || '—'}</td><td><b>{s.snapshot_missing ? '—' : (safeNum(s.score) === null ? 'NO DATA' : safeNum(s.score).toFixed(0) + '/100')}</b></td><td>{s.snapshot_missing ? '—' : fmtQty(s.qty_contracts)}</td><td>{s.snapshot_missing ? '—' : money(s.notional)}</td><td>{s.snapshot_missing ? '—' : money(s.risk_usd)}</td><td className={s.snapshot_missing ? 'muted' : s.ready ? 'up' : 'down'}>{s.snapshot_missing ? '—' : s.ready ? 'YES' : 'NO'}</td><td className="blocker" title={Array.isArray(s.gate_results) ? s.gate_results.map(gateTooltip).join('\n') : 'Structured gate results are not supplied by the current worker; existing block reasons shown.'}>{s.snapshot_missing ? 'No signal snapshot available' : (Array.isArray(s.gate_results) ? blockersDisplay(s.gate_results) : fmtReasons(s.blocked_reasons))}</td></tr>)}</tbody></table></div>
@@ -303,7 +316,7 @@ function fmtQty(v) {
   return num(v) === 0 ? '—' : num(v).toLocaleString('en-IN', { maximumFractionDigits: 0 });
 }
 
-function MarketTable({ market, signals, routedSymbols = [] }) {
+function MarketTable({ market, signals, routedSymbols = [], entrySafetyBlocked = false, entrySafetyReason = null, openPositionSymbols = new Set() }) {
   const visibleMarket = selectVisibleMarketRows(market, DEFAULT_VISIBLE_MARKET_LIMIT);
   const map = new Map();
   for (const s of signals || []) {
