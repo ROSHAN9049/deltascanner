@@ -77,6 +77,20 @@ test('explicit backend blocker takes precedence over a low/missing observed valu
   assert.equal(gate(rows, 'Fresh closed candles'), GATE_BLOCK);
 });
 
+test('a pending-reservation duplicate blocker stays BLOCK even with no open position row', () => {
+  const rows = buildRiskGovernorGates({
+    selected: {
+      symbol: 'PAXGUSD',
+      strategy: 'MOMENTUM',
+      stage: 'CONFIRMED',
+      score: 99,
+      blocked_reasons: ['Duplicate symbol']
+    },
+    positions: []
+  });
+  assert.equal(gate(rows, 'Duplicate symbol'), GATE_BLOCK);
+});
+
 test('an open position blocks the duplicate-symbol check', () => {
   const rows = buildRiskGovernorGates({
     selected: { symbol: 'BTCUSD', stage: 'CONFIRMED', score: 90 },
