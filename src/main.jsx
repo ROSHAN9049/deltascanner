@@ -156,7 +156,7 @@ function App() {
         <div className="sub">DELTA INDIA · PERPETUAL FUTURES COMMAND CENTER</div>
       </div>
       <div className="headerRight">
-        <span>BUILD v2.0.20261014.01</span>
+        <span>BUILD v2.0.20261014.02</span>
         <span>UTC {new Date(clock).toISOString().slice(11,19)}</span>
         <span>LOCAL {new Date(clock).toLocaleTimeString('en-IN')}</span>
         <b className="badge test">LIVE MARKET · SIGNAL ONLY</b>
@@ -212,7 +212,7 @@ function Dashboard({ market, settings, health, trades, positions, accountDataPro
   const polReplacementAvailable = unavailableMarketSymbols.includes('MATICUSD') &&
     (market || []).some(row => String(row.symbol || '').toUpperCase() === 'POLUSD') &&
     !(executionCoverage?.configuredRouteSymbols || []).includes('POLUSD');
-  const todayTrades = trades.filter(t => String(t.closed_at || '').slice(0,10) === today);
+  const todayTrades = trades.filter(t => indiaDateKey(t.closed_at) === today);
   const closedPnlValues = trades.map(trade => safeNum(trade.net_pnl));
   const closedPnlComplete = trades.length > 0 && tradesComplete && closedPnlValues.every(value => value !== null);
   const realizedPnl = closedPnlComplete ? closedPnlValues.reduce((sum, value) => sum + value, 0) : null;
