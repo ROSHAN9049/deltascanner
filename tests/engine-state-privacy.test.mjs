@@ -94,6 +94,7 @@ test('unauthenticated state hides private ledger and marks it protected, not emp
   assert.equal(state.signalCache[0].qty_contracts, null);
   assert.equal(state.logs.length, 1);
   assert.equal(state.logs[0].message, 'Worker heartbeat scan');
+  assert.equal('reservedSignals' in state.logs[0].data, false);
   assert.deepEqual(state.logs[0].data.tradetronRouting.unavailableMarketSymbols, ['MATICUSD']);
   assert.equal(JSON.stringify(state).includes('must-not-leak'), false);
   assert.equal(JSON.stringify(state).includes('Sensitive error'), false);
