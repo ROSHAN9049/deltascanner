@@ -60,9 +60,11 @@ Optional:
 - `TRADETRON_BASE_URL=https://api.tradetron.tech`
 - `TRADETRON_TIMEOUT_MS=10000`
 
-A separate Options route is disabled by default. The Options scanner is hard-limited to BTC, ETH and Gold (Delta underlying symbol XAUT); it never scans/options-routes the full perpetual-futures universe. Only after creating and verifying a dedicated Options strategy in Tradetron, configure:
+A separate Options route is disabled by default. The Options scanner is hard-limited to BTC, ETH and Gold (Delta underlying symbol XAUT); it never scans/options-routes the full perpetual-futures universe. **In the current build, Options entry execution is hard-locked in `worker/options-execution-lock.mjs` and candidates are analysis-only, even if route configuration is present.** Do not treat the following variables as permission to execute. They describe a future, separately reviewed route configuration only:
 - `TRADETRON_OPTIONS_BRIDGE_ENABLED=true`
 - `TRADETRON_OPTIONS_AUTH_TOKEN=<token linked to that separate Options strategy>`
+
+The code-level Options execution lock must be explicitly reviewed and changed in a separate safety review only after protective spread legs, maximum loss, dedicated credentials, and contract mappings are independently verified. The current worker must not emit Options entry signals.
 
 The futures bridge writes the legacy `<SYMBOL>_q` quantity read by the inspected strategy, plus `<SYMBOL>_qty` for compatibility, entry/exit metadata, the symbol-specific `_el/_es` entry trigger, and `api_buy/api_sell`. On verified webhook-linked Momentum/Scalping futures positions, the scanner can request `_xl/_xs` exits when fresh market marks cross stop/target or max-hold rules. This exit monitor requires Tradetron outbound activity to be configured and the simulated position to be synced back into `dd_positions`; it is not proof of an exchange-side bracket. The auth token is never printed in logs.
 

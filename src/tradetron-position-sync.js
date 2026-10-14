@@ -122,6 +122,7 @@ export function normalizeTradetronPosition(position, deployment = {}) {
     key: String(deployment.deployment_id ?? 'deployment') + ':' + identity,
     deploymentId: deployment.deployment_id ?? null,
     deploymentName: clean(deployment.deployment_name || deployment.name) || 'Tradetron deployment',
+    currencyCode: clean(deployment.currency_code || deployment.currencyCode || '').toUpperCase() || null,
     rawSymbol,
     symbol,
     side,
@@ -157,8 +158,24 @@ export function summarizeTradetronSnapshots(deployments = []) {
     ? reportedOpenCounts.reduce((total, value) => total + value, 0)
     : 0;
   const openCount = Math.max(reportedOpenCount, openRows.length);
-  const pnlValues = rows.map(row => numericValue(row?.pnl)).filter(value => value !== null);
-  const reportedPnl = rows.length > 0 && pnlValues.length === rows.length
+  const pnlValues = rows.map(row => numericValue(row?.pnl));
+  const reportedCurrencyCodes = rows.map(row =>
+    clean(row?.currency_code || row?.currencyCode || '').toUpperCase()
+  );
+  const distinctReportedCurrencies = new Set(reportedCurrencyCodes.filter(Boolean));
+  const reportedCurrencyCode = reportedCurrencyCodes.length > 0 &&
+    reportedCurrencyCodes.every(code => /^[A-Z]{3}$/.test(code)) &&
+    distinctReportedCurrencies.size === 1
+    ? reportedCurrencyCodes[0]
+    : null;
+  // A single deployment's reported number may be displayed as raw data. Across
+  // deployments, aggregate only when every P&L value is present and the API
+  // explicitly identifies one common currency for every deployment.
+  const reportedPnlComparable = rows.length === 1 ||
+    (reportedCurrencyCode !== null && reportedCurrencyCodes.length === rows.length);
+  const reportedPnl = rows.length > 0 &&
+    pnlValues.every(value => value !== null) &&
+    reportedPnlComparable
     ? pnlValues.reduce((total, value) => total + value, 0)
     : null;
   // Generic per-row "pnl" is not enough to claim open/unrealized P&L.
@@ -170,7 +187,15 @@ export function summarizeTradetronSnapshots(deployments = []) {
   const openPnlValues = openRows.map(row =>
     explicitOpenPnlSources.has(row.pnlSource) ? row.pnl : null
   );
-  const openPnl = openPnlValues.length && openPnlValues.every(value => value !== null)
+  const openDeploymentIds = new Set(openRows.map(row => String(row.deploymentId ?? 'unknown')));
+  const openCurrencyCodes = openRows.map(row => row.currencyCode);
+  const distinctOpenCurrencies = new Set(openCurrencyCodes.filter(Boolean));
+  const openCurrencyComparable = openDeploymentIds.size <= 1 ||
+    (openCurrencyCodes.every(code => typeof code === 'string' && /^[A-Z]{3}$/.test(code)) &&
+      distinctOpenCurrencies.size === 1);
+  const openPnl = openPnlValues.length &&
+    openPnlValues.every(value => value !== null) &&
+    openCurrencyComparable
     ? openPnlValues.reduce((total, value) => total + value, 0)
     : null;
 
@@ -181,6 +206,7 @@ export function summarizeTradetronSnapshots(deployments = []) {
     openRows,
     openCount,
     reportedPnl,
+    reportedPnlCurrencyCode: reportedCurrencyCode,
     openPnl,
     positionsHidden: rows.some(row => row?.positions_hidden === true),
     asOf: rows.reduce((latest, row) => {

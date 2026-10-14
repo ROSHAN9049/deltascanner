@@ -75,3 +75,4 @@ footer{color:#526177;text-align:center;font-size:9px;padding-top:12px}
 .saveStatus.pending{color:#f0b90b}
 .saveStatus.saved{color:#2de3a0}
 @media(max-width:620px){.settingsActions{align-items:stretch;flex-direction:column}.settingsButtons{width:100%}.settingsButtons button{flex:1}}
+.gates .unknown{background:#312a13;color:#f0c95e}

@@ -8,6 +8,7 @@ import { SIGNAL_RESERVATION_TTL_MS, TradetronBridge, withSignalReservations } fr
 import { buildTradetronPnlHistoryRows, TradetronDeveloperApi } from '../server/tradetron-developer-api.mjs';
 import { createGridState, evaluateGridTick } from './grid-strategy.mjs';
 import { CANDLE_WARMUP_BATCH_SIZE, CANDLE_WARMUP_RETRY_MS, planCandleWarmup } from './candle-warmup.mjs';
+import { isOptionsExecutionAllowed, OPTIONS_EXECUTION_LOCK_REASON } from './options-execution-lock.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const n = v => Number.isFinite(+v) ? +v : 0;
@@ -889,12 +890,14 @@ export class DeltaEngine {
           const s = best.signal;
           const q = this.optionQuantity({ ...s, ticker: best.ticker }, account, settings);
           const duplicate = (openPositions || []).some(p => String(p.symbol) === s.symbol && n(p.qty) > 0);
-          const executionLocked = !CONFIG.tradetronOptionsBridgeEnabled || !this.tradetronOptions.isConfigured();
+          const routeConfigured = CONFIG.tradetronOptionsBridgeEnabled && this.tradetronOptions.isConfigured();
+          const executionLocked = !isOptionsExecutionAllowed();
           const blocked = [...s.blocked];
           if (q < 1) blocked.push('Risk budget below 1 contract');
           if (duplicate) blocked.push('Duplicate option position');
-          if (executionLocked) blocked.push('Tradetron option signal route unavailable');
-          const ready = s.ready && q >= 1 && !duplicate && !executionLocked;
+          if (!routeConfigured) blocked.push('Tradetron option signal route unavailable');
+          if (executionLocked) blocked.push(OPTIONS_EXECUTION_LOCK_REASON);
+          const ready = s.ready && q >= 1 && !duplicate && routeConfigured && !executionLocked;
           const cv = Math.max(1e-9, n(best.ticker.contract_value) || 1);
           const row = { ...s, ticker: best.ticker, strategy: 'OPTIONS_BUY', qty: q,
             notional: q * s.mark * cv,
@@ -915,7 +918,7 @@ export class DeltaEngine {
               dte: row.dte, expiryMs: row.expiryMs, delta: row.delta, gamma: row.gamma, theta: row.theta,
               vega: row.vega, bid: row.bid, ask: row.ask, openInterest: row.oi, volume: row.volume,
               underlyingSymbol: row.underlyingSymbol, underlyingScore: row.underlyingScore,
-              executionLocked, signalOnly: CONFIG.signalOnly, tradetronRoute: 'tt_option_*' }
+              executionLocked, routeConfigured, signalOnly: CONFIG.signalOnly, tradetronRoute: 'tt_option_*' }
           });
           out.push(row);
         }
@@ -948,12 +951,14 @@ export class DeltaEngine {
           if (!(credit > 0)) blocked.push('Net credit <= 0');
           if (q < 1) blocked.push('Spread risk exceeds option risk budget');
           const optionRouteReady = CONFIG.tradetronOptionsBridgeEnabled && this.tradetronOptions.isConfigured();
+          const executionLocked = !isOptionsExecutionAllowed();
           if (!optionRouteReady) blocked.push('Tradetron option signal route unavailable');
-          const ready = s.ready && q >= 1 && !!hedge && credit > 0 && optionRouteReady;
+          if (executionLocked) blocked.push(OPTIONS_EXECUTION_LOCK_REASON);
+          const ready = s.ready && q >= 1 && !!hedge && credit > 0 && optionRouteReady && !executionLocked;
           const row = { ...s, ticker: best.ticker, strategy: 'OPTIONS_SELL', qty: q,
             hedgeSymbol: hedge?.symbol || '', hedgeStrike: hedge?.strike || 0, hedgeDelta: hedge?.delta || 0,
             credit, maxRiskPerSpread, notional: Math.max(0, credit * q), risk: maxRiskPerSpread * q,
-            blocked, executionLocked: false, ready, optionRouteReady };
+            blocked, executionLocked, ready, optionRouteReady };
           await db.insert('dd_signals', {
             symbol: row.symbol, product_id: n(best.ticker.product_id || best.ticker.id),
             rank: 1, strategy: 'OPTIONS_SELL', price: row.mark, change_24h: row.underlyingChange,
@@ -969,7 +974,7 @@ export class DeltaEngine {
               dte: row.dte, expiryMs: row.expiryMs, delta: row.delta, bid: row.bid, ask: row.ask,
               openInterest: row.oi, volume: row.volume, hedgeSymbol: row.hedgeSymbol,
               hedgeStrike: row.hedgeStrike, hedgeDelta: row.hedgeDelta, credit: row.credit,
-              maxRiskPerSpread: row.maxRiskPerSpread, executionLocked: true, signalOnly: CONFIG.signalOnly, tradetronRoute: 'tt_option_*',
+              maxRiskPerSpread: row.maxRiskPerSpread, executionLocked: true, optionRouteReady: row.optionRouteReady, signalOnly: CONFIG.signalOnly, tradetronRoute: 'tt_option_*',
               definedRiskOnly: settings.options_sell_defined_risk_only !== false }
           });
           out.push(row);
@@ -1423,6 +1428,8 @@ export class DeltaEngine {
   }
 
   async openOptionTrade(item, signal, account, settings, openPositions, trades) {
+    // Defense in depth: never emit Options entry signals while the hard lock is active.
+    if (!isOptionsExecutionAllowed()) return false;
     if (signal.stage !== 'CONFIRMED' || !signal.ready) return false;
     if (!CONFIG.tradetronOptionsBridgeEnabled || !this.tradetronOptions.isConfigured()) return false;
 

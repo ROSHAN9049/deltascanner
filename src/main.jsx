@@ -6,6 +6,9 @@ import { routeStatusForSymbol } from './market-route-status.js';
 import { getTradetronDiagnosticDetails } from './tradetron-diagnostics.js';
 import { summarizeTradetronSnapshots } from './tradetron-position-sync.js';
 import { DEFAULT_VISIBLE_MARKET_LIMIT, selectVisibleMarketRows, selectVisibleSignalRows } from './market-view.js';
+import { assessDeltaRange, fmtMultiplier, fmtPrice as fmtRawPrice, fmtRsi, safeNum } from './formatters.js';
+import { blockersDisplay, gateTooltip } from './gate-result.js';
+import { buildRiskGovernorGates } from './risk-governor.js';
 
 const tabs = [
   ['dashboard','Dashboard'],['rotation','Profit Rotation'],['momentum','Momentum'],['momentum-history','Mom History'],
@@ -13,10 +16,10 @@ const tabs = [
   ['pnl','PNL'],['paper','Paper Trading'],['testnet','Legacy Demo OFF'],['live','Live Trading'],['analytics','Analytics'],['settings','Settings']
 ];
 const num = v => Number.isFinite(+v) ? +v : 0;
-const pct = v => (num(v) >= 0 ? '+' : '') + num(v).toFixed(2) + '%';
+const pct = v => { const n = safeNum(v); return n === null ? '—' : (n >= 0 ? '+' : '') + n.toFixed(2) + '%'; };
 const USD_INR_RATE = Math.max(1, Number(import.meta.env.VITE_USD_INR_RATE || 96.83));
-const money = v => '₹' + (num(v) * USD_INR_RATE).toLocaleString('en-IN', { maximumFractionDigits: 2 });
-const price = v => num(v).toLocaleString('en-IN', { maximumFractionDigits: 8 });
+const money = v => { const n = safeNum(v); return n === null ? '—' : '₹' + (n * USD_INR_RATE).toLocaleString('en-IN', { maximumFractionDigits: 2 }); };
+const price = v => { const n = safeNum(v); return n === null ? '—' : n.toLocaleString('en-IN', { maximumFractionDigits: 8 }); };
 const isPass = v => v === true;
 const latestSignals = list => {
   const m = new Map();
@@ -204,8 +207,23 @@ function Dashboard({ market, settings, health, trades, positions, signals, signa
     (market || []).some(row => String(row.symbol || '').toUpperCase() === 'POLUSD') &&
     !(executionCoverage?.configuredRouteSymbols || []).includes('POLUSD');
   const todayTrades = trades.filter(t => String(t.closed_at || '').slice(0,10) === today);
-  const wins = todayTrades.filter(t => num(t.net_pnl) > 0).length;
-  const loss = todayTrades.filter(t => num(t.net_pnl) < 0).length;
+  const closedPnlValues = trades.map(trade => safeNum(trade.net_pnl));
+  const closedPnlComplete = trades.length > 0 && closedPnlValues.every(value => value !== null);
+  const realizedPnl = closedPnlComplete ? closedPnlValues.reduce((sum, value) => sum + value, 0) : null;
+  const measuredTodayTrades = todayTrades.filter(trade => safeNum(trade.net_pnl) !== null);
+  const wins = measuredTodayTrades.filter(t => safeNum(t.net_pnl) > 0).length;
+  const loss = measuredTodayTrades.filter(t => safeNum(t.net_pnl) < 0).length;
+  const unrealizedPnl = safeNum(settings.unrealized_pnl);
+  const openPnlComplete = positions.length === 0 || unrealizedPnl !== null;
+  const totalPnlComplete = (trades.length === 0 || closedPnlComplete) && openPnlComplete &&
+    (trades.length > 0 || positions.length > 0);
+  const totalPnl = totalPnlComplete
+    ? (closedPnlComplete ? realizedPnl : 0) + (positions.length > 0 ? unrealizedPnl : 0)
+    : null;
+  const todayFeesComplete = todayTrades.length > 0 && todayTrades.every(trade => safeNum(trade.fees) !== null);
+  const todayFees = todayFeesComplete
+    ? todayTrades.reduce((sum, trade) => sum + safeNum(trade.fees), 0)
+    : null;
   const reasons = {};
   for (const s of signals) for (const r of (String(s.blocked_reasons || '').split(' · ').filter(Boolean))) reasons[r] = (reasons[r] || 0) + 1;
   const top = Object.entries(reasons).sort((a,b) => b[1]-a[1]).slice(0,3).map(x => x[0] + ' (' + x[1] + ')').join(', ');
@@ -215,18 +233,18 @@ function Dashboard({ market, settings, health, trades, positions, signals, signa
     <section className="cards">
       <Card label="EQUITY" value={money(settings.equity)} sub={'USD ledger converted at approx ₹' + USD_INR_RATE.toFixed(2) + '/USD'}/>
       <Card label="AVAILABLE" value={money(settings.available_balance)} sub="signal sizing reference"/>
-      <Card label="REALIZED PNL" value={trades.length ? money(trades.reduce((sum, trade) => sum + num(trade.net_pnl), 0)) : '—'} sub={trades.length ? 'recorded closed-trade net P&L' : 'awaiting authenticated closed trades'}/>
-      <Card label="UNREALIZED PNL" value={positions.length ? money(settings.unrealized_pnl) : '—'} sub={positions.length ? 'engine/webhook position ledger' : 'no webhook-confirmed open positions'}/>
-      <Card label="TOTAL PNL" value={trades.length || positions.length ? money((trades.reduce((sum, trade) => sum + num(trade.net_pnl), 0)) + (positions.length ? num(settings.unrealized_pnl) : 0)) : '—'} sub="verified engine-ledger records only"/>
-      <Card label="FEES TODAY" value={trades.some(trade => String(trade.closed_at || '').slice(0,10) === new Date().toISOString().slice(0,10)) ? money(settings.fees_today) : '—'} sub="waiting for today's authenticated fill fees"/>
+      <Card label="REALIZED PNL" value={!trades.length ? '—' : closedPnlComplete ? money(realizedPnl) : 'INCOMPLETE DATA'} sub={!trades.length ? 'awaiting authenticated closed trades' : closedPnlComplete ? 'all recorded closed-trade P&L values present' : 'one or more closed-trade P&L values are missing'}/>
+      <Card label="UNREALIZED PNL" value={!positions.length ? '—' : unrealizedPnl === null ? 'NO DATA' : money(unrealizedPnl)} sub={!positions.length ? 'no webhook-confirmed open positions' : unrealizedPnl === null ? 'open positions exist; verified mark-to-market is unavailable' : 'engine/webhook position ledger'}/>
+      <Card label="TOTAL PNL" value={totalPnlComplete ? money(totalPnl) : (trades.length || positions.length ? 'INCOMPLETE DATA' : '—')} sub="only shown when each included ledger component is available"/>
+      <Card label="FEES TODAY" value={!todayTrades.length ? '—' : todayFeesComplete ? money(todayFees) : 'NO DATA'} sub={!todayTrades.length ? 'no authenticated closed-trade rows today' : todayFeesComplete ? 'sum of recorded today-trade fees' : 'one or more today-trade fee values are missing'}/>
       <Card label="OPEN POSITIONS" value={positions.length} sub="webhook-confirmed position ledger"/>
       <Card label="TT OPEN LEGS" value={developerDataProtected ? 'LOCKED' : developerApiConfigured ? tradetronMirror.openCount : '—'} sub="current Tradetron Developer API snapshot"/>
-      <Card label="TT P&L SNAPSHOT" value={developerDataProtected ? 'LOCKED' : (developerApiConfigured && tradetronMirror.reportedPnl !== null ? money(tradetronMirror.reportedPnl) : '—')} sub="reported deployment P&L; shown separately"/>
+      <Card label="TRADETRON SNAPSHOT P&L" value={developerDataProtected ? 'LOCKED' : (developerApiConfigured && tradetronMirror.reportedPnl !== null ? fmtRawPrice(tradetronMirror.reportedPnl, 2) : 'NO DATA')} sub="Raw Tradetron deployment P&L; unit/currency unverified, separate from scanner ledger"/>
       <Card label="TT SNAPSHOT ROWS" value={developerDataProtected ? 'LOCKED' : developerApiConfigured ? developerSnapshotRowCount : '—'} sub="raw API rows, including closed rows"/>
       <Card label="TT SIGNAL RECORDS" value={signalOrderStats?.total ?? '—'} sub="all states including expired; not fills"/>
       <Card label="TT SENT" value={signalOrderStats?.sent ?? '—'} sub="API accepted historically; may now be expired; not fills"/>
       <Card label="TT EVENTS" value={signalOrderStats?.events ?? '—'} sub="authenticated activity events received"/>
-      <Card label="TODAY" value={todayTrades.length} sub={wins + ' wins / ' + loss + ' losses · ' + (todayTrades.length ? (wins/todayTrades.length*100).toFixed(1) : '0.0') + '% WR'}/>
+      <Card label="TODAY CLOSED TRADES" value={todayTrades.length} sub={measuredTodayTrades.length ? (wins + ' wins / ' + loss + ' losses · ' + (wins/measuredTodayTrades.length*100).toFixed(1) + '% WR on ' + measuredTodayTrades.length + ' rows with recorded P&L') : (todayTrades.length ? 'WIN RATE NO DATA — trade P&L missing' : 'no authenticated closed trades today')}/>
     </section>
     <Panel title="Tradetron Execution Coverage">
       <section className="cards">
@@ -235,7 +253,7 @@ function Dashboard({ market, settings, health, trades, positions, signals, signa
         <Card label="PENDING SIGNAL RESERVATIONS" value={executionCoverage?.reservedSignals ?? '—'} sub={'unconfirmed signals within ' + (executionCoverage?.signalReservationTtlMinutes || 15) + 'm; not open positions'} />
         <Card label="SCAN-ONLY SYMBOLS" value={unroutedCount} sub="No Tradetron entry can be routed for these symbols" />
         <Card label="OPTIONS UNDERLYINGS" value="BTC · ETH · GOLD" sub="Gold contract symbol: XAUT" />
-        <Card label="OPTIONS EXECUTION" value={executionCoverage?.optionsRouteConfigured ? 'CONFIGURED' : 'LOCKED'} sub={executionCoverage?.optionsRouteConfigured ? 'Dedicated options route detected; validate in Live Offline' : 'Options bridge and its Tradetron token are not configured'} />
+        <Card label="OPTIONS EXECUTION" value="LOCKED" sub={executionCoverage?.optionsRouteConfigured ? 'Route is configured, but Options entry signals remain hard-locked pending verification' : 'Dedicated route not configured; Options remain analysis-only'}/>
       </section>
       <div className="lockedText"><b>Worker-confirmed futures basket:</b> {(executionCoverage?.routedSymbols || []).join(', ') || 'No worker-confirmed symbols yet'}<br/><small>Routing source: {executionCoverage?.routingStatusSource || 'API config fallback'}{executionCoverage?.routingObservedAt ? ' · heartbeat ' + new Date(executionCoverage.routingObservedAt).toLocaleTimeString('en-IN') : ''}. Unsupported symbols remain scan-only; direct Delta orders stay locked.</small></div>
       {unavailableMarketSymbols.length ? <div className="lockedText"><b>Configured but absent from the current live Delta market:</b> {unavailableMarketSymbols.join(', ')}.<br/><small>These are not worker-confirmed routes and must stay scan-only until the exchange exposes a matching live contract. {polReplacementAvailable ? 'POLUSD is present in the live market feed but is not configured for this Tradetron basket; add matching POLUSD_el / POLUSD_es variables and entry conditions in the linked Tradetron strategy before adding POLUSD to the worker allowlist.' : 'Any replacement symbol must first be configured in the linked Tradetron strategy variables and entry conditions; do not force-route a stale symbol.'}</small></div> : null}
@@ -244,10 +262,10 @@ function Dashboard({ market, settings, health, trades, positions, signals, signa
       <MarketTable market={market} signals={signals} routedSymbols={executionCoverage?.routedSymbols || []}/>
     </Panel>
     <section className="grid2">
-      <RiskGovernor signals={signals} health={health} positions={positions} onInspect={onInspect} inspect={inspect}/>
+      <RiskGovernor signals={signals} health={health} positions={positions} onInspect={onInspect} inspect={inspect} routedSymbols={executionCoverage?.routedSymbols || []} routeDataVerified={executionCoverage?.routingStatusSource === 'worker-heartbeat'}/>
       <Panel title={'Signal Stages · ' + visibleStageCoinCount + ' coins · WATCH → SETUP → CONFIRMED'}>
         <div className="marketCount">Momentum and Scalping status for the same top {visibleStageCoinCount} coins shown in the market table. Missing snapshots are marked NO DATA; the full background scanner remains active.</div>
-        <div className="tablewrap"><table><thead><tr><th>COIN</th><th>ENG</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>QTY</th><th>NOTIONAL</th><th>RISK</th><th>READY</th><th>WHY BLOCKED</th></tr></thead><tbody>{visibleSignalStages.map(s => <tr key={s.symbol + ':' + s.strategy}><td className="symbol">{s.symbol}</td><td>{s.strategy === 'MOMENTUM' ? 'MOM' : 'SCALP'}</td><td>{s.snapshot_missing ? 'WATCH · NO DATA' : s.stage}</td><td className={s.side === 'BUY' ? 'up' : s.side === 'SELL' ? 'down' : 'muted'}>{s.side || '—'}</td><td><b>{s.snapshot_missing ? '—' : num(s.score).toFixed(0) + '/100'}</b></td><td>{s.snapshot_missing ? '—' : fmtQty(s.qty_contracts)}</td><td>{s.snapshot_missing ? '—' : money(s.notional)}</td><td>{s.snapshot_missing ? '—' : money(s.risk_usd)}</td><td className={s.snapshot_missing ? 'muted' : s.ready ? 'up' : 'down'}>{s.snapshot_missing ? '—' : s.ready ? 'YES' : 'NO'}</td><td className="muted">{s.snapshot_missing ? 'No signal snapshot available' : fmtReasons(s.blocked_reasons)}</td></tr>)}</tbody></table></div>
+        <div className="tablewrap"><table><thead><tr><th>COIN</th><th>ENG</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>QTY</th><th>NOTIONAL</th><th>RISK</th><th>READY</th><th>WHY BLOCKED</th></tr></thead><tbody>{visibleSignalStages.map(s => <tr key={s.symbol + ':' + s.strategy}><td className="symbol">{s.symbol}</td><td>{s.strategy === 'MOMENTUM' ? 'MOM' : 'SCALP'}</td><td>{s.snapshot_missing ? 'WATCH · NO DATA' : s.stage}</td><td className={s.side === 'BUY' ? 'up' : s.side === 'SELL' ? 'down' : 'muted'}>{s.side || '—'}</td><td><b>{s.snapshot_missing ? '—' : (safeNum(s.score) === null ? 'NO DATA' : safeNum(s.score).toFixed(0) + '/100')}</b></td><td>{s.snapshot_missing ? '—' : fmtQty(s.qty_contracts)}</td><td>{s.snapshot_missing ? '—' : money(s.notional)}</td><td>{s.snapshot_missing ? '—' : money(s.risk_usd)}</td><td className={s.snapshot_missing ? 'muted' : s.ready ? 'up' : 'down'}>{s.snapshot_missing ? '—' : s.ready ? 'YES' : 'NO'}</td><td className="blocker" title={Array.isArray(s.gate_results) ? s.gate_results.map(gateTooltip).join('\n') : 'Structured gate results are not supplied by the current worker; existing block reasons shown.'}>{s.snapshot_missing ? 'No signal snapshot available' : (Array.isArray(s.gate_results) ? blockersDisplay(s.gate_results) : fmtReasons(s.blocked_reasons))}</td></tr>)}</tbody></table></div>
       </Panel>
     </section>
     <Panel title="Signal Mode"><div className="idle">SCANNER → TRADETRON → LIVE OFFLINE <span>No orders are sent by the scanner. Tradetron owns Live Offline execution and position management.</span></div></Panel>
@@ -288,41 +306,53 @@ function MarketTable({ market, signals, routedSymbols = [] }) {
     const x = map.get(m.symbol) || {};
     const best = [x.MOMENTUM,x.SCALPING].filter(Boolean).sort((a,b) => num(b.score)-num(a.score))[0];
     const routeInfo = routeStatusForSymbol(m.symbol, [x.MOMENTUM, x.SCALPING], routedSymbols);
-    return <tr key={m.symbol}><td>{i+1}</td><td className="symbol">{m.symbol}</td><td>{price(m.mark_price || m.close)}</td><td className={num(m.ltp_change_24h)>=0?'up':'down'}>{pct(m.ltp_change_24h)}</td><td>{money(m.turnover_usd)}</td><td>{best ? num(best.volume_spike).toFixed(2) + 'x' : '—'}</td><td><span className={x.MOMENTUM?.side==='BUY'?'up':x.MOMENTUM?.side==='SELL'?'down':''}>{x.MOMENTUM ? num(x.MOMENTUM.score).toFixed(0) + ' ' + (x.MOMENTUM.side || '') : '—'}</span></td><td><span className={x.SCALPING?.side==='BUY'?'up':x.SCALPING?.side==='SELL'?'down':''}>{x.SCALPING ? num(x.SCALPING.score).toFixed(0) + ' ' + (x.SCALPING.side || '') : '—'}</span></td><td>{best?.trend || '—'} / {best?.confirm_trend || '—'}</td><td>{price(best?.support)}</td><td>{price(best?.resistance)}</td><td><b className={best?.stage==='CONFIRMED'?'up':best?.stage==='SETUP'?'warn':'muted'}>{best?.stage || 'WATCH'}</b></td><td><button className={`tiny ${routeInfo.tone}`} disabled title={routeInfo.title}>{routeInfo.label}</button></td></tr>;
+    return <tr key={m.symbol}><td>{i+1}</td><td className="symbol">{m.symbol}</td><td>{price(m.mark_price || m.close)}</td><td className={safeNum(m.ltp_change_24h) === null ? 'muted' : safeNum(m.ltp_change_24h) >= 0 ? 'up' : 'down'}>{pct(m.ltp_change_24h)}</td><td>{money(m.turnover_usd)}</td><td>{fmtMultiplier(best?.volume_spike)}</td><td><span className={x.MOMENTUM?.side==='BUY'?'up':x.MOMENTUM?.side==='SELL'?'down':''}>{x.MOMENTUM ? (safeNum(x.MOMENTUM.score) === null ? 'NO DATA' : safeNum(x.MOMENTUM.score).toFixed(0)) + ' ' + (x.MOMENTUM.side || '') : '—'}</span></td><td><span className={x.SCALPING?.side==='BUY'?'up':x.SCALPING?.side==='SELL'?'down':''}>{x.SCALPING ? (safeNum(x.SCALPING.score) === null ? 'NO DATA' : safeNum(x.SCALPING.score).toFixed(0)) + ' ' + (x.SCALPING.side || '') : '—'}</span></td><td>{best?.trend || '—'} / {best?.confirm_trend || '—'}</td><td>{price(best?.support)}</td><td>{price(best?.resistance)}</td><td><b className={best?.stage==='CONFIRMED'?'up':best?.stage==='SETUP'?'warn':'muted'}>{best?.stage || 'WATCH'}</b></td><td><button className={`tiny ${routeInfo.tone}`} disabled title={routeInfo.title}>{routeInfo.label}</button></td></tr>;
   })}</tbody></table></div></>;
 }
 
-function RiskGovernor({ signals, health, positions, onInspect, inspect, scoreMin = 80 }) {
+function RiskGovernor({ signals, health, positions, onInspect, inspect, scoreMin = 80, routedSymbols = [], routeDataVerified = false }) {
   const selected = inspect;
   if (!selected) return <Panel title="Risk Governor"><div className="lockedText">No signal selected yet.</div></Panel>;
-  const details = typeof selected.details === 'string' ? (() => { try { return JSON.parse(selected.details); } catch { return {}; } })() : (selected.details || {});
-  const blockedText = Array.isArray(selected.blocked_reasons) ? selected.blocked_reasons.join(' · ') : String(selected.blocked_reasons || '');
-  const gate = reason => !blockedText.toLowerCase().includes(reason.toLowerCase());
-  const minimumScore = Math.max(80, num(scoreMin) || 80);
-  const btcOverride = details.btcRegimeOverride === true;
-  const gates = [
-    ['Signal CONFIRMED', selected.stage === 'CONFIRMED' && num(selected.score) >= minimumScore, selected.stage + ' · min ' + minimumScore],
-    ['Tradetron futures route', !blockedText.toLowerCase().includes('tradetron route unavailable'), blockedText.toLowerCase().includes('tradetron route unavailable') ? 'BLOCKED · symbol not mapped' : 'PASS'],
-    ['Fee + spread vs 1R', num(selected.fee_risk_ratio) <= (selected.strategy === 'SCALPING' ? 0.25 : 0.20), (num(selected.fee_risk_ratio)*100).toFixed(1)+'% of 1R'],
-    ['24h anti-chase', !selected.change_24h || (selected.side === 'BUY' ? num(selected.change_24h) <= 15 : selected.side === 'SELL' ? num(selected.change_24h) >= -15 : false), pct(selected.change_24h)],
-    ['5m range <= 3.00 ATR', num(selected.atr_5m) > 0 && gate('5m range'), 'range gate'],
-    ['EMA21 distance <= 2.50 ATR', !gate('Price > 2.50'), (selected.ema21 ? price(selected.ema21) : '—')],
-    ['BTC regime', !gate('BTC regime') || btcOverride, btcOverride ? 'ADAPTIVE OVERRIDE · local ' + num(details.localScore).toFixed(0) + '/95' : (selected.btc_trend || '—')],
-    ['Spread', !gate('Spread >'), num(selected.spread_pct).toFixed(3)+'% (max 0.35%)'],
-    ['Fresh closed candles', !gate('Fresh closed candles'), details.candlesFresh === false ? 'STALE' : 'FRESH'],
-    ['API / worker healthy', !!health?.workerLeaseActive && !!health?.exchangeHealthy && !!health?.tickFresh, health?.tickFresh ? 'PASS' : 'BLOCK'],
-    ['Duplicate symbol', !positions.some(p => p.symbol === selected.symbol), positions.some(p => p.symbol === selected.symbol) ? 'BLOCK' : 'PASS'],
-    ['Margin / min size', num(selected.qty_contracts) >= 1 && num(selected.notional) > 0, num(selected.qty_contracts) >= 1 ? 'PASS' : 'below minimum']
-  ];
-  return <Panel title="Risk Governor">
-    <div className="inspectRow"><label>Inspect coin<select value={selected.symbol} onChange={e => onInspect(e.target.value)}>{[...new Set(signals.map(x=>x.symbol))].slice(0,50).map(x => <option key={x}>{x}</option>)}</select></label><span>{selected.strategy} · {selected.side || 'NO SIDE'} · {num(selected.score).toFixed(0)}/100</span></div>
-    <div className="gates">{gates.map(([name,ok,detail]) => <div key={name}><b className={isPass(ok)?'pass':'block'}>{isPass(ok)?'PASS':'BLOCK'}</b><span>{name}</span><em>{detail}</em></div>)}</div>
+  const gates = buildRiskGovernorGates({
+    selected,
+    health,
+    positions,
+    routedSymbols,
+    routeDataVerified,
+    scoreMin
+  });
+  return <Panel title="Risk Governor · Evidence-Based Status">
+    <div className="inspectRow"><label>Inspect coin<select value={selected.symbol} onChange={e => onInspect(e.target.value)}>{[...new Set(signals.map(x=>x.symbol))].slice(0,50).map(x => <option key={x}>{x}</option>)}</select></label><span>{selected.strategy} · {selected.side || 'NO SIDE'} · {safeNum(selected.score) === null ? 'NO SCORE DATA' : safeNum(selected.score).toFixed(0) + '/100'}</span></div>
+    <div className="lockedText">PASS means the required observation is available and meets the displayed test. UNKNOWN means this view lacks enough evidence; UNKNOWN must not be treated as a pass.</div>
+    <div className="gates">{gates.map(gate => <div key={gate.gate}>
+      <b className={gate.result === 'PASS' ? 'pass' : gate.result === 'BLOCK' ? 'block' : 'unknown'}>{gate.result}</b>
+      <span>{gate.gate}</span>
+      <em title={gateTooltip(gate)}>{gateTooltip(gate).replace(gate.gate + ': ', '')}</em>
+    </div>)}</div>
   </Panel>;
 }
 
 function EngineView({ engine, signals }) {
   const rows = signals.filter(x => x.strategy === engine).sort((a,b) => num(b.score)-num(a.score));
-  return <Panel title={engine + ' · Closed-Candle Signal Engine'}><div className="tablewrap"><table><thead><tr><th>COIN</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>RSI</th><th>VOL</th><th>EMA21</th><th>ATR</th><th>SL</th><th>TP1</th><th>TP</th><th>QTY</th><th>RISK</th><th>BLOCKED</th></tr></thead><tbody>{rows.map(x => <tr key={x.symbol}><td className="symbol">{x.symbol}</td><td>{x.stage}</td><td className={x.side==='BUY'?'up':x.side==='SELL'?'down':''}>{x.side || '—'}</td><td><b>{num(x.score).toFixed(0)}</b></td><td>{num(x.rsi).toFixed(1)}</td><td>{num(x.volume_spike).toFixed(2)}x</td><td>{price(x.ema21)}</td><td>{price(x.atr_5m)}</td><td>{price(x.stop_price)}</td><td>{price(x.tp1_price)}</td><td>{price(x.tp_price)}</td><td>{fmtQty(x.qty_contracts)}</td><td>{money(x.risk_usd)}</td><td className="muted">{fmtReasons(x.blocked_reasons)}</td></tr>)}</tbody></table></div></Panel>;
+  return <Panel title={engine + ' · Closed-Candle Signal Engine'}><div className="tablewrap"><table><thead><tr><th>COIN</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>RSI</th><th>VOL</th><th>EMA21</th><th>ATR</th><th>SL</th><th>TP1</th><th>TP</th><th>QTY</th><th>RISK</th><th>BLOCKED / GATES</th></tr></thead><tbody>{rows.map(x => {
+    const hasGateResults = Array.isArray(x.gate_results);
+    return <tr key={x.symbol}>
+      <td className="symbol">{x.symbol}</td>
+      <td>{x.stage || '—'}</td>
+      <td className={x.side==='BUY'?'up':x.side==='SELL'?'down':''}>{x.side || '—'}</td>
+      <td><b>{safeNum(x.score) === null ? '—' : safeNum(x.score).toFixed(0)}</b></td>
+      <td>{fmtRsi(x.rsi)}</td>
+      <td>{fmtMultiplier(x.volume_spike)}</td>
+      <td>{fmtRawPrice(x.ema21)}</td>
+      <td>{fmtRawPrice(x.atr_5m)}</td>
+      <td>{fmtRawPrice(x.stop_price)}</td>
+      <td>{fmtRawPrice(x.tp1_price)}</td>
+      <td>{fmtRawPrice(x.tp_price)}</td>
+      <td>{fmtQty(x.qty_contracts)}</td>
+      <td>{safeNum(x.risk_usd) === null ? '—' : money(x.risk_usd)}</td>
+      <td className="muted" title={hasGateResults ? x.gate_results.map(gateTooltip).join('\n') : 'Structured gate results are not supplied by the current worker; showing existing block reasons.'}>{hasGateResults ? blockersDisplay(x.gate_results) : fmtReasons(x.blocked_reasons)}</td>
+    </tr>;
+  })}</tbody></table></div></Panel>;
 }
 
 function OptionsView({ signals, settings, optionCache = [], executionCoverage = null }) {
@@ -330,46 +360,79 @@ function OptionsView({ signals, settings, optionCache = [], executionCoverage = 
     .sort((a,b) => num(b.score) - num(a.score));
   const buys = rows.filter(x => x.strategy === 'OPTIONS_BUY');
   const sells = rows.filter(x => x.strategy === 'OPTIONS_SELL');
+  const buyMinDelta = safeNum(settings.options_buy_min_delta) || 0.45;
+  const buyMaxDelta = safeNum(settings.options_buy_max_delta) || 0.65;
+  const sellMinDelta = safeNum(settings.options_sell_min_delta) || 0.20;
+  const sellMaxDelta = safeNum(settings.options_sell_max_delta) || 0.35;
   return <>
     <section className="cards">
-      <Card label="OPTIONS ENGINE" value={settings.options_enabled === false ? 'OFF' : 'ON'} sub="BTC / ETH / GOLD (XAUT) only"/>
-      <Card label="BUY" value={settings.options_buy_enabled === false ? 'OFF' : 'ON'} sub="ATM / near-ITM · Δ 0.45–0.65"/>
-      <Card label="SELL" value={settings.options_sell_enabled === false ? 'OFF' : 'ON'} sub="defined-risk spread only"/>
-      <Card label="OPTIONS ROUTE" value={executionCoverage?.optionsRouteConfigured === true ? "CONFIGURED" : "LOCKED"} sub={executionCoverage?.optionsRouteConfigured === true ? "Dedicated Tradetron route reported by worker" : "Needs a dedicated Tradetron Options strategy and Railway token"}/>
+      <Card label="OPTIONS ENGINE" value={settings.options_enabled === false ? 'OFF' : 'ON'} sub="BTC / ETH / GOLD (XAUT) only · analysis data"/>
+      <Card label="BUY CANDIDATES" value={buys.length} sub={'Delta target ' + buyMinDelta.toFixed(2) + '–' + buyMaxDelta.toFixed(2)}/>
+      <Card label="SELL CANDIDATES" value={sells.length} sub={'Delta target ' + sellMinDelta.toFixed(2) + '–' + sellMaxDelta.toFixed(2) + ' · spread only'}/>
+      <Card label="OPTIONS ROUTE CONFIG" value={executionCoverage?.optionsRouteConfigured === true ? 'CONFIGURED' : 'NOT CONFIGURED'} sub="Route configuration does not unlock Options execution"/>
     </section>
-    <Panel title="Options BUY">
-      <OptionTable rows={buys} type="BUY" />
+    <div className="lockedText">
+      <b className="warn">⚠ OPTIONS EXECUTION LOCKED — ANALYSIS ONLY</b>
+      <p>Entries remain hard-locked until spread legs, defined maximum loss, dedicated credentials, and contract mappings are independently verified. A configured route is not execution authorization.</p>
+      <p className="muted">No Options entry signal should be sent from this scanner while the safety lock is active.</p>
+    </div>
+    <Panel title="Options BUY · Analysis Only">
+      <OptionTable rows={buys} type="BUY" deltaMin={buyMinDelta} deltaMax={buyMaxDelta} />
     </Panel>
-    <Panel title="Options SELL · Defined Risk">
-      <OptionTable rows={sells} type="SELL" />
+    <Panel title="Options SELL · Defined-Risk Review Only">
+      <OptionTable rows={sells} type="SELL" deltaMin={sellMinDelta} deltaMax={sellMaxDelta} />
     </Panel>
   </>;
 }
 
-function OptionTable({ rows, type }) {
+function OptionTable({ rows, type, deltaMin, deltaMax }) {
+  const hasSellRiskColumns = type === 'SELL';
+  // Never render a stale cached candidate as executable while the backend hard lock is active.
+  const optionsExecutionLocked = true;
+  const columnCount = hasSellRiskColumns ? 18 : 16;
   return <div className="tablewrap"><table><thead><tr>
-    <th>TIME</th><th>UNDERLYING</th><th>CONTRACT</th><th>TYPE</th><th>STRIKE</th><th>DTE</th><th>Δ</th><th>BID</th><th>ASK</th><th>SPREAD</th><th>OI</th><th>VOL</th><th>SCORE</th><th>STAGE</th><th>STATUS</th>
+    <th>TIME</th><th>UNDERLYING</th><th>CONTRACT</th><th>TYPE</th><th>STRIKE</th><th>DTE</th><th>Δ</th><th>DELTA RANGE CHECK</th><th>BID</th><th>ASK</th><th>SPREAD</th><th>OI</th><th>VOL</th><th>SCORE</th><th>STAGE</th>{hasSellRiskColumns ? <><th>PROTECTIVE LEG</th><th>MAX LOSS / SPREAD (RAW)</th></> : null}<th>STATUS</th>
   </tr></thead><tbody>{rows.slice(0,30).map(s => {
     let d = s.details || {};
-    if (typeof d === 'string') { try { d = JSON.parse(d); } catch {} }
+    if (typeof d === 'string') { try { d = JSON.parse(d); } catch { d = {}; } }
+    const deltaValue = safeNum(d.delta);
+    const deltaMissing = d.delta === null || d.delta === undefined || (typeof d.delta === 'string' && d.delta.trim() === '');
+    const deltaAssessment = assessDeltaRange(d.delta, deltaMin, deltaMax);
+    const hedgeStrike = safeNum(d.hedgeStrike);
+    const hedgeDelta = safeNum(d.hedgeDelta);
+    const protectiveLegConfirmed = Boolean(
+      typeof d.hedgeSymbol === 'string' && d.hedgeSymbol.trim() &&
+      hedgeStrike !== null && hedgeDelta !== null && hedgeDelta !== 0
+    );
+    const rawMaxLoss = safeNum(d.maxRiskPerSpread);
+    const maxLossAvailable = protectiveLegConfirmed && rawMaxLoss !== null && rawMaxLoss > 0;
+    const reasonText = fmtReasons(s.blocked_reasons);
+    const statusLocked = String(reasonText).toLowerCase().includes('execution') ||
+      String(reasonText).toLowerCase().includes('route unavailable') ||
+      String(reasonText).toLowerCase().includes('defined-risk hedge unavailable');
     return <tr key={s.id || s.symbol + s.strategy + s.captured_at}>
       <td>{s.cached_at ? new Date(s.cached_at).toLocaleTimeString('en-IN') : (s.captured_at ? new Date(s.captured_at).toLocaleTimeString('en-IN') : '—')}</td>
       <td className="symbol">{formatUnderlying(d.underlyingSymbol || s.underlying)}</td>
-      <td className="symbol">{s.symbol}</td>
+      <td className="symbol">{s.symbol || '—'}</td>
       <td>{d.optionType || '—'} / {type}</td>
-      <td>{num(d.strike).toLocaleString('en-IN',{maximumFractionDigits:2})}</td>
-      <td>{num(d.dte).toFixed(1)}</td>
-      <td>{num(d.delta).toFixed(2)}</td>
-      <td>{price(d.bid)}</td>
-      <td>{price(d.ask)}</td>
-      <td>{num(s.spread_pct).toFixed(2)}%</td>
-      <td>{num(d.openInterest).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
-      <td>{num(d.volume).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
-      <td><b>{num(s.score).toFixed(0)}</b>/100</td>
-      <td>{s.stage}</td>
-      <td className={s.ready ? 'up' : 'down'}>{s.ready ? 'READY' : (fmtReasons(s.blocked_reasons).toLowerCase().includes('route unavailable') || fmtReasons(s.blocked_reasons).toLowerCase().includes('execution') ? 'LOCKED' : 'WAIT')}</td>
+      <td>{safeNum(d.strike) === null ? '—' : safeNum(d.strike).toLocaleString('en-IN',{maximumFractionDigits:2})}</td>
+      <td>{safeNum(d.dte) === null ? '—' : safeNum(d.dte).toFixed(1)}</td>
+      <td>{deltaMissing ? 'NO DATA' : deltaValue === null ? 'INVALID' : deltaValue.toFixed(2)}</td>
+      <td className={deltaAssessment.status === 'IN_RANGE' ? 'up' : 'warn'} title={deltaAssessment.label}>{deltaAssessment.label}</td>
+      <td>{fmtRawPrice(d.bid)}</td>
+      <td>{fmtRawPrice(d.ask)}</td>
+      <td>{safeNum(s.spread_pct) === null ? '—' : safeNum(s.spread_pct).toFixed(2) + '%'}</td>
+      <td>{safeNum(d.openInterest) === null ? '—' : safeNum(d.openInterest).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
+      <td>{safeNum(d.volume) === null ? '—' : safeNum(d.volume).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
+      <td><b>{safeNum(s.score) === null ? '—' : safeNum(s.score).toFixed(0)}</b>/100</td>
+      <td>{s.stage || '—'}</td>
+      {hasSellRiskColumns ? <>
+        <td className="warn">{protectiveLegConfirmed ? 'SPREAD LEG: ' + d.hedgeSymbol + ' · STRIKE ' + hedgeStrike : 'PROTECTIVE LEG: NOT CONFIRMED'}</td>
+        <td>{maxLossAvailable ? fmtRawPrice(rawMaxLoss, 2) : 'MAX LOSS: NOT AVAILABLE — SPREAD NOT CONFIRMED'}</td>
+      </> : null}
+      <td className={optionsExecutionLocked || statusLocked ? 'warn' : s.ready ? 'up' : 'muted'}>{optionsExecutionLocked || statusLocked ? 'LOCKED' : s.ready ? 'READY' : 'WAIT'}</td>
     </tr>;
-  })}</tbody></table></div>;
+  })}{!rows.length ? <tr><td colSpan={columnCount}>No option candidates returned for the current market snapshot. No missing values are substituted with zero.</td></tr> : null}</tbody></table></div>;
 }
 
 function Positions({ rows = [], tradetronDeployments = [], snapshotsLocked = false }) {
@@ -428,7 +491,7 @@ function Positions({ rows = [], tradetronDeployments = [], snapshotsLocked = fal
       {snapshotsLocked ? <p className="apiStateWarn">Private Tradetron snapshot is locked. Enter the configured ENGINE_SECRET in Settings to load current Tradetron rows.</p> : null}
     </div>
     <div className="tablewrap"><table>
-      <thead><tr><th>TIME / SNAPSHOT</th><th>COIN</th><th>STRATEGY / SOURCE</th><th>SIDE</th><th>QTY</th><th>ENTRY</th><th>MARK</th><th>VALUE</th><th>API P&amp;L RAW (UNIT UNVERIFIED)</th><th>SL</th><th>TP1</th><th>TP</th><th>PROTECTION</th><th>ORIGIN</th></tr></thead>
+      <thead><tr><th>TIME / SNAPSHOT</th><th>COIN</th><th>STRATEGY / SOURCE</th><th>SIDE</th><th>QTY</th><th>ENTRY</th><th>MARK</th><th>API VALUE RAW (UNIT UNVERIFIED)</th><th>API P&amp;L RAW (UNIT UNVERIFIED)</th><th>SL</th><th>TP1</th><th>TP</th><th>PROTECTION</th><th>ORIGIN</th></tr></thead>
       <tbody>{displayRows.map((p, index) => {
         const snapshotOnly = p.snapshot_only === true;
         const protection = snapshotOnly ? 'NOT IN API' : (p.protection_verified ? 'VERIFIED' : (p.stop_price != null || p.tp_price != null ? 'LEVELS PRESENT' : 'NOT CONFIRMED'));
@@ -441,8 +504,8 @@ function Positions({ rows = [], tradetronDeployments = [], snapshotsLocked = fal
           <td>{p.qty == null ? '—' : fmtQty(p.qty)}</td>
           <td>{p.entry_price == null ? '—' : price(p.entry_price)}</td>
           <td>{p.current_price == null ? '—' : price(p.current_price)}</td>
-          <td>{p.snapshot_value == null ? '—' : money(p.snapshot_value)}</td>
-          <td>{p.snapshot_pnl == null ? '—' : price(p.snapshot_pnl)}</td>
+          <td>{p.snapshot_value == null ? '—' : fmtRawPrice(p.snapshot_value, 2)}</td>
+          <td>{p.snapshot_pnl == null ? '—' : fmtRawPrice(p.snapshot_pnl, 2)}</td>
           <td>{p.stop_price == null ? '—' : price(p.stop_price)}</td>
           <td>{p.tp1_price == null ? '—' : price(p.tp1_price)}</td>
           <td>{p.tp_price == null ? '—' : price(p.tp_price)}</td>
@@ -453,35 +516,151 @@ function Positions({ rows = [], tradetronDeployments = [], snapshotsLocked = fal
     </table></div>
   </Panel>;
 }
+function HistoryEmptyState({ engine }) {
+  return <div className="lockedText">
+    <b>NO VERIFIED CLOSED TRADE RECORDS — {String(engine || 'TRADE').toUpperCase()}</b>
+    <p>Data source: authenticated closed-trade/fill records processed into the scanner ledger.</p>
+    <p>Status: Awaiting verified entry and exit records.</p>
+    <p className="warn">Tradetron Developer API snapshots and notification history do not by themselves prove individual fills or exits. The account's outbound close-callback path is not assumed to be available.</p>
+    <p className="muted">This table is intentionally empty. No estimated, synthetic, or fabricated trade records are shown.</p>
+  </div>;
+}
+
 function TradeHistory({ trades = [], title }) {
-  const emptyMessage = String(title || '').includes('Trade History')
-    ? 'No authenticated closed-trade records have reached the scanner yet. Tradetron status notifications and current-position snapshots are not treated as fills or exits.'
-    : 'No closed trades have been recorded for this strategy yet.';
-  return <Panel title={title}><div className="tablewrap"><table><thead><tr><th>TIME</th><th>COIN</th><th>MODE</th><th>STRATEGY</th><th>SIDE</th><th>ENTRY</th><th>EXIT</th><th>QTY</th><th>FEES</th><th>GROSS</th><th>NET</th><th>PNL%</th><th>R</th><th>EXIT REASON</th><th>RESULT</th></tr></thead><tbody>{trades.map(t => <tr key={t.execution_id}><td>{t.closed_at ? new Date(t.closed_at).toLocaleString('en-IN') : '—'}</td><td className="symbol">{t.symbol}</td><td>TRADetron OFFLINE</td><td>{t.strategy || '—'}</td><td className={t.side==='BUY'?'up':'down'}>{t.side || '—'}</td><td>{t.entry_price == null ? '—' : price(t.entry_price)}</td><td>{t.exit_price == null ? '—' : price(t.exit_price)}</td><td>{t.qty == null ? '—' : fmtQty(t.qty)}</td><td>{t.fees == null ? '—' : money(t.fees)}</td><td>{t.gross_pnl == null ? '—' : money(t.gross_pnl)}</td><td className={t.net_pnl == null ? 'muted' : num(t.net_pnl)>=0?'up':'down'}>{t.net_pnl == null ? '—' : money(t.net_pnl)}</td><td>{t.pnl_pct == null ? '—' : pct(t.pnl_pct)}</td><td>{t.r_multiple == null ? '—' : num(t.r_multiple).toFixed(2)}</td><td>{t.exit_reason || '—'}</td><td>{t.result || '—'}</td></tr>)}{!trades.length ? <tr><td colSpan={15}>{emptyMessage}</td></tr> : null}</tbody></table></div></Panel>;
+  const engine = String(title || 'Trade History').split('·')[0].replace(/history/i, '').trim() || 'Trade';
+  return <Panel title={title}>
+    <div className="tablewrap"><table><thead><tr><th>TIME</th><th>COIN</th><th>MODE</th><th>STRATEGY</th><th>SIDE</th><th>ENTRY</th><th>EXIT</th><th>QTY</th><th>FEES</th><th>GROSS</th><th>NET</th><th>PNL%</th><th>R</th><th>EXIT REASON</th><th>RESULT</th></tr></thead><tbody>
+      {trades.map(t => <tr key={t.execution_id}>
+        <td>{t.closed_at ? new Date(t.closed_at).toLocaleString('en-IN') : '—'}</td>
+        <td className="symbol">{t.symbol || '—'}</td>
+        <td>TRADETRON OFFLINE</td>
+        <td>{t.strategy || '—'}</td>
+        <td className={t.side==='BUY'?'up':t.side==='SELL'?'down':'muted'}>{t.side || '—'}</td>
+        <td>{t.entry_price == null ? '—' : price(t.entry_price)}</td>
+        <td>{t.exit_price == null ? '—' : price(t.exit_price)}</td>
+        <td>{t.qty == null ? '—' : fmtQty(t.qty)}</td>
+        <td>{t.fees == null ? '—' : money(t.fees)}</td>
+        <td>{t.gross_pnl == null ? '—' : money(t.gross_pnl)}</td>
+        <td className={safeNum(t.net_pnl) === null ? 'muted' : safeNum(t.net_pnl) >= 0 ? 'up' : 'down'}>{t.net_pnl == null ? '—' : money(t.net_pnl)}</td>
+        <td>{t.pnl_pct == null ? '—' : pct(t.pnl_pct)}</td>
+        <td>{safeNum(t.r_multiple) === null ? '—' : safeNum(t.r_multiple).toFixed(2)}</td>
+        <td>{t.exit_reason || '—'}</td>
+        <td>{t.result || '—'}</td>
+      </tr>)}
+      {!trades.length ? <tr><td colSpan={15}><HistoryEmptyState engine={engine}/></td></tr> : null}
+    </tbody></table></div>
+  </Panel>;
 }
 function PNL({ trades = [], settings = {} }) {
   const hasClosedTrades = trades.length > 0;
-  const net = trades.reduce((s,t)=>s+num(t.net_pnl),0);
-  const fees = trades.reduce((s,t)=>s+num(t.fees),0);
-  return <><section className="cards"><Card label="REALIZED NET" value={hasClosedTrades ? money(net) : '—'} sub={hasClosedTrades ? 'sum of recorded closed-trade net P&L' : 'waiting for authenticated closed-trade records'}/><Card label="FEES" value={hasClosedTrades ? money(fees) : '—'} sub="only shown from recorded trade rows"/><Card label="EQUITY" value={settings.equity == null ? '—' : money(settings.equity)} sub="configured scanner ledger balance"/><Card label="UNREALIZED" value={settings.unrealized_pnl == null ? '—' : money(settings.unrealized_pnl)} sub="webhook/engine ledger only; Tradetron snapshot shown separately"/></section>{!hasClosedTrades ? <div className="lockedText">Realized P&amp;L and fees are not confirmed as zero; the scanner has no authenticated closed-trade rows yet. Tradetron deployment snapshots are displayed separately and are not merged into this ledger.</div> : null}</>;
+  const netValues = trades.map(trade => safeNum(trade.net_pnl));
+  const feeValues = trades.map(trade => safeNum(trade.fees));
+  const netComplete = hasClosedTrades && netValues.every(value => value !== null);
+  const feesComplete = hasClosedTrades && feeValues.every(value => value !== null);
+  const net = netComplete ? netValues.reduce((sum, value) => sum + value, 0) : null;
+  const fees = feesComplete ? feeValues.reduce((sum, value) => sum + value, 0) : null;
+  return <>
+    <section className="cards">
+      <Card label="REALIZED NET" value={!hasClosedTrades ? '—' : netComplete ? money(net) : 'INCOMPLETE DATA'} sub={!hasClosedTrades ? 'waiting for authenticated closed-trade records' : netComplete ? 'all recorded closed-trade P&L values present' : 'one or more closed-trade P&L values are missing'}/>
+      <Card label="FEES" value={!hasClosedTrades ? '—' : feesComplete ? money(fees) : 'INCOMPLETE DATA'} sub={!hasClosedTrades ? 'no authenticated closed trades yet' : feesComplete ? 'sum of recorded trade fees' : 'one or more recorded trade fee values are missing'}/>
+      <Card label="EQUITY" value={settings.equity == null ? '—' : money(settings.equity)} sub="configured scanner ledger balance"/>
+      <Card label="UNREALIZED" value={settings.unrealized_pnl == null ? '—' : money(settings.unrealized_pnl)} sub="webhook/engine ledger only; Tradetron snapshot shown separately"/>
+    </section>
+    {!hasClosedTrades ? <div className="lockedText">Realized P&amp;L and fees are not confirmed as zero; the scanner has no authenticated closed-trade rows yet. Tradetron deployment snapshots are displayed separately and are not merged into this ledger.</div> : null}
+  </>;
 }
-function Rotation({ ledger }) {
-  const nowDay = new Date().toISOString().slice(0,10); const todayLedger = ledger.filter(x => String(x.created_at || '').slice(0,10) === nowDay); const released = todayLedger.reduce((s,x)=>s+num(x.released),0), retained = todayLedger.reduce((s,x)=>s+num(x.retained),0);
-  return <><section className="cards"><Card label="EVENTS TODAY" value={todayLedger.length} sub="real profitable exits"/><Card label="RELEASED 90%" value={money(released)} sub="linked to execution ID"/><Card label="ALLOCATED" value={money(released)} sub="rotation released"/><Card label="RETAINED 10%" value={money(retained)} sub="ledger reserve"/></section><Panel title="Profit Rotation V3 Ledger"><div className="tablewrap"><table><thead><tr><th>TIME</th><th>EXECUTION ID</th><th>PROFIT</th><th>RELEASED</th><th>RETAINED</th><th>ROTATION ID</th></tr></thead><tbody>{ledger.map(x=><tr key={x.execution_id}><td>{new Date(x.created_at).toLocaleString('en-IN')}</td><td className="mono">{x.execution_id}</td><td className="up">{money(x.profit)}</td><td>{money(x.released)}</td><td>{money(x.retained)}</td><td>{x.rotation_id}</td></tr>)}</tbody></table></div></Panel></>;
+function Rotation({ ledger = [] }) {
+  const nowDay = new Date().toISOString().slice(0,10);
+  const todayLedger = ledger.filter(row => String(row.created_at || '').slice(0,10) === nowDay);
+  const releasedValues = todayLedger.map(row => safeNum(row.released));
+  const retainedValues = todayLedger.map(row => safeNum(row.retained));
+  const releasedComplete = todayLedger.length > 0 && releasedValues.every(value => value !== null);
+  const retainedComplete = todayLedger.length > 0 && retainedValues.every(value => value !== null);
+  const released = releasedComplete ? releasedValues.reduce((sum, value) => sum + value, 0) : null;
+  const retained = retainedComplete ? retainedValues.reduce((sum, value) => sum + value, 0) : null;
+  return <>
+    <section className="cards">
+      <Card label="EVENTS TODAY" value={todayLedger.length} sub="recorded profit-rotation ledger rows"/>
+      <Card label="RELEASED 90%" value={!todayLedger.length ? '—' : releasedComplete ? money(released) : 'INCOMPLETE DATA'} sub={releasedComplete ? 'sum of recorded release values' : 'missing release amount in one or more rows'}/>
+      <Card label="ALLOCATED" value={!todayLedger.length ? '—' : releasedComplete ? money(released) : 'INCOMPLETE DATA'} sub="matches the recorded released amount"/>
+      <Card label="RETAINED 10%" value={!todayLedger.length ? '—' : retainedComplete ? money(retained) : 'INCOMPLETE DATA'} sub={retainedComplete ? 'sum of recorded retained values' : 'missing retained amount in one or more rows'}/>
+    </section>
+    <Panel title="Profit Rotation V3 Ledger"><div className="tablewrap"><table><thead><tr><th>TIME</th><th>EXECUTION ID</th><th>PROFIT</th><th>RELEASED</th><th>RETAINED</th><th>ROTATION ID</th></tr></thead><tbody>{ledger.map(row=><tr key={row.execution_id}>
+      <td>{row.created_at ? new Date(row.created_at).toLocaleString('en-IN') : '—'}</td>
+      <td className="mono">{row.execution_id || '—'}</td>
+      <td className="up">{money(row.profit)}</td><td>{money(row.released)}</td><td>{money(row.retained)}</td><td>{row.rotation_id || '—'}</td>
+    </tr>)}</tbody></table></div></Panel>
+  </>;
 }
-function Analytics({ trades }) {
-  const engines = ['MOMENTUM','SCALPING'].map(e => {
-    const a = trades.filter(t=>t.strategy===e), wins=a.filter(t=>num(t.net_pnl)>0), losses=a.filter(t=>num(t.net_pnl)<0);
-    const avgWin=wins.length?wins.reduce((s,t)=>s+num(t.net_pnl),0)/wins.length:0, avgLoss=losses.length?losses.reduce((s,t)=>s+num(t.net_pnl),0)/losses.length:0;
-    const avgR=a.length?a.reduce((s,t)=>s+num(t.r_multiple),0)/a.length:0;
-    return {e,a,wins,losses,wr:a.length?wins.length/a.length*100:0,avgWin,avgLoss,avgR,net:a.reduce((s,t)=>s+num(t.net_pnl),0)};
+function Analytics({ trades = [] }) {
+  const engines = ['MOMENTUM','SCALPING'].map(engine => {
+    const rows = trades.filter(trade => trade.strategy === engine);
+    const pnlRows = rows.filter(trade => safeNum(trade.net_pnl) !== null);
+    const wins = pnlRows.filter(trade => safeNum(trade.net_pnl) > 0);
+    const losses = pnlRows.filter(trade => safeNum(trade.net_pnl) < 0);
+    const avgWin = wins.length ? wins.reduce((sum, trade) => sum + safeNum(trade.net_pnl), 0) / wins.length : null;
+    const avgLoss = losses.length ? losses.reduce((sum, trade) => sum + safeNum(trade.net_pnl), 0) / losses.length : null;
+    const rValues = rows.map(trade => safeNum(trade.r_multiple));
+    const avgR = rows.length && rValues.every(value => value !== null)
+      ? rValues.reduce((sum, value) => sum + value, 0) / rows.length
+      : null;
+    const net = rows.length && pnlRows.length === rows.length
+      ? pnlRows.reduce((sum, trade) => sum + safeNum(trade.net_pnl), 0)
+      : null;
+    return {
+      engine,
+      rows,
+      wins,
+      losses,
+      pnlCount: pnlRows.length,
+      winRate: pnlRows.length ? wins.length / pnlRows.length * 100 : null,
+      avgWin,
+      avgLoss,
+      avgR,
+      net
+    };
   });
-  const sorted=[...trades].sort((a,b)=>num(b.net_pnl)-num(a.net_pnl)), excluded=sorted.slice(0,5).reduce((s,t)=>s+num(t.net_pnl),0), exNet=trades.reduce((s,t)=>s+num(t.net_pnl),0)-excluded;
-  const byReason={}; for(const t of trades) byReason[t.exit_reason]=(byReason[t.exit_reason]||0)+1;
-  return <><section className="panel"><div className="panelTitle"><h2>Per-engine statistics</h2></div><div className="engineStats">{engines.map(x=><div key={x.e}><h3>{x.e}</h3><b>{x.wr.toFixed(1)}% win rate</b><span>{x.a.length} trades · avg win {money(x.avgWin)} · avg loss {money(x.avgLoss)} · avg R {x.avgR.toFixed(2)} · net {money(x.net)}</span></div>)}</div></section><section className="cards"><Card label="NET EXCLUDING TOP 5 WINNERS" value={money(exNet)} sub="stress-test metric"/><Card label="EXIT REASONS" value={Object.keys(byReason).length} sub="SL / TP1 / TP / BE / TRAIL / TIMEOUT / MANUAL"/><Card label="TOTAL TRADES" value={trades.length} sub="real fills only"/></section><Panel title="Exits by reason"><div className="chips">{Object.entries(byReason).map(([k,v])=><span key={k}>{k}: {v}</span>)}</div></Panel><Panel title="Equity Curve"><div className="curve">{equityPoints(trades).map((x,i)=><span key={i} style={{height:Math.max(4,Math.min(150,70+x.delta))}} title={x.label}></span>)}</div></Panel></>;
+  const allPnlKnown = trades.length > 0 && trades.every(trade => safeNum(trade.net_pnl) !== null);
+  const sortedKnown = allPnlKnown
+    ? [...trades].sort((a,b) => safeNum(b.net_pnl) - safeNum(a.net_pnl))
+    : [];
+  const excludedTopWinnersNet = allPnlKnown
+    ? trades.reduce((sum, trade) => sum + safeNum(trade.net_pnl), 0) -
+      sortedKnown.slice(0,5).reduce((sum, trade) => sum + safeNum(trade.net_pnl), 0)
+    : null;
+  const byReason = {};
+  for (const trade of trades) {
+    const reason = trade.exit_reason || 'UNKNOWN';
+    byReason[reason] = (byReason[reason] || 0) + 1;
+  }
+  return <>
+    <section className="panel">
+      <div className="panelTitle"><h2>Per-engine statistics</h2></div>
+      <div className="engineStats">{engines.map(engine => <div key={engine.engine}>
+        <h3>{engine.engine}</h3>
+        <b>{engine.winRate === null ? 'NO P&L DATA' : engine.winRate.toFixed(1) + '% win rate'}</b>
+        <span>{engine.rows.length} recorded trades · {engine.pnlCount} with P&amp;L · avg win {engine.avgWin === null ? '—' : money(engine.avgWin)} · avg loss {engine.avgLoss === null ? '—' : money(engine.avgLoss)} · avg R {engine.avgR === null ? '—' : engine.avgR.toFixed(2)} · net {engine.net === null ? 'INCOMPLETE DATA' : money(engine.net)}</span>
+      </div>)}</div>
+    </section>
+    <section className="cards">
+      <Card label="NET EXCLUDING TOP 5 WINNERS" value={excludedTopWinnersNet === null ? (trades.length ? 'INCOMPLETE DATA' : '—') : money(excludedTopWinnersNet)} sub="available only when every recorded trade has net P&L"/>
+      <Card label="EXIT REASONS" value={Object.keys(byReason).length} sub="recorded exit reason labels"/>
+      <Card label="TOTAL TRADES" value={trades.length} sub="recorded closed-trade rows"/>
+    </section>
+    <Panel title="Exits by reason"><div className="chips">{Object.entries(byReason).map(([reason,count])=><span key={reason}>{reason}: {count}</span>)}</div></Panel>
+    <Panel title="Equity Curve"><div className="curve">{allPnlKnown
+      ? equityPoints(trades).map((point,index)=><span key={index} style={{height:Math.max(4,Math.min(150,70+point.delta))}} title={point.label}></span>)
+      : <div className="muted">{trades.length ? 'Equity curve hidden because one or more trade P&L values are missing.' : 'No verified closed-trade P&L records yet.'}</div>}</div></Panel>
+  </>;
 }
 function equityPoints(trades) {
-  let total=0; return trades.slice().reverse().map(t=>{total+=num(t.net_pnl); return {delta:total,label:money(total)}});
+  let total=0;
+  return trades.slice().reverse().flatMap(trade => {
+    const pnl = safeNum(trade.net_pnl);
+    if (pnl === null) return [];
+    total += pnl;
+    return [{delta:total,label:money(total)}];
+  });
 }
 function Testnet({ settings, health, busy, mutate, positions }) {
   return <><section className="cards"><Card label="ENVIRONMENT" value="SIGNAL ONLY" sub="production market feed"/><Card label="AUTO" value="BRIDGE ON" sub="Tradetron signal route"/><Card label="CONTINUOUS MODE" value="NO POSITION CAP" sub="scanner opportunity routing"/><Card label="VERIFIED OPEN POSITIONS" value={positions.length} sub="from synchronized position records"/></section><Panel title="Testnet Controls"><div className="lockedText">Direct Delta execution is disabled. Tradetron Live Offline is the only execution/simulation layer.</div><div className="statusLine">Worker {health?.workerLeaseActive?'ONLINE':'OFFLINE'} · Tick {health?.tickFresh?'FRESH':'STALE'} · Exchange {health?.exchangeHealthy?'HEALTHY':'DOWN'}</div><p className="muted">No scanner-side global position or rolling signal-count cap. Same-symbol duplicate protection, signal idempotency, technical-quality checks, per-trade sizing, route readiness and emergency stop remain active.</p></Panel></>;
@@ -633,8 +812,8 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
     </div>
     <section className="cards">
       <Card label="TT OPEN LEGS" value={configured ? mirror.openCount : '—'} sub={mirror.positionsHidden ? 'some position rows hidden by Tradetron' : 'reported by current API snapshot'} />
-      <Card label="TT DEPLOYMENT P&L" value={mirror.reportedPnl === null ? '—' : money(mirror.reportedPnl)} sub="Tradetron-reported snapshot; not scanner ledger P&L" />
-      <Card label="TT OPEN P&L" value={mirror.openPnl === null ? '—' : money(mirror.openPnl)} sub="only when API exposes explicit open/M2M P&L fields" />
+      <Card label="TT DEPLOYMENT P&L RAW" value={mirror.reportedPnl === null ? '—' : fmtRawPrice(mirror.reportedPnl, 2)} sub="Raw aggregate Tradetron value; unit/currency unverified, not scanner ledger P&L" />
+      <Card label="TT OPEN P&L RAW" value={mirror.openPnl === null ? '—' : fmtRawPrice(mirror.openPnl, 2)} sub="Raw sum of explicitly named M2M fields; currency/unit still unverified" />
       <Card label="TT DEPLOYMENTS" value={mirror.deployments} sub="returned by read-only API" />
     </section>
     {mirror.openPnl !== null && mirror.reportedPnl !== null && Math.abs(mirror.openPnl - mirror.reportedPnl) > Math.max(1, Math.abs(mirror.reportedPnl) * 0.1) ? <div className="lockedText apiStateWarn"><b>P&amp;L reconciliation warning:</b> verified open/M2M rows and deployment aggregate differ materially. Both are preserved as separate read-only API figures; neither is merged into the scanner's realized-trade ledger.</div> : null}
@@ -644,13 +823,13 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
         <td>{row.deployment_name || row.deployment_id}<br/><small className="muted">ID {row.deployment_id}</small></td>
         <td>{row.status || '—'}</td><td>{row.deployment_type || '—'}</td><td>{row.broker || '—'}</td>
         <td>{row.positions_hidden ? 'HIDDEN' : (row.open_positions ?? '—') + ' reported'}<br/><small className="muted">{Array.isArray(row.positions) ? row.positions.length : 0} raw row(s)</small></td>
-        <td className={num(row.pnl) >= 0 ? 'up' : 'down'}>{row.pnl == null ? '—' : money(row.pnl)}</td><td>{row.currency_code || '—'}</td>
+        <td className={safeNum(row.pnl) === null ? 'muted' : safeNum(row.pnl) >= 0 ? 'up' : 'down'}>{row.pnl == null || safeNum(row.pnl) === null ? '—' : fmtRawPrice(row.pnl, 2)}</td><td>{row.currency_code || 'UNIT UNVERIFIED'}</td>
         <td>{row.as_of ? new Date(row.as_of).toLocaleString('en-IN') : (row.last_success_at ? new Date(row.last_success_at).toLocaleString('en-IN') : '—')}</td>
       </tr>)}</tbody>
     </table></div> : <div className="lockedText">No deployment snapshot is available yet. A successful API response with an empty positions array means no visible position rows; it does not create placeholder trades.</div>}
     <div className="panelTitle"><h3>Current Open Positions · Tradetron</h3></div>
     {mirror.openRows.length ? <div className="tablewrap"><table>
-      <thead><tr><th>DEPLOYMENT</th><th>SYMBOL</th><th>SIDE</th><th>QTY</th><th>ENTRY</th><th>LTP / MARK</th><th>VALUE</th><th>API P&amp;L RAW (UNIT UNVERIFIED)</th><th>STATUS</th></tr></thead>
+      <thead><tr><th>DEPLOYMENT</th><th>SYMBOL</th><th>SIDE</th><th>QTY</th><th>ENTRY</th><th>LTP / MARK</th><th>VALUE RAW (UNIT UNVERIFIED)</th><th>API P&amp;L RAW (UNIT UNVERIFIED)</th><th>STATUS</th></tr></thead>
       <tbody>{mirror.openRows.map(row => <tr key={row.key}>
         <td>{row.deploymentName}<br/><small className="muted">ID {row.deploymentId ?? '—'}</small></td>
         <td className="symbol" title={row.rawSymbol}>{row.symbol}</td>
@@ -658,8 +837,8 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
         <td>{row.quantity === null ? '—' : fmtQty(row.quantity)}</td>
         <td>{row.entryPrice === null ? '—' : price(row.entryPrice)}</td>
         <td>{row.markPrice === null ? '—' : price(row.markPrice)}</td>
-        <td>{row.marketValue === null ? '—' : money(row.marketValue)}</td>
-        <td className={row.pnl === null ? 'muted' : 'mono'}>{row.pnl === null ? '—' : price(row.pnl)}</td>
+        <td>{fmtRawPrice(row.marketValue, 2)}</td>
+        <td className={safeNum(row.pnl) === null ? 'muted' : 'mono'}>{fmtRawPrice(row.pnl, 2)}</td>
         <td>{row.status}</td>
       </tr>)}</tbody>
     </table></div> : <div className="lockedText">
@@ -680,7 +859,7 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
     <div className="lockedText"><b>Trade history / exit reconciliation:</b> {sync?.status === 'OK' ? 'position snapshot is syncing.' : 'position snapshot is not confirmed fresh.'} Developer API notifications below provide a read-only event timeline, but they are not converted to fill/trade rows. Actual per-trade entry/exit prices, fees and realized P&amp;L still require a verified trade-detail endpoint or authenticated fill data. Generic row-level “pnl” fields are displayed raw with no currency conversion and are not summed as open P&amp;L unless the API identifies them as M2M/unrealized P&amp;L.</div>
     <div className="panelTitle"><h3>Recent Tradetron P&amp;L History · 5-minute snapshots</h3></div>
     <div className="lockedText"><span>Stored separately from closed-trade ledger. Repeated polls update the same five-minute bucket; old snapshots are pruned after 90 days.</span></div>
-    {pnlHistory.length ? <div className="tablewrap"><table><thead><tr><th>CAPTURED</th><th>DEPLOYMENT</th><th>REPORTED P&amp;L</th><th>OPEN / TOTAL</th><th>STATUS</th></tr></thead><tbody>{pnlHistory.slice(0, 36).map(row => <tr key={row.snapshot_id}><td>{row.captured_at ? new Date(row.captured_at).toLocaleString('en-IN') : '—'}</td><td>{row.deployment_name || row.deployment_id}<br/><small className="muted">ID {row.deployment_id}</small></td><td className={row.reported_pnl == null ? 'muted' : num(row.reported_pnl) >= 0 ? 'up' : 'down'}>{row.reported_pnl == null ? '—' : row.currency_code === 'USD' || !row.currency_code ? money(row.reported_pnl) : String(row.reported_pnl) + ' ' + row.currency_code}</td><td>{row.open_positions ?? '—'} / {row.total_positions ?? '—'}</td><td>{row.status || '—'}</td></tr>)}</tbody></table></div> : <div className="lockedText">No P&amp;L history snapshots recorded yet. The first bucket is written after the next successful Developer API sync once the new database migration is applied.</div>}
+    {pnlHistory.length ? <div className="tablewrap"><table><thead><tr><th>CAPTURED</th><th>DEPLOYMENT</th><th>REPORTED P&amp;L</th><th>OPEN / TOTAL</th><th>STATUS</th></tr></thead><tbody>{pnlHistory.slice(0, 36).map(row => <tr key={row.snapshot_id}><td>{row.captured_at ? new Date(row.captured_at).toLocaleString('en-IN') : '—'}</td><td>{row.deployment_name || row.deployment_id}<br/><small className="muted">ID {row.deployment_id}</small></td><td className={safeNum(row.reported_pnl) === null ? 'muted' : safeNum(row.reported_pnl) >= 0 ? 'up' : 'down'}>{safeNum(row.reported_pnl) === null ? '—' : row.currency_code ? row.currency_code + ' ' + fmtRawPrice(row.reported_pnl, 2) : fmtRawPrice(row.reported_pnl, 2) + ' (UNIT UNVERIFIED)'}</td><td>{row.open_positions ?? '—'} / {row.total_positions ?? '—'}</td><td>{row.status || '—'}</td></tr>)}</tbody></table></div> : <div className="lockedText">No P&amp;L history snapshots recorded yet. The first bucket is written after the next successful Developer API sync once the new database migration is applied.</div>}
     <div className="panelTitle"><h3>Tradetron Developer API Notifications · read-only timeline</h3></div>
     <div className="lockedText"><b className={notificationSync?.status === 'OK' ? 'apiStateOk' : notificationSync?.status === 'ERROR' ? 'apiStateError' : 'apiStateWarn'}>Notification sync: {notificationSync?.status || (configured ? 'WAITING FOR FIRST SYNC' : 'NOT CONFIGURED')}</b><br/><span>Last successful sync: {notificationSync?.last_success_at ? new Date(notificationSync.last_success_at).toLocaleString('en-IN') : '—'} · Returned notifications: {notificationSync?.notification_count ?? '—'}</span>{notificationSync?.last_error ? <p className="apiStateError">Notification sync warning/error: {notificationSync.last_error}</p> : null}<p>These are Tradetron account/deployment notices polled through the read-only Developer API. They are shown for audit context and are not proof of a fill; the scanner never converts notification text into a position or closed trade.</p></div>
     {notifications.length ? <div className="tablewrap"><table><thead><tr><th>TIME</th><th>DEPLOYMENT</th><th>TYPE</th><th>NOTICE</th></tr></thead><tbody>{notifications.slice(0, 30).map(row => <tr key={row.notification_id}><td>{row.event_at ? new Date(row.event_at).toLocaleString('en-IN') : (row.updated_at ? new Date(row.updated_at).toLocaleString('en-IN') : '—')}</td><td>{row.deployment_id || '—'}</td><td>{row.notification_type || 'NOTICE'}</td><td><b>{row.title || '—'}</b>{row.description ? <div className="muted">{row.description}</div> : null}</td></tr>)}</tbody></table></div> : <div className="lockedText">No notifications returned yet. If Tradetron returns a notification format the API client cannot recognize, the sync status will show an error rather than guessing the payload shape.</div>}

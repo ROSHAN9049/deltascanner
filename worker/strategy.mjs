@@ -1,4 +1,10 @@
 const n = v => Number.isFinite(+v) ? +v : 0;
+const optionalNumber = value => {
+  if (value === null || value === undefined || (typeof value === 'string' && value.trim() === '')) return null;
+  if (typeof value !== 'number' && typeof value !== 'string') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
 
 export function closed(candles) {
   return Array.isArray(candles) && candles.length > 2 ? candles.slice(0, -1) : [];
@@ -81,7 +87,7 @@ function optionTypeFromTicker(ticker) {
 function optionGreeks(ticker) {
   const g = ticker?.greeks && typeof ticker.greeks === 'object' ? ticker.greeks : {};
   return {
-    delta: n(g.delta ?? ticker.delta),
+    delta: optionalNumber(g.delta ?? ticker.delta),
     gamma: n(g.gamma ?? ticker.gamma),
     theta: n(g.theta ?? ticker.theta),
     vega: n(g.vega ?? ticker.vega),
@@ -103,7 +109,7 @@ export function analyseOption(ticker, underlying, strategy, cfg = {}) {
   const oi = n(ticker?.open_interest ?? ticker?.openInterest ?? ticker?.oi);
   const volume = n(ticker?.volume);
   const greeks = optionGreeks(ticker);
-  const delta = Math.abs(greeks.delta);
+  const delta = Math.abs(greeks.delta ?? 0);
   const minDte = Math.max(1, n(cfg.minDays) || 2);
   const maxDte = Math.max(minDte, n(cfg.maxDays) || 14);
   const minOi = Math.max(0, n(cfg.minOi) || 50);
@@ -117,7 +123,7 @@ export function analyseOption(ticker, underlying, strategy, cfg = {}) {
   const underlyingScoreMin = n(cfg.scoreMin || 70);
   const underlyingOk = String(underlying?.stage || '') === 'CONFIRMED' && n(underlying?.score) >= underlyingScoreMin;
   const directionOk = !!underlying?.side && optionType === targetType;
-  const deltaOk = delta >= deltaMin && delta <= deltaMax;
+  const deltaOk = greeks.delta !== null && delta >= deltaMin && delta <= deltaMax;
   const dteOk = dte >= minDte && dte <= maxDte;
   const liqOk = mark > 0 && bid > 0 && ask > 0 && spreadPct <= maxSpread && oi >= minOi && volume >= minVol;
   const antiChaseOk = Math.abs(n(underlying?.change)) <= (isBuy ? 12 : 8);

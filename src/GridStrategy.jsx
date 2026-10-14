@@ -1,8 +1,15 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { safeNum } from './formatters.js';
 
-const n = value => Number.isFinite(Number(value)) ? Number(value) : 0;
-const usd = value => '$' + n(value).toLocaleString('en-US', { maximumFractionDigits: 2 });
-const price = value => n(value) > 0 ? n(value).toLocaleString('en-US', { maximumFractionDigits: 8 }) : '—';
+const n = value => safeNum(value) ?? 0;
+const usd = value => {
+  const amount = safeNum(value);
+  return amount === null ? '—' : '$' + amount.toLocaleString('en-US', { maximumFractionDigits: 2 });
+};
+const price = value => {
+  const amount = safeNum(value);
+  return amount !== null && amount > 0 ? amount.toLocaleString('en-US', { maximumFractionDigits: 8 }) : '—';
+};
 
 function levelsFor(lower, upper, count) {
   const lo = n(lower), hi = n(upper), length = Math.round(n(count));
@@ -60,9 +67,19 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
   const positions = Array.isArray(gridState.positions) ? gridState.positions : [];
   const trades = Array.isArray(gridState.trades) ? [...gridState.trades].reverse() : [];
   const events = Array.isArray(gridState.events) ? [...gridState.events].reverse().slice(0, 10) : [];
-  const openRisk = n(gridState.openRiskUsd);
-  const dailyCap = n(gridState.dayStartEquity) * n(settings.grid_daily_loss_pct || 2) / 100;
+  const openRisk = safeNum(gridState.openRiskUsd);
+  const dayStartEquity = safeNum(gridState.dayStartEquity);
+  const dailyLossPct = safeNum(settings.grid_daily_loss_pct) ?? 2;
+  const dailyCap = dayStartEquity === null ? null : dayStartEquity * dailyLossPct / 100;
+  const realizedGridPnl = safeNum(gridState.realizedPnl);
+  const dayPnl = safeNum(gridState.dayPnl);
+  const unrealizedPnl = safeNum(gridState.unrealizedPnl);
+  const totalDayPnl = dayPnl !== null && unrealizedPnl !== null ? dayPnl + unrealizedPnl : null;
+  const currentEquity = safeNum(gridState.currentEquity);
+  const drawdownPct = safeNum(gridState.drawdownPct);
   const momentum = gridState.momentum || {};
+  const momentumMovePct = safeNum(momentum.movePct);
+  const momentumRetracementPct = safeNum(momentum.retracementPct);
   const valid = levels.length >= 8 && n(draft.gridLowerPrice) < n(draft.gridUpperPrice);
   const openLevelSet = new Set(positions.map(position => Number(position.levelIndex)));
   const targetLevelSet = new Set(positions.map(position => Number(position.levelIndex) + 1));
@@ -91,11 +108,11 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
     <section className="cards">
       <div className="card"><small>GRID ENGINE</small><strong>{stateStatus.replaceAll('_', ' ')}</strong><span>Dedicated BTC/ETH grid; independent from momentum/scalping.</span></div>
       <div className="card"><small>INSTRUMENT / LIVE PRICE</small><strong>{symbol}</strong><span>{currentPrice > 0 ? price(currentPrice) : 'Waiting for market price'} · Delta public market feed</span></div>
-      <div className="card"><small>OPEN GRID POSITIONS</small><strong>{positions.length} / {Number(settings.grid_max_positions || 4)}</strong><span>{usd(openRisk)} estimated remaining-to-grid-stop risk.</span></div>
-      <div className="card"><small>GRID PNL · LIVE OFFLINE MIRROR</small><strong className={n(gridState.realizedPnl) >= 0 ? 'up' : 'down'}>{usd(gridState.realizedPnl)}</strong><span>Realized after estimated maker fees and slippage; simulator only.</span></div>
-      <div className="card"><small>DAY PNL</small><strong className={n(gridState.dayPnl) >= 0 ? 'up' : 'down'}>{usd(gridState.dayPnl + n(gridState.unrealizedPnl))}</strong><span>Realized + mark-to-market; daily stop {Number(settings.grid_daily_loss_pct || 2).toFixed(1)}%.</span></div>
-      <div className="card"><small>STRATEGY EQUITY</small><strong>{usd(gridState.currentEquity || gridState.strategyStartEquity)}</strong><span>Drawdown {n(gridState.drawdownPct).toFixed(2)}% · hard stop 5%.</span></div>
-      <div className="card"><small>MOMENTUM FILTER</small><strong className={momentum.paused ? 'warn' : 'up'}>{momentum.paused ? 'PAUSED' : 'CLEAR'}</strong><span>{momentum.direction || 'NONE'} · {n(momentum.movePct).toFixed(2)}% move · reversal {n(momentum.retracementPct).toFixed(2)}%.</span></div>
+      <div className="card"><small>OPEN GRID POSITIONS</small><strong>{positions.length} / {safeNum(settings.grid_max_positions) ?? draft.gridMaxPositions}</strong><span>{usd(openRisk === null && positions.length === 0 ? 0 : openRisk)} estimated remaining-to-grid-stop risk.</span></div>
+      <div className="card"><small>GRID PNL · LIVE OFFLINE MIRROR</small><strong className={realizedGridPnl === null ? 'muted' : realizedGridPnl >= 0 ? 'up' : 'down'}>{usd(realizedGridPnl)}</strong><span>Realized after estimated maker fees and slippage; simulator only.</span></div>
+      <div className="card"><small>DAY PNL</small><strong className={totalDayPnl === null ? 'muted' : totalDayPnl >= 0 ? 'up' : 'down'}>{usd(totalDayPnl)}</strong><span>Realized + mark-to-market; daily stop {Number(settings.grid_daily_loss_pct || 2).toFixed(1)}%.</span></div>
+      <div className="card"><small>STRATEGY EQUITY</small><strong>{usd(currentEquity)}</strong><span>Drawdown {drawdownPct === null ? 'NO DATA' : drawdownPct.toFixed(2) + '%'} · hard stop 5%.</span></div>
+      <div className="card"><small>MOMENTUM FILTER</small><strong className={momentum.paused ? 'warn' : 'up'}>{momentum.paused ? 'PAUSED' : 'CLEAR'}</strong><span>{momentum.direction || 'NO DATA'} · {momentumMovePct === null ? 'NO DATA' : momentumMovePct.toFixed(2) + '%'} move · reversal {momentumRetracementPct === null ? 'NO DATA' : momentumRetracementPct.toFixed(2) + '%' }.</span></div>
       <div className="card"><small>EXECUTION</small><strong>TRADETRON LIVE OFFLINE</strong><span>Next lower grid rung is the protective stop and next higher rung is the target. Live Offline is simulated; no exchange orders are sent.</span></div>
     </section>
 
@@ -137,26 +154,26 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
           const position = positions.find(item => Number(item.levelIndex) === level.index);
           const targetFor = positions.filter(item => Number(item.levelIndex) + 1 === level.index);
           const status = position ? 'POSITION OPEN' : targetFor.length ? 'EXIT TARGET' : level.index === levels.length - 1 ? 'TOP · NO ENTRY' : (currentPrice > 0 && Math.abs(currentPrice - level.price) / level.price < 0.001 ? 'NEAR PRICE' : 'AVAILABLE');
-          return <tr key={level.index}><td>G{String(level.index + 1).padStart(2,'0')}</td><td>{price(level.price)}</td><td>{level.index < levels.length - 1 ? 'LIMIT BUY' : '—'}</td><td>{level.target > 0 ? price(level.target) : '—'}</td><td className={position ? 'warn' : targetFor.length ? 'up' : 'muted'}>{status}{position ? ' · ' + n(position.qty) + ' qty' : ''}</td></tr>;
+          return <tr key={level.index}><td>G{String(level.index + 1).padStart(2,'0')}</td><td>{price(level.price)}</td><td>{level.index < levels.length - 1 ? 'LIMIT BUY' : '—'}</td><td>{level.target > 0 ? price(level.target) : '—'}</td><td className={position ? 'warn' : targetFor.length ? 'up' : 'muted'}>{status}{position ? ' · ' + (safeNum(position.qty) === null ? 'QTY NO DATA' : safeNum(position.qty) + ' qty') : ''}</td></tr>;
         })}
       </tbody></table></div>
     </Panel>
 
     <div className="grid2">
       <Panel title="Open Grid Positions">
-        {positions.length ? <div className="tablewrap"><table className="gridLevelsTable"><thead><tr><th>LEVEL</th><th>ENTRY</th><th>TARGET</th><th>QTY</th><th>RISK</th><th>OPENED</th></tr></thead><tbody>{positions.map(position => <tr key={position.id}><td>G{Number(position.levelIndex)+1}</td><td>{price(position.entryPrice)}</td><td>{price(position.targetPrice)}</td><td>{n(position.qty)}</td><td>{usd(position.riskUsd)}</td><td>{position.openedAt ? new Date(position.openedAt).toLocaleTimeString('en-IN') : '—'}</td></tr>)}</tbody></table></div> : <div className="lockedText">No open grid positions. A level is only entered when price crosses it downward from above; a closed level becomes available again.</div>}
+        {positions.length ? <div className="tablewrap"><table className="gridLevelsTable"><thead><tr><th>LEVEL</th><th>ENTRY</th><th>TARGET</th><th>QTY</th><th>RISK</th><th>OPENED</th></tr></thead><tbody>{positions.map(position => <tr key={position.id}><td>G{Number(position.levelIndex)+1}</td><td>{price(position.entryPrice)}</td><td>{price(position.targetPrice)}</td><td>{safeNum(position.qty) === null ? '—' : safeNum(position.qty)}</td><td>{usd(position.riskUsd)}</td><td>{position.openedAt ? new Date(position.openedAt).toLocaleTimeString('en-IN') : '—'}</td></tr>)}</tbody></table></div> : <div className="lockedText">No open grid positions. A level is only entered when price crosses it downward from above; a closed level becomes available again.</div>}
       </Panel>
       <Panel title="Risk Locks & Last Events">
-        <div className="gridLockRow"><b>Daily loss</b><span>{usd(Math.max(0, -n(gridState.dayPnl)))} / {usd(dailyCap)}</span></div>
-        <div className="gridLockRow"><b>Open risk</b><span>{usd(openRisk)}</span></div>
-        <div className="gridLockRow"><b>Drawdown</b><span>{n(gridState.drawdownPct).toFixed(2)}% / 5.00%</span></div>
+        <div className="gridLockRow"><b>Daily loss</b><span>{dayPnl === null ? 'NO DATA' : usd(Math.max(0, -dayPnl))} / {usd(dailyCap)}</span></div>
+        <div className="gridLockRow"><b>Open risk</b><span>{usd(openRisk === null && positions.length === 0 ? 0 : openRisk)}</span></div>
+        <div className="gridLockRow"><b>Drawdown</b><span>{drawdownPct === null ? 'NO DATA' : drawdownPct.toFixed(2) + '%'} / 5.00%</span></div>
         <div className="gridLockRow"><b>Hard-stop reason</b><span className={gridState.pausedReason ? 'down' : 'up'}>{gridState.pausedReason || 'None'}</span></div>
         <div className="gridEvents">{events.length ? events.map((event, index) => <div key={String(event.at) + index}><small>{event.at ? new Date(event.at).toLocaleTimeString('en-IN') : '—'}</small><b>{event.type || 'INFO'}</b><span>{event.reason || (event.type === 'ENTRY' ? 'Entry' : event.type === 'EXIT' ? 'Exit' : 'Grid update')}{event.levelIndex != null ? ' · G' + (Number(event.levelIndex)+1) : ''}{event.price ? ' · ' + price(event.price) : ''}{event.pnl != null ? ' · ' + usd(event.pnl) : ''}</span></div>) : <span>No grid events yet.</span>}</div>
       </Panel>
     </div>
 
     <Panel title="Recent Grid Test Trades">
-      {trades.length ? <div className="tablewrap"><table className="gridLevelsTable"><thead><tr><th>CLOSED</th><th>LEVEL</th><th>ENTRY</th><th>EXIT</th><th>QTY</th><th>NET PNL</th><th>REASON</th></tr></thead><tbody>{trades.slice(0,20).map(trade => <tr key={trade.id}><td>{trade.closedAt ? new Date(trade.closedAt).toLocaleString('en-IN') : '—'}</td><td>G{Number(trade.levelIndex)+1}</td><td>{price(trade.entryPrice)}</td><td>{price(trade.exitPrice)}</td><td>{n(trade.qty)}</td><td className={n(trade.netPnl) >= 0 ? 'up' : 'down'}>{usd(trade.netPnl)}</td><td>{trade.reason}</td></tr>)}</tbody></table></div> : <div className="lockedText">No completed grid trades yet.</div>}
+      {trades.length ? <div className="tablewrap"><table className="gridLevelsTable"><thead><tr><th>CLOSED</th><th>LEVEL</th><th>ENTRY</th><th>EXIT</th><th>QTY</th><th>NET PNL</th><th>REASON</th></tr></thead><tbody>{trades.slice(0,20).map(trade => <tr key={trade.id}><td>{trade.closedAt ? new Date(trade.closedAt).toLocaleString('en-IN') : '—'}</td><td>G{Number(trade.levelIndex)+1}</td><td>{price(trade.entryPrice)}</td><td>{price(trade.exitPrice)}</td><td>{safeNum(trade.qty) === null ? '—' : safeNum(trade.qty)}</td><td className={safeNum(trade.netPnl) === null ? 'muted' : safeNum(trade.netPnl) >= 0 ? 'up' : 'down'}>{usd(trade.netPnl)}</td><td>{trade.reason}</td></tr>)}</tbody></table></div> : <div className="lockedText">No completed grid trades yet.</div>}
       {lastTrade ? <div className="statusLine">Last trade: {lastTrade.reason} · net {usd(lastTrade.netPnl)} · {lastTrade.symbol}</div> : null}
     </Panel>
     <div className="gridTestNotice">TRADETRON SIGNAL MODE: Grid entry and exit triggers use the existing Momentum/Scalping Signal Bridge and its symbol-specific entry/exit variables. Only one grid position is allowed at a time because the current bridge has one net position/exit flag per symbol. Tradetron Live Offline simulates the trade; the scanner never places direct Delta orders.</div>
