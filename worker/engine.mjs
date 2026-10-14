@@ -306,7 +306,28 @@ export class DeltaEngine {
         this.getCandles(symbol, '1m').length >= 6;
     }
 
-    const effectiveEnabled = settings.grid_enabled === true && bridgeReady;
+    const snapshotSafety = await this.getTradetronSnapshotRiskState();
+    if (snapshotSafety.configured) this.lastTradetronEntrySafety = snapshotSafety;
+    const localGridPositionOpen = Array.isArray(priorState.positions) &&
+      priorState.positions.some(position => Math.abs(n(position?.qty)) > 0 && !!position?.bridgeExecutionId);
+    const snapshotPositionOnGridSymbol = snapshotSafety.configured && snapshotSafety.trusted === true &&
+      snapshotSafety.openPositions.some(position => String(position.symbol || '').toUpperCase() === symbol);
+    const snapshotEntryBlocked = snapshotSafety.configured && (
+      snapshotSafety.trusted !== true || (snapshotPositionOnGridSymbol && !localGridPositionOpen)
+    );
+    if (settings.grid_enabled === true && snapshotEntryBlocked) {
+      const safetyKey = 'GRID-SNAPSHOT:' + symbol + ':' + (snapshotSafety.reason || 'SAME_SYMBOL_OPEN');
+      if (!this.unsupportedBridgeWarnings.has(safetyKey)) {
+        this.unsupportedBridgeWarnings.add(safetyKey);
+        await this.log('WARN', 'Grid new entry blocked by Tradetron position snapshot safety', {
+          symbol,
+          reason: snapshotSafety.reason || (snapshotPositionOnGridSymbol ? 'SAME_SYMBOL_OPEN_POSITION' : 'SNAPSHOT_UNTRUSTED'),
+          lastSuccessAt: snapshotSafety.lastSuccessAt || null,
+          note: 'Existing Grid positions still use their own simulated exit rules; API snapshots never confirm exits or fills'
+        });
+      }
+    }
+    const effectiveEnabled = settings.grid_enabled === true && bridgeReady && !snapshotEntryBlocked;
     const evaluationSettings = {
       ...settings,
       grid_symbol: symbol,
