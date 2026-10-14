@@ -85,6 +85,8 @@ export function protectEngineState(payload, authorized) {
     daily: null,
     signalOrders: [],
     signalOrderCount: null,
+    tradeRowCount: null,
+    ledgerRowCount: null,
     signals: hideSignalSizing(payload.signals),
     signalCache: hideSignalSizing(payload.signalCache),
     optionCache: hideSignalSizing(payload.optionCache),
