@@ -95,7 +95,10 @@ export function normalizeTradetronPosition(position, deployment = {}) {
   const quantity = numericValue(firstValue(position, POSITION_QTY_KEYS));
   const explicitOpen = booleanValue(firstValue(position, OPEN_FLAG_KEYS));
   const statusOpen = hasPositionStatus(position);
-  const open = explicitOpen === false
+  // Any explicit close signal wins over an original/nonzero historical quantity.
+  // This prevents exited snapshot rows from reappearing as current open positions.
+  const explicitlyClosed = explicitOpen === false || statusOpen === false;
+  const open = explicitlyClosed
     ? false
     : quantity !== null && quantity !== 0
       ? true
