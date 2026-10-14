@@ -218,3 +218,83 @@ export function summarizeTradetronSnapshots(deployments = []) {
     }, null)
   };
 }
+
+export const TRADETRON_SNAPSHOT_MAX_AGE_MS = 180000;
+
+/**
+ * Turn only a complete, fresh, read-only snapshot into duplicate-entry blockers.
+ * Snapshot rows never become fill, trade-history, or exit-monitor records.
+ */
+export function buildTradetronSnapshotRiskState({
+  syncState = null,
+  deployments = [],
+  now = Date.now(),
+  maxAgeMs = TRADETRON_SNAPSHOT_MAX_AGE_MS
+} = {}) {
+  const details = syncState?.details && typeof syncState.details === 'object'
+    ? syncState.details
+    : {};
+  const lastSuccessMs = Date.parse(syncState?.last_success_at || '');
+  const ageMs = Number.isFinite(lastSuccessMs) ? now - lastSuccessMs : null;
+  const status = String(syncState?.status || '').trim().toUpperCase();
+  const fail = reason => ({
+    configured: true,
+    trusted: false,
+    reason,
+    openPositions: [],
+    positionCount: null,
+    lastSuccessAt: syncState?.last_success_at || null,
+    ageMs
+  });
+
+  if (status !== 'OK') return fail('SYNC_NOT_OK');
+  if (ageMs === null || ageMs < 0 || ageMs > maxAgeMs) return fail('SNAPSHOT_STALE');
+  const deploymentIds = Array.isArray(details.deploymentIds)
+    ? [...new Set(details.deploymentIds.map(value => String(value ?? '').trim()).filter(value => /^\d+$/.test(value)))]
+    : [];
+  if (!deploymentIds.length) return fail('NO_DEPLOYMENT_COVERAGE');
+
+  const rows = (Array.isArray(deployments) ? deployments : []).filter(row =>
+    deploymentIds.includes(String(row?.deployment_id ?? '').trim())
+  );
+  if (rows.length !== deploymentIds.length) return fail('DEPLOYMENT_COVERAGE_INCOMPLETE');
+  if (rows.some(row => row?.positions_hidden === true)) return fail('POSITIONS_HIDDEN');
+  if (rows.some(row => {
+    const snapshotAt = Date.parse(row?.last_success_at || '');
+    const snapshotAge = Number.isFinite(snapshotAt) ? now - snapshotAt : null;
+    return snapshotAge === null || snapshotAge < 0 || snapshotAge > maxAgeMs;
+  })) return fail('POSITION_SNAPSHOT_STALE');
+
+  const summary = summarizeTradetronSnapshots(rows);
+  const openRows = summary.openRows;
+  if (summary.openCount > openRows.length) return fail('OPEN_POSITION_COUNT_UNRECONCILED');
+  if (openRows.some(row => {
+    const qty = numericValue(row.quantity);
+    return !/^[A-Z0-9]+USD$/.test(row.symbol || '') ||
+      row.symbol === 'USD' ||
+      !['BUY', 'SELL'].includes(row.side) ||
+      qty === null ||
+      qty === 0;
+  })) return fail('OPEN_POSITION_ROW_UNVERIFIED');
+
+  const openPositions = openRows.map(row => ({
+    symbol: row.symbol,
+    side: row.side,
+    qty: Math.abs(numericValue(row.quantity)),
+    strategy: 'TT_API_SNAPSHOT',
+    origin: 'TRADETRON_API_SNAPSHOT',
+    execution_id: 'tt-api:' + row.key,
+    updated_at: row.raw?.updated_at || row.raw?.as_of || syncState?.last_success_at || null,
+    snapshot_only: true
+  }));
+
+  return {
+    configured: true,
+    trusted: true,
+    reason: null,
+    openPositions,
+    positionCount: openPositions.length,
+    lastSuccessAt: syncState?.last_success_at || null,
+    ageMs
+  };
+}
