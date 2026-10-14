@@ -14,7 +14,7 @@ import { buildRiskGovernorGates } from './risk-governor.js';
 const tabs = [
   ['dashboard','Dashboard'],['rotation','Profit Rotation'],['momentum','Momentum'],['momentum-history','Mom History'],
   ['scalping','Scalping'],['grid','Grid Strategy'],['scalp-history','Scalp History'],['options','Options'],['positions','Positions'],['trade-history','Trade History'],
-  ['pnl','PNL'],['paper','Paper Trading'],['testnet','Legacy Demo OFF'],['live','Live Trading'],['analytics','Analytics'],['settings','Settings']
+  ['pnl','PNL'],['paper','Paper Trading'],['testnet','Worker Status'],['live','Live Trading'],['analytics','Analytics'],['settings','Settings']
 ];
 const num = v => Number.isFinite(+v) ? +v : 0;
 const pct = v => { const n = safeNum(v); return n === null ? '—' : (n >= 0 ? '+' : '') + n.toFixed(2) + '%'; };
@@ -177,9 +177,9 @@ function App() {
 
     {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} trades={trades} positions={positions} accountDataProtected={accountDataProtected} signals={signals} signalOrderStats={state?.signalOrderStats || null} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.tradeRowCount ?? null} tradetronEvents={state?.tradetronEvents || []} executionCoverage={executionCoverage} developerSync={state?.tradetronDeveloperSync || null} developerSnapshots={state?.tradetronDeveloperSnapshots || []} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} developerDataProtected={state?.tradetronDeveloperDataProtected === true} developerNotifications={state?.tradetronDeveloperNotifications || []} developerNotificationSync={state?.tradetronDeveloperNotificationSync || null} developerPnlHistory={state?.tradetronDeveloperPnlHistory || []} onInspect={setInspect} inspect={selected} logs={state?.logs || []} />}
     {tab === 'rotation' && <Rotation ledger={rotationLedger} accountDataProtected={accountDataProtected} ledgerComplete={rotationLedgerComplete} ledgerRowCount={state?.ledgerRowCount ?? null} />}
-    {tab === 'momentum' && <EngineView engine="MOMENTUM" signals={signals} />}
+    {tab === 'momentum' && <EngineView engine="MOMENTUM" signals={signals} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols} />}
     {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
-    {tab === 'scalping' && <EngineView engine="SCALPING" signals={signals} />}
+    {tab === 'scalping' && <EngineView engine="SCALPING" signals={signals} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols} />}
     {tab === 'grid' && <GridStrategy settings={settings} market={market} busy={busy} mutate={mutate} accountDataProtected={accountDataProtected} gridEntrySafety={executionCoverage?.gridEntrySafety || null} />}
     {tab === 'options' && <OptionsView signals={signals} settings={settings} optionCache={state?.optionCache || []} executionCoverage={state?.executionCoverage || null} />}
     {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
@@ -290,7 +290,7 @@ function Dashboard({ market, settings, health, trades, positions, accountDataPro
       <RiskGovernor signals={signals} health={health} positions={accountDataProtected || routeSafetyBlocked ? null : riskGovernorPositions} onInspect={onInspect} inspect={inspect} routedSymbols={executionCoverage?.routedSymbols || []} routeDataVerified={executionCoverage?.routingStatusSource === 'worker-heartbeat'} entrySafetyTrusted={executionCoverage?.tradetronEntrySafety?.configured === true ? executionCoverage.tradetronEntrySafety.trusted === true : null}/>
       <Panel title={'Signal Stages · ' + visibleStageCoinCount + ' coins · WATCH → SETUP → CONFIRMED'}>
         <div className="marketCount">Momentum and Scalping status for the same top {visibleStageCoinCount} coins shown in the market table. Missing snapshots are marked NO DATA; the full background scanner remains active.</div>
-        <div className="tablewrap"><table><thead><tr><th>COIN</th><th>ENG</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>QTY</th><th>NOTIONAL</th><th>RISK</th><th>READY</th><th>WHY BLOCKED</th></tr></thead><tbody>{visibleSignalStages.map(s => <tr key={s.symbol + ':' + s.strategy}><td className="symbol">{s.symbol}</td><td>{s.strategy === 'MOMENTUM' ? 'MOM' : 'SCALP'}</td><td>{s.snapshot_missing ? 'WATCH · NO DATA' : s.stage}</td><td className={s.side === 'BUY' ? 'up' : s.side === 'SELL' ? 'down' : 'muted'}>{s.side || '—'}</td><td><b>{s.snapshot_missing ? '—' : (safeNum(s.score) === null ? 'NO DATA' : safeNum(s.score).toFixed(0) + '/100')}</b></td><td>{s.snapshot_missing ? '—' : fmtQty(s.qty_contracts)}</td><td>{s.snapshot_missing ? '—' : money(s.notional)}</td><td>{s.snapshot_missing ? '—' : money(s.risk_usd)}</td><td className={s.snapshot_missing ? 'muted' : s.ready ? 'up' : 'down'}>{s.snapshot_missing ? '—' : s.ready && !routeSafetyBlocked && !openPositionSymbols.has(String(s.symbol || '').toUpperCase()) ? 'YES' : 'NO'}</td><td className="blocker" title={Array.isArray(s.gate_results) ? s.gate_results.map(gateTooltip).join('\n') : 'Structured gate results are not supplied by the current worker; existing block reasons shown.'}>{s.snapshot_missing ? 'No signal snapshot available' : routeSafetyBlocked ? 'Tradetron entry safety blocked: ' + routeSafetyReason : openPositionSymbols.has(String(s.symbol || '').toUpperCase()) ? 'Open Tradetron position detected; duplicate entry blocked' : (Array.isArray(s.gate_results) ? blockersDisplay(s.gate_results) : fmtReasons(s.blocked_reasons))}</td></tr>)}</tbody></table></div>
+        <div className="tablewrap"><table><thead><tr><th>COIN</th><th>ENG</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>QTY</th><th>NOTIONAL</th><th>RISK</th><th>READY</th><th>WHY BLOCKED</th></tr></thead><tbody>{visibleSignalStages.map(s => <tr key={s.symbol + ':' + s.strategy}><td className="symbol">{s.symbol}</td><td>{s.strategy === 'MOMENTUM' ? 'MOM' : 'SCALP'}</td><td>{s.snapshot_missing ? 'WATCH · NO DATA' : s.stage}</td><td className={s.side === 'BUY' ? 'up' : s.side === 'SELL' ? 'down' : 'muted'}>{s.side || '—'}</td><td><b>{s.snapshot_missing ? '—' : (safeNum(s.score) === null ? 'NO DATA' : safeNum(s.score).toFixed(0) + '/100')}</b></td><td>{s.snapshot_missing ? '—' : fmtQty(s.qty_contracts)}</td><td>{s.snapshot_missing ? '—' : money(s.notional)}</td><td>{s.snapshot_missing ? '—' : money(s.risk_usd)}</td><td className={s.snapshot_missing ? 'muted' : s.ready && !routeSafetyBlocked && !openPositionSymbols.has(String(s.symbol || '').toUpperCase()) ? 'up' : 'down'}>{s.snapshot_missing ? '—' : s.ready && !routeSafetyBlocked && !openPositionSymbols.has(String(s.symbol || '').toUpperCase()) ? 'YES' : 'NO'}</td><td className="blocker" title={Array.isArray(s.gate_results) ? s.gate_results.map(gateTooltip).join('\n') : 'Structured gate results are not supplied by the current worker; existing block reasons shown.'}>{s.snapshot_missing ? 'No signal snapshot available' : routeSafetyBlocked ? 'Tradetron entry safety blocked: ' + routeSafetyReason : openPositionSymbols.has(String(s.symbol || '').toUpperCase()) ? 'Open Tradetron position detected; duplicate entry blocked' : (Array.isArray(s.gate_results) ? blockersDisplay(s.gate_results) : fmtReasons(s.blocked_reasons))}</td></tr>)}</tbody></table></div>
       </Panel>
     </section>
     <Panel title="Signal Mode"><div className="idle">SCANNER → TRADETRON → LIVE OFFLINE <span>No orders are sent by the scanner. Tradetron owns Live Offline execution and position management.</span></div></Panel>
@@ -362,10 +362,13 @@ function RiskGovernor({ signals, health, positions, onInspect, inspect, scoreMin
   </Panel>;
 }
 
-function EngineView({ engine, signals }) {
+function EngineView({ engine, signals, entrySafetyBlocked = false, entrySafetyReason = null, openPositionSymbols = new Set() }) {
   const rows = signals.filter(x => x.strategy === engine).sort((a,b) => num(b.score)-num(a.score));
-  return <Panel title={engine + ' · Closed-Candle Signal Engine'}><div className="tablewrap"><table><thead><tr><th>COIN</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>RSI</th><th>VOL</th><th>EMA21</th><th>ATR</th><th>SL</th><th>TP1</th><th>TP</th><th>QTY</th><th>RISK</th><th>BLOCKED / GATES</th></tr></thead><tbody>{rows.map(x => {
+  return <Panel title={engine + ' · Closed-Candle Signal Engine'}>{entrySafetyBlocked ? <div className="danger">NEW ENTRIES BLOCKED — {entrySafetyReason || 'Tradetron position snapshot is not verified'}.</div> : null}<div className="tablewrap"><table><thead><tr><th>COIN</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>RSI</th><th>VOL</th><th>EMA21</th><th>ATR</th><th>SL</th><th>TP1</th><th>TP</th><th>QTY</th><th>RISK</th><th>BLOCKED / GATES</th></tr></thead><tbody>{rows.map(x => {
     const hasGateResults = Array.isArray(x.gate_results);
+    const positionOpen = openPositionSymbols.has(String(x.symbol || '').toUpperCase());
+    const safetyReason = entrySafetyBlocked ? 'Tradetron entry safety blocked: ' + (entrySafetyReason || 'snapshot not verified') : positionOpen ? 'Open position detected; duplicate entry blocked' : '';
+    const rowReasons = [hasGateResults ? blockersDisplay(x.gate_results) : fmtReasons(x.blocked_reasons), safetyReason].filter(value => value && value !== '—').join(' · ') || '—';
     return <tr key={x.symbol}>
       <td className="symbol">{x.symbol}</td>
       <td>{x.stage || '—'}</td>
@@ -380,7 +383,7 @@ function EngineView({ engine, signals }) {
       <td>{fmtRawPrice(x.tp_price)}</td>
       <td>{fmtQty(x.qty_contracts)}</td>
       <td>{safeNum(x.risk_usd) === null ? '—' : money(x.risk_usd)}</td>
-      <td className="muted" title={hasGateResults ? x.gate_results.map(gateTooltip).join('\n') : 'Structured gate results are not supplied by the current worker; showing existing block reasons.'}>{hasGateResults ? blockersDisplay(x.gate_results) : fmtReasons(x.blocked_reasons)}</td>
+      <td className={safetyReason ? 'blocker' : 'muted'} title={(hasGateResults ? x.gate_results.map(gateTooltip).join('\n') : 'Structured gate results are not supplied by the current worker; showing existing block reasons.') + (safetyReason ? '\n' + safetyReason : '')}>{rowReasons}</td>
     </tr>;
   })}</tbody></table></div></Panel>;
 }
