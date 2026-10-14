@@ -1,0 +1,86 @@
+const cleanSymbols = value => Array.isArray(value)
+  ? [...new Set(value.map(item => String(item ?? '').trim().toUpperCase()).filter(Boolean))]
+  : [];
+
+const finiteNumber = value => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+};
+
+function publicHeartbeatRows(logs) {
+  const rows = Array.isArray(logs) ? logs : [];
+  return rows
+    .filter(row => row?.message === 'Worker heartbeat scan' && row?.data?.tradetronRouting)
+    .slice(0, 1)
+    .map(row => {
+      const routing = row.data.tradetronRouting || {};
+      return {
+        id: row.id ?? null,
+        level: row.level ?? 'INFO',
+        message: 'Worker heartbeat scan',
+        created_at: row.created_at ?? null,
+        data: {
+          tradetronRouting: {
+            supportedSymbols: cleanSymbols(routing.supportedSymbols),
+            configuredSymbols: cleanSymbols(routing.configuredSymbols),
+            unavailableMarketSymbols: cleanSymbols(routing.unavailableMarketSymbols),
+            marketSymbolCount: finiteNumber(routing.marketSymbolCount),
+            configuredRoutes: finiteNumber(routing.configuredRoutes),
+            optionsRouteConfigured: routing.optionsRouteConfigured === true
+          },
+          reservedSignals: finiteNumber(row.data.reservedSignals),
+          signalReservationTtlMs: finiteNumber(row.data.signalReservationTtlMs)
+        }
+      };
+    });
+}
+
+/**
+ * Keep public market/signal information available, but never serialize private
+ * account ledgers or balance/position details without the configured engine
+ * secret. Empty redacted arrays must be accompanied by accountDataProtected.
+ */
+export function protectEngineState(payload, authorized) {
+  const state = { ...payload, accountDataProtected: !authorized };
+  if (authorized) return state;
+
+  const settings = payload?.settings && typeof payload.settings === 'object'
+    ? {
+        ...payload.settings,
+        equity: null,
+        available_balance: null,
+        realized_pnl: null,
+        unrealized_pnl: null,
+        fees_today: null,
+        grid_state: null
+      }
+    : null;
+
+  return {
+    ...state,
+    settings,
+    positions: [],
+    trades: [],
+    ledger: [],
+    counters: null,
+    daily: null,
+    signalOrders: [],
+    signalOrderCount: null,
+    signalOrderStats: {
+      total: null,
+      sent: null,
+      pending: null,
+      expired: null,
+      failed: null,
+      events: null
+    },
+    tradetronEvents: [],
+    logs: publicHeartbeatRows(payload?.logs),
+    tradetronDeveloperDataProtected: true,
+    tradetronDeveloperSync: null,
+    tradetronDeveloperSnapshots: [],
+    tradetronDeveloperNotificationSync: null,
+    tradetronDeveloperNotifications: [],
+    tradetronDeveloperPnlHistory: []
+  };
+}
