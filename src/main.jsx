@@ -206,8 +206,23 @@ function Dashboard({ market, settings, health, trades, positions, signals, signa
     (market || []).some(row => String(row.symbol || '').toUpperCase() === 'POLUSD') &&
     !(executionCoverage?.configuredRouteSymbols || []).includes('POLUSD');
   const todayTrades = trades.filter(t => String(t.closed_at || '').slice(0,10) === today);
-  const wins = todayTrades.filter(t => num(t.net_pnl) > 0).length;
-  const loss = todayTrades.filter(t => num(t.net_pnl) < 0).length;
+  const closedPnlValues = trades.map(trade => safeNum(trade.net_pnl));
+  const closedPnlComplete = trades.length > 0 && closedPnlValues.every(value => value !== null);
+  const realizedPnl = closedPnlComplete ? closedPnlValues.reduce((sum, value) => sum + value, 0) : null;
+  const measuredTodayTrades = todayTrades.filter(trade => safeNum(trade.net_pnl) !== null);
+  const wins = measuredTodayTrades.filter(t => safeNum(t.net_pnl) > 0).length;
+  const loss = measuredTodayTrades.filter(t => safeNum(t.net_pnl) < 0).length;
+  const unrealizedPnl = safeNum(settings.unrealized_pnl);
+  const openPnlComplete = positions.length === 0 || unrealizedPnl !== null;
+  const totalPnlComplete = (trades.length === 0 || closedPnlComplete) && openPnlComplete &&
+    (trades.length > 0 || positions.length > 0);
+  const totalPnl = totalPnlComplete
+    ? (closedPnlComplete ? realizedPnl : 0) + (positions.length > 0 ? unrealizedPnl : 0)
+    : null;
+  const todayFeesComplete = todayTrades.length > 0 && todayTrades.every(trade => safeNum(trade.fees) !== null);
+  const todayFees = todayFeesComplete
+    ? todayTrades.reduce((sum, trade) => sum + safeNum(trade.fees), 0)
+    : null;
   const reasons = {};
   for (const s of signals) for (const r of (String(s.blocked_reasons || '').split(' · ').filter(Boolean))) reasons[r] = (reasons[r] || 0) + 1;
   const top = Object.entries(reasons).sort((a,b) => b[1]-a[1]).slice(0,3).map(x => x[0] + ' (' + x[1] + ')').join(', ');
@@ -217,10 +232,10 @@ function Dashboard({ market, settings, health, trades, positions, signals, signa
     <section className="cards">
       <Card label="EQUITY" value={money(settings.equity)} sub={'USD ledger converted at approx ₹' + USD_INR_RATE.toFixed(2) + '/USD'}/>
       <Card label="AVAILABLE" value={money(settings.available_balance)} sub="signal sizing reference"/>
-      <Card label="REALIZED PNL" value={trades.length ? money(trades.reduce((sum, trade) => sum + num(trade.net_pnl), 0)) : '—'} sub={trades.length ? 'recorded closed-trade net P&L' : 'awaiting authenticated closed trades'}/>
-      <Card label="UNREALIZED PNL" value={positions.length ? money(settings.unrealized_pnl) : '—'} sub={positions.length ? 'engine/webhook position ledger' : 'no webhook-confirmed open positions'}/>
-      <Card label="TOTAL PNL" value={trades.length || positions.length ? money((trades.reduce((sum, trade) => sum + num(trade.net_pnl), 0)) + (positions.length ? num(settings.unrealized_pnl) : 0)) : '—'} sub="verified engine-ledger records only"/>
-      <Card label="FEES TODAY" value={trades.some(trade => String(trade.closed_at || '').slice(0,10) === new Date().toISOString().slice(0,10)) ? money(settings.fees_today) : '—'} sub="waiting for today's authenticated fill fees"/>
+      <Card label="REALIZED PNL" value={!trades.length ? '—' : closedPnlComplete ? money(realizedPnl) : 'INCOMPLETE DATA'} sub={!trades.length ? 'awaiting authenticated closed trades' : closedPnlComplete ? 'all recorded closed-trade P&L values present' : 'one or more closed-trade P&L values are missing'}/>
+      <Card label="UNREALIZED PNL" value={!positions.length ? '—' : unrealizedPnl === null ? 'NO DATA' : money(unrealizedPnl)} sub={!positions.length ? 'no webhook-confirmed open positions' : unrealizedPnl === null ? 'open positions exist; verified mark-to-market is unavailable' : 'engine/webhook position ledger'}/>
+      <Card label="TOTAL PNL" value={totalPnlComplete ? money(totalPnl) : (trades.length || positions.length ? 'INCOMPLETE DATA' : '—')} sub="only shown when each included ledger component is available"/>
+      <Card label="FEES TODAY" value={!todayTrades.length ? '—' : todayFeesComplete ? money(todayFees) : 'NO DATA'} sub={!todayTrades.length ? 'no authenticated closed-trade rows today' : todayFeesComplete ? 'sum of recorded today-trade fees' : 'one or more today-trade fee values are missing'}/>
       <Card label="OPEN POSITIONS" value={positions.length} sub="webhook-confirmed position ledger"/>
       <Card label="TT OPEN LEGS" value={developerDataProtected ? 'LOCKED' : developerApiConfigured ? tradetronMirror.openCount : '—'} sub="current Tradetron Developer API snapshot"/>
       <Card label="TRADETRON SNAPSHOT P&L" value={developerDataProtected ? 'LOCKED' : (developerApiConfigured && tradetronMirror.reportedPnl !== null ? fmtRawPrice(tradetronMirror.reportedPnl, 2) : 'NO DATA')} sub="Raw Tradetron deployment P&L; unit/currency unverified, separate from scanner ledger"/>
@@ -228,7 +243,7 @@ function Dashboard({ market, settings, health, trades, positions, signals, signa
       <Card label="TT SIGNAL RECORDS" value={signalOrderStats?.total ?? '—'} sub="all states including expired; not fills"/>
       <Card label="TT SENT" value={signalOrderStats?.sent ?? '—'} sub="API accepted historically; may now be expired; not fills"/>
       <Card label="TT EVENTS" value={signalOrderStats?.events ?? '—'} sub="authenticated activity events received"/>
-      <Card label="TODAY" value={todayTrades.length} sub={wins + ' wins / ' + loss + ' losses · ' + (todayTrades.length ? (wins/todayTrades.length*100).toFixed(1) : '0.0') + '% WR'}/>
+      <Card label="TODAY CLOSED TRADES" value={todayTrades.length} sub={measuredTodayTrades.length ? (wins + ' wins / ' + loss + ' losses · ' + (wins/measuredTodayTrades.length*100).toFixed(1) + '% WR on ' + measuredTodayTrades.length + ' rows with recorded P&L') : (todayTrades.length ? 'WIN RATE NO DATA — trade P&L missing' : 'no authenticated closed trades today')}/>
     </section>
     <Panel title="Tradetron Execution Coverage">
       <section className="cards">
@@ -543,9 +558,21 @@ function TradeHistory({ trades = [], title }) {
 }
 function PNL({ trades = [], settings = {} }) {
   const hasClosedTrades = trades.length > 0;
-  const net = trades.reduce((s,t)=>s+num(t.net_pnl),0);
-  const fees = trades.reduce((s,t)=>s+num(t.fees),0);
-  return <><section className="cards"><Card label="REALIZED NET" value={hasClosedTrades ? money(net) : '—'} sub={hasClosedTrades ? 'sum of recorded closed-trade net P&L' : 'waiting for authenticated closed-trade records'}/><Card label="FEES" value={hasClosedTrades ? money(fees) : '—'} sub="only shown from recorded trade rows"/><Card label="EQUITY" value={settings.equity == null ? '—' : money(settings.equity)} sub="configured scanner ledger balance"/><Card label="UNREALIZED" value={settings.unrealized_pnl == null ? '—' : money(settings.unrealized_pnl)} sub="webhook/engine ledger only; Tradetron snapshot shown separately"/></section>{!hasClosedTrades ? <div className="lockedText">Realized P&amp;L and fees are not confirmed as zero; the scanner has no authenticated closed-trade rows yet. Tradetron deployment snapshots are displayed separately and are not merged into this ledger.</div> : null}</>;
+  const netValues = trades.map(trade => safeNum(trade.net_pnl));
+  const feeValues = trades.map(trade => safeNum(trade.fees));
+  const netComplete = hasClosedTrades && netValues.every(value => value !== null);
+  const feesComplete = hasClosedTrades && feeValues.every(value => value !== null);
+  const net = netComplete ? netValues.reduce((sum, value) => sum + value, 0) : null;
+  const fees = feesComplete ? feeValues.reduce((sum, value) => sum + value, 0) : null;
+  return <>
+    <section className="cards">
+      <Card label="REALIZED NET" value={!hasClosedTrades ? '—' : netComplete ? money(net) : 'INCOMPLETE DATA'} sub={!hasClosedTrades ? 'waiting for authenticated closed-trade records' : netComplete ? 'all recorded closed-trade P&L values present' : 'one or more closed-trade P&L values are missing'}/>
+      <Card label="FEES" value={!hasClosedTrades ? '—' : feesComplete ? money(fees) : 'INCOMPLETE DATA'} sub={!hasClosedTrades ? 'no authenticated closed trades yet' : feesComplete ? 'sum of recorded trade fees' : 'one or more recorded trade fee values are missing'}/>
+      <Card label="EQUITY" value={settings.equity == null ? '—' : money(settings.equity)} sub="configured scanner ledger balance"/>
+      <Card label="UNREALIZED" value={settings.unrealized_pnl == null ? '—' : money(settings.unrealized_pnl)} sub="webhook/engine ledger only; Tradetron snapshot shown separately"/>
+    </section>
+    {!hasClosedTrades ? <div className="lockedText">Realized P&amp;L and fees are not confirmed as zero; the scanner has no authenticated closed-trade rows yet. Tradetron deployment snapshots are displayed separately and are not merged into this ledger.</div> : null}
+  </>;
 }
 function Rotation({ ledger }) {
   const nowDay = new Date().toISOString().slice(0,10); const todayLedger = ledger.filter(x => String(x.created_at || '').slice(0,10) === nowDay); const released = todayLedger.reduce((s,x)=>s+num(x.released),0), retained = todayLedger.reduce((s,x)=>s+num(x.retained),0);
