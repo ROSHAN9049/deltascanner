@@ -6,6 +6,8 @@ import { analyse, analyseOption } from './strategy.mjs';
 import * as db from '../server/db.js';
 import { SIGNAL_RESERVATION_TTL_MS, TradetronBridge, withSignalReservations } from '../server/tradetron.js';
 import { buildTradetronPnlHistoryRows, TradetronDeveloperApi } from '../server/tradetron-developer-api.mjs';
+import { buildTradetronSnapshotRiskState, TRADETRON_SNAPSHOT_MAX_AGE_MS } from '../src/tradetron-position-sync.js';
+import { indiaDateKey } from '../src/date-utils.js';
 import { createGridState, evaluateGridTick } from './grid-strategy.mjs';
 import { CANDLE_WARMUP_BATCH_SIZE, CANDLE_WARMUP_RETRY_MS, planCandleWarmup } from './candle-warmup.mjs';
 import { isOptionsExecutionAllowed, OPTIONS_EXECUTION_LOCK_REASON } from './options-execution-lock.mjs';
@@ -13,7 +15,7 @@ import { isOptionsExecutionAllowed, OPTIONS_EXECUTION_LOCK_REASON } from './opti
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const n = v => Number.isFinite(+v) ? +v : 0;
 const iso = () => new Date().toISOString();
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => indiaDateKey(new Date());
 const sideExit = side => side === 'BUY' ? 'sell' : 'buy';
 const clientId = (prefix, symbol) => (prefix + '-' + symbol.slice(0, 12) + '-' + Date.now().toString(36)).slice(0, 32);
 const roundDown = (v, step) => {
@@ -51,6 +53,10 @@ export class DeltaEngine {
     this.tradetronDeveloperApi = new TradetronDeveloperApi();
     this.lastTradetronDeveloperSyncAt = 0;
     this.lastTradetronDeveloperPnlCleanupAt = 0;
+    this.lastTradetronSnapshotRiskState = null;
+    this.lastTradetronSnapshotRiskStateAt = 0;
+    this.tradetronSnapshotRiskStateInFlight = null;
+    this.lastTradetronEntrySafetyLogAt = 0;
     this.lastSignalReservationExpiryAt = 0;
     this.tradetronDeveloperSyncInFlight = null;
     this.tradetronDeveloperApiStatus = CONFIG.tradetronDeveloperApiKey ? 'WAITING_FOR_FIRST_SYNC' : 'NOT_CONFIGURED';
@@ -2112,9 +2118,88 @@ export class DeltaEngine {
     }
   }
 
+  async getTradetronSnapshotRiskState() {
+    if (!CONFIG.tradetronDeveloperApiKey || !this.tradetronDeveloperApi.isConfigured()) {
+      return {
+        configured: false, trusted: null, reason: 'DEVELOPER_API_NOT_CONFIGURED',
+        openPositions: [], positionCount: null, lastSuccessAt: null, ageMs: null
+      };
+    }
+    const now = Date.now();
+    if (this.lastTradetronSnapshotRiskState &&
+        now - this.lastTradetronSnapshotRiskStateAt < 10000) {
+      return this.lastTradetronSnapshotRiskState;
+    }
+    if (this.tradetronSnapshotRiskStateInFlight) return this.tradetronSnapshotRiskStateInFlight;
+
+    this.tradetronSnapshotRiskStateInFlight = (async () => {
+      let result;
+      try {
+        const [syncRows, snapshotRows] = await Promise.all([
+          db.select('dd_tradetron_developer_sync_state', 'id=eq.1&select=id,status,last_success_at,details'),
+          db.select('dd_tradetron_developer_snapshots', 'order=deployment_id.asc')
+        ]);
+        const syncState = Array.isArray(syncRows) ? syncRows[0] || null : null;
+        const ids = Array.isArray(syncState?.details?.deploymentIds)
+          ? syncState.details.deploymentIds.map(value => String(value))
+          : [];
+        const snapshots = (Array.isArray(snapshotRows) ? snapshotRows : []).filter(row =>
+          ids.includes(String(row?.deployment_id ?? ''))
+        );
+        result = buildTradetronSnapshotRiskState({
+          syncState,
+          deployments: snapshots,
+          now,
+          maxAgeMs: TRADETRON_SNAPSHOT_MAX_AGE_MS
+        });
+      } catch (error) {
+        result = {
+          configured: true, trusted: false, reason: 'SNAPSHOT_LOOKUP_FAILED',
+          openPositions: [], positionCount: null, lastSuccessAt: null, ageMs: null,
+          detail: String(error?.message || error).slice(0, 240)
+        };
+      }
+      this.lastTradetronSnapshotRiskState = result;
+      this.lastTradetronSnapshotRiskStateAt = Date.now();
+      return result;
+    })();
+    try {
+      return await this.tradetronSnapshotRiskStateInFlight;
+    } finally {
+      this.tradetronSnapshotRiskStateInFlight = null;
+    }
+  }
+
   async getSignalOnlyPositions(openRows) {
-    const positions = Array.isArray(openRows) ? openRows : [];
+    let positions = Array.isArray(openRows) ? [...openRows] : [];
     if (!CONFIG.signalOnly || !CONFIG.tradetronBridgeEnabled) return positions;
+
+    const snapshotSafety = await this.getTradetronSnapshotRiskState();
+    this.lastTradetronEntrySafety = snapshotSafety;
+    if (snapshotSafety.configured && !snapshotSafety.trusted) {
+      if (Date.now() - this.lastTradetronEntrySafetyLogAt >= 60000) {
+        this.lastTradetronEntrySafetyLogAt = Date.now();
+        await this.log('WARN', 'New Tradetron entries blocked: Developer API position snapshot is not trusted', {
+          reason: snapshotSafety.reason,
+          lastSuccessAt: snapshotSafety.lastSuccessAt,
+          ageMs: snapshotSafety.ageMs,
+          detail: snapshotSafety.detail || null,
+          note: 'Read-only position snapshots are used only for duplicate-entry safety, never as fills or exit confirmations'
+        });
+      }
+      return null;
+    }
+
+    if (snapshotSafety.configured && snapshotSafety.trusted) {
+      const occupiedSymbols = new Set(positions
+        .filter(row => Math.abs(Number(row?.qty) || 0) > 0)
+        .map(row => String(row?.symbol || '').toUpperCase()));
+      const snapshotOnly = snapshotSafety.openPositions.filter(position =>
+        !occupiedSymbols.has(String(position.symbol || '').toUpperCase())
+      );
+      positions = positions.concat(snapshotOnly);
+    }
+
     try {
       const cutoff = new Date(Date.now() - SIGNAL_RESERVATION_TTL_MS).toISOString();
       const pendingSignals = await db.select(
@@ -2347,7 +2432,7 @@ export class DeltaEngine {
     const unrealized = account.positions.reduce((s, p) => s + n(p.unrealized_pnl), 0);
     const closed = trades || [];
     const realized = closed.reduce((s, t) => s + n(t.net_pnl), 0);
-    const feesToday = closed.filter(t => String(t.closed_at || '').slice(0, 10) === today()).reduce((s, t) => s + n(t.fees), 0);
+    const feesToday = closed.filter(t => indiaDateKey(t.closed_at) === today()).reduce((s, t) => s + n(t.fees), 0);
     const idle = candidatesText(this.lastSignals);
     await this.updateEngineState({
       equity: account.equity, available_balance: account.available, realized_pnl: realized,
@@ -2378,6 +2463,14 @@ export class DeltaEngine {
       positions: positions.filter(position => position.origin === 'TRADETRON' && n(position.qty) > 0).length,
       reservedSignals: positions.filter(position => position.origin === 'SIGNAL_RESERVATION').length,
       signalReservationTtlMs: SIGNAL_RESERVATION_TTL_MS,
+      tradetronEntrySafety: {
+        configured: this.lastTradetronEntrySafety?.configured === true,
+        trusted: this.lastTradetronEntrySafety?.trusted ?? null,
+        reason: this.lastTradetronEntrySafety?.reason || null,
+        lastSuccessAt: this.lastTradetronEntrySafety?.lastSuccessAt || null,
+        ageMs: Number.isFinite(this.lastTradetronEntrySafety?.ageMs) ? this.lastTradetronEntrySafety.ageMs : null,
+        openPositionCount: this.lastTradetronEntrySafety?.trusted === true ? this.lastTradetronEntrySafety.positionCount : null
+      },
       tradetronRouting: {
         bridgeConfigured,
         configuredRoutes: configuredBridgeCount,
