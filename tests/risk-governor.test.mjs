@@ -27,6 +27,19 @@ test('missing risk observations remain UNKNOWN instead of displaying false PASS'
   assert.equal(gate(rows, 'Margin / min size'), GATE_UNKNOWN);
 });
 
+test('route and entry are blocked when Tradetron position snapshots are untrusted', () => {
+  const rows = buildRiskGovernorGates({
+    selected: { symbol: 'BTCUSD', strategy: 'MOMENTUM', stage: 'CONFIRMED', score: 92 },
+    health: { workerLeaseActive: true, exchangeHealthy: true, tickFresh: true },
+    positions: null,
+    routedSymbols: ['BTCUSD'],
+    routeDataVerified: true,
+    entrySafetyTrusted: false
+  });
+  assert.equal(gate(rows, 'Tradetron futures route'), GATE_BLOCK);
+  assert.equal(gate(rows, 'Duplicate symbol'), GATE_UNKNOWN);
+});
+
 test('observed values can pass only the gate they actually verify', () => {
   const rows = buildRiskGovernorGates({
     selected: {
@@ -75,6 +88,20 @@ test('explicit backend blocker takes precedence over a low/missing observed valu
   assert.equal(gate(rows, 'Spread'), GATE_BLOCK);
   assert.equal(gate(rows, '5m range <= 3 ATR'), GATE_BLOCK);
   assert.equal(gate(rows, 'Fresh closed candles'), GATE_BLOCK);
+});
+
+test('a pending-reservation duplicate blocker stays BLOCK even with no open position row', () => {
+  const rows = buildRiskGovernorGates({
+    selected: {
+      symbol: 'PAXGUSD',
+      strategy: 'MOMENTUM',
+      stage: 'CONFIRMED',
+      score: 99,
+      blocked_reasons: ['Duplicate symbol']
+    },
+    positions: []
+  });
+  assert.equal(gate(rows, 'Duplicate symbol'), GATE_BLOCK);
 });
 
 test('an open position blocks the duplicate-symbol check', () => {

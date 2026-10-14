@@ -1,5 +1,6 @@
 import { CONFIG } from '../../server/config.js';
 import { select, updateReturning } from '../../server/db.js';
+import { GRID_MAX_POSITION_CHOICES, GRID_RISK_PER_TRADE_CHOICES, GRID_DAILY_LOSS_CHOICES, GRID_MOMENTUM_PAUSE_CHOICES } from '../../shared/grid-settings.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ success: false, error: 'POST only' });
@@ -111,8 +112,8 @@ export default async function handler(req, res) {
       }
       if (body.gridMaxPositions !== undefined) {
         const value = Number(body.gridMaxPositions);
-        if (![3, 4].includes(value)) {
-          return res.status(400).json({ success: false, error: 'Grid max positions must be 3 or 4.' });
+        if (!GRID_MAX_POSITION_CHOICES.includes(value)) {
+          return res.status(400).json({ success: false, error: 'Grid max positions must be 1, 3 or 4. Tradetron bridge mode still limits the live simulation to one net position.' });
         }
         if (gridPositions.length > value) {
           return res.status(409).json({ success: false, error: 'Grid max positions cannot be lower than the current open position count.' });
@@ -121,21 +122,21 @@ export default async function handler(req, res) {
       }
       if (body.gridRiskPerTradePct !== undefined) {
         const value = Number(body.gridRiskPerTradePct);
-        if (![1, 1.25, 1.5].includes(value)) {
-          return res.status(400).json({ success: false, error: 'Grid per-trade risk target must be 1%, 1.25% or 1.5%.' });
+        if (!GRID_RISK_PER_TRADE_CHOICES.includes(value)) {
+          return res.status(400).json({ success: false, error: 'Grid per-trade risk target must be 0.30%, 0.50%, 0.75% or 1.00%.' });
         }
         patch.grid_risk_per_trade_pct = value;
       }
       if (body.gridDailyLossPct !== undefined) {
         const value = Number(body.gridDailyLossPct);
-        if (![2, 2.25, 2.5].includes(value)) {
+        if (!GRID_DAILY_LOSS_CHOICES.includes(value)) {
           return res.status(400).json({ success: false, error: 'Grid daily loss limit must be 2%, 2.25% or 2.5%.' });
         }
         patch.grid_daily_loss_pct = value;
       }
       if (body.gridMomentumPausePct !== undefined) {
         const value = Number(body.gridMomentumPausePct);
-        if (![2.5, 2.75, 3].includes(value)) {
+        if (!GRID_MOMENTUM_PAUSE_CHOICES.includes(value)) {
           return res.status(400).json({ success: false, error: 'Grid momentum pause must be 2.5%, 2.75% or 3%.' });
         }
         patch.grid_momentum_pause_pct = value;

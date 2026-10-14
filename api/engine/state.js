@@ -1,10 +1,11 @@
 import { CONFIG } from '../../server/config.js';
 import { count, select } from '../../server/db.js';
+import { protectEngineState } from '../../server/engine-state-privacy.js';
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate');
   try {
-    const [settings, positions, signals, signalCache, marketCache, optionCache, trades, logs, ledger, counters, daily, signalOrders, tradetronEvents, signalOrderCount, signalSentCount, signalPendingCount, signalExpiredCount, signalFailedCount, tradetronEventCount] = await Promise.all([
+    const [settings, positions, signals, signalCache, marketCache, optionCache, trades, logs, ledger, counters, daily, signalOrders, tradetronEvents, signalOrderCount, signalSentCount, signalPendingCount, signalExpiredCount, signalFailedCount, tradetronEventCount, tradeRowCount, ledgerRowCount] = await Promise.all([
       select('dd_settings', 'id=eq.1&select=*'),
       CONFIG.signalOnly ? select('dd_positions', 'origin=eq.TRADETRON&qty=gt.0&order=updated_at.desc') : select('dd_positions', 'qty=gt.0&order=updated_at.desc'),
       select('dd_signals', 'order=captured_at.desc&limit=200'),
@@ -40,6 +41,14 @@ export default async function handler(req, res) {
       }),
       count('dd_tradetron_events', 'select=event_id').catch(error => {
         console.error('[engine/state] exact Tradetron event count unavailable:', error.message);
+        return null;
+      }),
+      count('dd_trades', 'select=id').catch(error => {
+        console.error('[engine/state] exact closed-trade row count unavailable:', error.message);
+        return null;
+      }),
+      count('dd_rotation_ledger', 'select=execution_id').catch(error => {
+        console.error('[engine/state] exact rotation-ledger row count unavailable:', error.message);
         return null;
       })
     ]);
@@ -96,7 +105,7 @@ export default async function handler(req, res) {
       ? workerRouting.optionsRouteConfigured === true
       : CONFIG.tradetronOptionsBridgeEnabled && !!CONFIG.tradetronOptionsAuthToken;
 
-    return res.status(200).json({
+    return res.status(200).json(protectEngineState({
       success: true, environment: CONFIG.environment,
       executionCoverage: {
         routedFuturesSymbols: routedFuturesSymbols.length,
@@ -115,7 +124,10 @@ export default async function handler(req, res) {
       positions: positions || [], signals: signals || [],
       signalCache: signalCache || [], marketCache: marketCache || [], optionCache: optionCache || [],
       trades: trades || [], logs: logs || [], ledger: ledger || [], counters: counters?.[0] || null,
-      daily: daily?.[0] || null, signalOrders: signalOrders || [],
+      daily: daily?.[0] || null,
+      tradeRowCount: tradeRowCount == null ? null : Number(tradeRowCount),
+      ledgerRowCount: ledgerRowCount == null ? null : Number(ledgerRowCount),
+      signalOrders: signalOrders || [],
       signalOrderCount: signalOrderCount == null ? null : Number(signalOrderCount),
       signalOrderStats: {
         total: signalOrderCount == null ? null : Number(signalOrderCount),
@@ -132,7 +144,7 @@ export default async function handler(req, res) {
       tradetronDeveloperNotificationSync,
       tradetronDeveloperNotifications,
       tradetronDeveloperPnlHistory
-    });
+    }, privateDataAuthorized));
   } catch (e) {
     return res.status(503).json({ success: false, environment: CONFIG.environment, error: e.message });
   }

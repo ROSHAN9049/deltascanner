@@ -1,4 +1,6 @@
-Delta Scanner deployment refresh: 2026-10-12
+Delta Scanner deployment refresh: 2026-10-14
+Build v2.0.20261014.02: fix Grid control/backend validation mismatch; honor explicit closed Tradetron rows; correct India-local date filters; prevent incomplete trade and rotation ledgers from being shown as complete P&L; redact private account state and sizing unless authenticated; use fresh, complete read-only Tradetron position snapshots to block duplicate entries without inventing fills or exits; add regression tests.
+Build v2.0.20261014.01: clarify Tradetron callback limitations and separate read-only API snapshots from authenticated fills and closed trades.
 Build v2.0.20261012.07: batch actionable full-universe signal-history writes to reduce serial database latency before refreshing the scanner cache and routing decisions.
 Build v2.0.20261012.06: align default Grid trade risk with Momentum/Scalping at 0.30%, update the Grid risk selector, and add a whole-contract budget regression test.
 Build v2.0.20261012.05: calculate Grid risk against the actual rung stop, execute Grid stop exits, reject bottom-rung entries with poor reward/risk, and prevent same-tick re-entry after stop-outs.

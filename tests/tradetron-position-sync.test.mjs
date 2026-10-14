@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import {
   normalizeTradetronPosition,
   normalizeTradetronPositions,
-  summarizeTradetronSnapshots
+  summarizeTradetronSnapshots,
+  buildTradetronSnapshotRiskState,
+  TRADETRON_SNAPSHOT_MAX_AGE_MS
 } from '../src/tradetron-position-sync.js';
 
 test('normalizes open Delta Exchange legs from Tradetron snapshot rows', () => {
@@ -53,6 +55,19 @@ test('closed zero-quantity snapshot rows do not become open positions', () => {
   assert.equal(summary.openCount, 0);
   assert.equal(summary.openRows.length, 0);
   assert.equal(summary.reportedPnl, -46.52);
+});
+
+test('explicit closed status overrides a nonzero historical quantity', () => {
+  const summary = summarizeTradetronSnapshots([{
+    deployment_id: 7,
+    open_positions: 0,
+    positions: [
+      { instrument_symbol: 'DIN-AMDBUSD 31 DEC 2099 XX 0', quantity: 2, status: 'Exited', open: true },
+      { instrument_symbol: 'DIN-LINKUSD 31 DEC 2099 XX 0', quantity: -1, position_status: 'Closed' }
+    ]
+  }]);
+  assert.equal(summary.openCount, 0);
+  assert.equal(summary.openRows.length, 0);
 });
 
 test('deployment open count remains visible if individual positions are hidden', () => {
@@ -144,4 +159,78 @@ test('aggregates multiple deployment P&L values only when the API declares one c
   assert.equal(summary.reportedPnl, 6);
   assert.equal(summary.reportedPnlCurrencyCode, 'USD');
   assert.equal(summary.openPnl, 3.5);
+});
+
+function freshSnapshotFixture(overrides = {}) {
+  const now = Date.parse('2026-10-14T04:00:00.000Z');
+  return {
+    now,
+    syncState: {
+      status: 'OK',
+      last_success_at: new Date(now - 30_000).toISOString(),
+      details: { deploymentIds: [7] }
+    },
+    deployments: [{
+      deployment_id: 7,
+      deployment_name: 'Signal Bridge',
+      status: 'Active',
+      positions_hidden: false,
+      last_success_at: new Date(now - 30_000).toISOString(),
+      open_positions: 1,
+      positions: [{
+        instrument_symbol: 'DIN-BTCUSD 31 DEC 2099 XX 0',
+        quantity: -2,
+        open: true
+      }]
+    }],
+    ...overrides
+  };
+}
+
+test('fresh complete Tradetron snapshots become duplicate-entry blockers, not exit-ledger rows', () => {
+  const fixture = freshSnapshotFixture();
+  const result = buildTradetronSnapshotRiskState(fixture);
+  assert.equal(result.trusted, true);
+  assert.equal(result.positionCount, 1);
+  assert.equal(result.openPositions[0].symbol, 'BTCUSD');
+  assert.equal(result.openPositions[0].side, 'SELL');
+  assert.equal(result.openPositions[0].qty, 2);
+  assert.equal(result.openPositions[0].origin, 'TRADETRON_API_SNAPSHOT');
+  assert.equal(result.openPositions[0].snapshot_only, true);
+});
+
+test('stale, failed, or partial snapshots block duplicate-risk trust', () => {
+  const fixture = freshSnapshotFixture();
+  assert.equal(buildTradetronSnapshotRiskState({
+    ...fixture, syncState: { ...fixture.syncState, last_success_at: new Date(fixture.now - TRADETRON_SNAPSHOT_MAX_AGE_MS - 1).toISOString() }
+  }).reason, 'SNAPSHOT_STALE');
+  assert.equal(buildTradetronSnapshotRiskState({
+    ...fixture, syncState: { ...fixture.syncState, status: 'PARTIAL' }
+  }).reason, 'SYNC_NOT_OK');
+  assert.equal(buildTradetronSnapshotRiskState({
+    ...fixture, deployments: []
+  }).reason, 'DEPLOYMENT_COVERAGE_INCOMPLETE');
+});
+
+test('hidden or unreconciled open position counts fail closed', () => {
+  const fixture = freshSnapshotFixture();
+  assert.equal(buildTradetronSnapshotRiskState({
+    ...fixture, deployments: fixture.deployments.map(row => ({ ...row, positions_hidden: true }))
+  }).reason, 'POSITIONS_HIDDEN');
+  assert.equal(buildTradetronSnapshotRiskState({
+    ...fixture, deployments: fixture.deployments.map(row => ({ ...row, open_positions: 3 }))
+  }).reason, 'OPEN_POSITION_COUNT_UNRECONCILED');
+});
+
+test('an open API row without signed quantity or side is not treated as a verified blocker', () => {
+  const fixture = freshSnapshotFixture({
+    deployments: [{
+      deployment_id: 7,
+      positions_hidden: false,
+      last_success_at: new Date(Date.parse('2026-10-14T03:59:30Z')).toISOString(),
+      open_positions: 1,
+      positions: [{ instrument_symbol: 'DIN-BTCUSD 31 DEC 2099 XX 0', open: true }]
+    }]
+  });
+  assert.equal(buildTradetronSnapshotRiskState(fixture).reason, 'OPEN_POSITION_ROW_UNVERIFIED');
 });
