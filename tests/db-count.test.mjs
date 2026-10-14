@@ -4,6 +4,7 @@ import { exactCountFromResponse } from '../server/db.js';
 
 test('reads an exact total from Supabase Content-Range', () => {
   assert.equal(exactCountFromResponse('0-0/0'), 0);
+  assert.equal(exactCountFromResponse('*/0'), 0);
   assert.equal(exactCountFromResponse('0-0/1'), 1);
   assert.equal(exactCountFromResponse('0-0/200'), 200);
 });
