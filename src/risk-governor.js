@@ -27,7 +27,9 @@ function status(known, passes) {
 }
 
 function hasReason(reasonText, pattern) {
-  return reasonText.toLowerCase().includes(pattern.toLowerCase());
+  const normalizedReason = reasonText.toLowerCase().replace(/[_-]+/g, ' ');
+  const normalizedPattern = pattern.toLowerCase().replace(/[_-]+/g, ' ');
+  return normalizedReason.includes(normalizedPattern);
 }
 
 export function buildRiskGovernorGates({
