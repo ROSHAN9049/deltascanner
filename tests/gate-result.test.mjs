@@ -57,8 +57,10 @@ test('blocking and unknown gates are both displayed', () => {
   assert.ok(display.includes('VOLUME'));
 });
 
-test('malformed or unrecognized results never become PASS and never crash', () => {
+test('malformed, unnamed or unrecognized results never become PASS and never crash', () => {
   assert.notEqual(blockersDisplay([{ gate: 'RISK', result: 'SKIP' }]), 'PASS — NO BLOCKERS');
   assert.notEqual(blockersDisplay([null]), 'PASS — NO BLOCKERS');
+  assert.notEqual(blockersDisplay([{ result: 'PASS' }]), 'PASS — NO BLOCKERS');
+  assert.match(blockersDisplay([{ result: 'PASS' }]), /MISSING GATE NAME/);
   assert.match(gateTooltip(null), /UNKNOWN_GATE/);
 });
