@@ -306,7 +306,7 @@ function MarketTable({ market, signals, routedSymbols = [] }) {
     const x = map.get(m.symbol) || {};
     const best = [x.MOMENTUM,x.SCALPING].filter(Boolean).sort((a,b) => num(b.score)-num(a.score))[0];
     const routeInfo = routeStatusForSymbol(m.symbol, [x.MOMENTUM, x.SCALPING], routedSymbols);
-    return <tr key={m.symbol}><td>{i+1}</td><td className="symbol">{m.symbol}</td><td>{price(m.mark_price || m.close)}</td><td className={num(m.ltp_change_24h)>=0?'up':'down'}>{pct(m.ltp_change_24h)}</td><td>{money(m.turnover_usd)}</td><td>{fmtMultiplier(best?.volume_spike)}</td><td><span className={x.MOMENTUM?.side==='BUY'?'up':x.MOMENTUM?.side==='SELL'?'down':''}>{x.MOMENTUM ? (safeNum(x.MOMENTUM.score) === null ? 'NO DATA' : safeNum(x.MOMENTUM.score).toFixed(0)) + ' ' + (x.MOMENTUM.side || '') : '—'}</span></td><td><span className={x.SCALPING?.side==='BUY'?'up':x.SCALPING?.side==='SELL'?'down':''}>{x.SCALPING ? (safeNum(x.SCALPING.score) === null ? 'NO DATA' : safeNum(x.SCALPING.score).toFixed(0)) + ' ' + (x.SCALPING.side || '') : '—'}</span></td><td>{best?.trend || '—'} / {best?.confirm_trend || '—'}</td><td>{price(best?.support)}</td><td>{price(best?.resistance)}</td><td><b className={best?.stage==='CONFIRMED'?'up':best?.stage==='SETUP'?'warn':'muted'}>{best?.stage || 'WATCH'}</b></td><td><button className={`tiny ${routeInfo.tone}`} disabled title={routeInfo.title}>{routeInfo.label}</button></td></tr>;
+    return <tr key={m.symbol}><td>{i+1}</td><td className="symbol">{m.symbol}</td><td>{price(m.mark_price || m.close)}</td><td className={safeNum(m.ltp_change_24h) === null ? 'muted' : safeNum(m.ltp_change_24h) >= 0 ? 'up' : 'down'}>{pct(m.ltp_change_24h)}</td><td>{money(m.turnover_usd)}</td><td>{fmtMultiplier(best?.volume_spike)}</td><td><span className={x.MOMENTUM?.side==='BUY'?'up':x.MOMENTUM?.side==='SELL'?'down':''}>{x.MOMENTUM ? (safeNum(x.MOMENTUM.score) === null ? 'NO DATA' : safeNum(x.MOMENTUM.score).toFixed(0)) + ' ' + (x.MOMENTUM.side || '') : '—'}</span></td><td><span className={x.SCALPING?.side==='BUY'?'up':x.SCALPING?.side==='SELL'?'down':''}>{x.SCALPING ? (safeNum(x.SCALPING.score) === null ? 'NO DATA' : safeNum(x.SCALPING.score).toFixed(0)) + ' ' + (x.SCALPING.side || '') : '—'}</span></td><td>{best?.trend || '—'} / {best?.confirm_trend || '—'}</td><td>{price(best?.support)}</td><td>{price(best?.resistance)}</td><td><b className={best?.stage==='CONFIRMED'?'up':best?.stage==='SETUP'?'warn':'muted'}>{best?.stage || 'WATCH'}</b></td><td><button className={`tiny ${routeInfo.tone}`} disabled title={routeInfo.title}>{routeInfo.label}</button></td></tr>;
   })}</tbody></table></div></>;
 }
 
@@ -541,9 +541,9 @@ function TradeHistory({ trades = [], title }) {
         <td>{t.qty == null ? '—' : fmtQty(t.qty)}</td>
         <td>{t.fees == null ? '—' : money(t.fees)}</td>
         <td>{t.gross_pnl == null ? '—' : money(t.gross_pnl)}</td>
-        <td className={t.net_pnl == null ? 'muted' : num(t.net_pnl)>=0?'up':'down'}>{t.net_pnl == null ? '—' : money(t.net_pnl)}</td>
+        <td className={safeNum(t.net_pnl) === null ? 'muted' : safeNum(t.net_pnl) >= 0 ? 'up' : 'down'}>{t.net_pnl == null ? '—' : money(t.net_pnl)}</td>
         <td>{t.pnl_pct == null ? '—' : pct(t.pnl_pct)}</td>
-        <td>{t.r_multiple == null ? '—' : num(t.r_multiple).toFixed(2)}</td>
+        <td>{safeNum(t.r_multiple) === null ? '—' : safeNum(t.r_multiple).toFixed(2)}</td>
         <td>{t.exit_reason || '—'}</td>
         <td>{t.result || '—'}</td>
       </tr>)}
