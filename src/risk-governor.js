@@ -56,7 +56,7 @@ export function buildRiskGovernorGates({
     ? new Set(routedSymbols.map(item => String(item || '').trim().toUpperCase()).filter(Boolean))
     : null;
   const routeBlockedByReason = hasReason(reasonText, 'route unavailable');
-  const routeStatus = routeBlockedByReason
+  const routeStatus = routeBlockedByReason || entrySafetyTrusted === false
     ? GATE_BLOCK
     : routeDataVerified && routeSet && symbol
       ? status(true, routeSet.has(symbol))
@@ -149,7 +149,7 @@ export function buildRiskGovernorGates({
 
   return [
     gateResult({ gate: 'Signal CONFIRMED', result: confirmed, observedValue: selected.stage || null, unit: 'stage', threshold: minimumScore, thresholdUnit: 'minimum score', blockReason: confirmed === GATE_BLOCK ? 'Signal stage/score does not satisfy entry criteria' : '' }),
-    gateResult({ gate: 'Tradetron futures route', result: routeStatus, observedValue: symbol || null, unit: 'symbol', blockReason: routeStatus === GATE_BLOCK ? 'Symbol has no usable Tradetron route' : routeStatus === GATE_UNKNOWN ? 'Worker-confirmed route data unavailable' : '' }),
+    gateResult({ gate: 'Tradetron futures route', result: routeStatus, observedValue: symbol || null, unit: 'symbol', blockReason: routeStatus === GATE_BLOCK ? (entrySafetyTrusted === false ? 'Fresh complete Tradetron position snapshot is unavailable; new entries fail closed' : 'Symbol has no usable Tradetron route') : routeStatus === GATE_UNKNOWN ? 'Worker-confirmed route data unavailable' : '' }),
     gateResult({ gate: 'Fee + spread vs 1R', result: feeStatus, observedValue: feeRiskRatio, unit: 'R', threshold: feeRiskLimit, thresholdUnit: 'R', blockReason: feeStatus === GATE_BLOCK ? 'Fee/spread cost exceeds configured limit or is explicitly blocked' : feeStatus === GATE_UNKNOWN ? 'Cost ratio missing' : '' }),
     gateResult({ gate: '24h anti-chase', result: antiChaseStatus, observedValue: change24h, unit: '%', threshold: side === 'BUY' ? 15 : -15, thresholdUnit: '%', blockReason: antiChaseStatus === GATE_BLOCK ? 'Anti-chase gate blocked' : antiChaseStatus === GATE_UNKNOWN ? '24h change or side missing' : '' }),
     gateResult({ gate: '5m range <= 3 ATR', result: rangeStatus, observedValue: rangeAtr, unit: 'ATR', threshold: 3, thresholdUnit: 'ATR', blockReason: rangeStatus === GATE_BLOCK ? 'Range gate blocked' : rangeStatus === GATE_UNKNOWN ? 'Comparable range/ATR observation unavailable' : '' }),
