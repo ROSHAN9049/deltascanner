@@ -15,10 +15,10 @@ const tabs = [
   ['pnl','PNL'],['paper','Paper Trading'],['testnet','Legacy Demo OFF'],['live','Live Trading'],['analytics','Analytics'],['settings','Settings']
 ];
 const num = v => Number.isFinite(+v) ? +v : 0;
-const pct = v => (num(v) >= 0 ? '+' : '') + num(v).toFixed(2) + '%';
+const pct = v => { const n = safeNum(v); return n === null ? '—' : (n >= 0 ? '+' : '') + n.toFixed(2) + '%'; };
 const USD_INR_RATE = Math.max(1, Number(import.meta.env.VITE_USD_INR_RATE || 96.83));
-const money = v => '₹' + (num(v) * USD_INR_RATE).toLocaleString('en-IN', { maximumFractionDigits: 2 });
-const price = v => num(v).toLocaleString('en-IN', { maximumFractionDigits: 8 });
+const money = v => { const n = safeNum(v); return n === null ? '—' : '₹' + (n * USD_INR_RATE).toLocaleString('en-IN', { maximumFractionDigits: 2 }); };
+const price = v => { const n = safeNum(v); return n === null ? '—' : n.toLocaleString('en-IN', { maximumFractionDigits: 8 }); };
 const isPass = v => v === true;
 const latestSignals = list => {
   const m = new Map();
@@ -481,7 +481,7 @@ function Positions({ rows = [], tradetronDeployments = [], snapshotsLocked = fal
       {snapshotsLocked ? <p className="apiStateWarn">Private Tradetron snapshot is locked. Enter the configured ENGINE_SECRET in Settings to load current Tradetron rows.</p> : null}
     </div>
     <div className="tablewrap"><table>
-      <thead><tr><th>TIME / SNAPSHOT</th><th>COIN</th><th>STRATEGY / SOURCE</th><th>SIDE</th><th>QTY</th><th>ENTRY</th><th>MARK</th><th>VALUE</th><th>API P&amp;L RAW (UNIT UNVERIFIED)</th><th>SL</th><th>TP1</th><th>TP</th><th>PROTECTION</th><th>ORIGIN</th></tr></thead>
+      <thead><tr><th>TIME / SNAPSHOT</th><th>COIN</th><th>STRATEGY / SOURCE</th><th>SIDE</th><th>QTY</th><th>ENTRY</th><th>MARK</th><th>API VALUE RAW (UNIT UNVERIFIED)</th><th>API P&amp;L RAW (UNIT UNVERIFIED)</th><th>SL</th><th>TP1</th><th>TP</th><th>PROTECTION</th><th>ORIGIN</th></tr></thead>
       <tbody>{displayRows.map((p, index) => {
         const snapshotOnly = p.snapshot_only === true;
         const protection = snapshotOnly ? 'NOT IN API' : (p.protection_verified ? 'VERIFIED' : (p.stop_price != null || p.tp_price != null ? 'LEVELS PRESENT' : 'NOT CONFIRMED'));
@@ -494,8 +494,8 @@ function Positions({ rows = [], tradetronDeployments = [], snapshotsLocked = fal
           <td>{p.qty == null ? '—' : fmtQty(p.qty)}</td>
           <td>{p.entry_price == null ? '—' : price(p.entry_price)}</td>
           <td>{p.current_price == null ? '—' : price(p.current_price)}</td>
-          <td>{p.snapshot_value == null ? '—' : money(p.snapshot_value)}</td>
-          <td>{p.snapshot_pnl == null ? '—' : price(p.snapshot_pnl)}</td>
+          <td>{p.snapshot_value == null ? '—' : fmtRawPrice(p.snapshot_value, 2)}</td>
+          <td>{p.snapshot_pnl == null ? '—' : fmtRawPrice(p.snapshot_pnl, 2)}</td>
           <td>{p.stop_price == null ? '—' : price(p.stop_price)}</td>
           <td>{p.tp1_price == null ? '—' : price(p.tp1_price)}</td>
           <td>{p.tp_price == null ? '—' : price(p.tp_price)}</td>
