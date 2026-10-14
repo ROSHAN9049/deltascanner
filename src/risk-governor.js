@@ -62,31 +62,38 @@ export function buildRiskGovernorGates({
 
   const feeRiskRatio = safeNum(selected.fee_risk_ratio);
   const feeRiskLimit = selected.strategy === 'SCALPING' ? 0.25 : 0.20;
-  const feeStatus = feeRiskRatio !== null
-    ? status(true, feeRiskRatio <= feeRiskLimit)
-    : hasReason(reasonText, 'fee') || hasReason(reasonText, 'spread')
-      ? GATE_BLOCK
-      : GATE_UNKNOWN;
+  const feeStatus = hasReason(reasonText, 'fee') || hasReason(reasonText, 'cost ratio')
+    ? GATE_BLOCK
+    : feeRiskRatio !== null
+      ? status(true, feeRiskRatio <= feeRiskLimit)
+      : hasReason(reasonText, 'spread')
+        ? GATE_BLOCK
+        : GATE_UNKNOWN;
 
   const change24h = safeNum(selected.change_24h);
   const side = String(selected.side || '').toUpperCase();
   const antiChaseKnown = change24h !== null && (side === 'BUY' || side === 'SELL');
   const antiChasePass = side === 'BUY' ? change24h <= 15 : side === 'SELL' ? change24h >= -15 : false;
-  const antiChaseStatus = antiChaseKnown
-    ? status(true, antiChasePass)
-    : hasReason(reasonText, 'anti-chase') ? GATE_BLOCK : GATE_UNKNOWN;
+  const antiChaseStatus = hasReason(reasonText, 'anti-chase')
+    ? GATE_BLOCK
+    : antiChaseKnown
+      ? status(true, antiChasePass)
+      : GATE_UNKNOWN;
 
   const rangeAtr = safeNum(details.rangeAtrRatio ?? details.range_atr_ratio);
-  const rangeStatus = rangeAtr !== null
-    ? status(true, rangeAtr <= 3)
-    : hasReason(reasonText, '5m range') || hasReason(reasonText, 'range >')
-      ? GATE_BLOCK
+  const rangeBlocked = hasReason(reasonText, '5m range') || hasReason(reasonText, 'range >');
+  const rangeStatus = rangeBlocked
+    ? GATE_BLOCK
+    : rangeAtr !== null
+      ? status(true, rangeAtr <= 3)
       : GATE_UNKNOWN;
 
   const emaDistance = safeNum(details.emaDistanceAtr ?? details.ema21DistanceAtr ?? details.ema_distance_atr);
-  const emaStatus = emaDistance !== null
-    ? status(true, emaDistance <= 2.5)
-    : hasReason(reasonText, 'price > 2.50') ? GATE_BLOCK : GATE_UNKNOWN;
+  const emaStatus = hasReason(reasonText, 'price > 2.50')
+    ? GATE_BLOCK
+    : emaDistance !== null
+      ? status(true, emaDistance <= 2.5)
+      : GATE_UNKNOWN;
 
   const btcOverride = details.btcRegimeOverride === true;
   const btcStatus = btcOverride
@@ -94,14 +101,18 @@ export function buildRiskGovernorGates({
     : hasReason(reasonText, 'BTC regime') ? GATE_BLOCK : GATE_UNKNOWN;
 
   const spreadPct = safeNum(selected.spread_pct);
-  const spreadStatus = spreadPct !== null
-    ? status(true, spreadPct <= 0.35)
-    : hasReason(reasonText, 'spread') ? GATE_BLOCK : GATE_UNKNOWN;
+  const spreadStatus = hasReason(reasonText, 'spread >') || hasReason(reasonText, 'spread too wide')
+    ? GATE_BLOCK
+    : spreadPct !== null
+      ? status(true, spreadPct <= 0.35)
+      : hasReason(reasonText, 'spread') ? GATE_BLOCK : GATE_UNKNOWN;
 
   const candlesFresh = details.candlesFresh;
-  const freshnessStatus = typeof candlesFresh === 'boolean'
-    ? status(true, candlesFresh)
-    : hasReason(reasonText, 'fresh closed candles') ? GATE_BLOCK : GATE_UNKNOWN;
+  const freshnessStatus = hasReason(reasonText, 'fresh closed candles') || hasReason(reasonText, 'stale candle')
+    ? GATE_BLOCK
+    : typeof candlesFresh === 'boolean'
+      ? status(true, candlesFresh)
+      : GATE_UNKNOWN;
 
   const healthValues = [
     health?.workerLeaseActive,
