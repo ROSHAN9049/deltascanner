@@ -212,8 +212,10 @@ function Dashboard({ market, settings, health, trades, positions, accountDataPro
     (count, deployment) => count + (Array.isArray(deployment?.positions) ? deployment.positions.length : 0), 0
   );
   const tradetronMirror = summarizeTradetronSnapshots(developerSnapshots);
-  const routeSafetyBlocked = executionCoverage?.tradetronEntrySafety?.configured === true && executionCoverage?.tradetronEntrySafety?.trusted !== true;
-  const routeSafetyReason = executionCoverage?.tradetronEntrySafety?.reason || 'SNAPSHOT_NOT_VERIFIED';
+  const routeSafetyRequired = Number(executionCoverage?.configuredFuturesRoutes || 0) > 0;
+  const routeSafetyBlocked = routeSafetyRequired && executionCoverage?.tradetronEntrySafety?.trusted !== true;
+  const routeSafetyReason = executionCoverage?.tradetronEntrySafety?.reason ||
+    (executionCoverage?.tradetronEntrySafety?.configured === true ? 'SNAPSHOT_NOT_VERIFIED' : 'DEVELOPER_API_NOT_CONFIGURED');
   const eventPositionSymbols = (positions || []).filter(position => Math.abs(Number(position?.qty) || 0) > 0).map(position => String(position?.symbol || '').toUpperCase());
   const openPositionSymbols = new Set([...eventPositionSymbols, ...tradetronMirror.openRows.map(position => String(position.symbol || '').toUpperCase())].filter(Boolean));
   const snapshotPositionRows = tradetronMirror.openRows.map(position => ({
@@ -270,7 +272,7 @@ function Dashboard({ market, settings, health, trades, positions, accountDataPro
     <Panel title="Tradetron Execution Coverage">
       <section className="cards">
         <Card label="LIVE FUTURES SCANNED" value={market?.length || 0} sub="Delta India perpetual tickers" />
-        <Card label="ENTRY SAFETY" value={routeSafetyBlocked ? "BLOCKED" : executionCoverage?.tradetronEntrySafety?.configured === true ? "VERIFIED" : "API SNAPSHOT OFF"} sub={routeSafetyBlocked ? "New scanner entries stopped: " + routeSafetyReason : executionCoverage?.tradetronEntrySafety?.configured === true ? "Fresh full TT position snapshot used for duplicate checks only" : "No API snapshot guard; event-ledger checks only"}/>
+        <Card label="ENTRY SAFETY" value={routeSafetyBlocked ? "BLOCKED" : routeSafetyRequired && executionCoverage?.tradetronEntrySafety?.trusted === true ? "VERIFIED" : "NO FUTURES ROUTE"} sub={routeSafetyBlocked ? "New scanner entries stopped: " + routeSafetyReason : routeSafetyRequired ? "Fresh complete TT snapshot is trusted for duplicate checks only" : "No active futures bridge route reported"}/>
         <Card label="FUTURES SYMBOLS ROUTED" value={activeRoutedCount + ' / ' + (market?.length || 0)} sub={(executionCoverage?.configuredFuturesRoutes ?? 0) + ' worker-confirmed bridge(s); ' + (executionCoverage?.routingStatusSource === 'worker-heartbeat' ? 'live worker telemetry' : 'API config fallback')} />
         <Card label="PENDING SIGNAL RESERVATIONS" value={accountDataProtected ? 'LOCKED' : executionCoverage?.reservedSignals ?? '—'} sub={accountDataProtected ? 'private signal state' : 'unconfirmed signals within ' + (executionCoverage?.signalReservationTtlMinutes || 15) + 'm; not open positions'} />
         <Card label="SCAN-ONLY SYMBOLS" value={unroutedCount} sub="No Tradetron entry can be routed for these symbols" />
