@@ -25,9 +25,9 @@ async function call(path, init) {
 }
 export const select = (table, query) => call(table + '?' + (query || ''));
 export function exactCountFromResponse(contentRange) {
-  const value = String(contentRange || '').split('/').at(-1);
-  if (!value || value === '*') return null;
-  const total = Number(value);
+  const match = String(contentRange || '').trim().match(/^\d+-\d+\/(\d+)$/);
+  if (!match) return null;
+  const total = Number(match[1]);
   return Number.isSafeInteger(total) && total >= 0 ? total : null;
 }
 export async function count(table, query) {
