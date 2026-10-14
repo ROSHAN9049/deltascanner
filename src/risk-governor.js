@@ -38,6 +38,7 @@ export function buildRiskGovernorGates({
   positions = null,
   routedSymbols = null,
   routeDataVerified = false,
+  entrySafetyTrusted = null,
   scoreMin = 80
 } = {}) {
   if (!selected || typeof selected !== 'object') return [];
