@@ -32,14 +32,18 @@ function normalizeGate(input) {
     };
   }
 
-  const gate = cleanText(input.gate || input.name) || 'UNKNOWN_GATE';
+  const gateName = cleanText(input.gate || input.name);
+  const gate = gateName || 'UNKNOWN_GATE';
   const rawResult = cleanText(input.result).toUpperCase();
   const validResult = VALID_RESULTS.has(rawResult);
-  const result = validResult ? rawResult : GATE_UNKNOWN;
+  const validRecord = validResult && Boolean(gateName);
+  const result = validRecord ? rawResult : GATE_UNKNOWN;
   const observedValue = input.observedValue ?? input.observed_value ?? null;
   const threshold = input.threshold ?? input.limit ?? null;
   const blockReason = cleanText(input.blockReason || input.block_reason) ||
-    (validResult ? '' : ('UNRECOGNIZED RESULT' + (rawResult ? ': ' + rawResult : '')));
+    (!gateName
+      ? 'MISSING GATE NAME'
+      : validResult ? '' : ('UNRECOGNIZED RESULT' + (rawResult ? ': ' + rawResult : '')));
 
   return {
     gate,
@@ -49,7 +53,7 @@ function normalizeGate(input) {
     threshold,
     thresholdUnit: cleanText(input.thresholdUnit || input.threshold_unit || input.unit),
     blockReason,
-    validRecord: validResult
+    validRecord
   };
 }
 
