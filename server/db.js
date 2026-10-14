@@ -25,7 +25,9 @@ async function call(path, init) {
 }
 export const select = (table, query) => call(table + '?' + (query || ''));
 export function exactCountFromResponse(contentRange) {
-  const match = String(contentRange || '').trim().match(/^\d+-\d+\/(\d+)$/);
+  const value = String(contentRange || '').trim();
+  if (value === '*/0') return 0;
+  const match = value.match(/^\d+-\d+\/(\d+)$/);
   if (!match) return null;
   const total = Number(match[1]);
   return Number.isSafeInteger(total) && total >= 0 ? total : null;
