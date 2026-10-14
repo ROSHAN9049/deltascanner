@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { safeNum } from './formatters.js';
+import { GRID_BRIDGE_MAX_POSITIONS, GRID_RISK_PER_TRADE_CHOICES, normalizeGridRiskPerTradePct } from '../shared/grid-settings.js';
 
 const n = value => safeNum(value) ?? 0;
 const usd = value => {
@@ -27,8 +28,8 @@ function parseDraft(settings) {
     gridLowerPrice: settings.grid_lower_price ? String(settings.grid_lower_price) : '',
     gridUpperPrice: settings.grid_upper_price ? String(settings.grid_upper_price) : '',
     gridLevelsCount: Number(settings.grid_levels_count || 10),
-    gridMaxPositions: Number(settings.grid_max_positions || 1),
-    gridRiskPerTradePct: Number(settings.grid_risk_per_trade_pct ?? 0.3),
+    gridMaxPositions: GRID_BRIDGE_MAX_POSITIONS,
+    gridRiskPerTradePct: normalizeGridRiskPerTradePct(settings.grid_risk_per_trade_pct ?? 0.3),
     gridDailyLossPct: Number(settings.grid_daily_loss_pct || 2),
     gridMomentumPausePct: Number(settings.grid_momentum_pause_pct || 2.5),
     gridReduceAfterLosses: settings.grid_reduce_after_losses !== false
@@ -108,7 +109,7 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
     <section className="cards">
       <div className="card"><small>GRID ENGINE</small><strong>{stateStatus.replaceAll('_', ' ')}</strong><span>Dedicated BTC/ETH grid; independent from momentum/scalping.</span></div>
       <div className="card"><small>INSTRUMENT / LIVE PRICE</small><strong>{symbol}</strong><span>{currentPrice > 0 ? price(currentPrice) : 'Waiting for market price'} · Delta public market feed</span></div>
-      <div className="card"><small>OPEN GRID POSITIONS</small><strong>{positions.length} / {safeNum(settings.grid_max_positions) ?? draft.gridMaxPositions}</strong><span>{usd(openRisk === null && positions.length === 0 ? 0 : openRisk)} estimated remaining-to-grid-stop risk.</span></div>
+      <div className="card"><small>OPEN GRID POSITIONS</small><strong>{positions.length} / {GRID_BRIDGE_MAX_POSITIONS}</strong><span>{usd(openRisk === null && positions.length === 0 ? 0 : openRisk)} estimated remaining-to-grid-stop risk.</span></div>
       <div className="card"><small>GRID PNL · LIVE OFFLINE MIRROR</small><strong className={realizedGridPnl === null ? 'muted' : realizedGridPnl >= 0 ? 'up' : 'down'}>{usd(realizedGridPnl)}</strong><span>Realized after estimated maker fees and slippage; simulator only.</span></div>
       <div className="card"><small>DAY PNL</small><strong className={totalDayPnl === null ? 'muted' : totalDayPnl >= 0 ? 'up' : 'down'}>{usd(totalDayPnl)}</strong><span>Realized + mark-to-market; daily stop {Number(settings.grid_daily_loss_pct || 2).toFixed(1)}%.</span></div>
       <div className="card"><small>STRATEGY EQUITY</small><strong>{usd(currentEquity)}</strong><span>Drawdown {drawdownPct === null ? 'NO DATA' : drawdownPct.toFixed(2) + '%'} · hard stop 5%.</span></div>
@@ -122,8 +123,8 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
         <label>Lower Price<input type="number" inputMode="decimal" min="0" step="any" placeholder="Set lower grid boundary" value={draft.gridLowerPrice} onChange={e => update('gridLowerPrice', e.target.value)} disabled={lockedConfig}/></label>
         <label>Upper Price<input type="number" inputMode="decimal" min="0" step="any" placeholder="Set upper grid boundary" value={draft.gridUpperPrice} onChange={e => update('gridUpperPrice', e.target.value)} disabled={lockedConfig}/></label>
         <label>Grid Levels<select value={draft.gridLevelsCount} onChange={e => update('gridLevelsCount', Number(e.target.value))} disabled={lockedConfig}>{[8,9,10,11,12].map(v => <option key={v} value={v}>{v} levels</option>)}</select></label>
-        <label>Max Open Positions<select value={draft.gridMaxPositions} onChange={e => update('gridMaxPositions', Number(e.target.value))} disabled={lockedConfig}><option value={1}>1 position · Tradetron safe mode</option></select></label>
-        <label>Target Risk / Trade<select value={draft.gridRiskPerTradePct} onChange={e => update('gridRiskPerTradePct', Number(e.target.value))}><option value={0.3}>0.30% · same as Momentum/Scalping</option><option value={0.5}>0.50% target</option><option value={0.75}>0.75% target</option><option value={1}>1.0% target</option></select></label>
+        <label>Max Open Positions<select value={draft.gridMaxPositions} onChange={e => update('gridMaxPositions', Number(e.target.value))} disabled={lockedConfig}><option value={GRID_BRIDGE_MAX_POSITIONS}>1 position · Tradetron safe mode</option></select></label>
+        <label>Target Risk / Trade<select value={draft.gridRiskPerTradePct} onChange={e => update('gridRiskPerTradePct', Number(e.target.value))}>{GRID_RISK_PER_TRADE_CHOICES.map(value => <option key={value} value={value}>{value.toFixed(2)}%{value === 0.3 ? ' · same as Momentum/Scalping' : ' target'}</option>)}</select></label>
         <label>Daily Loss Limit<select value={draft.gridDailyLossPct} onChange={e => update('gridDailyLossPct', Number(e.target.value))}><option value={2}>2.0%</option><option value={2.25}>2.25%</option><option value={2.5}>2.5%</option></select></label>
         <label>Momentum Pause<select value={draft.gridMomentumPausePct} onChange={e => update('gridMomentumPausePct', Number(e.target.value))}><option value={2.5}>2.5% one-way move</option><option value={2.75}>2.75% one-way move</option><option value={3}>3.0% one-way move</option></select></label>
       </div>
