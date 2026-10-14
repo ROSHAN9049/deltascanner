@@ -47,7 +47,7 @@ const fieldMap = {
   gridReduceAfterLosses: 'gridReduceAfterLosses'
 };
 
-export default function GridStrategy({ settings = {}, market = [], busy = false, mutate }) {
+export default function GridStrategy({ settings = {}, market = [], busy = false, mutate, accountDataProtected = false }) {
   const [draft, setDraft] = useState(() => parseDraft(settings));
   const gridState = settings.grid_state && typeof settings.grid_state === 'object'
     ? settings.grid_state : {};
@@ -87,6 +87,8 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
   const lockedConfig = positions.length > 0;
   const stateStatus = gridState.status || 'OFF';
   const lastTrade = trades[0];
+
+  if (accountDataProtected) return <Panel title="Grid Strategy · Protected"><div className="lockedText">Grid position state, simulated trades, equity and risk locks are private. Enter the configured engine key in Settings before reviewing or changing Grid configuration.</div></Panel>;
 
   const update = (key, value) => setDraft(old => ({ ...old, [key]: value }));
   const payload = Object.fromEntries(Object.entries(draft).map(([key, value]) => {
