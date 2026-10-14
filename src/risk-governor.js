@@ -133,9 +133,13 @@ export function buildRiskGovernorGates({
     String(position?.symbol || '').trim().toUpperCase() === symbol &&
     (safeNum(position?.qty ?? position?.quantity) ?? 0) !== 0
   );
-  const duplicateStatus = positionsKnown
-    ? status(true, !duplicatePosition)
-    : GATE_UNKNOWN;
+  // The backend can reserve a symbol while a signal is pending even when no
+  // position row exists yet; preserve that explicit blocker in the inspector.
+  const duplicateStatus = hasReason(reasonText, 'duplicate symbol')
+    ? GATE_BLOCK
+    : positionsKnown
+      ? status(true, !duplicatePosition)
+      : GATE_UNKNOWN;
 
   const qty = safeNum(selected.qty_contracts);
   const notional = safeNum(selected.notional);
