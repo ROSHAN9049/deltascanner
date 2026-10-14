@@ -10,6 +10,8 @@ test('India date key follows Asia/Kolkata across UTC midnight', () => {
 
 test('invalid timestamps remain unknown instead of becoming a date', () => {
   assert.equal(indiaDateKey('not-a-date'), null);
+  assert.equal(indiaDateKey(undefined), null);
+  assert.equal(indiaDateKey(null), null);
   assert.equal(isSameIndiaDate('not-a-date', '2026-10-14T00:00:00Z'), false);
 });
 
