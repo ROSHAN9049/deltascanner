@@ -24,6 +24,12 @@ async function call(path, init) {
   return txt ? JSON.parse(txt) : null;
 }
 export const select = (table, query) => call(table + '?' + (query || ''));
+export function exactCountFromResponse(contentRange) {
+  const value = String(contentRange || '').split('/').at(-1);
+  if (!value || value === '*') return null;
+  const total = Number(value);
+  return Number.isSafeInteger(total) && total >= 0 ? total : null;
+}
 export async function count(table, query) {
   assertDb();
   const key = CONFIG.supabaseAdminKey;
@@ -40,14 +46,11 @@ export async function count(table, query) {
   const res = await fetch(baseUrl + '/rest/v1/' + path, { headers });
   const txt = await res.text();
   if (!res.ok) throw new Error('Supabase count ' + res.status + ': ' + txt.slice(0, 500));
-  const range = res.headers.get('content-range') || '';
-  const totalText = range.split('/').at(-1);
-  if (totalText && totalText !== '*') {
-    const total = Number(totalText);
-    if (Number.isSafeInteger(total) && total >= 0) return total;
-  }
-  const rows = txt ? JSON.parse(txt) : [];
-  return Array.isArray(rows) ? rows.length : 0;
+  const total = exactCountFromResponse(res.headers.get('content-range'));
+  // Range 0-0 intentionally returns at most one row. If Supabase does not
+  // provide an exact Content-Range total, the response body cannot prove the
+  // table count; return unknown rather than falsely claiming a complete ledger.
+  return total;
 }
 export const insert = (table, row) => call(table, { method: 'POST', headers: { Prefer: 'return=minimal' }, body: JSON.stringify(row) });
 // Insert a list of history rows in one PostgREST request. Use for a complete
