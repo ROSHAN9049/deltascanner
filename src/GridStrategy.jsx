@@ -97,7 +97,7 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
   }));
   const readyToStart = valid && n(draft.gridLowerPrice) > 0 && n(draft.gridUpperPrice) > n(draft.gridLowerPrice);
   const gridSafetyBlocked = gridEntrySafety?.configured === true && gridEntrySafety?.blocked === true;
-  const gridSafetyReason = gridEntrySafety?.reason || 'TRAD ETRON_POSITION_SNAPSHOT_UNVERIFIED';
+  const gridSafetyReason = gridEntrySafety?.reason || 'SNAPSHOT_NOT_VERIFIED';
   const save = () => {
     if (!readyToStart) return;
     mutate({ ...payload, gridEnabled: settings.grid_enabled === true });
