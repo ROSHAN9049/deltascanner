@@ -4,7 +4,12 @@ import { safeNum } from './formatters.js';
 const n = value => safeNum(value) ?? 0;
 const usd = value => {
   const amount = safeNum(value);
-  return amount === null ? '—' : '
+  return amount === null ? '—' : '$' + amount.toLocaleString('en-US', { maximumFractionDigits: 2 });
+};
+const price = value => {
+  const amount = safeNum(value);
+  return amount !== null && amount > 0 ? amount.toLocaleString('en-US', { maximumFractionDigits: 8 }) : '—';
+};
 
 function levelsFor(lower, upper, count) {
   const lo = n(lower), hi = n(upper), length = Math.round(n(count));
