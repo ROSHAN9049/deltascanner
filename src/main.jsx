@@ -6,6 +6,8 @@ import { routeStatusForSymbol } from './market-route-status.js';
 import { getTradetronDiagnosticDetails } from './tradetron-diagnostics.js';
 import { summarizeTradetronSnapshots } from './tradetron-position-sync.js';
 import { DEFAULT_VISIBLE_MARKET_LIMIT, selectVisibleMarketRows, selectVisibleSignalRows } from './market-view.js';
+import { assessDeltaRange, fmtMultiplier, fmtPrice as fmtRawPrice, fmtRsi, safeNum } from './formatters.js';
+import { blockersDisplay, gateTooltip } from './gate-result.js';
 
 const tabs = [
   ['dashboard','Dashboard'],['rotation','Profit Rotation'],['momentum','Momentum'],['momentum-history','Mom History'],
@@ -221,7 +223,7 @@ function Dashboard({ market, settings, health, trades, positions, signals, signa
       <Card label="FEES TODAY" value={trades.some(trade => String(trade.closed_at || '').slice(0,10) === new Date().toISOString().slice(0,10)) ? money(settings.fees_today) : '—'} sub="waiting for today's authenticated fill fees"/>
       <Card label="OPEN POSITIONS" value={positions.length} sub="webhook-confirmed position ledger"/>
       <Card label="TT OPEN LEGS" value={developerDataProtected ? 'LOCKED' : developerApiConfigured ? tradetronMirror.openCount : '—'} sub="current Tradetron Developer API snapshot"/>
-      <Card label="TT P&L SNAPSHOT" value={developerDataProtected ? 'LOCKED' : (developerApiConfigured && tradetronMirror.reportedPnl !== null ? money(tradetronMirror.reportedPnl) : '—')} sub="reported deployment P&L; shown separately"/>
+      <Card label="TRADETRON SNAPSHOT P&L" value={developerDataProtected ? 'LOCKED' : (developerApiConfigured && tradetronMirror.reportedPnl !== null ? fmtRawPrice(tradetronMirror.reportedPnl, 2) : 'NO DATA')} sub="Raw Tradetron deployment P&L; unit/currency unverified, separate from scanner ledger"/>
       <Card label="TT SNAPSHOT ROWS" value={developerDataProtected ? 'LOCKED' : developerApiConfigured ? developerSnapshotRowCount : '—'} sub="raw API rows, including closed rows"/>
       <Card label="TT SIGNAL RECORDS" value={signalOrderStats?.total ?? '—'} sub="all states including expired; not fills"/>
       <Card label="TT SENT" value={signalOrderStats?.sent ?? '—'} sub="API accepted historically; may now be expired; not fills"/>
@@ -235,7 +237,7 @@ function Dashboard({ market, settings, health, trades, positions, signals, signa
         <Card label="PENDING SIGNAL RESERVATIONS" value={executionCoverage?.reservedSignals ?? '—'} sub={'unconfirmed signals within ' + (executionCoverage?.signalReservationTtlMinutes || 15) + 'm; not open positions'} />
         <Card label="SCAN-ONLY SYMBOLS" value={unroutedCount} sub="No Tradetron entry can be routed for these symbols" />
         <Card label="OPTIONS UNDERLYINGS" value="BTC · ETH · GOLD" sub="Gold contract symbol: XAUT" />
-        <Card label="OPTIONS EXECUTION" value={executionCoverage?.optionsRouteConfigured ? 'CONFIGURED' : 'LOCKED'} sub={executionCoverage?.optionsRouteConfigured ? 'Dedicated options route detected; validate in Live Offline' : 'Options bridge and its Tradetron token are not configured'} />
+        <Card label="OPTIONS EXECUTION" value="LOCKED" sub={executionCoverage?.optionsRouteConfigured ? 'Route is configured, but Options entry signals remain hard-locked pending verification' : 'Dedicated route not configured; Options remain analysis-only'}/>
       </section>
       <div className="lockedText"><b>Worker-confirmed futures basket:</b> {(executionCoverage?.routedSymbols || []).join(', ') || 'No worker-confirmed symbols yet'}<br/><small>Routing source: {executionCoverage?.routingStatusSource || 'API config fallback'}{executionCoverage?.routingObservedAt ? ' · heartbeat ' + new Date(executionCoverage.routingObservedAt).toLocaleTimeString('en-IN') : ''}. Unsupported symbols remain scan-only; direct Delta orders stay locked.</small></div>
       {unavailableMarketSymbols.length ? <div className="lockedText"><b>Configured but absent from the current live Delta market:</b> {unavailableMarketSymbols.join(', ')}.<br/><small>These are not worker-confirmed routes and must stay scan-only until the exchange exposes a matching live contract. {polReplacementAvailable ? 'POLUSD is present in the live market feed but is not configured for this Tradetron basket; add matching POLUSD_el / POLUSD_es variables and entry conditions in the linked Tradetron strategy before adding POLUSD to the worker allowlist.' : 'Any replacement symbol must first be configured in the linked Tradetron strategy variables and entry conditions; do not force-route a stale symbol.'}</small></div> : null}
@@ -288,7 +290,7 @@ function MarketTable({ market, signals, routedSymbols = [] }) {
     const x = map.get(m.symbol) || {};
     const best = [x.MOMENTUM,x.SCALPING].filter(Boolean).sort((a,b) => num(b.score)-num(a.score))[0];
     const routeInfo = routeStatusForSymbol(m.symbol, [x.MOMENTUM, x.SCALPING], routedSymbols);
-    return <tr key={m.symbol}><td>{i+1}</td><td className="symbol">{m.symbol}</td><td>{price(m.mark_price || m.close)}</td><td className={num(m.ltp_change_24h)>=0?'up':'down'}>{pct(m.ltp_change_24h)}</td><td>{money(m.turnover_usd)}</td><td>{best ? num(best.volume_spike).toFixed(2) + 'x' : '—'}</td><td><span className={x.MOMENTUM?.side==='BUY'?'up':x.MOMENTUM?.side==='SELL'?'down':''}>{x.MOMENTUM ? num(x.MOMENTUM.score).toFixed(0) + ' ' + (x.MOMENTUM.side || '') : '—'}</span></td><td><span className={x.SCALPING?.side==='BUY'?'up':x.SCALPING?.side==='SELL'?'down':''}>{x.SCALPING ? num(x.SCALPING.score).toFixed(0) + ' ' + (x.SCALPING.side || '') : '—'}</span></td><td>{best?.trend || '—'} / {best?.confirm_trend || '—'}</td><td>{price(best?.support)}</td><td>{price(best?.resistance)}</td><td><b className={best?.stage==='CONFIRMED'?'up':best?.stage==='SETUP'?'warn':'muted'}>{best?.stage || 'WATCH'}</b></td><td><button className={`tiny ${routeInfo.tone}`} disabled title={routeInfo.title}>{routeInfo.label}</button></td></tr>;
+    return <tr key={m.symbol}><td>{i+1}</td><td className="symbol">{m.symbol}</td><td>{price(m.mark_price || m.close)}</td><td className={num(m.ltp_change_24h)>=0?'up':'down'}>{pct(m.ltp_change_24h)}</td><td>{money(m.turnover_usd)}</td><td>{fmtMultiplier(best?.volume_spike)}</td><td><span className={x.MOMENTUM?.side==='BUY'?'up':x.MOMENTUM?.side==='SELL'?'down':''}>{x.MOMENTUM ? num(x.MOMENTUM.score).toFixed(0) + ' ' + (x.MOMENTUM.side || '') : '—'}</span></td><td><span className={x.SCALPING?.side==='BUY'?'up':x.SCALPING?.side==='SELL'?'down':''}>{x.SCALPING ? num(x.SCALPING.score).toFixed(0) + ' ' + (x.SCALPING.side || '') : '—'}</span></td><td>{best?.trend || '—'} / {best?.confirm_trend || '—'}</td><td>{price(best?.support)}</td><td>{price(best?.resistance)}</td><td><b className={best?.stage==='CONFIRMED'?'up':best?.stage==='SETUP'?'warn':'muted'}>{best?.stage || 'WATCH'}</b></td><td><button className={`tiny ${routeInfo.tone}`} disabled title={routeInfo.title}>{routeInfo.label}</button></td></tr>;
   })}</tbody></table></div></>;
 }
 
