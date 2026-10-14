@@ -47,7 +47,6 @@ function publicHeartbeatRows(logs) {
             configuredRoutes: finiteNumber(routing.configuredRoutes),
             optionsRouteConfigured: routing.optionsRouteConfigured === true
           },
-          reservedSignals: finiteNumber(row.data.reservedSignals),
           signalReservationTtlMs: finiteNumber(row.data.signalReservationTtlMs),
           tradetronEntrySafety: row.data.tradetronEntrySafety && typeof row.data.tradetronEntrySafety === 'object'
             ? {
