@@ -47,7 +47,7 @@ const fieldMap = {
   gridReduceAfterLosses: 'gridReduceAfterLosses'
 };
 
-export default function GridStrategy({ settings = {}, market = [], busy = false, mutate, accountDataProtected = false }) {
+export default function GridStrategy({ settings = {}, market = [], busy = false, mutate, accountDataProtected = false, gridEntrySafety = null }) {
   const [draft, setDraft] = useState(() => parseDraft(settings));
   const gridState = settings.grid_state && typeof settings.grid_state === 'object'
     ? settings.grid_state : {};
@@ -96,6 +96,8 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
     return [fieldMap[key] || key, value];
   }));
   const readyToStart = valid && n(draft.gridLowerPrice) > 0 && n(draft.gridUpperPrice) > n(draft.gridLowerPrice);
+  const gridSafetyBlocked = gridEntrySafety?.configured === true && gridEntrySafety?.blocked === true;
+  const gridSafetyReason = gridEntrySafety?.reason || 'TRAD ETRON_POSITION_SNAPSHOT_UNVERIFIED';
   const save = () => {
     if (!readyToStart) return;
     mutate({ ...payload, gridEnabled: settings.grid_enabled === true });
@@ -132,8 +134,9 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
       </div>
       <label className="gridCheck"><input type="checkbox" checked={draft.gridReduceAfterLosses} onChange={e => update('gridReduceAfterLosses', e.target.checked)}/> Reduce position sizing by 50% after 2 consecutive losses</label>
       <div className="gridButtons">
+      {gridSafetyBlocked ? <div className="errorText">Grid new entries are blocked by Tradetron position safety ({gridSafetyReason}). A fresh, complete position snapshot is required, and an existing same-symbol position prevents a new Grid entry. Existing Grid positions continue to follow their own exit rules.</div> : null}
         <button className="action" disabled={busy || !readyToStart} onClick={save}>Save Configuration</button>
-        <button className="action gridStart" disabled={busy || !readyToStart || settings.grid_enabled === true || !!gridState.pausedReason} onClick={start}>Start Tradetron Live Offline</button>
+        <button className="action gridStart" disabled={busy || !readyToStart || settings.grid_enabled === true || !!gridState.pausedReason || gridSafetyBlocked} onClick={start}>Start Tradetron Live Offline</button>
         <button className="action" disabled={busy || settings.grid_enabled !== true} onClick={pause}>Pause New Entries</button>
         <button className="dangerBtn" disabled={busy || lockedConfig || !gridState.pausedReason || settings.emergency_stop === true || ['DAILY_LOSS_LIMIT','OVERALL_DRAWDOWN_STOP'].includes(gridState.pausedReason)} onClick={reset}>Reset Range / E-Stop</button>
       </div>
