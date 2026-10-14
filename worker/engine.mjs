@@ -313,7 +313,7 @@ export class DeltaEngine {
       priorState.positions.some(position => Math.abs(n(position?.qty)) > 0 && !!position?.bridgeExecutionId);
     const snapshotPositionOnGridSymbol = snapshotSafety.configured && snapshotSafety.trusted === true &&
       snapshotSafety.openPositions.some(position => String(position.symbol || '').toUpperCase() === symbol);
-    const snapshotEntryBlocked = snapshotSafety.configured && (
+    const snapshotEntryBlocked = tradetronMode && CONFIG.tradetronBridgeEnabled && (
       snapshotSafety.trusted !== true || (snapshotPositionOnGridSymbol && !localGridPositionOpen)
     );
     this.lastGridEntrySafety = {
@@ -2206,7 +2206,7 @@ export class DeltaEngine {
 
     const snapshotSafety = await this.getTradetronSnapshotRiskState();
     this.lastTradetronEntrySafety = snapshotSafety;
-    if (snapshotSafety.configured && !snapshotSafety.trusted) {
+    if (snapshotSafety.trusted !== true) {
       if (Date.now() - this.lastTradetronEntrySafetyLogAt >= 60000) {
         this.lastTradetronEntrySafetyLogAt = Date.now();
         await this.log('WARN', 'New Tradetron entries blocked: Developer API position snapshot is not trusted', {
