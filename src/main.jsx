@@ -249,7 +249,7 @@ function Dashboard({ market, settings, health, trades, positions, signals, signa
       <RiskGovernor signals={signals} health={health} positions={positions} onInspect={onInspect} inspect={inspect}/>
       <Panel title={'Signal Stages · ' + visibleStageCoinCount + ' coins · WATCH → SETUP → CONFIRMED'}>
         <div className="marketCount">Momentum and Scalping status for the same top {visibleStageCoinCount} coins shown in the market table. Missing snapshots are marked NO DATA; the full background scanner remains active.</div>
-        <div className="tablewrap"><table><thead><tr><th>COIN</th><th>ENG</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>QTY</th><th>NOTIONAL</th><th>RISK</th><th>READY</th><th>WHY BLOCKED</th></tr></thead><tbody>{visibleSignalStages.map(s => <tr key={s.symbol + ':' + s.strategy}><td className="symbol">{s.symbol}</td><td>{s.strategy === 'MOMENTUM' ? 'MOM' : 'SCALP'}</td><td>{s.snapshot_missing ? 'WATCH · NO DATA' : s.stage}</td><td className={s.side === 'BUY' ? 'up' : s.side === 'SELL' ? 'down' : 'muted'}>{s.side || '—'}</td><td><b>{s.snapshot_missing ? '—' : num(s.score).toFixed(0) + '/100'}</b></td><td>{s.snapshot_missing ? '—' : fmtQty(s.qty_contracts)}</td><td>{s.snapshot_missing ? '—' : money(s.notional)}</td><td>{s.snapshot_missing ? '—' : money(s.risk_usd)}</td><td className={s.snapshot_missing ? 'muted' : s.ready ? 'up' : 'down'}>{s.snapshot_missing ? '—' : s.ready ? 'YES' : 'NO'}</td><td className="muted">{s.snapshot_missing ? 'No signal snapshot available' : fmtReasons(s.blocked_reasons)}</td></tr>)}</tbody></table></div>
+        <div className="tablewrap"><table><thead><tr><th>COIN</th><th>ENG</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>QTY</th><th>NOTIONAL</th><th>RISK</th><th>READY</th><th>WHY BLOCKED</th></tr></thead><tbody>{visibleSignalStages.map(s => <tr key={s.symbol + ':' + s.strategy}><td className="symbol">{s.symbol}</td><td>{s.strategy === 'MOMENTUM' ? 'MOM' : 'SCALP'}</td><td>{s.snapshot_missing ? 'WATCH · NO DATA' : s.stage}</td><td className={s.side === 'BUY' ? 'up' : s.side === 'SELL' ? 'down' : 'muted'}>{s.side || '—'}</td><td><b>{s.snapshot_missing ? '—' : num(s.score).toFixed(0) + '/100'}</b></td><td>{s.snapshot_missing ? '—' : fmtQty(s.qty_contracts)}</td><td>{s.snapshot_missing ? '—' : money(s.notional)}</td><td>{s.snapshot_missing ? '—' : money(s.risk_usd)}</td><td className={s.snapshot_missing ? 'muted' : s.ready ? 'up' : 'down'}>{s.snapshot_missing ? '—' : s.ready ? 'YES' : 'NO'}</td><td className="blocker" title={Array.isArray(s.gate_results) ? s.gate_results.map(gateTooltip).join('\n') : 'Structured gate results are not supplied by the current worker; existing block reasons shown.'}>{s.snapshot_missing ? 'No signal snapshot available' : (Array.isArray(s.gate_results) ? blockersDisplay(s.gate_results) : fmtReasons(s.blocked_reasons))}</td></tr>)}</tbody></table></div>
       </Panel>
     </section>
     <Panel title="Signal Mode"><div className="idle">SCANNER → TRADETRON → LIVE OFFLINE <span>No orders are sent by the scanner. Tradetron owns Live Offline execution and position management.</span></div></Panel>
@@ -324,7 +324,25 @@ function RiskGovernor({ signals, health, positions, onInspect, inspect, scoreMin
 
 function EngineView({ engine, signals }) {
   const rows = signals.filter(x => x.strategy === engine).sort((a,b) => num(b.score)-num(a.score));
-  return <Panel title={engine + ' · Closed-Candle Signal Engine'}><div className="tablewrap"><table><thead><tr><th>COIN</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>RSI</th><th>VOL</th><th>EMA21</th><th>ATR</th><th>SL</th><th>TP1</th><th>TP</th><th>QTY</th><th>RISK</th><th>BLOCKED</th></tr></thead><tbody>{rows.map(x => <tr key={x.symbol}><td className="symbol">{x.symbol}</td><td>{x.stage}</td><td className={x.side==='BUY'?'up':x.side==='SELL'?'down':''}>{x.side || '—'}</td><td><b>{num(x.score).toFixed(0)}</b></td><td>{num(x.rsi).toFixed(1)}</td><td>{num(x.volume_spike).toFixed(2)}x</td><td>{price(x.ema21)}</td><td>{price(x.atr_5m)}</td><td>{price(x.stop_price)}</td><td>{price(x.tp1_price)}</td><td>{price(x.tp_price)}</td><td>{fmtQty(x.qty_contracts)}</td><td>{money(x.risk_usd)}</td><td className="muted">{fmtReasons(x.blocked_reasons)}</td></tr>)}</tbody></table></div></Panel>;
+  return <Panel title={engine + ' · Closed-Candle Signal Engine'}><div className="tablewrap"><table><thead><tr><th>COIN</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>RSI</th><th>VOL</th><th>EMA21</th><th>ATR</th><th>SL</th><th>TP1</th><th>TP</th><th>QTY</th><th>RISK</th><th>BLOCKED / GATES</th></tr></thead><tbody>{rows.map(x => {
+    const hasGateResults = Array.isArray(x.gate_results);
+    return <tr key={x.symbol}>
+      <td className="symbol">{x.symbol}</td>
+      <td>{x.stage || '—'}</td>
+      <td className={x.side==='BUY'?'up':x.side==='SELL'?'down':''}>{x.side || '—'}</td>
+      <td><b>{safeNum(x.score) === null ? '—' : safeNum(x.score).toFixed(0)}</b></td>
+      <td>{fmtRsi(x.rsi)}</td>
+      <td>{fmtMultiplier(x.volume_spike)}</td>
+      <td>{fmtRawPrice(x.ema21)}</td>
+      <td>{fmtRawPrice(x.atr_5m)}</td>
+      <td>{fmtRawPrice(x.stop_price)}</td>
+      <td>{fmtRawPrice(x.tp1_price)}</td>
+      <td>{fmtRawPrice(x.tp_price)}</td>
+      <td>{fmtQty(x.qty_contracts)}</td>
+      <td>{safeNum(x.risk_usd) === null ? '—' : money(x.risk_usd)}</td>
+      <td className="muted" title={hasGateResults ? x.gate_results.map(gateTooltip).join('\n') : 'Structured gate results are not supplied by the current worker; showing existing block reasons.'}>{hasGateResults ? blockersDisplay(x.gate_results) : fmtReasons(x.blocked_reasons)}</td>
+    </tr>;
+  })}</tbody></table></div></Panel>;
 }
 
 function OptionsView({ signals, settings, optionCache = [], executionCoverage = null }) {
@@ -486,11 +504,40 @@ function Positions({ rows = [], tradetronDeployments = [], snapshotsLocked = fal
     </table></div>
   </Panel>;
 }
+function HistoryEmptyState({ engine }) {
+  return <div className="lockedText">
+    <b>NO VERIFIED CLOSED TRADE RECORDS — {String(engine || 'TRADE').toUpperCase()}</b>
+    <p>Data source: authenticated closed-trade/fill records processed into the scanner ledger.</p>
+    <p>Status: Awaiting verified entry and exit records.</p>
+    <p className="warn">Tradetron Developer API snapshots and notification history do not by themselves prove individual fills or exits. The account's outbound close-callback path is not assumed to be available.</p>
+    <p className="muted">This table is intentionally empty. No estimated, synthetic, or fabricated trade records are shown.</p>
+  </div>;
+}
+
 function TradeHistory({ trades = [], title }) {
-  const emptyMessage = String(title || '').includes('Trade History')
-    ? 'No authenticated closed-trade records have reached the scanner yet. Tradetron status notifications and current-position snapshots are not treated as fills or exits.'
-    : 'No closed trades have been recorded for this strategy yet.';
-  return <Panel title={title}><div className="tablewrap"><table><thead><tr><th>TIME</th><th>COIN</th><th>MODE</th><th>STRATEGY</th><th>SIDE</th><th>ENTRY</th><th>EXIT</th><th>QTY</th><th>FEES</th><th>GROSS</th><th>NET</th><th>PNL%</th><th>R</th><th>EXIT REASON</th><th>RESULT</th></tr></thead><tbody>{trades.map(t => <tr key={t.execution_id}><td>{t.closed_at ? new Date(t.closed_at).toLocaleString('en-IN') : '—'}</td><td className="symbol">{t.symbol}</td><td>TRADetron OFFLINE</td><td>{t.strategy || '—'}</td><td className={t.side==='BUY'?'up':'down'}>{t.side || '—'}</td><td>{t.entry_price == null ? '—' : price(t.entry_price)}</td><td>{t.exit_price == null ? '—' : price(t.exit_price)}</td><td>{t.qty == null ? '—' : fmtQty(t.qty)}</td><td>{t.fees == null ? '—' : money(t.fees)}</td><td>{t.gross_pnl == null ? '—' : money(t.gross_pnl)}</td><td className={t.net_pnl == null ? 'muted' : num(t.net_pnl)>=0?'up':'down'}>{t.net_pnl == null ? '—' : money(t.net_pnl)}</td><td>{t.pnl_pct == null ? '—' : pct(t.pnl_pct)}</td><td>{t.r_multiple == null ? '—' : num(t.r_multiple).toFixed(2)}</td><td>{t.exit_reason || '—'}</td><td>{t.result || '—'}</td></tr>)}{!trades.length ? <tr><td colSpan={15}>{emptyMessage}</td></tr> : null}</tbody></table></div></Panel>;
+  const engine = String(title || 'Trade History').split('·')[0].replace(/history/i, '').trim() || 'Trade';
+  return <Panel title={title}>
+    <div className="tablewrap"><table><thead><tr><th>TIME</th><th>COIN</th><th>MODE</th><th>STRATEGY</th><th>SIDE</th><th>ENTRY</th><th>EXIT</th><th>QTY</th><th>FEES</th><th>GROSS</th><th>NET</th><th>PNL%</th><th>R</th><th>EXIT REASON</th><th>RESULT</th></tr></thead><tbody>
+      {trades.map(t => <tr key={t.execution_id}>
+        <td>{t.closed_at ? new Date(t.closed_at).toLocaleString('en-IN') : '—'}</td>
+        <td className="symbol">{t.symbol || '—'}</td>
+        <td>TRADETRON OFFLINE</td>
+        <td>{t.strategy || '—'}</td>
+        <td className={t.side==='BUY'?'up':t.side==='SELL'?'down':'muted'}>{t.side || '—'}</td>
+        <td>{t.entry_price == null ? '—' : price(t.entry_price)}</td>
+        <td>{t.exit_price == null ? '—' : price(t.exit_price)}</td>
+        <td>{t.qty == null ? '—' : fmtQty(t.qty)}</td>
+        <td>{t.fees == null ? '—' : money(t.fees)}</td>
+        <td>{t.gross_pnl == null ? '—' : money(t.gross_pnl)}</td>
+        <td className={t.net_pnl == null ? 'muted' : num(t.net_pnl)>=0?'up':'down'}>{t.net_pnl == null ? '—' : money(t.net_pnl)}</td>
+        <td>{t.pnl_pct == null ? '—' : pct(t.pnl_pct)}</td>
+        <td>{t.r_multiple == null ? '—' : num(t.r_multiple).toFixed(2)}</td>
+        <td>{t.exit_reason || '—'}</td>
+        <td>{t.result || '—'}</td>
+      </tr>)}
+      {!trades.length ? <tr><td colSpan={15}><HistoryEmptyState engine={engine}/></td></tr> : null}
+    </tbody></table></div>
+  </Panel>;
 }
 function PNL({ trades = [], settings = {} }) {
   const hasClosedTrades = trades.length > 0;
