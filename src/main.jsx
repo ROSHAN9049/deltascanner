@@ -218,8 +218,10 @@ function Dashboard({ market, settings, health, trades, positions, accountDataPro
   const loss = measuredTodayTrades.filter(t => safeNum(t.net_pnl) < 0).length;
   const unrealizedPnl = safeNum(settings.unrealized_pnl);
   const openPnlComplete = positions.length === 0 || unrealizedPnl !== null;
-  const totalPnlComplete = (trades.length === 0 || closedPnlComplete) && openPnlComplete &&
-    (trades.length > 0 || positions.length > 0);
+  // An open position without any authenticated closed-trade history cannot
+  // prove that realized P&L is zero. Require a complete realized ledger before
+  // showing a combined total.
+  const totalPnlComplete = closedPnlComplete && openPnlComplete;
   const totalPnl = totalPnlComplete
     ? (closedPnlComplete ? realizedPnl : 0) + (positions.length > 0 ? unrealizedPnl : 0)
     : null;
