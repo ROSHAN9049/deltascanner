@@ -812,8 +812,8 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
     </div>
     <section className="cards">
       <Card label="TT OPEN LEGS" value={configured ? mirror.openCount : '—'} sub={mirror.positionsHidden ? 'some position rows hidden by Tradetron' : 'reported by current API snapshot'} />
-      <Card label="TT DEPLOYMENT P&L" value={mirror.reportedPnl === null ? '—' : money(mirror.reportedPnl)} sub="Tradetron-reported snapshot; not scanner ledger P&L" />
-      <Card label="TT OPEN P&L" value={mirror.openPnl === null ? '—' : money(mirror.openPnl)} sub="only when API exposes explicit open/M2M P&L fields" />
+      <Card label="TT DEPLOYMENT P&L RAW" value={mirror.reportedPnl === null ? '—' : fmtRawPrice(mirror.reportedPnl, 2)} sub="Raw aggregate Tradetron value; unit/currency unverified, not scanner ledger P&L" />
+      <Card label="TT OPEN P&L RAW" value={mirror.openPnl === null ? '—' : fmtRawPrice(mirror.openPnl, 2)} sub="Raw sum of explicitly named M2M fields; currency/unit still unverified" />
       <Card label="TT DEPLOYMENTS" value={mirror.deployments} sub="returned by read-only API" />
     </section>
     {mirror.openPnl !== null && mirror.reportedPnl !== null && Math.abs(mirror.openPnl - mirror.reportedPnl) > Math.max(1, Math.abs(mirror.reportedPnl) * 0.1) ? <div className="lockedText apiStateWarn"><b>P&amp;L reconciliation warning:</b> verified open/M2M rows and deployment aggregate differ materially. Both are preserved as separate read-only API figures; neither is merged into the scanner's realized-trade ledger.</div> : null}
@@ -823,13 +823,13 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
         <td>{row.deployment_name || row.deployment_id}<br/><small className="muted">ID {row.deployment_id}</small></td>
         <td>{row.status || '—'}</td><td>{row.deployment_type || '—'}</td><td>{row.broker || '—'}</td>
         <td>{row.positions_hidden ? 'HIDDEN' : (row.open_positions ?? '—') + ' reported'}<br/><small className="muted">{Array.isArray(row.positions) ? row.positions.length : 0} raw row(s)</small></td>
-        <td className={num(row.pnl) >= 0 ? 'up' : 'down'}>{row.pnl == null ? '—' : money(row.pnl)}</td><td>{row.currency_code || '—'}</td>
+        <td className={safeNum(row.pnl) === null ? 'muted' : safeNum(row.pnl) >= 0 ? 'up' : 'down'}>{row.pnl == null || safeNum(row.pnl) === null ? '—' : fmtRawPrice(row.pnl, 2)}</td><td>{row.currency_code || 'UNIT UNVERIFIED'}</td>
         <td>{row.as_of ? new Date(row.as_of).toLocaleString('en-IN') : (row.last_success_at ? new Date(row.last_success_at).toLocaleString('en-IN') : '—')}</td>
       </tr>)}</tbody>
     </table></div> : <div className="lockedText">No deployment snapshot is available yet. A successful API response with an empty positions array means no visible position rows; it does not create placeholder trades.</div>}
     <div className="panelTitle"><h3>Current Open Positions · Tradetron</h3></div>
     {mirror.openRows.length ? <div className="tablewrap"><table>
-      <thead><tr><th>DEPLOYMENT</th><th>SYMBOL</th><th>SIDE</th><th>QTY</th><th>ENTRY</th><th>LTP / MARK</th><th>VALUE</th><th>API P&amp;L RAW (UNIT UNVERIFIED)</th><th>STATUS</th></tr></thead>
+      <thead><tr><th>DEPLOYMENT</th><th>SYMBOL</th><th>SIDE</th><th>QTY</th><th>ENTRY</th><th>LTP / MARK</th><th>VALUE RAW (UNIT UNVERIFIED)</th><th>API P&amp;L RAW (UNIT UNVERIFIED)</th><th>STATUS</th></tr></thead>
       <tbody>{mirror.openRows.map(row => <tr key={row.key}>
         <td>{row.deploymentName}<br/><small className="muted">ID {row.deploymentId ?? '—'}</small></td>
         <td className="symbol" title={row.rawSymbol}>{row.symbol}</td>
@@ -837,8 +837,8 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
         <td>{row.quantity === null ? '—' : fmtQty(row.quantity)}</td>
         <td>{row.entryPrice === null ? '—' : price(row.entryPrice)}</td>
         <td>{row.markPrice === null ? '—' : price(row.markPrice)}</td>
-        <td>{row.marketValue === null ? '—' : money(row.marketValue)}</td>
-        <td className={row.pnl === null ? 'muted' : 'mono'}>{row.pnl === null ? '—' : price(row.pnl)}</td>
+        <td>{fmtRawPrice(row.marketValue, 2)}</td>
+        <td className={safeNum(row.pnl) === null ? 'muted' : 'mono'}>{fmtRawPrice(row.pnl, 2)}</td>
         <td>{row.status}</td>
       </tr>)}</tbody>
     </table></div> : <div className="lockedText">
@@ -859,7 +859,7 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
     <div className="lockedText"><b>Trade history / exit reconciliation:</b> {sync?.status === 'OK' ? 'position snapshot is syncing.' : 'position snapshot is not confirmed fresh.'} Developer API notifications below provide a read-only event timeline, but they are not converted to fill/trade rows. Actual per-trade entry/exit prices, fees and realized P&amp;L still require a verified trade-detail endpoint or authenticated fill data. Generic row-level “pnl” fields are displayed raw with no currency conversion and are not summed as open P&amp;L unless the API identifies them as M2M/unrealized P&amp;L.</div>
     <div className="panelTitle"><h3>Recent Tradetron P&amp;L History · 5-minute snapshots</h3></div>
     <div className="lockedText"><span>Stored separately from closed-trade ledger. Repeated polls update the same five-minute bucket; old snapshots are pruned after 90 days.</span></div>
-    {pnlHistory.length ? <div className="tablewrap"><table><thead><tr><th>CAPTURED</th><th>DEPLOYMENT</th><th>REPORTED P&amp;L</th><th>OPEN / TOTAL</th><th>STATUS</th></tr></thead><tbody>{pnlHistory.slice(0, 36).map(row => <tr key={row.snapshot_id}><td>{row.captured_at ? new Date(row.captured_at).toLocaleString('en-IN') : '—'}</td><td>{row.deployment_name || row.deployment_id}<br/><small className="muted">ID {row.deployment_id}</small></td><td className={row.reported_pnl == null ? 'muted' : num(row.reported_pnl) >= 0 ? 'up' : 'down'}>{row.reported_pnl == null ? '—' : row.currency_code === 'USD' || !row.currency_code ? money(row.reported_pnl) : String(row.reported_pnl) + ' ' + row.currency_code}</td><td>{row.open_positions ?? '—'} / {row.total_positions ?? '—'}</td><td>{row.status || '—'}</td></tr>)}</tbody></table></div> : <div className="lockedText">No P&amp;L history snapshots recorded yet. The first bucket is written after the next successful Developer API sync once the new database migration is applied.</div>}
+    {pnlHistory.length ? <div className="tablewrap"><table><thead><tr><th>CAPTURED</th><th>DEPLOYMENT</th><th>REPORTED P&amp;L</th><th>OPEN / TOTAL</th><th>STATUS</th></tr></thead><tbody>{pnlHistory.slice(0, 36).map(row => <tr key={row.snapshot_id}><td>{row.captured_at ? new Date(row.captured_at).toLocaleString('en-IN') : '—'}</td><td>{row.deployment_name || row.deployment_id}<br/><small className="muted">ID {row.deployment_id}</small></td><td className={safeNum(row.reported_pnl) === null ? 'muted' : safeNum(row.reported_pnl) >= 0 ? 'up' : 'down'}>{safeNum(row.reported_pnl) === null ? '—' : row.currency_code ? row.currency_code + ' ' + fmtRawPrice(row.reported_pnl, 2) : fmtRawPrice(row.reported_pnl, 2) + ' (UNIT UNVERIFIED)'}</td><td>{row.open_positions ?? '—'} / {row.total_positions ?? '—'}</td><td>{row.status || '—'}</td></tr>)}</tbody></table></div> : <div className="lockedText">No P&amp;L history snapshots recorded yet. The first bucket is written after the next successful Developer API sync once the new database migration is applied.</div>}
     <div className="panelTitle"><h3>Tradetron Developer API Notifications · read-only timeline</h3></div>
     <div className="lockedText"><b className={notificationSync?.status === 'OK' ? 'apiStateOk' : notificationSync?.status === 'ERROR' ? 'apiStateError' : 'apiStateWarn'}>Notification sync: {notificationSync?.status || (configured ? 'WAITING FOR FIRST SYNC' : 'NOT CONFIGURED')}</b><br/><span>Last successful sync: {notificationSync?.last_success_at ? new Date(notificationSync.last_success_at).toLocaleString('en-IN') : '—'} · Returned notifications: {notificationSync?.notification_count ?? '—'}</span>{notificationSync?.last_error ? <p className="apiStateError">Notification sync warning/error: {notificationSync.last_error}</p> : null}<p>These are Tradetron account/deployment notices polled through the read-only Developer API. They are shown for audit context and are not proof of a fill; the scanner never converts notification text into a position or closed trade.</p></div>
     {notifications.length ? <div className="tablewrap"><table><thead><tr><th>TIME</th><th>DEPLOYMENT</th><th>TYPE</th><th>NOTICE</th></tr></thead><tbody>{notifications.slice(0, 30).map(row => <tr key={row.notification_id}><td>{row.event_at ? new Date(row.event_at).toLocaleString('en-IN') : (row.updated_at ? new Date(row.updated_at).toLocaleString('en-IN') : '—')}</td><td>{row.deployment_id || '—'}</td><td>{row.notification_type || 'NOTICE'}</td><td><b>{row.title || '—'}</b>{row.description ? <div className="muted">{row.description}</div> : null}</td></tr>)}</tbody></table></div> : <div className="lockedText">No notifications returned yet. If Tradetron returns a notification format the API client cannot recognize, the sync status will show an error rather than guessing the payload shape.</div>}
