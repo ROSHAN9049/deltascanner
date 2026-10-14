@@ -79,6 +79,9 @@ function App() {
   const trades = state?.trades || [];
   const positions = state?.positions || [];
   const accountDataProtected = state?.accountDataProtected === true;
+  const tradeHistoryComplete = state?.tradeRowCount != null && Number(state.tradeRowCount) === trades.length;
+  const rotationLedger = state?.ledger || [];
+  const rotationLedgerComplete = state?.ledgerRowCount != null && Number(state.ledgerRowCount) === rotationLedger.length;
   const signals = latestSignals(state?.signalCache || state?.signals || []);
   const today = indiaDateKey(new Date());
   const todayTrades = trades.filter(t => indiaDateKey(t.closed_at) === today);
@@ -168,21 +171,21 @@ function App() {
     <nav>{tabs.map(([id,label]) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}{id === 'live' ? ' 🔒' : ''}</button>)}</nav>
     {accountDataProtected ? <div className="danger">🔒 ACCOUNT DATA LOCKED — Enter ENGINE_SECRET in Settings to view private positions, closed trades, P&amp;L, rotation ledger, Grid state, and account-specific logs. Hidden data is not zero.</div> : null}
 
-    {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} trades={trades} positions={positions} accountDataProtected={accountDataProtected} signals={signals} signalOrderStats={state?.signalOrderStats || null} tradetronEvents={state?.tradetronEvents || []} executionCoverage={executionCoverage} developerSync={state?.tradetronDeveloperSync || null} developerSnapshots={state?.tradetronDeveloperSnapshots || []} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} developerDataProtected={state?.tradetronDeveloperDataProtected === true} developerNotifications={state?.tradetronDeveloperNotifications || []} developerNotificationSync={state?.tradetronDeveloperNotificationSync || null} developerPnlHistory={state?.tradetronDeveloperPnlHistory || []} onInspect={setInspect} inspect={selected} logs={state?.logs || []} />}
-    {tab === 'rotation' && <Rotation ledger={state?.ledger || []} accountDataProtected={accountDataProtected} />}
+    {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} trades={trades} positions={positions} accountDataProtected={accountDataProtected} signals={signals} signalOrderStats={state?.signalOrderStats || null} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.tradeRowCount ?? null} tradetronEvents={state?.tradetronEvents || []} executionCoverage={executionCoverage} developerSync={state?.tradetronDeveloperSync || null} developerSnapshots={state?.tradetronDeveloperSnapshots || []} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} developerDataProtected={state?.tradetronDeveloperDataProtected === true} developerNotifications={state?.tradetronDeveloperNotifications || []} developerNotificationSync={state?.tradetronDeveloperNotificationSync || null} developerPnlHistory={state?.tradetronDeveloperPnlHistory || []} onInspect={setInspect} inspect={selected} logs={state?.logs || []} />}
+    {tab === 'rotation' && <Rotation ledger={rotationLedger} accountDataProtected={accountDataProtected} ledgerComplete={rotationLedgerComplete} ledgerRowCount={state?.ledgerRowCount ?? null} />}
     {tab === 'momentum' && <EngineView engine="MOMENTUM" signals={signals} />}
-    {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" accountDataProtected={accountDataProtected} />}
+    {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'scalping' && <EngineView engine="SCALPING" signals={signals} />}
     {tab === 'grid' && <GridStrategy settings={settings} market={market} busy={busy} mutate={mutate} accountDataProtected={accountDataProtected} />}
     {tab === 'options' && <OptionsView signals={signals} settings={settings} optionCache={state?.optionCache || []} executionCoverage={state?.executionCoverage || null} />}
-    {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" accountDataProtected={accountDataProtected} />}
+    {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'positions' && <><Positions rows={positions} tradetronDeployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} snapshotsLocked={state?.tradetronDeveloperDataProtected === true} accountDataProtected={accountDataProtected} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
-    {tab === 'trade-history' && <><TradeHistory trades={trades} title="Trade History · Webhook-Synced Tradetron Records" accountDataProtected={accountDataProtected} /><TradetronActivity events={state?.tradetronEvents || []} signalStats={state?.signalOrderStats || null} webhookSecretConfigured={executionCoverage?.webhookSecretConfigured === true} accountDataProtected={accountDataProtected} /></>}
-    {tab === 'pnl' && <><PNL trades={trades} settings={settings} accountDataProtected={accountDataProtected} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
+    {tab === 'trade-history' && <><TradeHistory trades={trades} title="Trade History · Webhook-Synced Tradetron Records" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} /><TradetronActivity events={state?.tradetronEvents || []} signalStats={state?.signalOrderStats || null} webhookSecretConfigured={executionCoverage?.webhookSecretConfigured === true} accountDataProtected={accountDataProtected} /></>}
+    {tab === 'pnl' && <><PNL trades={trades} settings={settings} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.tradeRowCount ?? null} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
     {tab === 'paper' && <Panel title="Paper Trading"><div className="lockedText">Scanner is signal-only. No Delta order is placed here; Tradetron Live Offline runs the simulated execution.</div></Panel>}
     {tab === 'testnet' && <Testnet settings={settings} health={health} busy={busy} mutate={mutate} positions={positions} accountDataProtected={accountDataProtected} />}
     {tab === 'live' && <Panel title="Live Trading"><div className="liveLock">🔒 DIRECT DELTA EXECUTION LOCKED<br/><small>The scanner never sends production orders. Future live execution must be enabled manually in Tradetron.</small></div></Panel>}
-    {tab === 'analytics' && <Analytics trades={trades} accountDataProtected={accountDataProtected} />}
+    {tab === 'analytics' && <Analytics trades={trades} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.tradeRowCount ?? null} />}
     {tab === 'settings' && <Settings settings={settings} secret={secret} setSecret={v => { secretRef.current = v; setSecret(v); sessionStorage.setItem('delta-engine-secret', v); }} busy={busy} mutate={mutate} />}
     <footer>Delta Exchange India · production market feed · Tradetron signal-only · no direct orders · no guaranteed win rate</footer>
   </div>;
@@ -194,7 +197,7 @@ function Panel({ title, children }) {
 function Card({ label, value, sub }) {
   return <div className="card"><small>{label}</small><strong>{value}</strong><span>{sub}</span></div>;
 }
-function Dashboard({ market, settings, health, trades, positions, accountDataProtected = false, signals, signalOrderStats = null, tradetronEvents = [], executionCoverage = null, developerSync = null, developerSnapshots = [], developerApiConfigured = false, developerDataProtected = false, developerNotifications = [], developerNotificationSync = null, developerPnlHistory = [], onInspect, inspect, logs }) {
+function Dashboard({ market, settings, health, trades, positions, accountDataProtected = false, signals, signalOrderStats = null, tradesComplete = false, tradeRowCount = null, tradetronEvents = [], executionCoverage = null, developerSync = null, developerSnapshots = [], developerApiConfigured = false, developerDataProtected = false, developerNotifications = [], developerNotificationSync = null, developerPnlHistory = [], onInspect, inspect, logs }) {
   const today = indiaDateKey(new Date());
   const configuredRouteSymbols = new Set(executionCoverage?.routedSymbols || []);
   const activeRoutedCount = configuredRouteSymbols.size
@@ -211,7 +214,7 @@ function Dashboard({ market, settings, health, trades, positions, accountDataPro
     !(executionCoverage?.configuredRouteSymbols || []).includes('POLUSD');
   const todayTrades = trades.filter(t => String(t.closed_at || '').slice(0,10) === today);
   const closedPnlValues = trades.map(trade => safeNum(trade.net_pnl));
-  const closedPnlComplete = trades.length > 0 && closedPnlValues.every(value => value !== null);
+  const closedPnlComplete = trades.length > 0 && tradesComplete && closedPnlValues.every(value => value !== null);
   const realizedPnl = closedPnlComplete ? closedPnlValues.reduce((sum, value) => sum + value, 0) : null;
   const measuredTodayTrades = todayTrades.filter(trade => safeNum(trade.net_pnl) !== null);
   const wins = measuredTodayTrades.filter(t => safeNum(t.net_pnl) > 0).length;
@@ -225,7 +228,7 @@ function Dashboard({ market, settings, health, trades, positions, accountDataPro
   const totalPnl = totalPnlComplete
     ? (closedPnlComplete ? realizedPnl : 0) + (positions.length > 0 ? unrealizedPnl : 0)
     : null;
-  const todayFeesComplete = todayTrades.length > 0 && todayTrades.every(trade => safeNum(trade.fees) !== null);
+  const todayFeesComplete = tradesComplete && todayTrades.length > 0 && todayTrades.every(trade => safeNum(trade.fees) !== null);
   const todayFees = todayFeesComplete
     ? todayTrades.reduce((sum, trade) => sum + safeNum(trade.fees), 0)
     : null;
@@ -532,7 +535,7 @@ function HistoryEmptyState({ engine }) {
   </div>;
 }
 
-function TradeHistory({ trades = [], title, accountDataProtected = false }) {
+function TradeHistory({ trades = [], title, accountDataProtected = false, tradesComplete = false }) {
   if (accountDataProtected) return <Panel title={title}><div className="lockedText">Closed-trade records are private and currently locked. Enter ENGINE_SECRET in Settings to view history. No trades are being inferred from snapshots.</div></Panel>;
   const engine = String(title || 'Trade History').split('·')[0].replace(/history/i, '').trim() || 'Trade';
   return <Panel title={title}>
@@ -558,13 +561,13 @@ function TradeHistory({ trades = [], title, accountDataProtected = false }) {
     </tbody></table></div>
   </Panel>;
 }
-function PNL({ trades = [], settings = {}, accountDataProtected = false }) {
+function PNL({ trades = [], settings = {}, accountDataProtected = false, tradesComplete = false, tradeRowCount = null }) {
   if (accountDataProtected) return <Panel title="PNL · Protected"><div className="lockedText">Private realized P&amp;L, fees and scanner equity are hidden. Enter ENGINE_SECRET in Settings to inspect them. Tradetron snapshots remain a separate read-only source.</div></Panel>;
   const hasClosedTrades = trades.length > 0;
   const netValues = trades.map(trade => safeNum(trade.net_pnl));
   const feeValues = trades.map(trade => safeNum(trade.fees));
-  const netComplete = hasClosedTrades && netValues.every(value => value !== null);
-  const feesComplete = hasClosedTrades && feeValues.every(value => value !== null);
+  const netComplete = hasClosedTrades && tradesComplete && netValues.every(value => value !== null);
+  const feesComplete = hasClosedTrades && tradesComplete && feeValues.every(value => value !== null);
   const net = netComplete ? netValues.reduce((sum, value) => sum + value, 0) : null;
   const fees = feesComplete ? feeValues.reduce((sum, value) => sum + value, 0) : null;
   return <>
@@ -577,14 +580,14 @@ function PNL({ trades = [], settings = {}, accountDataProtected = false }) {
     {!hasClosedTrades ? <div className="lockedText">Realized P&amp;L and fees are not confirmed as zero; the scanner has no authenticated closed-trade rows yet. Tradetron deployment snapshots are displayed separately and are not merged into this ledger.</div> : null}
   </>;
 }
-function Rotation({ ledger = [], accountDataProtected = false }) {
+function Rotation({ ledger = [], accountDataProtected = false, ledgerComplete = false, ledgerRowCount = null }) {
   if (accountDataProtected) return <Panel title="Profit Rotation V3 Ledger · Protected"><div className="lockedText">Rotation ledger rows and amounts are private. Enter ENGINE_SECRET in Settings to view them.</div></Panel>;
   const nowDay = indiaDateKey(new Date());
   const todayLedger = ledger.filter(row => indiaDateKey(row.created_at) === nowDay);
   const releasedValues = todayLedger.map(row => safeNum(row.released));
   const retainedValues = todayLedger.map(row => safeNum(row.retained));
-  const releasedComplete = todayLedger.length > 0 && releasedValues.every(value => value !== null);
-  const retainedComplete = todayLedger.length > 0 && retainedValues.every(value => value !== null);
+  const releasedComplete = ledgerComplete && todayLedger.length > 0 && releasedValues.every(value => value !== null);
+  const retainedComplete = ledgerComplete && todayLedger.length > 0 && retainedValues.every(value => value !== null);
   const released = releasedComplete ? releasedValues.reduce((sum, value) => sum + value, 0) : null;
   const retained = retainedComplete ? retainedValues.reduce((sum, value) => sum + value, 0) : null;
   return <>
@@ -601,7 +604,7 @@ function Rotation({ ledger = [], accountDataProtected = false }) {
     </tr>)}</tbody></table></div></Panel>
   </>;
 }
-function Analytics({ trades = [], accountDataProtected = false }) {
+function Analytics({ trades = [], accountDataProtected = false, tradesComplete = false, tradeRowCount = null }) {
   if (accountDataProtected) return <Panel title="Analytics · Protected"><div className="lockedText">Closed-trade analytics, equity curve and P&amp;L statistics are private. Enter ENGINE_SECRET in Settings to view them.</div></Panel>;
   const engines = ['MOMENTUM','SCALPING'].map(engine => {
     const rows = trades.filter(trade => trade.strategy === engine);
@@ -614,7 +617,7 @@ function Analytics({ trades = [], accountDataProtected = false }) {
     const avgR = rows.length && rValues.every(value => value !== null)
       ? rValues.reduce((sum, value) => sum + value, 0) / rows.length
       : null;
-    const net = rows.length && pnlRows.length === rows.length
+    const net = tradesComplete && rows.length && pnlRows.length === rows.length
       ? pnlRows.reduce((sum, trade) => sum + safeNum(trade.net_pnl), 0)
       : null;
     return {
@@ -630,7 +633,7 @@ function Analytics({ trades = [], accountDataProtected = false }) {
       net
     };
   });
-  const allPnlKnown = trades.length > 0 && trades.every(trade => safeNum(trade.net_pnl) !== null);
+  const allPnlKnown = tradesComplete && trades.length > 0 && trades.every(trade => safeNum(trade.net_pnl) !== null);
   const sortedKnown = allPnlKnown
     ? [...trades].sort((a,b) => safeNum(b.net_pnl) - safeNum(a.net_pnl))
     : [];
@@ -648,14 +651,14 @@ function Analytics({ trades = [], accountDataProtected = false }) {
       <div className="panelTitle"><h2>Per-engine statistics</h2></div>
       <div className="engineStats">{engines.map(engine => <div key={engine.engine}>
         <h3>{engine.engine}</h3>
-        <b>{engine.winRate === null ? 'NO P&L DATA' : engine.winRate.toFixed(1) + '% win rate'}</b>
-        <span>{engine.rows.length} recorded trades · {engine.pnlCount} with P&amp;L · avg win {engine.avgWin === null ? '—' : money(engine.avgWin)} · avg loss {engine.avgLoss === null ? '—' : money(engine.avgLoss)} · avg R {engine.avgR === null ? '—' : engine.avgR.toFixed(2)} · net {engine.net === null ? 'INCOMPLETE DATA' : money(engine.net)}</span>
+        <b>{engine.winRate === null ? 'NO P&L DATA' : (!tradesComplete ? 'SAMPLE · ' : '') + engine.winRate.toFixed(1) + '% win rate'}</b>
+        <span>{engine.rows.length} loaded rows · {engine.pnlCount} with P&amp;L · avg win {engine.avgWin === null ? '—' : money(engine.avgWin)} · avg loss {engine.avgLoss === null ? '—' : money(engine.avgLoss)} · avg R {engine.avgR === null ? '—' : engine.avgR.toFixed(2)} · net {engine.net === null ? 'INCOMPLETE DATA' : money(engine.net)}</span>
       </div>)}</div>
     </section>
     <section className="cards">
       <Card label="NET EXCLUDING TOP 5 WINNERS" value={excludedTopWinnersNet === null ? (trades.length ? 'INCOMPLETE DATA' : '—') : money(excludedTopWinnersNet)} sub="available only when every recorded trade has net P&L"/>
       <Card label="EXIT REASONS" value={Object.keys(byReason).length} sub="recorded exit reason labels"/>
-      <Card label="TOTAL TRADES" value={trades.length} sub="recorded closed-trade rows"/>
+      <Card label="TOTAL TRADES" value={tradesComplete ? trades.length : trades.length ? 'PARTIAL' : '—'} sub={tradesComplete ? 'all stored closed-trade rows' : `loaded ${trades.length} of ${tradeRowCount ?? 'an unknown number of'} stored rows`}/>
     </section>
     <Panel title="Exits by reason"><div className="chips">{Object.entries(byReason).map(([reason,count])=><span key={reason}>{reason}: {count}</span>)}</div></Panel>
     <Panel title="Equity Curve"><div className="curve">{allPnlKnown
