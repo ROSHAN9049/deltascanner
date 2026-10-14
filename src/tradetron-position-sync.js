@@ -265,9 +265,17 @@ export function buildTradetronSnapshotRiskState({
     return snapshotAge === null || snapshotAge < 0 || snapshotAge > maxAgeMs;
   })) return fail('POSITION_SNAPSHOT_STALE');
 
+  const reportedOpenCounts = rows.map(row => numericValue(row?.open_positions));
+  if (reportedOpenCounts.some(value => value === null || !Number.isInteger(value) || value < 0)) {
+    return fail('OPEN_POSITION_COUNT_UNAVAILABLE');
+  }
+  const reportedOpenCount = reportedOpenCounts.reduce((total, value) => total + value, 0);
   const summary = summarizeTradetronSnapshots(rows);
   const openRows = summary.openRows;
-  if (summary.openCount > openRows.length) return fail('OPEN_POSITION_COUNT_UNRECONCILED');
+  // The normalizer must match Tradetron's explicit open-leg count exactly.
+  // Using max(reported, normalized) masks historical rows with a stale nonzero
+  // quantity and can make an incomplete position snapshot look trustworthy.
+  if (reportedOpenCount !== openRows.length) return fail('OPEN_POSITION_COUNT_UNRECONCILED');
   if (openRows.some(row => {
     const qty = numericValue(row.quantity);
     return !/^[A-Z0-9]+USD$/.test(row.symbol || '') ||
