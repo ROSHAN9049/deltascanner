@@ -27,6 +27,19 @@ test('missing risk observations remain UNKNOWN instead of displaying false PASS'
   assert.equal(gate(rows, 'Margin / min size'), GATE_UNKNOWN);
 });
 
+test('route and entry are blocked when Tradetron position snapshots are untrusted', () => {
+  const rows = buildRiskGovernorGates({
+    selected: { symbol: 'BTCUSD', strategy: 'MOMENTUM', stage: 'CONFIRMED', score: 92 },
+    health: { workerLeaseActive: true, exchangeHealthy: true, tickFresh: true },
+    positions: null,
+    routedSymbols: ['BTCUSD'],
+    routeDataVerified: true,
+    entrySafetyTrusted: false
+  });
+  assert.equal(gate(rows, 'Tradetron futures route'), GATE_BLOCK);
+  assert.equal(gate(rows, 'Duplicate symbol'), GATE_UNKNOWN);
+});
+
 test('observed values can pass only the gate they actually verify', () => {
   const rows = buildRiskGovernorGates({
     selected: {
