@@ -332,46 +332,77 @@ function OptionsView({ signals, settings, optionCache = [], executionCoverage = 
     .sort((a,b) => num(b.score) - num(a.score));
   const buys = rows.filter(x => x.strategy === 'OPTIONS_BUY');
   const sells = rows.filter(x => x.strategy === 'OPTIONS_SELL');
+  const buyMinDelta = safeNum(settings.options_buy_min_delta) || 0.45;
+  const buyMaxDelta = safeNum(settings.options_buy_max_delta) || 0.65;
+  const sellMinDelta = safeNum(settings.options_sell_min_delta) || 0.20;
+  const sellMaxDelta = safeNum(settings.options_sell_max_delta) || 0.35;
   return <>
     <section className="cards">
-      <Card label="OPTIONS ENGINE" value={settings.options_enabled === false ? 'OFF' : 'ON'} sub="BTC / ETH / GOLD (XAUT) only"/>
-      <Card label="BUY" value={settings.options_buy_enabled === false ? 'OFF' : 'ON'} sub="ATM / near-ITM · Δ 0.45–0.65"/>
-      <Card label="SELL" value={settings.options_sell_enabled === false ? 'OFF' : 'ON'} sub="defined-risk spread only"/>
-      <Card label="OPTIONS ROUTE" value={executionCoverage?.optionsRouteConfigured === true ? "CONFIGURED" : "LOCKED"} sub={executionCoverage?.optionsRouteConfigured === true ? "Dedicated Tradetron route reported by worker" : "Needs a dedicated Tradetron Options strategy and Railway token"}/>
+      <Card label="OPTIONS ENGINE" value={settings.options_enabled === false ? 'OFF' : 'ON'} sub="BTC / ETH / GOLD (XAUT) only · analysis data"/>
+      <Card label="BUY CANDIDATES" value={buys.length} sub={'Delta target ' + buyMinDelta.toFixed(2) + '–' + buyMaxDelta.toFixed(2)}/>
+      <Card label="SELL CANDIDATES" value={sells.length} sub={'Delta target ' + sellMinDelta.toFixed(2) + '–' + sellMaxDelta.toFixed(2) + ' · spread only'}/>
+      <Card label="OPTIONS ROUTE CONFIG" value={executionCoverage?.optionsRouteConfigured === true ? 'CONFIGURED' : 'NOT CONFIGURED'} sub="Route configuration does not unlock Options execution"/>
     </section>
-    <Panel title="Options BUY">
-      <OptionTable rows={buys} type="BUY" />
+    <div className="lockedText">
+      <b className="warn">⚠ OPTIONS EXECUTION LOCKED — ANALYSIS ONLY</b>
+      <p>Entries remain hard-locked until spread legs, defined maximum loss, dedicated credentials, and contract mappings are independently verified. A configured route is not execution authorization.</p>
+      <p className="muted">No Options entry signal should be sent from this scanner while the safety lock is active.</p>
+    </div>
+    <Panel title="Options BUY · Analysis Only">
+      <OptionTable rows={buys} type="BUY" deltaMin={buyMinDelta} deltaMax={buyMaxDelta} />
     </Panel>
-    <Panel title="Options SELL · Defined Risk">
-      <OptionTable rows={sells} type="SELL" />
+    <Panel title="Options SELL · Defined-Risk Review Only">
+      <OptionTable rows={sells} type="SELL" deltaMin={sellMinDelta} deltaMax={sellMaxDelta} />
     </Panel>
   </>;
 }
 
-function OptionTable({ rows, type }) {
+function OptionTable({ rows, type, deltaMin, deltaMax }) {
+  const hasSellRiskColumns = type === 'SELL';
+  const columnCount = hasSellRiskColumns ? 18 : 16;
   return <div className="tablewrap"><table><thead><tr>
-    <th>TIME</th><th>UNDERLYING</th><th>CONTRACT</th><th>TYPE</th><th>STRIKE</th><th>DTE</th><th>Δ</th><th>BID</th><th>ASK</th><th>SPREAD</th><th>OI</th><th>VOL</th><th>SCORE</th><th>STAGE</th><th>STATUS</th>
+    <th>TIME</th><th>UNDERLYING</th><th>CONTRACT</th><th>TYPE</th><th>STRIKE</th><th>DTE</th><th>Δ</th><th>DELTA RANGE CHECK</th><th>BID</th><th>ASK</th><th>SPREAD</th><th>OI</th><th>VOL</th><th>SCORE</th><th>STAGE</th>{hasSellRiskColumns ? <><th>PROTECTIVE LEG</th><th>MAX LOSS / SPREAD (RAW)</th></> : null}<th>STATUS</th>
   </tr></thead><tbody>{rows.slice(0,30).map(s => {
     let d = s.details || {};
-    if (typeof d === 'string') { try { d = JSON.parse(d); } catch {} }
+    if (typeof d === 'string') { try { d = JSON.parse(d); } catch { d = {}; } }
+    const deltaValue = safeNum(d.delta);
+    const deltaMissing = d.delta === null || d.delta === undefined || (typeof d.delta === 'string' && d.delta.trim() === '');
+    const deltaAssessment = assessDeltaRange(d.delta, deltaMin, deltaMax);
+    const hedgeStrike = safeNum(d.hedgeStrike);
+    const hedgeDelta = safeNum(d.hedgeDelta);
+    const protectiveLegConfirmed = Boolean(
+      typeof d.hedgeSymbol === 'string' && d.hedgeSymbol.trim() &&
+      hedgeStrike !== null && hedgeDelta !== null && hedgeDelta !== 0
+    );
+    const rawMaxLoss = safeNum(d.maxRiskPerSpread);
+    const maxLossAvailable = protectiveLegConfirmed && rawMaxLoss !== null && rawMaxLoss > 0;
+    const reasonText = fmtReasons(s.blocked_reasons);
+    const statusLocked = String(reasonText).toLowerCase().includes('execution') ||
+      String(reasonText).toLowerCase().includes('route unavailable') ||
+      String(reasonText).toLowerCase().includes('defined-risk hedge unavailable');
     return <tr key={s.id || s.symbol + s.strategy + s.captured_at}>
       <td>{s.cached_at ? new Date(s.cached_at).toLocaleTimeString('en-IN') : (s.captured_at ? new Date(s.captured_at).toLocaleTimeString('en-IN') : '—')}</td>
       <td className="symbol">{formatUnderlying(d.underlyingSymbol || s.underlying)}</td>
-      <td className="symbol">{s.symbol}</td>
+      <td className="symbol">{s.symbol || '—'}</td>
       <td>{d.optionType || '—'} / {type}</td>
-      <td>{num(d.strike).toLocaleString('en-IN',{maximumFractionDigits:2})}</td>
-      <td>{num(d.dte).toFixed(1)}</td>
-      <td>{num(d.delta).toFixed(2)}</td>
-      <td>{price(d.bid)}</td>
-      <td>{price(d.ask)}</td>
-      <td>{num(s.spread_pct).toFixed(2)}%</td>
-      <td>{num(d.openInterest).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
-      <td>{num(d.volume).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
-      <td><b>{num(s.score).toFixed(0)}</b>/100</td>
-      <td>{s.stage}</td>
-      <td className={s.ready ? 'up' : 'down'}>{s.ready ? 'READY' : (fmtReasons(s.blocked_reasons).toLowerCase().includes('route unavailable') || fmtReasons(s.blocked_reasons).toLowerCase().includes('execution') ? 'LOCKED' : 'WAIT')}</td>
+      <td>{safeNum(d.strike) === null ? '—' : safeNum(d.strike).toLocaleString('en-IN',{maximumFractionDigits:2})}</td>
+      <td>{safeNum(d.dte) === null ? '—' : safeNum(d.dte).toFixed(1)}</td>
+      <td>{deltaMissing ? 'NO DATA' : deltaValue === null ? 'INVALID' : deltaValue.toFixed(2)}</td>
+      <td className={deltaAssessment.status === 'IN_RANGE' ? 'up' : 'warn'} title={deltaAssessment.label}>{deltaAssessment.label}</td>
+      <td>{fmtRawPrice(d.bid)}</td>
+      <td>{fmtRawPrice(d.ask)}</td>
+      <td>{safeNum(s.spread_pct) === null ? '—' : safeNum(s.spread_pct).toFixed(2) + '%'}</td>
+      <td>{safeNum(d.openInterest) === null ? '—' : safeNum(d.openInterest).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
+      <td>{safeNum(d.volume) === null ? '—' : safeNum(d.volume).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
+      <td><b>{safeNum(s.score) === null ? '—' : safeNum(s.score).toFixed(0)}</b>/100</td>
+      <td>{s.stage || '—'}</td>
+      {hasSellRiskColumns ? <>
+        <td className="warn">{protectiveLegConfirmed ? 'SPREAD LEG: ' + d.hedgeSymbol + ' · STRIKE ' + hedgeStrike : 'PROTECTIVE LEG: NOT CONFIRMED'}</td>
+        <td>{maxLossAvailable ? fmtRawPrice(rawMaxLoss, 2) : 'MAX LOSS: NOT AVAILABLE — SPREAD NOT CONFIRMED'}</td>
+      </> : null}
+      <td className={s.ready ? 'up' : statusLocked ? 'warn' : 'muted'}>{s.ready ? 'READY' : (statusLocked ? 'LOCKED' : 'WAIT')}</td>
     </tr>;
-  })}</tbody></table></div>;
+  })}{!rows.length ? <tr><td colSpan={columnCount}>No option candidates returned for the current market snapshot. No missing values are substituted with zero.</td></tr> : null}</tbody></table></div>;
 }
 
 function Positions({ rows = [], tradetronDeployments = [], snapshotsLocked = false }) {
