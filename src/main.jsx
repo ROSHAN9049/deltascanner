@@ -569,9 +569,28 @@ function PNL({ trades = [], settings = {} }) {
     {!hasClosedTrades ? <div className="lockedText">Realized P&amp;L and fees are not confirmed as zero; the scanner has no authenticated closed-trade rows yet. Tradetron deployment snapshots are displayed separately and are not merged into this ledger.</div> : null}
   </>;
 }
-function Rotation({ ledger }) {
-  const nowDay = new Date().toISOString().slice(0,10); const todayLedger = ledger.filter(x => String(x.created_at || '').slice(0,10) === nowDay); const released = todayLedger.reduce((s,x)=>s+num(x.released),0), retained = todayLedger.reduce((s,x)=>s+num(x.retained),0);
-  return <><section className="cards"><Card label="EVENTS TODAY" value={todayLedger.length} sub="real profitable exits"/><Card label="RELEASED 90%" value={money(released)} sub="linked to execution ID"/><Card label="ALLOCATED" value={money(released)} sub="rotation released"/><Card label="RETAINED 10%" value={money(retained)} sub="ledger reserve"/></section><Panel title="Profit Rotation V3 Ledger"><div className="tablewrap"><table><thead><tr><th>TIME</th><th>EXECUTION ID</th><th>PROFIT</th><th>RELEASED</th><th>RETAINED</th><th>ROTATION ID</th></tr></thead><tbody>{ledger.map(x=><tr key={x.execution_id}><td>{new Date(x.created_at).toLocaleString('en-IN')}</td><td className="mono">{x.execution_id}</td><td className="up">{money(x.profit)}</td><td>{money(x.released)}</td><td>{money(x.retained)}</td><td>{x.rotation_id}</td></tr>)}</tbody></table></div></Panel></>;
+function Rotation({ ledger = [] }) {
+  const nowDay = new Date().toISOString().slice(0,10);
+  const todayLedger = ledger.filter(row => String(row.created_at || '').slice(0,10) === nowDay);
+  const releasedValues = todayLedger.map(row => safeNum(row.released));
+  const retainedValues = todayLedger.map(row => safeNum(row.retained));
+  const releasedComplete = todayLedger.length > 0 && releasedValues.every(value => value !== null);
+  const retainedComplete = todayLedger.length > 0 && retainedValues.every(value => value !== null);
+  const released = releasedComplete ? releasedValues.reduce((sum, value) => sum + value, 0) : null;
+  const retained = retainedComplete ? retainedValues.reduce((sum, value) => sum + value, 0) : null;
+  return <>
+    <section className="cards">
+      <Card label="EVENTS TODAY" value={todayLedger.length} sub="recorded profit-rotation ledger rows"/>
+      <Card label="RELEASED 90%" value={!todayLedger.length ? '—' : releasedComplete ? money(released) : 'INCOMPLETE DATA'} sub={releasedComplete ? 'sum of recorded release values' : 'missing release amount in one or more rows'}/>
+      <Card label="ALLOCATED" value={!todayLedger.length ? '—' : releasedComplete ? money(released) : 'INCOMPLETE DATA'} sub="matches the recorded released amount"/>
+      <Card label="RETAINED 10%" value={!todayLedger.length ? '—' : retainedComplete ? money(retained) : 'INCOMPLETE DATA'} sub={retainedComplete ? 'sum of recorded retained values' : 'missing retained amount in one or more rows'}/>
+    </section>
+    <Panel title="Profit Rotation V3 Ledger"><div className="tablewrap"><table><thead><tr><th>TIME</th><th>EXECUTION ID</th><th>PROFIT</th><th>RELEASED</th><th>RETAINED</th><th>ROTATION ID</th></tr></thead><tbody>{ledger.map(row=><tr key={row.execution_id}>
+      <td>{row.created_at ? new Date(row.created_at).toLocaleString('en-IN') : '—'}</td>
+      <td className="mono">{row.execution_id || '—'}</td>
+      <td className="up">{money(row.profit)}</td><td>{money(row.released)}</td><td>{money(row.retained)}</td><td>{row.rotation_id || '—'}</td>
+    </tr>)}</tbody></table></div></Panel>
+  </>;
 }
 function Analytics({ trades = [] }) {
   const engines = ['MOMENTUM','SCALPING'].map(engine => {
