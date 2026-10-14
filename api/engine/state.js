@@ -1,5 +1,6 @@
 import { CONFIG } from '../../server/config.js';
 import { count, select } from '../../server/db.js';
+import { protectEngineState } from '../../server/engine-state-privacy.js';
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate');
@@ -96,7 +97,7 @@ export default async function handler(req, res) {
       ? workerRouting.optionsRouteConfigured === true
       : CONFIG.tradetronOptionsBridgeEnabled && !!CONFIG.tradetronOptionsAuthToken;
 
-    return res.status(200).json({
+    return res.status(200).json(protectEngineState({
       success: true, environment: CONFIG.environment,
       executionCoverage: {
         routedFuturesSymbols: routedFuturesSymbols.length,
@@ -132,7 +133,7 @@ export default async function handler(req, res) {
       tradetronDeveloperNotificationSync,
       tradetronDeveloperNotifications,
       tradetronDeveloperPnlHistory
-    });
+    }, privateDataAuthorized));
   } catch (e) {
     return res.status(503).json({ success: false, environment: CONFIG.environment, error: e.message });
   }
