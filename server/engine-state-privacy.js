@@ -48,7 +48,26 @@ function publicHeartbeatRows(logs) {
             optionsRouteConfigured: routing.optionsRouteConfigured === true
           },
           reservedSignals: finiteNumber(row.data.reservedSignals),
-          signalReservationTtlMs: finiteNumber(row.data.signalReservationTtlMs)
+          signalReservationTtlMs: finiteNumber(row.data.signalReservationTtlMs),
+          tradetronEntrySafety: row.data.tradetronEntrySafety && typeof row.data.tradetronEntrySafety === 'object'
+            ? {
+                configured: row.data.tradetronEntrySafety.configured === true,
+                trusted: typeof row.data.tradetronEntrySafety.trusted === 'boolean'
+                  ? row.data.tradetronEntrySafety.trusted : null,
+                reason: String(row.data.tradetronEntrySafety.reason || '').slice(0, 100) || null,
+                lastSuccessAt: row.data.tradetronEntrySafety.lastSuccessAt || null,
+                ageMs: finiteNumber(row.data.tradetronEntrySafety.ageMs)
+              }
+            : null,
+          gridEntrySafety: row.data.gridEntrySafety && typeof row.data.gridEntrySafety === 'object'
+            ? {
+                configured: row.data.gridEntrySafety.configured === true,
+                trusted: typeof row.data.gridEntrySafety.trusted === 'boolean'
+                  ? row.data.gridEntrySafety.trusted : null,
+                blocked: row.data.gridEntrySafety.blocked === true,
+                reason: String(row.data.gridEntrySafety.reason || '').slice(0, 100) || null
+              }
+            : null
         }
       };
     });
