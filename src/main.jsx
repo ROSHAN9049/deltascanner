@@ -234,26 +234,26 @@ function Dashboard({ market, settings, health, trades, positions, accountDataPro
   const visibleStageCoinCount = new Set(visibleSignalStages.map(s => s.symbol)).size;
   return <>
     <section className="cards">
-      <Card label="EQUITY" value={money(settings.equity)} sub={'USD ledger converted at approx ₹' + USD_INR_RATE.toFixed(2) + '/USD'}/>
-      <Card label="AVAILABLE" value={money(settings.available_balance)} sub="signal sizing reference"/>
-      <Card label="REALIZED PNL" value={!trades.length ? '—' : closedPnlComplete ? money(realizedPnl) : 'INCOMPLETE DATA'} sub={!trades.length ? 'awaiting authenticated closed trades' : closedPnlComplete ? 'all recorded closed-trade P&L values present' : 'one or more closed-trade P&L values are missing'}/>
-      <Card label="UNREALIZED PNL" value={!positions.length ? '—' : unrealizedPnl === null ? 'NO DATA' : money(unrealizedPnl)} sub={!positions.length ? 'no webhook-confirmed open positions' : unrealizedPnl === null ? 'open positions exist; verified mark-to-market is unavailable' : 'engine/webhook position ledger'}/>
-      <Card label="TOTAL PNL" value={totalPnlComplete ? money(totalPnl) : (trades.length || positions.length ? 'INCOMPLETE DATA' : '—')} sub="only shown when each included ledger component is available"/>
-      <Card label="FEES TODAY" value={!todayTrades.length ? '—' : todayFeesComplete ? money(todayFees) : 'NO DATA'} sub={!todayTrades.length ? 'no authenticated closed-trade rows today' : todayFeesComplete ? 'sum of recorded today-trade fees' : 'one or more today-trade fee values are missing'}/>
-      <Card label="OPEN POSITIONS" value={positions.length} sub="webhook-confirmed position ledger"/>
+      <Card label="EQUITY" value={accountDataProtected ? 'LOCKED' : money(settings.equity)} sub={accountDataProtected ? 'enter ENGINE_SECRET to view balance' : 'USD ledger converted at approx ₹' + USD_INR_RATE.toFixed(2) + '/USD'}/>
+      <Card label="AVAILABLE" value={accountDataProtected ? 'LOCKED' : money(settings.available_balance)} sub={accountDataProtected ? 'account-specific sizing is hidden' : 'signal sizing reference'}/>
+      <Card label="REALIZED PNL" value={accountDataProtected ? 'LOCKED' : !trades.length ? '—' : closedPnlComplete ? money(realizedPnl) : 'INCOMPLETE DATA'} sub={accountDataProtected ? 'enter ENGINE_SECRET to view verified closed-trade P&L' : !trades.length ? 'awaiting authenticated closed trades' : closedPnlComplete ? 'all recorded closed-trade P&L values present' : 'one or more closed-trade P&L values are missing'}/>
+      <Card label="UNREALIZED PNL" value={accountDataProtected ? 'LOCKED' : !positions.length ? '—' : unrealizedPnl === null ? 'NO DATA' : money(unrealizedPnl)} sub={accountDataProtected ? 'enter ENGINE_SECRET to view position-ledger M2M' : !positions.length ? 'no webhook-confirmed open positions' : unrealizedPnl === null ? 'open positions exist; verified mark-to-market is unavailable' : 'engine/webhook position ledger'}/>
+      <Card label="TOTAL PNL" value={accountDataProtected ? 'LOCKED' : totalPnlComplete ? money(totalPnl) : (trades.length || positions.length ? 'INCOMPLETE DATA' : '—')} sub={accountDataProtected ? 'account ledger is private' : 'only shown when each included ledger component is available'}/>
+      <Card label="FEES TODAY" value={accountDataProtected ? 'LOCKED' : !todayTrades.length ? '—' : todayFeesComplete ? money(todayFees) : 'NO DATA'} sub={accountDataProtected ? 'enter ENGINE_SECRET to view verified trade fees' : !todayTrades.length ? 'no authenticated closed-trade rows today' : todayFeesComplete ? 'sum of recorded today-trade fees' : 'one or more today-trade fee values are missing'}/>
+      <Card label="OPEN POSITIONS" value={accountDataProtected ? 'LOCKED' : positions.length} sub={accountDataProtected ? 'hidden data is not zero' : 'webhook-confirmed position ledger'}/>
       <Card label="TT OPEN LEGS" value={developerDataProtected ? 'LOCKED' : developerApiConfigured ? tradetronMirror.openCount : '—'} sub="current Tradetron Developer API snapshot"/>
       <Card label="TRADETRON SNAPSHOT P&L" value={developerDataProtected ? 'LOCKED' : (developerApiConfigured && tradetronMirror.reportedPnl !== null ? fmtRawPrice(tradetronMirror.reportedPnl, 2) : 'NO DATA')} sub="Raw Tradetron deployment P&L; unit/currency unverified, separate from scanner ledger"/>
       <Card label="TT SNAPSHOT ROWS" value={developerDataProtected ? 'LOCKED' : developerApiConfigured ? developerSnapshotRowCount : '—'} sub="raw API rows, including closed rows"/>
-      <Card label="TT SIGNAL RECORDS" value={signalOrderStats?.total ?? '—'} sub="all states including expired; not fills"/>
-      <Card label="TT SENT" value={signalOrderStats?.sent ?? '—'} sub="API accepted historically; may now be expired; not fills"/>
-      <Card label="TT EVENTS" value={signalOrderStats?.events ?? '—'} sub="authenticated activity events received"/>
-      <Card label="TODAY CLOSED TRADES" value={todayTrades.length} sub={measuredTodayTrades.length ? (wins + ' wins / ' + loss + ' losses · ' + (wins/measuredTodayTrades.length*100).toFixed(1) + '% WR on ' + measuredTodayTrades.length + ' rows with recorded P&L') : (todayTrades.length ? 'WIN RATE NO DATA — trade P&L missing' : 'no authenticated closed trades today')}/>
+      <Card label="TT SIGNAL RECORDS" value={accountDataProtected ? 'LOCKED' : signalOrderStats?.total ?? '—'} sub={accountDataProtected ? 'private signal history' : 'all states including expired; not fills'}/>
+      <Card label="TT SENT" value={accountDataProtected ? 'LOCKED' : signalOrderStats?.sent ?? '—'} sub={accountDataProtected ? 'private signal submission history' : 'API accepted historically; may now be expired; not fills'}/>
+      <Card label="TT EVENTS" value={accountDataProtected ? 'LOCKED' : signalOrderStats?.events ?? '—'} sub={accountDataProtected ? 'private activity history' : 'authenticated activity events received'}/>
+      <Card label="TODAY CLOSED TRADES" value={accountDataProtected ? 'LOCKED' : todayTrades.length} sub={accountDataProtected ? 'enter ENGINE_SECRET to view closed-trade counts' : measuredTodayTrades.length ? (wins + ' wins / ' + loss + ' losses · ' + (wins/measuredTodayTrades.length*100).toFixed(1) + '% WR on ' + measuredTodayTrades.length + ' rows with recorded P&L') : (todayTrades.length ? 'WIN RATE NO DATA — trade P&L missing' : 'no authenticated closed trades today')}/>
     </section>
     <Panel title="Tradetron Execution Coverage">
       <section className="cards">
         <Card label="LIVE FUTURES SCANNED" value={market?.length || 0} sub="Delta India perpetual tickers" />
         <Card label="FUTURES SYMBOLS ROUTED" value={activeRoutedCount + ' / ' + (market?.length || 0)} sub={(executionCoverage?.configuredFuturesRoutes ?? 0) + ' worker-confirmed bridge(s); ' + (executionCoverage?.routingStatusSource === 'worker-heartbeat' ? 'live worker telemetry' : 'API config fallback')} />
-        <Card label="PENDING SIGNAL RESERVATIONS" value={executionCoverage?.reservedSignals ?? '—'} sub={'unconfirmed signals within ' + (executionCoverage?.signalReservationTtlMinutes || 15) + 'm; not open positions'} />
+        <Card label="PENDING SIGNAL RESERVATIONS" value={accountDataProtected ? 'LOCKED' : executionCoverage?.reservedSignals ?? '—'} sub={accountDataProtected ? 'private signal state' : 'unconfirmed signals within ' + (executionCoverage?.signalReservationTtlMinutes || 15) + 'm; not open positions'} />
         <Card label="SCAN-ONLY SYMBOLS" value={unroutedCount} sub="No Tradetron entry can be routed for these symbols" />
         <Card label="OPTIONS UNDERLYINGS" value="BTC · ETH · GOLD" sub="Gold contract symbol: XAUT" />
         <Card label="OPTIONS EXECUTION" value="LOCKED" sub={executionCoverage?.optionsRouteConfigured ? 'Route is configured, but Options entry signals remain hard-locked pending verification' : 'Dedicated route not configured; Options remain analysis-only'}/>
@@ -272,7 +272,7 @@ function Dashboard({ market, settings, health, trades, positions, accountDataPro
       </Panel>
     </section>
     <Panel title="Signal Mode"><div className="idle">SCANNER → TRADETRON → LIVE OFFLINE <span>No orders are sent by the scanner. Tradetron owns Live Offline execution and position management.</span></div></Panel>
-    <TradetronActivity events={tradetronEvents} signalStats={signalOrderStats} webhookSecretConfigured={executionCoverage?.webhookSecretConfigured === true} />
+    <TradetronActivity events={tradetronEvents} signalStats={signalOrderStats} webhookSecretConfigured={executionCoverage?.webhookSecretConfigured === true} accountDataProtected={accountDataProtected} />
     <TradetronDeveloperApiPanel configured={developerApiConfigured} sync={developerSync} deployments={developerSnapshots} privateDataProtected={developerDataProtected} notifications={developerNotifications} notificationSync={developerNotificationSync} pnlHistory={developerPnlHistory} />
     <Panel title="Idle Reason"><div className="idle">{idleFromSignals(signals)} <span>Top blocks: {top || 'none recorded'}</span></div></Panel>
     <Panel title="Engine Log · last 200 lines">{accountDataProtected ? <div className="lockedText">Private engine logs are hidden. Enter ENGINE_SECRET in Settings to view them.</div> : <Log rows={logs || []}/>}</Panel>
