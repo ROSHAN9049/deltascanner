@@ -7,6 +7,25 @@ const finiteNumber = value => {
   return Number.isFinite(number) ? number : null;
 };
 
+function hideSignalSizing(rows) {
+  return (Array.isArray(rows) ? rows : []).map(row => {
+    const existing = Array.isArray(row?.blocked_reasons)
+      ? row.blocked_reasons.filter(item => typeof item === 'string')
+      : String(row?.blocked_reasons || '').split(' · ').filter(Boolean);
+    const reason = 'Account sizing hidden; enter ENGINE_SECRET';
+    return {
+      ...row,
+      qty: null,
+      quantity: null,
+      qty_contracts: null,
+      notional: null,
+      risk_usd: null,
+      ready: false,
+      blocked_reasons: [...new Set([...existing, reason])]
+    };
+  });
+}
+
 function publicHeartbeatRows(logs) {
   const rows = Array.isArray(logs) ? logs : [];
   return rows
@@ -66,6 +85,9 @@ export function protectEngineState(payload, authorized) {
     daily: null,
     signalOrders: [],
     signalOrderCount: null,
+    signals: hideSignalSizing(payload.signals),
+    signalCache: hideSignalSizing(payload.signalCache),
+    optionCache: hideSignalSizing(payload.optionCache),
     signalOrderStats: {
       total: null,
       sent: null,
