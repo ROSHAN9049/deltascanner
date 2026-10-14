@@ -578,19 +578,75 @@ function Rotation({ ledger }) {
   const nowDay = new Date().toISOString().slice(0,10); const todayLedger = ledger.filter(x => String(x.created_at || '').slice(0,10) === nowDay); const released = todayLedger.reduce((s,x)=>s+num(x.released),0), retained = todayLedger.reduce((s,x)=>s+num(x.retained),0);
   return <><section className="cards"><Card label="EVENTS TODAY" value={todayLedger.length} sub="real profitable exits"/><Card label="RELEASED 90%" value={money(released)} sub="linked to execution ID"/><Card label="ALLOCATED" value={money(released)} sub="rotation released"/><Card label="RETAINED 10%" value={money(retained)} sub="ledger reserve"/></section><Panel title="Profit Rotation V3 Ledger"><div className="tablewrap"><table><thead><tr><th>TIME</th><th>EXECUTION ID</th><th>PROFIT</th><th>RELEASED</th><th>RETAINED</th><th>ROTATION ID</th></tr></thead><tbody>{ledger.map(x=><tr key={x.execution_id}><td>{new Date(x.created_at).toLocaleString('en-IN')}</td><td className="mono">{x.execution_id}</td><td className="up">{money(x.profit)}</td><td>{money(x.released)}</td><td>{money(x.retained)}</td><td>{x.rotation_id}</td></tr>)}</tbody></table></div></Panel></>;
 }
-function Analytics({ trades }) {
-  const engines = ['MOMENTUM','SCALPING'].map(e => {
-    const a = trades.filter(t=>t.strategy===e), wins=a.filter(t=>num(t.net_pnl)>0), losses=a.filter(t=>num(t.net_pnl)<0);
-    const avgWin=wins.length?wins.reduce((s,t)=>s+num(t.net_pnl),0)/wins.length:0, avgLoss=losses.length?losses.reduce((s,t)=>s+num(t.net_pnl),0)/losses.length:0;
-    const avgR=a.length?a.reduce((s,t)=>s+num(t.r_multiple),0)/a.length:0;
-    return {e,a,wins,losses,wr:a.length?wins.length/a.length*100:0,avgWin,avgLoss,avgR,net:a.reduce((s,t)=>s+num(t.net_pnl),0)};
+function Analytics({ trades = [] }) {
+  const engines = ['MOMENTUM','SCALPING'].map(engine => {
+    const rows = trades.filter(trade => trade.strategy === engine);
+    const pnlRows = rows.filter(trade => safeNum(trade.net_pnl) !== null);
+    const wins = pnlRows.filter(trade => safeNum(trade.net_pnl) > 0);
+    const losses = pnlRows.filter(trade => safeNum(trade.net_pnl) < 0);
+    const avgWin = wins.length ? wins.reduce((sum, trade) => sum + safeNum(trade.net_pnl), 0) / wins.length : null;
+    const avgLoss = losses.length ? losses.reduce((sum, trade) => sum + safeNum(trade.net_pnl), 0) / losses.length : null;
+    const rValues = rows.map(trade => safeNum(trade.r_multiple));
+    const avgR = rows.length && rValues.every(value => value !== null)
+      ? rValues.reduce((sum, value) => sum + value, 0) / rows.length
+      : null;
+    const net = rows.length && pnlRows.length === rows.length
+      ? pnlRows.reduce((sum, trade) => sum + safeNum(trade.net_pnl), 0)
+      : null;
+    return {
+      engine,
+      rows,
+      wins,
+      losses,
+      pnlCount: pnlRows.length,
+      winRate: pnlRows.length ? wins.length / pnlRows.length * 100 : null,
+      avgWin,
+      avgLoss,
+      avgR,
+      net
+    };
   });
-  const sorted=[...trades].sort((a,b)=>num(b.net_pnl)-num(a.net_pnl)), excluded=sorted.slice(0,5).reduce((s,t)=>s+num(t.net_pnl),0), exNet=trades.reduce((s,t)=>s+num(t.net_pnl),0)-excluded;
-  const byReason={}; for(const t of trades) byReason[t.exit_reason]=(byReason[t.exit_reason]||0)+1;
-  return <><section className="panel"><div className="panelTitle"><h2>Per-engine statistics</h2></div><div className="engineStats">{engines.map(x=><div key={x.e}><h3>{x.e}</h3><b>{x.wr.toFixed(1)}% win rate</b><span>{x.a.length} trades · avg win {money(x.avgWin)} · avg loss {money(x.avgLoss)} · avg R {x.avgR.toFixed(2)} · net {money(x.net)}</span></div>)}</div></section><section className="cards"><Card label="NET EXCLUDING TOP 5 WINNERS" value={money(exNet)} sub="stress-test metric"/><Card label="EXIT REASONS" value={Object.keys(byReason).length} sub="SL / TP1 / TP / BE / TRAIL / TIMEOUT / MANUAL"/><Card label="TOTAL TRADES" value={trades.length} sub="real fills only"/></section><Panel title="Exits by reason"><div className="chips">{Object.entries(byReason).map(([k,v])=><span key={k}>{k}: {v}</span>)}</div></Panel><Panel title="Equity Curve"><div className="curve">{equityPoints(trades).map((x,i)=><span key={i} style={{height:Math.max(4,Math.min(150,70+x.delta))}} title={x.label}></span>)}</div></Panel></>;
+  const allPnlKnown = trades.length > 0 && trades.every(trade => safeNum(trade.net_pnl) !== null);
+  const sortedKnown = allPnlKnown
+    ? [...trades].sort((a,b) => safeNum(b.net_pnl) - safeNum(a.net_pnl))
+    : [];
+  const excludedTopWinnersNet = allPnlKnown
+    ? trades.reduce((sum, trade) => sum + safeNum(trade.net_pnl), 0) -
+      sortedKnown.slice(0,5).reduce((sum, trade) => sum + safeNum(trade.net_pnl), 0)
+    : null;
+  const byReason = {};
+  for (const trade of trades) {
+    const reason = trade.exit_reason || 'UNKNOWN';
+    byReason[reason] = (byReason[reason] || 0) + 1;
+  }
+  return <>
+    <section className="panel">
+      <div className="panelTitle"><h2>Per-engine statistics</h2></div>
+      <div className="engineStats">{engines.map(engine => <div key={engine.engine}>
+        <h3>{engine.engine}</h3>
+        <b>{engine.winRate === null ? 'NO P&L DATA' : engine.winRate.toFixed(1) + '% win rate'}</b>
+        <span>{engine.rows.length} recorded trades · {engine.pnlCount} with P&amp;L · avg win {engine.avgWin === null ? '—' : money(engine.avgWin)} · avg loss {engine.avgLoss === null ? '—' : money(engine.avgLoss)} · avg R {engine.avgR === null ? '—' : engine.avgR.toFixed(2)} · net {engine.net === null ? 'INCOMPLETE DATA' : money(engine.net)}</span>
+      </div>)}</div>
+    </section>
+    <section className="cards">
+      <Card label="NET EXCLUDING TOP 5 WINNERS" value={excludedTopWinnersNet === null ? (trades.length ? 'INCOMPLETE DATA' : '—') : money(excludedTopWinnersNet)} sub="available only when every recorded trade has net P&L"/>
+      <Card label="EXIT REASONS" value={Object.keys(byReason).length} sub="recorded exit reason labels"/>
+      <Card label="TOTAL TRADES" value={trades.length} sub="recorded closed-trade rows"/>
+    </section>
+    <Panel title="Exits by reason"><div className="chips">{Object.entries(byReason).map(([reason,count])=><span key={reason}>{reason}: {count}</span>)}</div></Panel>
+    <Panel title="Equity Curve"><div className="curve">{allPnlKnown
+      ? equityPoints(trades).map((point,index)=><span key={index} style={{height:Math.max(4,Math.min(150,70+point.delta))}} title={point.label}></span>)
+      : <div className="muted">{trades.length ? 'Equity curve hidden because one or more trade P&L values are missing.' : 'No verified closed-trade P&L records yet.'}</div>}</div></Panel>
+  </>;
 }
 function equityPoints(trades) {
-  let total=0; return trades.slice().reverse().map(t=>{total+=num(t.net_pnl); return {delta:total,label:money(total)}});
+  let total=0;
+  return trades.slice().reverse().flatMap(trade => {
+    const pnl = safeNum(trade.net_pnl);
+    if (pnl === null) return [];
+    total += pnl;
+    return [{delta:total,label:money(total)}];
+  });
 }
 function Testnet({ settings, health, busy, mutate, positions }) {
   return <><section className="cards"><Card label="ENVIRONMENT" value="SIGNAL ONLY" sub="production market feed"/><Card label="AUTO" value="BRIDGE ON" sub="Tradetron signal route"/><Card label="CONTINUOUS MODE" value="NO POSITION CAP" sub="scanner opportunity routing"/><Card label="VERIFIED OPEN POSITIONS" value={positions.length} sub="from synchronized position records"/></section><Panel title="Testnet Controls"><div className="lockedText">Direct Delta execution is disabled. Tradetron Live Offline is the only execution/simulation layer.</div><div className="statusLine">Worker {health?.workerLeaseActive?'ONLINE':'OFFLINE'} · Tick {health?.tickFresh?'FRESH':'STALE'} · Exchange {health?.exchangeHealthy?'HEALTHY':'DOWN'}</div><p className="muted">No scanner-side global position or rolling signal-count cap. Same-symbol duplicate protection, signal idempotency, technical-quality checks, per-trade sizing, route readiness and emergency stop remain active.</p></Panel></>;
