@@ -75,7 +75,7 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
   const dayPnl = safeNum(gridState.dayPnl);
   const unrealizedPnl = safeNum(gridState.unrealizedPnl);
   const totalDayPnl = dayPnl !== null && unrealizedPnl !== null ? dayPnl + unrealizedPnl : null;
-  const currentEquity = safeNum(gridState.currentEquity) ?? safeNum(gridState.strategyStartEquity);
+  const currentEquity = safeNum(gridState.currentEquity);
   const drawdownPct = safeNum(gridState.drawdownPct);
   const momentum = gridState.momentum || {};
   const momentumMovePct = safeNum(momentum.movePct);
@@ -108,7 +108,7 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
     <section className="cards">
       <div className="card"><small>GRID ENGINE</small><strong>{stateStatus.replaceAll('_', ' ')}</strong><span>Dedicated BTC/ETH grid; independent from momentum/scalping.</span></div>
       <div className="card"><small>INSTRUMENT / LIVE PRICE</small><strong>{symbol}</strong><span>{currentPrice > 0 ? price(currentPrice) : 'Waiting for market price'} · Delta public market feed</span></div>
-      <div className="card"><small>OPEN GRID POSITIONS</small><strong>{positions.length} / {Number(settings.grid_max_positions || 4)}</strong><span>{usd(openRisk === null && positions.length === 0 ? 0 : openRisk)} estimated remaining-to-grid-stop risk.</span></div>
+      <div className="card"><small>OPEN GRID POSITIONS</small><strong>{positions.length} / {safeNum(settings.grid_max_positions) ?? draft.gridMaxPositions}</strong><span>{usd(openRisk === null && positions.length === 0 ? 0 : openRisk)} estimated remaining-to-grid-stop risk.</span></div>
       <div className="card"><small>GRID PNL · LIVE OFFLINE MIRROR</small><strong className={realizedGridPnl === null ? 'muted' : realizedGridPnl >= 0 ? 'up' : 'down'}>{usd(realizedGridPnl)}</strong><span>Realized after estimated maker fees and slippage; simulator only.</span></div>
       <div className="card"><small>DAY PNL</small><strong className={totalDayPnl === null ? 'muted' : totalDayPnl >= 0 ? 'up' : 'down'}>{usd(totalDayPnl)}</strong><span>Realized + mark-to-market; daily stop {Number(settings.grid_daily_loss_pct || 2).toFixed(1)}%.</span></div>
       <div className="card"><small>STRATEGY EQUITY</small><strong>{usd(currentEquity)}</strong><span>Drawdown {drawdownPct === null ? 'NO DATA' : drawdownPct.toFixed(2) + '%'} · hard stop 5%.</span></div>
@@ -154,7 +154,7 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
           const position = positions.find(item => Number(item.levelIndex) === level.index);
           const targetFor = positions.filter(item => Number(item.levelIndex) + 1 === level.index);
           const status = position ? 'POSITION OPEN' : targetFor.length ? 'EXIT TARGET' : level.index === levels.length - 1 ? 'TOP · NO ENTRY' : (currentPrice > 0 && Math.abs(currentPrice - level.price) / level.price < 0.001 ? 'NEAR PRICE' : 'AVAILABLE');
-          return <tr key={level.index}><td>G{String(level.index + 1).padStart(2,'0')}</td><td>{price(level.price)}</td><td>{level.index < levels.length - 1 ? 'LIMIT BUY' : '—'}</td><td>{level.target > 0 ? price(level.target) : '—'}</td><td className={position ? 'warn' : targetFor.length ? 'up' : 'muted'}>{status}{position ? ' · ' + n(position.qty) + ' qty' : ''}</td></tr>;
+          return <tr key={level.index}><td>G{String(level.index + 1).padStart(2,'0')}</td><td>{price(level.price)}</td><td>{level.index < levels.length - 1 ? 'LIMIT BUY' : '—'}</td><td>{level.target > 0 ? price(level.target) : '—'}</td><td className={position ? 'warn' : targetFor.length ? 'up' : 'muted'}>{status}{position ? ' · ' + (safeNum(position.qty) === null ? 'QTY NO DATA' : safeNum(position.qty) + ' qty') : ''}</td></tr>;
         })}
       </tbody></table></div>
     </Panel>
@@ -173,7 +173,7 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
     </div>
 
     <Panel title="Recent Grid Test Trades">
-      {trades.length ? <div className="tablewrap"><table className="gridLevelsTable"><thead><tr><th>CLOSED</th><th>LEVEL</th><th>ENTRY</th><th>EXIT</th><th>QTY</th><th>NET PNL</th><th>REASON</th></tr></thead><tbody>{trades.slice(0,20).map(trade => <tr key={trade.id}><td>{trade.closedAt ? new Date(trade.closedAt).toLocaleString('en-IN') : '—'}</td><td>G{Number(trade.levelIndex)+1}</td><td>{price(trade.entryPrice)}</td><td>{price(trade.exitPrice)}</td><td>{n(trade.qty)}</td><td className={safeNum(trade.netPnl) === null ? 'muted' : safeNum(trade.netPnl) >= 0 ? 'up' : 'down'}>{usd(trade.netPnl)}</td><td>{trade.reason}</td></tr>)}</tbody></table></div> : <div className="lockedText">No completed grid trades yet.</div>}
+      {trades.length ? <div className="tablewrap"><table className="gridLevelsTable"><thead><tr><th>CLOSED</th><th>LEVEL</th><th>ENTRY</th><th>EXIT</th><th>QTY</th><th>NET PNL</th><th>REASON</th></tr></thead><tbody>{trades.slice(0,20).map(trade => <tr key={trade.id}><td>{trade.closedAt ? new Date(trade.closedAt).toLocaleString('en-IN') : '—'}</td><td>G{Number(trade.levelIndex)+1}</td><td>{price(trade.entryPrice)}</td><td>{price(trade.exitPrice)}</td><td>{safeNum(trade.qty) === null ? '—' : safeNum(trade.qty)}</td><td className={safeNum(trade.netPnl) === null ? 'muted' : safeNum(trade.netPnl) >= 0 ? 'up' : 'down'}>{usd(trade.netPnl)}</td><td>{trade.reason}</td></tr>)}</tbody></table></div> : <div className="lockedText">No completed grid trades yet.</div>}
       {lastTrade ? <div className="statusLine">Last trade: {lastTrade.reason} · net {usd(lastTrade.netPnl)} · {lastTrade.symbol}</div> : null}
     </Panel>
     <div className="gridTestNotice">TRADETRON SIGNAL MODE: Grid entry and exit triggers use the existing Momentum/Scalping Signal Bridge and its symbol-specific entry/exit variables. Only one grid position is allowed at a time because the current bridge has one net position/exit flag per symbol. Tradetron Live Offline simulates the trade; the scanner never places direct Delta orders.</div>
