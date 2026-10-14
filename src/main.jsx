@@ -377,6 +377,8 @@ function OptionsView({ signals, settings, optionCache = [], executionCoverage = 
 
 function OptionTable({ rows, type, deltaMin, deltaMax }) {
   const hasSellRiskColumns = type === 'SELL';
+  // Never render a stale cached candidate as executable while the backend hard lock is active.
+  const optionsExecutionLocked = true;
   const columnCount = hasSellRiskColumns ? 18 : 16;
   return <div className="tablewrap"><table><thead><tr>
     <th>TIME</th><th>UNDERLYING</th><th>CONTRACT</th><th>TYPE</th><th>STRIKE</th><th>DTE</th><th>Δ</th><th>DELTA RANGE CHECK</th><th>BID</th><th>ASK</th><th>SPREAD</th><th>OI</th><th>VOL</th><th>SCORE</th><th>STAGE</th>{hasSellRiskColumns ? <><th>PROTECTIVE LEG</th><th>MAX LOSS / SPREAD (RAW)</th></> : null}<th>STATUS</th>
@@ -418,7 +420,7 @@ function OptionTable({ rows, type, deltaMin, deltaMax }) {
         <td className="warn">{protectiveLegConfirmed ? 'SPREAD LEG: ' + d.hedgeSymbol + ' · STRIKE ' + hedgeStrike : 'PROTECTIVE LEG: NOT CONFIRMED'}</td>
         <td>{maxLossAvailable ? fmtRawPrice(rawMaxLoss, 2) : 'MAX LOSS: NOT AVAILABLE — SPREAD NOT CONFIRMED'}</td>
       </> : null}
-      <td className={s.ready ? 'up' : statusLocked ? 'warn' : 'muted'}>{s.ready ? 'READY' : (statusLocked ? 'LOCKED' : 'WAIT')}</td>
+      <td className={optionsExecutionLocked || statusLocked ? 'warn' : s.ready ? 'up' : 'muted'}>{optionsExecutionLocked || statusLocked ? 'LOCKED' : s.ready ? 'READY' : 'WAIT'}</td>
     </tr>;
   })}{!rows.length ? <tr><td colSpan={columnCount}>No option candidates returned for the current market snapshot. No missing values are substituted with zero.</td></tr> : null}</tbody></table></div>;
 }
