@@ -96,7 +96,7 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
     return [fieldMap[key] || key, value];
   }));
   const readyToStart = valid && n(draft.gridLowerPrice) > 0 && n(draft.gridUpperPrice) > n(draft.gridLowerPrice);
-  const gridSafetyBlocked = gridEntrySafety?.configured === true && gridEntrySafety?.blocked === true;
+  const gridSafetyBlocked = gridEntrySafety?.blocked === true;
   const gridSafetyReason = gridEntrySafety?.reason || 'SNAPSHOT_NOT_VERIFIED';
   const save = () => {
     if (!readyToStart) return;
