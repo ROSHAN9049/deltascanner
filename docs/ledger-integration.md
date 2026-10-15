@@ -26,9 +26,9 @@ psql -h <host> -U <user> -d <db> -f src/ledger/migrations/001_position_ledger.sq
 Then connect to the same database and verify that the three tables exist:
 
 ```sql
-\\dt position_ledger
-\\dt webhook_events
-\\dt system_meta
+\dt position_ledger
+\dt webhook_events
+\dt system_meta
 ```
 
 **WARNING:** Do not run this migration twice. It uses `BEGIN`/`COMMIT` and `CREATE TABLE` without `IF NOT EXISTS`; a second run will fail because the tables already exist. If rerun-safe behavior is required, wrap the migration in the database migration runner and track applied migrations.
