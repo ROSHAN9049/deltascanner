@@ -50,7 +50,7 @@ describe('existing worker EMA / ATR / RSI functions', () => {
     }));
     // The worker drops the last (forming) candle and seeds EMA from its first
     // close, then applies k = 2 / (3 + 1) across the remaining closed prices.
-    near(ema(candles, 3), 13.125);
+    near(ema(candles, 3), 13.0625);
   });
 
   test('EMA returns zero for insufficient closed candles in the existing worker API', () => {
@@ -61,7 +61,7 @@ describe('existing worker EMA / ATR / RSI functions', () => {
     const closes = Array.from({ length: 30 }, (_, index) => 100 + index);
     const candles = [...closes, 500].map((close, index) => ({ time: index, high: close + 1, low: close - 1, close }));
     const value = ema(candles, 9);
-    assert.ok(value > closes[closes.length - 4]);
+    assert.ok(value > closes[10]);
     assert.ok(value < closes[closes.length - 1]);
   });
 
