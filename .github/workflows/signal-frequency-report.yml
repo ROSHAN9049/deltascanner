@@ -1,0 +1,64 @@
+name: Signal frequency report
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    name: Read-only signal frequency analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DATABASE_URL: \${{ secrets.DATABASE_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Guard DATABASE_URL
+        shell: bash
+        run: |
+          if [ -z "\${DATABASE_URL:-}" ]; then
+            echo "DATABASE_URL secret is not configured; refusing database access." >&2
+            exit 1
+          fi
+          echo "DATABASE_URL is configured (value hidden)."
+
+      - name: Export signal observations
+        run: node scripts/export-signals.mjs > signals.json
+
+      - name: Export recorded fills
+        run: node scripts/export-fills.mjs > fills.json
+
+      - name: Export Tradetron events
+        run: node scripts/export-tradetron-events.mjs > events.json
+
+      - name: Build signal frequency report
+        shell: bash
+        run: |
+          set -o pipefail
+          node scripts/signal-frequency-report.mjs --signals=signals.json --fills=fills.json --events=events.json | tee /tmp/signal-frequency-report.txt
+          head -n 60 /tmp/signal-frequency-report.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report data (7 days)
+        uses: actions/upload-artifact@v4
+        with:
+          name: signal-frequency-report-\${{ github.run_id }}
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            signals.json
+            fills.json
+            events.json
+            signal-frequency-report.json
