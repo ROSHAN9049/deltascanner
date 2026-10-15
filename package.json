@@ -15,7 +15,9 @@
     "test:smoke": "node tests/smoke.test.mjs",
     "smoke:ledger": "node scripts/smoke-ledger.mjs",
     "db:migrate": "node scripts/apply-migration.mjs",
-    "btc:regime:compare": "node scripts/btc-regime-compare.mjs"
+    "btc:regime:compare": "node scripts/btc-regime-compare.mjs",
+    "db:diagnose-disk": "node scripts/diagnose-disk.mjs",
+    "db:prune-signals": "node scripts/prune-signals-safe.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",
