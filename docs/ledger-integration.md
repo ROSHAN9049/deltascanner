@@ -2,18 +2,21 @@
 
 PositionLedger is a separate ledger intended to record positions from authenticated Tradetron fill webhooks. It is designed to provide a position count independent of potentially stale or incomplete read-only snapshots. This guide documents a parallel observability/ingestion path only. It does **not** enable live trading, modify the existing entry gate, or automatically switch the position-cap source.
 
-**CRITICAL — repository compatibility finding:** The four PositionLedger files are committed, but the current application is not yet wired for them. The repository uses ES modules, a Supabase REST database wrapper, and Vercel serverless handlers; it does not currently expose the Express + PostgreSQL `query(sql, params)` application assumed by these CommonJS route modules. Do not copy/paste the wiring snippets into the current worker and expect them to run without an explicit compatibility/hosting step.
+**CRITICAL — architecture:** The repository uses ESM, a Supabase REST wrapper, and worker/serverless handlers. The ledger runs in an optional, separate Express process using a direct PostgreSQL `pg.Pool` connection. It does not replace the worker or modify its entry gate.
 
 ## Prerequisites
 
 - A PostgreSQL database with `src/ledger/migrations/001_position_ledger.sql` applied. The migration is not applied by committing it to GitHub.
 - The server-side environment variable `TRADETRON_WEBHOOK_SECRET` configured wherever the new webhook handler will actually run.
-- Node.js and Express in a dedicated HTTP host **or** a reviewed adaptation to the repository's existing serverless architecture. Express is not a current dependency in `package.json`.
+- Node.js, Express, and `pg` installed from `package.json` dependencies.
+- `DATABASE_URL` set in the optional ledger server's environment (preferred); `SUPABASE_DB_URL` is accepted as a fallback. Never print either variable.
+- Supabase PostgreSQL direct connection is reachable over SSL. The configured Transaction Pooler host may be IPv6-first; if the deployment is IPv4-only, enable the Supabase IPv4 add-on or use a compatible Session Pooler connection string.
+- The optional ledger server performs `SELECT 1` before listening and exits with status 1 if the startup database check fails.
 - The existing snapshot-based position cap MUST remain active. Do not remove or bypass it.
 - A database adapter compatible with the ledger's expected `db.query(sql, params)` contract. The existing `server/db.js` is a Supabase PostgREST wrapper exposing functions such as `select`, `insert`, and `update`; it does not expose `query`.
 - A logger object with `info`, `warn`, and `error` methods. No standalone logger module was found; the worker currently uses console methods and `server/db.js` exports a database-backed `log` helper.
 
-**TODO before wiring:** Decide and document how these CommonJS `.js` modules will run under the repository's `package.json` setting `"type": "module"`. In this package, Node treats `.js` files as ES modules, so `require` and `module.exports` will not work as-is. Options include using a dedicated CommonJS package boundary/`.cjs` filenames, or converting the modules to ES modules in a separate reviewed change.
+The CommonJS implementations use `.cjs` extensions so they remain CommonJS under `"type": "module"`. ESM wrappers in `src/ledger/index.mjs`, `src/webhooks/index.mjs`, and `src/routes/index.mjs` expose them to the ESM server.
 
 ## Step 1 — Run the Migration
 
@@ -33,7 +36,7 @@ Then connect to the same database and verify that the three tables exist:
 
 **WARNING:** Do not run this migration twice. It uses `BEGIN`/`COMMIT` and `CREATE TABLE` without `IF NOT EXISTS`; a second run will fail because the tables already exist. If rerun-safe behavior is required, wrap the migration in the database migration runner and track applied migrations.
 
-The current repository's `server/db.js` talks to Supabase through its REST API; it is not a direct PostgreSQL client. Confirm that the SQL migration is applied to the database behind the configured Supabase project or to the separately chosen PostgreSQL database, and ensure the future ledger adapter points to that same database.
+The current `server/db.js` remains REST-based and unchanged. The separate `src/ledger/pg-adapter.mjs` connects directly to PostgreSQL using `DATABASE_URL` (or fallback `SUPABASE_DB_URL`), with SSL enabled and a pool size of five. Apply the migration to the same Supabase database referenced by that connection string.
 
 ## Step 2 — Configure Environment Variable
 
@@ -45,9 +48,9 @@ TRADETRON_WEBHOOK_SECRET=<value-from-tradetron-dashboard>
 
 - **WARNING:** Never commit the actual secret.
 - Add it to the host's encrypted/sensitive environment-variable store. For local development, use a local `.env` file only if your local runner loads it.
-- **TODO:** A root `.gitignore` file was not found during inspection. Add and verify an ignore rule for local secret files before creating a local `.env`.
+- Keep `.env` out of source control; the repository's `.gitignore` already ignores `.env`.
 - Rotate the secret immediately if it is leaked.
-- The repository's `server/config.js` already reads `TRADETRON_WEBHOOK_SECRET` for the existing `/api/tradetron/webhook` receiver, but that existing route uses a bearer/custom-secret scheme. The new `src/webhooks/tradetron-handler.js` uses an HMAC signature header, `x-tradetron-signature`; these are distinct endpoint contracts.
+- The repository's `server/config.js` already reads `TRADETRON_WEBHOOK_SECRET` for the existing `/api/tradetron/webhook` receiver, but that existing route uses a bearer/custom-secret scheme. The new `src/webhooks/tradetron-handler.cjs` uses an HMAC signature header, `x-tradetron-signature`; these are distinct endpoint contracts.
 - If the new handler's `verifySignature()` cannot run because the secret is missing, its route catches the error and returns HTTP 500. The error does not, by itself, crash the server.
 
 **Important:** A secret only authenticates inbound requests. It does not configure Tradetron to send webhooks. The repository documentation records that Tradetron support said outbound webhook delivery is unavailable for this account; a verified event source or separately reviewed relay is still required.
@@ -62,11 +65,9 @@ The following is the requested composition pattern for a **future compatible HTT
 // In a compatible HTTP host (TODO: choose/add the host and module format):
 const { PositionLedger } = require('./src/ledger/PositionLedger');
 
-// TODO: supply a PostgreSQL-compatible adapter that implements query(sql, params).
-const db = <your-db-client-import-here>;
+import { db } from './src/ledger/pg-adapter.mjs';
 
-// TODO: supply the host's logger with info(), warn(), and error().
-const logger = <your-logger-import-here>;
+// The optional server defines a temporary timestamped console logger.
 
 const positionLedger = new PositionLedger(db, { logger });
 
@@ -103,16 +104,12 @@ This registers `POST /webhook/tradetron`.
 
 ## Step 5 — Register the Ledger Status Route
 
-The intended route-registration pattern is:
+The standalone server already registers these routes. For reference, the intended ESM pattern is:
 
 ```javascript
 const registerLedgerStatusRoute = require('./src/routes/ledger-status');
 
-// TODO: the current Tradetron Developer API class exposes fetchSnapshot()
-// and returns a snapshot result object; it does not expose getSnapshot()
-// returning a normalized array of { symbol, side } rows. Add and test an
-// explicit adapter before registering this route.
-const tradetronAPI = <your-tradetron-snapshot-adapter>;
+import { tradetronAPI } from './src/adapters/tradetron-snapshot-adapter.mjs';
 
 registerLedgerStatusRoute(app, {
   positionLedger,
@@ -128,7 +125,7 @@ This registers:
 
 Both routes are read-only. The dashboard can poll `/api/ledger/status` to detect a mismatch. Snapshot or reconciliation failure is represented as partial response data rather than failing the whole status request; failure of the ledger count itself returns HTTP 500.
 
-**Adapter TODO:** The current implementation is `TradetronDeveloperApi.fetchSnapshot()` in `server/tradetron-developer-api.mjs`, called by `worker/engine.mjs`. It fetches deployment snapshots with nested position arrays and returns an object that includes `snapshots`; it is not the `tradetronAPI.getSnapshot()` array expected by `src/routes/ledger-status.js`. Normalize the actual position rows and their side values in a tested adapter. Do not infer fills or trust snapshot P&L as authenticated ledger events.
+**Adapter note:** `src/adapters/tradetron-snapshot-adapter.mjs` wraps `TradetronDeveloperApi.fetchSnapshot()` and flattens nested deployment `positions` into `{ symbol, side }` rows. It logs a warning and skips rows with unexpected shapes. Verify side and signed-quantity semantics against live API samples before relying on reconciliation; snapshots are not authenticated fill events.
 
 ## Step 6 — What Is NOT Changed (CRITICAL)
 
@@ -188,14 +185,14 @@ Run these checks only after the database migration and a compatible host/adapter
 6. In staging, send a synthetic test webhook signed over the exact raw JSON body using the configured secret. Expected: HTTP 200 for a valid event and a corresponding row in `position_ledger` for a valid `ENTRY_FILLED`. A locally signed synthetic test proves the receiver can verify a signature; it does **not** prove that Tradetron is delivering real production events.
 7. In staging, send the same valid-shaped test payload with an invalid signature. Expected: HTTP 401 and an audit row in `webhook_events` with status `SIGNATURE_FAILED`.
 
-**Current limitation:** The repository already has a different inbound webhook handler at `/api/tradetron/webhook`, but this new route is not mounted by any current Express app. Do not treat the checklist as complete until the host, database adapter, snapshot adapter, and event sender are actually configured.
+**Current limitation:** The optional server is separate and is not automatically started by the worker. Tradetron outbound webhook delivery has been reported unavailable for this account; do not treat the checklist as complete until an event sender/relay is configured and verified.
 
 ## Step 8 — Rollback
 
 If the new host wiring causes problems:
 
-1. Revert the specific wiring commit(s) using `git revert <SHA>`. This documentation-only commit and the earlier file commits can be managed separately from any wiring change.
-2. Restart/redeploy without the `registerTradetronWebhook` and `registerLedgerStatusRoute` calls.
+1. Stop the optional ledger process and revert the specific ledger-server or wiring commit(s) using `git revert <SHA>`.
+2. Do not change or restart the existing worker as part of this rollback; the optional server is a separate process.
 3. The PositionLedger tables can remain in place; they are inert without a consumer writing to them.
 4. If removal is explicitly approved and the audit history is no longer needed, drop the tables:
 
@@ -226,7 +223,13 @@ DROP TABLE IF EXISTS system_meta;
 | File | Purpose |
 |------|---------|
 | `src/ledger/migrations/001_position_ledger.sql` | Database schema for positions, webhook audit events, and observability metadata |
-| `src/ledger/PositionLedger.js` | Ledger class, signature verification, count queries, and snapshot reconciliation |
-| `src/webhooks/tradetron-handler.js` | Express webhook handler with raw-body HMAC verification |
-| `src/routes/ledger-status.js` | Read-only dashboard status and health endpoints |
+| `src/ledger/PositionLedger.cjs` | CommonJS ledger class, signature verification, count queries, and snapshot reconciliation |
+| `src/ledger/index.mjs` | ESM wrapper for PositionLedger |
+| `src/ledger/pg-adapter.mjs` | Direct PostgreSQL pool and `query(sql, params)` adapter |
+| `src/webhooks/tradetron-handler.cjs` | Express webhook handler with raw-body HMAC verification |
+| `src/webhooks/index.mjs` | ESM wrapper for webhook registration |
+| `src/routes/ledger-status.cjs` | Read-only dashboard status and health endpoints |
+| `src/routes/index.mjs` | ESM wrapper for status route registration |
+| `src/adapters/tradetron-snapshot-adapter.mjs` | Normalizes read-only Tradetron snapshots |
+| `src/server/ledger-server.mjs` | Optional, separate Express server for ledger routes |
 | `docs/ledger-integration.md` | This integration guide |
