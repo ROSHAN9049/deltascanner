@@ -159,7 +159,7 @@ function reasonSql(jsonExpression) {
     "      WHEN raw_reason ~* '(volume|spike)' THEN 'Volume spike'",
     "      WHEN raw_reason ~* '(anti.?chase|24.?h)' THEN 'Anti-chase'",
     "      WHEN raw_reason ~* '(entry candle|candle.*range|range.*atr)' THEN 'Entry candle range'",
-    "      WHEN raw_reason ~* '(ema.*distance|distance.*ema)' THEN 'EMA distance'",
+    "      WHEN raw_reason ~* '(ema.*distance|distance.*ema|from .*ema|ema21|entry ema)' THEN 'EMA distance'",
     "      WHEN raw_reason ~* '(btc|bitcoin)' THEN 'BTC regime'",
     "      WHEN raw_reason ~* '(fee.*spread|spread.*fee|cost.*risk|1r cost)' THEN 'Fee+spread'",
     "      WHEN raw_reason ~* 'spread' THEN 'Spread'",
@@ -304,6 +304,7 @@ async function main() {
       '  COUNT(DISTINCT (symbol, strategy))::text AS unique_symbol_strategy,',
       '  COUNT(DISTINCT (symbol, strategy)) FILTER (WHERE ready IS TRUE)::text AS ready_symbol_strategy,',
       "  COUNT(DISTINCT (symbol, strategy, (captured_at AT TIME ZONE 'UTC')::date)) FILTER (WHERE ready IS TRUE AND captured_at > NOW() - INTERVAL '7 days')::text AS ready_symbol_strategy_date_7d,",
+      "  COUNT(DISTINCT (captured_at AT TIME ZONE 'UTC')::date) FILTER (WHERE captured_at > NOW() - INTERVAL '7 days')::text AS active_signal_dates_7d,",
       '  MIN(captured_at) AS min_captured_at,',
       '  MAX(captured_at) AS max_captured_at,',
       '  COUNT(*) FILTER (WHERE captured_at IS NULL)::text AS null_captured_at',
@@ -478,6 +479,10 @@ async function main() {
     const actionReady = count(summary.action_ready);
     const readyCombos = count(summary.ready_symbol_strategy);
     const readySymbolStrategyDate7d = count(summary.ready_symbol_strategy_date_7d);
+    const activeSignalDates7d = count(summary.active_signal_dates_7d);
+    const readyUniqueTuplePerCalendarDay7d = readySymbolStrategyDate7d / 7;
+    const readyUniqueTuplePerObservedDay7d = activeSignalDates7d ? readySymbolStrategyDate7d / activeSignalDates7d : null;
+    const readyUniqueTuplePerDay7d = readyUniqueTuplePerObservedDay7d;
     const observedDates = daily.length;
     const activeDayReadyCombos = daily.reduce((sum, row) => sum + row.readySymbolStrategy, 0);
     const activeDays = daily.filter(row => row.observations > 0).length;
@@ -490,7 +495,6 @@ async function main() {
     const readyPerDay = ready / 30;
     const actionReadyPerDay = actionReady / 30;
     const readyComboPerDay = activeDayReadyCombos / 30;
-    const readyUniqueTuplePerDay7d = readySymbolStrategyDate7d / 7;
     const scoreBandCounts = SCORE_BANDS.map(band => ({
       band: band.key,
       all: count(score[band.count]),
@@ -575,7 +579,11 @@ async function main() {
 
     const recommendedActions = [];
     recommendedActions.push('Score recalibration is on hold. Use action-ready counts and the 7-day unique (symbol, strategy, date) proxy before reviewing any threshold.');
-    if (readyUniqueTuplePerDay7d < 2) {
+    if (retentionDays === null || retentionDays < 7) {
+      recommendedActions.push('Observed signal history spans fewer than seven days; the seven-day frequency proxy is provisional. Collect sufficient history before any score recalibration.');
+    } else if (activeSignalDates7d === 0) {
+      recommendedActions.push('No signal-observation dates are present in the last seven days. Investigate worker/data coverage before interpreting a zero actionable frequency.');
+    } else if (readyUniqueTuplePerDay7d < 2) {
       recommendedActions.push('Unique ready (symbol, strategy, date) tuples average below 2/day; verify the history window and investigate readiness blockers before considering any score change.');
     } else if (readyUniqueTuplePerDay7d <= 8) {
       recommendedActions.push('Unique ready (symbol, strategy, date) tuples average 2–8/day, within the requested monitoring range; validate delivery/trade evidence before judging signal quality.');
@@ -643,7 +651,9 @@ async function main() {
         uniqueSymbolStrategyDateReady7d: {
           count: readySymbolStrategyDate7d,
           pctOfTotal: null,
-          perCalendarDay: round(readyUniqueTuplePerDay7d),
+          perCalendarDay: round(readyUniqueTuplePerCalendarDay7d),
+          perObservedSignalDay: round(readyUniqueTuplePerObservedDay7d),
+          observedSignalDays: activeSignalDates7d,
           windowDays: 7,
           definition: 'COUNT(DISTINCT (symbol, strategy, UTC date)) where ready=true; repeated scan observations collapse within each symbol/strategy/day.'
         },
@@ -665,7 +675,9 @@ async function main() {
           readyTrue: round(readyPerDay),
           readyTrueAndNoBlockers: round(actionReadyPerDay),
           uniqueReadySymbolStrategyPerDay: round(readyComboPerDay),
-          uniqueReadySymbolStrategyDatePerDayLast7Days: round(readyUniqueTuplePerDay7d)
+          uniqueReadySymbolStrategyDatePerCalendarDayLast7Days: round(readyUniqueTuplePerCalendarDay7d),
+          uniqueReadySymbolStrategyDatePerObservedSignalDayLast7Days: round(readyUniqueTuplePerObservedDay7d),
+          observedSignalDaysLast7Days: activeSignalDates7d
         }
       },
       scoreDistribution: {
@@ -745,7 +757,9 @@ async function main() {
       ['Unique (symbol,strategy), ready=true', readyCombos, 'N/A', round(readyComboPerDay)]
     ], 34);
     console.log('Unique ready (symbol,strategy,date) tuples — last 7 days: ' + readySymbolStrategyDate7d);
-    console.log('Estimated unique ready tuples/day — last 7 days: ' + round(readyUniqueTuplePerDay7d));
+    console.log('Unique ready tuples per calendar day — last 7 days: ' + round(readyUniqueTuplePerCalendarDay7d));
+    console.log('Unique ready tuples per observed signal day — last 7 days: ' + (readyUniqueTuplePerObservedDay7d === null ? 'N/A' : round(readyUniqueTuplePerObservedDay7d)));
+    console.log('Observed signal dates in last 7 days: ' + activeSignalDates7d);
     console.log('Caution: a symbol/strategy/day tuple is a conservative opportunity proxy, not a distinct entry ID.');
     console.log('');
 
@@ -786,7 +800,7 @@ async function main() {
     console.log('CONFIRMED/day (rolling 30 days): ' + round(confirmedPerDay));
     console.log('ready=true/day (rolling 30 days): ' + round(readyPerDay));
     console.log('ready=true and no blockers/day: ' + round(actionReadyPerDay));
-    console.log('Unique ready (symbol,strategy,date)/day over last 7 days: ' + round(readyUniqueTuplePerDay7d));
+    console.log('Unique ready (symbol,strategy,date)/observed day over last 7 days: ' + (readyUniqueTuplePerObservedDay7d === null ? 'N/A' : round(readyUniqueTuplePerObservedDay7d)));
     for (const action of recommendedActions) console.log('- ' + action);
     console.log('');
 
