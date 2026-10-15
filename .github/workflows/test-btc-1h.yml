@@ -1,0 +1,65 @@
+name: BTC 1h candle fetch test
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: "Delta futures symbol to test"
+        required: true
+        type: string
+        default: "BTCUSD"
+      limit:
+        description: "Requested candle limit"
+        required: true
+        type: string
+        default: "250"
+
+permissions:
+  contents: read
+
+jobs:
+  btc-1h-diagnostic:
+    name: BTC 1h candle fetch test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run BTC 1h candle diagnostic
+        env:
+          BTC_SYMBOL: ${{ inputs.symbol }}
+          BTC_LIMIT: ${{ inputs.limit }}
+        run: |
+          set -o pipefail
+          echo "Running read-only public candle diagnostic for ${BTC_SYMBOL} (requested resolution: 1h)."
+          node scripts/test-btc-1h.mjs --symbol="$BTC_SYMBOL" --limit="$BTC_LIMIT" | tee /tmp/btc-1h-result.json
+
+      - name: Summarize verdict
+        run: |
+          {
+            echo "### BTC 1h Test Result"
+            echo ""
+            node --input-type=commonjs -e '
+              const fs = require("node:fs");
+              const r = JSON.parse(fs.readFileSync("/tmp/btc-1h-result.json", "utf8"));
+              console.log("**Verdict:** " + r.verdict);
+              console.log("**Candles:** " + r.candleCount);
+              console.log("");
+              console.log("| Field | Value |");
+              console.log("|---|---|");
+              for (const key of ["symbol", "requestedResolution", "requestedLimit", "firstTimestamp", "lastTimestamp", "durationHours", "expectedDurationHours", "durationMatch"]) {
+                console.log("| " + key + " | " + String(r[key] ?? "unavailable") + " |");
+              }
+              if (r.error) console.log("\n**Sanitized error:** " + r.error);
+            '
+          } >> "$GITHUB_STEP_SUMMARY"
