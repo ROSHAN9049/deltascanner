@@ -47,10 +47,6 @@ function dateMs(value) {
   const parsed = typeof value === 'number' ? value : Date.parse(value || '');
   return Number.isFinite(parsed) ? parsed : null;
 }
-function isoOrNull(value) {
-  const ms = dateMs(value);
-  return ms === null ? null : new Date(ms).toISOString();
-}
 function utcDate(value) {
   const ms = dateMs(value);
   return ms === null ? null : new Date(ms).toISOString().slice(0, 10);
@@ -136,6 +132,7 @@ function round(value, places = 2) {
   return value === null || value === undefined || !Number.isFinite(value) ? null : Number(value.toFixed(places));
 }
 function scoreBand(score) {
+  if (score === null || score === undefined || score === '') return null;
   const value = Number(score);
   if (!Number.isFinite(value) || value < 0 || value > 100) return null;
   return SCORE_BANDS.find(band => value >= band.min && (band.includeMax ? value <= band.max : value < band.max))?.label ?? null;
@@ -341,7 +338,7 @@ function main() {
   const stageCounts = countMap(signals, stageOf);
   const strategyCounts = countMap(signals, strategyOf);
   const readyConfirmed = confirmed.filter(row => row.ready === true && isEmptyReasons(row.blocked_reasons));
-  const readinessKnownCount = confirmed.filter(row => typeof row.ready === 'boolean' || row.blocked_reasons !== undefined && row.blocked_reasons !== null).length;
+  const readinessKnownCount = confirmed.filter(row => typeof row.ready === 'boolean' && row.blocked_reasons !== undefined && row.blocked_reasons !== null).length;
   const readinessUnknownCount = confirmed.length - readinessKnownCount;
   const readinessStepCount = readinessKnownCount === confirmed.length ? readyConfirmed.length : 'UNKNOWN';
 
@@ -399,7 +396,6 @@ function main() {
   const currentUtcMidnight = Date.parse(todayUtc + 'T00:00:00.000Z');
   const firstQueryDate = new Date(now - 29 * DAY_MS).toISOString().slice(0, 10);
   const firstQueryMidnight = Date.parse(firstQueryDate + 'T00:00:00.000Z');
-  const lastQueryDate = todayUtc;
   const dailyRows = [];
   for (let timestamp = firstQueryMidnight; timestamp <= currentUtcMidnight; timestamp += DAY_MS) {
     const date = new Date(timestamp).toISOString().slice(0, 10);
@@ -433,7 +429,7 @@ function main() {
   const actualRetentionDays = signalCoverage.oldestRowAgeDays;
   const dataSpanDays = signalCoverage.observedSpanDays;
 
-  let eventCorrelation = correlateUnique(readyConfirmed, events, {
+  const eventCorrelation = correlateUnique(readyConfirmed, events, {
     sourceTime: 'captured_at', targetTime: 'event_at', windowMs: 5 * MINUTE_MS, checkLongGaps: true
   });
   let fillCorrelation;
@@ -492,7 +488,7 @@ function main() {
     },
     signalFrequency: {
       observationPerDay: {
-        averageOnObservedDays: activeDayCount ? round(signals.reduce((sum, row) => sum + (dailyMap.get(utcDate(row.captured_at))?.total || 0), 0) / activeDayCount) : null,
+        averageOnObservedDays: activeDayCount ? round(signalDayValues.reduce((sum, value) => sum + value, 0) / activeDayCount) : null,
         medianOnObservedDays: round(median(signalDayValues)),
         maxOnObservedDays: signalDayValues.length ? Math.max(...signalDayValues) : null,
         observedDays: activeDayCount,
