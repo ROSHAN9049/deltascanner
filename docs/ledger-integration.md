@@ -233,3 +233,27 @@ DROP TABLE IF EXISTS system_meta;
 | `src/adapters/tradetron-snapshot-adapter.mjs` | Normalizes read-only Tradetron snapshots |
 | `src/server/ledger-server.mjs` | Optional, separate Express server for ledger routes |
 | `docs/ledger-integration.md` | This integration guide |
+
+## Running Tests
+
+The project uses Node.js's built-in `node:test` runner; no Jest, Mocha, or Vitest dependency is required.
+
+From the repository root:
+
+```bash
+npm test
+npm run test:smoke
+```
+
+- `npm test` runs the `*.test.mjs` tests in the top-level `tests/` directory, including the ledger, webhook, status-route, and smoke tests.
+- `npm run test:smoke` runs the lightweight module-load smoke test. It does not issue database queries or call the Tradetron snapshot endpoint.
+- `npm run smoke:ledger` is a **manual integration smoke test** and is not part of `npm test`. It requires `DATABASE_URL`, an applied migration, database network access, and the appropriate Tradetron Developer API configuration for snapshot retrieval. Run it only when intentionally checking the configured database and read-only snapshot API.
+
+The manual script prints counts and a final summary only. It does not print database connection strings, credentials, or snapshot rows. It verifies the required tables and current ledger counts; it does not insert, update, close, or reset any position.
+
+## Refactor Note: ledger-server.mjs
+
+`src/server/ledger-server.mjs` exports `createApp(deps)` to compose the optional Express routes without starting a listener, and `main(deps)` to perform the startup connection check, listen, and install graceful-shutdown handlers.
+
+The module only invokes `main()` automatically when executed directly with `node src/server/ledger-server.mjs`. Importing it from tests or another module no longer starts the HTTP server. The optional standalone process remains separate from `worker/index.mjs`; the existing live gate, trading configuration, and execution behavior are not changed.
+
