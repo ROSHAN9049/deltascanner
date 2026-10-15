@@ -4,7 +4,7 @@
 
 The scanner writes repeated dd_signals observations. A single symbol/strategy can appear many times during a day, so a raw row count or score histogram is not the same as a count of distinct actionable opportunities. Measure stage, readiness, blockers, correlated events, and recorded closed trades separately before changing any score threshold or gate.
 
-The current Signal frequency report performs counting and grouping inside PostgreSQL. It does not export or transfer millions of dd_signals rows. Its 30-day signal aggregates have no 100,000-row sample limit. The report also inspects all-time signal count and oldest/newest timestamps so observed history coverage is measured rather than assumed.
+The current Signal frequency report performs counting and grouping inside PostgreSQL. It does not export or transfer millions of dd_signals rows. Its seven-day signal aggregates have no 100,000-row sample limit. The report also inspects all-time signal count and oldest/newest timestamps so observed history coverage is measured rather than assumed.
 
 ## 2. Score, stage, readiness, and blockers are different
 
@@ -21,7 +21,7 @@ The report counts these metrics separately. dd_signals.blocked_reasons and dd_si
 
 The report returns these counts for the rolling 7-day window unless noted otherwise:
 
-1. **Total observations:** all dd_signals rows with captured_at > NOW() - INTERVAL '30 days'. These are repeated observations, not unique trades.
+1. **Total observations:** all dd_signals rows with captured_at > NOW() - INTERVAL '7 days'. These are repeated observations, not unique trades.
 2. **Unique symbols:** distinct non-empty symbols.
 3. **CONFIRMED stage:** rows with stage = 'CONFIRMED'.
 4. **ready=true:** rows explicitly marked ready by the worker, regardless of the stage label.
@@ -76,7 +76,7 @@ Do not recalibrate the score from CONFIRMED counts alone. Review readiness, uniq
 - The report uses exact aggregate queries for all dd_signals records in the rolling 7-day window; it does not apply the former 100,000-row raw-export limit.
 - The all-time signal count and oldest row timestamp measure the retained history currently present in the table. They do not establish the database's retention policy or guarantee that history is never pruned.
 - dd_signal_cache remains a latest snapshot per symbol/strategy and is not used as historical signal evidence.
-- Daily grouping uses UTC calendar dates. The rolling 30-day window can overlap 31 UTC dates because it begins and ends partway through a day.
+- Daily grouping uses UTC calendar dates. The rolling seven-day window can touch eight UTC dates because its start and end may fall partway through different days; the report separately shows active UTC dates and uses seven calendar days for the main daily average.
 - dd_tradetron_events may be empty or may contain events unrelated to outbound signal delivery. Empty event history produces UNKNOWN correlation, not an assertion that no delivery happened.
 - Signal-to-event and signal-to-trade correlation uses ±5-minute windows. Repeated same-symbol observations can make a match ambiguous; ambiguous/incomplete correlation is not converted into zero.
 - dd_trades contains closed-trade aggregate records. The dd_fills table is not used by the report because the inspected worker path does not write raw exchange fills into it.
