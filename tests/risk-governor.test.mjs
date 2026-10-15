@@ -164,5 +164,5 @@ test('BTC regime fails closed with an explicit adapter-window reason when 15m BT
   }});
   assert.equal(gate(rows, 'BTC regime'), GATE_BLOCK);
   assert.match(rows.find(row => row.gate === 'BTC regime').blockReason, /about 21 hours/);
-  assert.match(rows.find(row => row.gate === 'BTC regime').blockReason, /does not/);
+  assert.match(rows.find(row => row.gate === 'BTC regime').blockReason, /not BTC 15m/);
 });
