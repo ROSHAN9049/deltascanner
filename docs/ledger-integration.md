@@ -257,3 +257,57 @@ The manual script prints counts and a final summary only. It does not print data
 
 The module only invokes `main()` automatically when executed directly with `node src/server/ledger-server.mjs`. Importing it from tests or another module no longer starts the HTTP server. The optional standalone process remains separate from `worker/index.mjs`; the existing live gate, trading configuration, and execution behavior are not changed.
 
+## Migration Guide
+
+Only run the migration commands deliberately against the intended PostgreSQL database. These commands do not interact with Delta order execution, but the migration creates tables in the database named by DATABASE_URL.
+
+1. **Check whether the migration is already applied.** With DATABASE_URL set in your shell, run:
+
+   ~~~bash
+   psql "$DATABASE_URL" -c "SELECT to_regclass('public.position_ledger');"
+   ~~~
+
+   The migration runner checks all three required tables: position_ledger, webhook_events, and system_meta. If all exist, it reports that the migration is already applied and makes no schema changes. If only some exist, it stops and requires manual inspection.
+
+2. **Apply the migration with the runner.**
+
+   ~~~bash
+   npm run db:migrate
+   ~~~
+
+   The script requires DATABASE_URL, reads src/ledger/migrations/001_position_ledger.sql, runs the statements inside a transaction, then verifies that all three tables exist. It strips the migration file's outer BEGIN/COMMIT statements for execution inside the runner-owned transaction; the migration SQL file itself remains unchanged.
+
+3. **Run the real-environment smoke test.**
+
+   ~~~bash
+   npm run smoke:ledger
+   ~~~
+
+   This manually checks database connectivity, required tables, row counts, PositionLedger.getGlobalCount(), the read-only Tradetron snapshot adapter, and reconciliation. It does not print connection strings, credentials, snapshot rows, or position details. Snapshot or reconciliation failure causes a non-zero exit; a detected isSynced: false mismatch is reported clearly and is not automatically corrected.
+
+4. **If a partial schema exists, inspect before repairing.**
+
+   The runner uses a PostgreSQL transaction, so an ordinary failed migration should roll back its schema changes. If the runner detects a partial state, stop and inspect the database manually; do not repeatedly rerun the script. If those tables were created by this migration, contain no records that must be retained, and a database owner explicitly approves dropping them, the following destructive recovery sequence can be used:
+
+   ~~~sql
+   DROP TABLE IF EXISTS webhook_events;
+   DROP TABLE IF EXISTS position_ledger;
+   DROP TABLE IF EXISTS system_meta;
+   ~~~
+
+   Then run npm run db:migrate again. **WARNING: these DROP statements permanently delete the corresponding tables and all data inside them. Do not use this recovery sequence on populated tables or without a verified backup and explicit approval.** If any table contains useful records, repair the schema manually instead of dropping it.
+
+## Test Layers
+
+| Layer | Command | Requires DB | Requires CI |
+|-------|---------|-------------|-------------|
+| Unit tests | npm test | No | Yes |
+| Smoke (mocked) | npm run test:smoke | No | Yes |
+| HTTP integration | npm test (included) | No | Yes |
+| Real DB smoke | npm run smoke:ledger | Yes (DATABASE_URL) | No |
+| Migration apply | npm run db:migrate | Yes (DATABASE_URL) | No |
+
+**Safety warning:** Only smoke:ledger and db:migrate connect to the real configured database; neither is part of the CI workflow. All other tests use fake database dependencies and are CI-safe. The HTTP test starts an ephemeral localhost Express server, but it does not make a database connection or send live trading calls.
+
+The migration runner and real-database smoke test must be invoked manually. Never add npm run db:migrate or npm run smoke:ledger to CI, a deployment build, or a startup hook.
+
