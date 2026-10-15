@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      DATABASE_URL: \${{ secrets.DATABASE_URL }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,7 +29,7 @@ jobs:
       - name: Guard DATABASE_URL
         shell: bash
         run: |
-          if [ -z "\${DATABASE_URL:-}" ]; then
+          if [ -z "${DATABASE_URL:-}" ]; then
             echo "DATABASE_URL secret is not configured; refusing database access." >&2
             exit 1
           fi
@@ -54,7 +54,7 @@ jobs:
       - name: Upload report data (7 days)
         uses: actions/upload-artifact@v4
         with:
-          name: signal-frequency-report-\${{ github.run_id }}
+          name: signal-frequency-report-${{ github.run_id }}
           retention-days: 7
           if-no-files-found: error
           path: |
