@@ -149,6 +149,58 @@ test('BTC regime uses a clearly labeled 5m/15m approximation when both trend lab
   assert.match(record.blockReason, /not the full 1h EMA50\/EMA200 \+ ATR regime/);
 });
 
+test('BTC live 1h shadow regime is displayed read-only when available', () => {
+  const rows = buildRiskGovernorGates({ selected: {
+    symbol: 'ETHUSD',
+    strategy: 'MOMENTUM',
+    btc_trend: 'BEAR',
+    details: {
+      btcTrend5m: 'BEAR',
+      btcTrend15m: 'BEAR',
+      btcRegime: 'BULL_LOW_VOL',
+      btcRegimeStatus: 'PASS',
+      btcRegimeReason: 'BTC regime: BULL_LOW_VOL (ATR 1.20%)',
+      btcRegimeSource: 'live-1h',
+      btcAtrPct: 1.2
+    }
+  }});
+  const record = rows.find(row => row.gate === 'BTC regime');
+  assert.equal(record.result, GATE_PASS);
+  assert.equal(record.observedValue, 'BTC regime (live 1h shadow): BULL_LOW_VOL');
+  assert.match(record.blockReason, /^\(shadow\)/);
+});
+
+test('BTC live 1h shadow BLOCK is displayed but a worker BTC blocker retains priority', () => {
+  const shadowRows = buildRiskGovernorGates({ selected: {
+    symbol: 'ETHUSD',
+    strategy: 'MOMENTUM',
+    details: {
+      btcRegime: 'CHOPPY',
+      btcRegimeStatus: 'BLOCK',
+      btcRegimeReason: 'BTC regime: CHOPPY (ATR 4.50%)',
+      btcRegimeSource: 'live-1h'
+    }
+  }});
+  const shadowRecord = shadowRows.find(row => row.gate === 'BTC regime');
+  assert.equal(shadowRecord.result, GATE_BLOCK);
+  assert.match(shadowRecord.blockReason, /^\(shadow\)/);
+
+  const blockedRows = buildRiskGovernorGates({ selected: {
+    symbol: 'ETHUSD',
+    strategy: 'MOMENTUM',
+    btc_trend: 'BEAR',
+    blocked_reasons: ['BTC regime'],
+    details: {
+      btcRegime: 'BULL_LOW_VOL',
+      btcRegimeStatus: 'PASS',
+      btcRegimeReason: 'BTC regime: BULL_LOW_VOL',
+      btcRegimeSource: 'live-1h'
+    }
+  }});
+  assert.equal(blockedRows.find(row => row.gate === 'BTC regime').result, GATE_BLOCK);
+  assert.match(blockedRows.find(row => row.gate === 'BTC regime').blockReason, /Worker reported a BTC-regime blocker/);
+});
+
 test('BTC regime approximation BLOCKs mixed/flat trends and never returns UNKNOWN', () => {
   const rows = buildRiskGovernorGates({ selected: {
     symbol: 'ETHUSD', strategy: 'SCALPING', btc_trend: 'BULL',

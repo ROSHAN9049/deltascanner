@@ -64,6 +64,21 @@ function dashboardBtcTrendApproximation({ selected, details, reasonText }) {
     };
   }
 
+  if (details.btcRegime && details.btcRegimeSource === 'live-1h') {
+    const regime = String(details.btcRegime);
+    const shadowStatusValue = String(details.btcRegimeStatus || '').toUpperCase();
+    const shadowStatus = shadowStatusValue === 'PASS'
+      ? GATE_PASS
+      : shadowStatusValue === 'BLOCK'
+        ? GATE_BLOCK
+        : GATE_UNKNOWN;
+    return {
+      status: shadowStatus,
+      observed: `BTC regime (live 1h shadow): ${regime}`,
+      reason: `(shadow) ${String(details.btcRegimeReason || 'BTC 1h shadow status unavailable')}`
+    };
+  }
+
   const trend5m = normalizeTrend(
     details.btcTrend5m ?? details.btc_trend_5m ?? details.btcTrend ?? selected.btc_trend ?? selected.btcTrend
   );
