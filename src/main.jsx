@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './style.css';
 import { indiaDateKey } from './date-utils.js';
@@ -44,7 +44,7 @@ function App() {
   const [clock, setClock] = useState(Date.now());
   const [inspect, setInspect] = useState('');
 
-  const load = async () => {
+  const load = useCallback(async () => {
     const cacheBust = '?t=' + Date.now();
     // Market rendering is independent of the slower health / engine-state requests.
     const marketRequest = (async () => {
@@ -70,7 +70,7 @@ function App() {
     })().catch(e => setError(e.message || 'Dashboard data unavailable'));
 
     await Promise.allSettled([marketRequest, stateRequest]);
-  };
+  }, []);
   const unlockSession = async () => {
     const candidate = secretRef.current;
     if (!candidate) {
@@ -122,7 +122,7 @@ function App() {
     }
   };
 
-  useEffect(() => { load(); const id = setInterval(load, 10000); return () => clearInterval(id); });
+  useEffect(() => { void load(); const id = setInterval(() => { void load(); }, 10000); return () => clearInterval(id); }, [load]);
   useEffect(() => { const id = setInterval(() => setClock(Date.now()), 1000); return () => clearInterval(id); }, []);
 
   const settings = state?.settings || {};
