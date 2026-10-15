@@ -32,6 +32,71 @@ function hasReason(reasonText, pattern) {
   return normalizedReason.includes(normalizedPattern);
 }
 
+function normalizeTrend(value) {
+  const trend = String(value || '').trim().toUpperCase();
+  return ['BULL', 'BEAR', 'FLAT'].includes(trend) ? trend : null;
+}
+
+/*
+ * Dashboard-only BTC fallback. The current DeltaAdapter.candles() maps
+ * unknown resolutions to 300 seconds, so candles('BTCUSD', '1h', 250)
+ * requests only about 21 hours of history, not the ~250 hours needed for
+ * EMA200. Until the adapter's request window is corrected and a full 1h
+ * series is available, the dashboard may approximate using BTC 5m + 15m
+ * trend labels when both are present. The current signal cache exposes the
+ * BTC 5m label as btc_trend, but does not persist the 15m BTC label; that
+ * missing second observation must BLOCK, not be inferred from the selected
+ * coin's own confirm_trend. This is display-only and never gates live signals.
+ */
+function dashboardBtcTrendApproximation({ selected, details, reasonText }) {
+  if (details.btcRegimeOverride === true) {
+    return {
+      status: GATE_PASS,
+      observed: 'explicit worker override',
+      reason: 'Explicit worker BTC-regime override is present; dashboard-only status, not an order gate'
+    };
+  }
+  if (hasReason(reasonText, 'BTC regime')) {
+    return {
+      status: GATE_BLOCK,
+      observed: selected.btc_trend ?? null,
+      reason: 'Worker reported a BTC-regime blocker; dashboard approximation cannot override it'
+    };
+  }
+
+  const trend5m = normalizeTrend(
+    details.btcTrend5m ?? details.btc_trend_5m ?? details.btcTrend ?? selected.btc_trend ?? selected.btcTrend
+  );
+  const trend15m = normalizeTrend(
+    details.btcTrend15m ?? details.btc_trend_15m ?? details.btcConfirmTrend ??
+    details.btc_confirm_trend ?? selected.btc_trend_15m ?? selected.btc_confirm_trend ??
+    selected.btcConfirmTrend
+  );
+
+  if (!trend5m || !trend15m) {
+    return {
+      status: GATE_BLOCK,
+      observed: trend5m ? `5m ${trend5m}; 15m missing` : 'BTC 5m/15m trend data missing',
+      reason: 'BLOCK: 1h EMA50/EMA200 + ATR regime is unavailable because the current adapter requests only about 21 hours for limit=250. Dashboard 5m/15m approximation needs both BTC trend labels; the current cache exposes btc_trend (5m) but not BTC 15m, so it fails closed.'
+    };
+  }
+
+  const aligned = trend5m === trend15m && (trend5m === 'BULL' || trend5m === 'BEAR');
+  if (aligned) {
+    return {
+      status: GATE_PASS,
+      observed: `5m ${trend5m} / 15m ${trend15m}`,
+      reason: `Dashboard-only approximation PASS: BTC ${trend5m} agrees on 5m and 15m. This is not the full 1h EMA50/EMA200 + ATR regime.`
+    };
+  }
+
+  return {
+    status: GATE_BLOCK,
+    observed: `5m ${trend5m} / 15m ${trend15m}`,
+    reason: `Dashboard-only approximation BLOCK: BTC 5m/15m trends are mixed or flat (${trend5m}/${trend15m}); 1h EMA50/EMA200 + ATR regime was not computed.`
+  };
+}
+
 export function buildRiskGovernorGates({
   selected,
   health = null,
@@ -122,10 +187,8 @@ export function buildRiskGovernorGates({
           ? 'Observed EMA21 distance/ATR exceeds the selected strategy limit'
           : '';
 
-  const btcOverride = details.btcRegimeOverride === true;
-  const btcStatus = btcOverride
-    ? GATE_PASS
-    : hasReason(reasonText, 'BTC regime') ? GATE_BLOCK : GATE_UNKNOWN;
+  const btcApproximation = dashboardBtcTrendApproximation({ selected, details, reasonText });
+  const btcStatus = btcApproximation.status;
 
   const spreadPct = safeNum(selected.spread_pct);
   const spreadStatus = hasReason(reasonText, 'spread >') || hasReason(reasonText, 'spread too wide')
@@ -179,7 +242,7 @@ export function buildRiskGovernorGates({
     gateResult({ gate: '24h anti-chase', result: antiChaseStatus, observedValue: change24h, unit: '%', threshold: side === 'BUY' ? 15 : -15, thresholdUnit: '%', blockReason: antiChaseStatus === GATE_BLOCK ? 'Anti-chase gate blocked' : antiChaseStatus === GATE_UNKNOWN ? '24h change or side missing' : '' }),
     gateResult({ gate: `5m range <= ${rangeLimit} ATR`, result: rangeStatus, observedValue: rangeAtr, unit: 'ATR', threshold: rangeLimit, thresholdUnit: 'ATR', blockReason: rangeBlockReason }),
     gateResult({ gate: `EMA21 distance <= ${emaDistanceLimit.toFixed(2)} ATR`, result: emaStatus, observedValue: emaDistance, unit: 'ATR', threshold: emaDistanceLimit, thresholdUnit: 'ATR', blockReason: emaBlockReason }),
-    gateResult({ gate: 'BTC regime', result: btcStatus, observedValue: selected.btc_trend ?? null, blockReason: btcStatus === GATE_BLOCK ? 'BTC regime gate blocked' : btcStatus === GATE_UNKNOWN ? 'A trend label alone does not prove the regime gate passed' : 'Explicit adaptive override supplied' }),
+    gateResult({ gate: 'BTC regime', result: btcStatus, observedValue: btcApproximation.observed, blockReason: btcApproximation.reason }),
     gateResult({ gate: 'Spread', result: spreadStatus, observedValue: spreadPct, unit: '%', threshold: 0.35, thresholdUnit: '%', blockReason: spreadStatus === GATE_BLOCK ? 'Spread above limit or explicitly blocked' : spreadStatus === GATE_UNKNOWN ? 'Spread observation missing' : '' }),
     gateResult({ gate: 'Fresh closed candles', result: freshnessStatus, observedValue: candlesFresh ?? null, blockReason: freshnessStatus === GATE_BLOCK ? 'Candle freshness blocked' : freshnessStatus === GATE_UNKNOWN ? 'Candle freshness was not supplied' : '' }),
     gateResult({ gate: 'API / worker healthy', result: healthStatus, blockReason: healthStatus === GATE_BLOCK ? 'At least one health check explicitly failed' : healthStatus === GATE_UNKNOWN ? 'One or more health checks unavailable' : '' }),

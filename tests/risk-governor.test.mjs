@@ -19,7 +19,7 @@ test('missing risk observations fail closed for range and EMA gates instead of d
   assert.equal(gate(rows, '24h anti-chase'), GATE_UNKNOWN);
   assert.equal(gate(rows, '5m range <= 4 ATR'), GATE_BLOCK);
   assert.equal(gate(rows, 'EMA21 distance <= 3.50 ATR'), GATE_BLOCK);
-  assert.equal(gate(rows, 'BTC regime'), GATE_UNKNOWN);
+  assert.equal(gate(rows, 'BTC regime'), GATE_BLOCK);
   assert.equal(gate(rows, 'Spread'), GATE_UNKNOWN);
   assert.equal(gate(rows, 'Fresh closed candles'), GATE_UNKNOWN);
   assert.equal(gate(rows, 'API / worker healthy'), GATE_UNKNOWN);
@@ -135,4 +135,34 @@ test('SCALP alias uses the same dashboard thresholds as SCALPING', () => {
   }});
   assert.equal(gate(rows, '5m range <= 3 ATR'), GATE_PASS);
   assert.equal(gate(rows, 'EMA21 distance <= 2.50 ATR'), GATE_PASS);
+});
+
+test('BTC regime uses a clearly labeled 5m/15m approximation when both trend labels exist', () => {
+  const rows = buildRiskGovernorGates({ selected: {
+    symbol: 'ETHUSD', strategy: 'MOMENTUM',
+    btc_trend: 'BULL',
+    details: { btcTrend15m: 'BULL' }
+  }});
+  assert.equal(gate(rows, 'BTC regime'), GATE_PASS);
+  const record = rows.find(row => row.gate === 'BTC regime');
+  assert.match(record.blockReason, /Dashboard-only approximation PASS/);
+  assert.match(record.blockReason, /not the full 1h EMA50\/EMA200 \+ ATR regime/);
+});
+
+test('BTC regime approximation BLOCKs mixed/flat trends and never returns UNKNOWN', () => {
+  const rows = buildRiskGovernorGates({ selected: {
+    symbol: 'ETHUSD', strategy: 'SCALPING', btc_trend: 'BULL',
+    details: { btcTrend15m: 'BEAR' }
+  }});
+  assert.equal(gate(rows, 'BTC regime'), GATE_BLOCK);
+  assert.match(rows.find(row => row.gate === 'BTC regime').blockReason, /trends are mixed or flat/);
+});
+
+test('BTC regime fails closed with an explicit adapter-window reason when 15m BTC trend is absent', () => {
+  const rows = buildRiskGovernorGates({ selected: {
+    symbol: 'ETHUSD', strategy: 'MOMENTUM', btc_trend: 'BULL'
+  }});
+  assert.equal(gate(rows, 'BTC regime'), GATE_BLOCK);
+  assert.match(rows.find(row => row.gate === 'BTC regime').blockReason, /about 21 hours/);
+  assert.match(rows.find(row => row.gate === 'BTC regime').blockReason, /does not/);
 });
