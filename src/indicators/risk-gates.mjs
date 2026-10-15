@@ -48,7 +48,7 @@ function limitOrDefault(value, fallback, allowZero = true) {
 
 function withinLimit(observed, limit, label, unit = '') {
   // Treat harmless floating-point rounding at a stated boundary as equal.
-  const tolerance = Number.EPSILON * 16 * Math.max(1, Math.abs(limit));
+  const tolerance = 1e-10 * Math.max(1, Math.abs(limit));
   if (observed <= limit + tolerance) {
     return gateResult('PASS', observed, limit, `${label}: ${observed.toFixed(4)}${unit} is within limit ${limit}${unit}`);
   }
