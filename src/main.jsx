@@ -186,6 +186,40 @@ function App() {
   const unavailableMarketSymbols = Array.isArray(workerRouting?.unavailableMarketSymbols)
     ? normalizeSymbols(workerRouting.unavailableMarketSymbols)
     : configuredRouteSymbols.filter(symbol => !workerSupportedSymbols.includes(symbol));
+
+  // A fresh snapshot can still be over the configured cap. Trust means the
+  // count is usable; it does not mean another entry is safe.
+  const configuredMaxOpenPositions = safeNum(settings.max_open_positions);
+  const currentTradetronOpenPositionCount = safeNum(workerEntrySafety?.openPositionCount);
+  const globalPositionCapReached = configuredMaxOpenPositions !== null &&
+    configuredMaxOpenPositions >= 1 &&
+    currentTradetronOpenPositionCount !== null &&
+    currentTradetronOpenPositionCount >= configuredMaxOpenPositions;
+  const globalPositionCapReason = globalPositionCapReached
+    ? 'Global open-position limit reached (' + currentTradetronOpenPositionCount + '/' +
+      configuredMaxOpenPositions + '); new entries blocked'
+    : null;
+  const effectiveEntrySafety = workerEntrySafety ? {
+    ...workerEntrySafety,
+    maxOpenPositions: configuredMaxOpenPositions,
+    capReached: globalPositionCapReached,
+    blocked: workerEntrySafety.trusted !== true || globalPositionCapReached,
+    reason: workerEntrySafety.trusted !== true
+      ? (workerEntrySafety.reason || 'POSITION_SNAPSHOT_UNTRUSTED')
+      : globalPositionCapReason
+  } : null;
+  const effectiveGridEntrySafety = workerGridEntrySafety ? {
+    ...workerGridEntrySafety,
+    blocked: workerGridEntrySafety.blocked === true ||
+      workerEntrySafety?.trusted !== true ||
+      globalPositionCapReached,
+    reason: workerGridEntrySafety.blocked === true
+      ? (workerGridEntrySafety.reason || 'GRID_POSITION_SAFETY_BLOCKED')
+      : workerEntrySafety?.trusted !== true
+        ? (workerEntrySafety?.reason || 'POSITION_SNAPSHOT_UNTRUSTED')
+        : globalPositionCapReason
+  } : null;
+
   const executionCoverage = workerRouting ? {
     ...(state?.executionCoverage || {}),
     routedFuturesSymbols: workerSupportedSymbols.length,
@@ -201,14 +235,14 @@ function App() {
       : 15,
     routingStatusSource: 'worker-heartbeat',
     routingObservedAt: workerRoutingLog?.created_at || null,
-    tradetronEntrySafety: workerEntrySafety,
-    gridEntrySafety: workerGridEntrySafety
+    tradetronEntrySafety: effectiveEntrySafety,
+    gridEntrySafety: effectiveGridEntrySafety
   } : (state?.executionCoverage || null);
 
   // These values are consumed by the Momentum and Scalping routes, so keep
   // them in App scope rather than inside Dashboard.
   const routeSafetyRequired = Number(executionCoverage?.configuredFuturesRoutes || 0) > 0;
-  const routeSafetyBlocked = routeSafetyRequired && executionCoverage?.tradetronEntrySafety?.trusted !== true;
+  const routeSafetyBlocked = routeSafetyRequired && (executionCoverage?.tradetronEntrySafety?.trusted !== true || executionCoverage?.tradetronEntrySafety?.blocked === true || executionCoverage?.tradetronEntrySafety?.capReached === true);
   const routeSafetyReason = executionCoverage?.tradetronEntrySafety?.reason ||
     (executionCoverage?.tradetronEntrySafety?.configured === true ? 'SNAPSHOT_NOT_VERIFIED' : 'DEVELOPER_API_NOT_CONFIGURED');
   const appTradetronSnapshots = state?.tradetronDeveloperDataProtected === true
@@ -284,7 +318,7 @@ function Dashboard({ market, settings, health, trades, positions, accountDataPro
   );
   const tradetronMirror = summarizeTradetronSnapshots(developerSnapshots);
   const routeSafetyRequired = Number(executionCoverage?.configuredFuturesRoutes || 0) > 0;
-  const routeSafetyBlocked = routeSafetyRequired && executionCoverage?.tradetronEntrySafety?.trusted !== true;
+  const routeSafetyBlocked = routeSafetyRequired && (executionCoverage?.tradetronEntrySafety?.trusted !== true || executionCoverage?.tradetronEntrySafety?.blocked === true || executionCoverage?.tradetronEntrySafety?.capReached === true);
   const routeSafetyReason = executionCoverage?.tradetronEntrySafety?.reason ||
     (executionCoverage?.tradetronEntrySafety?.configured === true ? 'SNAPSHOT_NOT_VERIFIED' : 'DEVELOPER_API_NOT_CONFIGURED');
   const eventPositionSymbols = (positions || []).filter(position => Math.abs(Number(position?.qty) || 0) > 0).map(position => String(position?.symbol || '').toUpperCase());
