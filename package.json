@@ -13,7 +13,8 @@
     "lint": "eslint . --max-warnings=0",
     "test": "node --test tests/*.test.mjs",
     "test:smoke": "node tests/smoke.test.mjs",
-    "smoke:ledger": "node scripts/smoke-ledger.mjs"
+    "smoke:ledger": "node scripts/smoke-ledger.mjs",
+    "db:migrate": "node scripts/apply-migration.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",
