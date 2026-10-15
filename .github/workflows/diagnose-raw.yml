@@ -1,0 +1,45 @@
+name: Raw database diagnostic
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Read-only raw database diagnostics
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Guard DATABASE_URL
+        env:
+          DATABASE_URL: \${{ secrets.DATABASE_URL }}
+        shell: bash
+        run: |
+          if [ -z "\${DATABASE_URL:-}" ]; then
+            echo "DATABASE_URL secret is not configured; refusing database access." >&2
+            exit 1
+          fi
+          echo "DATABASE_URL is configured (value hidden)."
+
+      - name: Run raw diagnostics
+        env:
+          DATABASE_URL: \${{ secrets.DATABASE_URL }}
+        shell: bash
+        run: |
+          set -o pipefail
+          node scripts/diagnose-raw.mjs 2>&1 | tee /tmp/diagnose-raw.log
+          cat /tmp/diagnose-raw.log >> "$GITHUB_STEP_SUMMARY"
