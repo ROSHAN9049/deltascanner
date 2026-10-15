@@ -134,7 +134,7 @@ export function buildTradetronPositionReconciliation({
     snapshotAvailable,
     positionsHidden: mirror.positionsHidden,
     snapshotAsOf,
-    openPositionCount: mirror.openCount,
+    openPositionCount: snapshotRows.length > 0 ? mirror.openCount : null,
     visibleOpenRowCount: mirror.openRows.length,
     latestAcceptedSignalSymbols: acceptedSignals.size,
     mismatchCount,
