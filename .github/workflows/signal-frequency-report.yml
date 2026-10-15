@@ -8,9 +8,9 @@ permissions:
 
 jobs:
   report:
-    name: Read-only signal frequency analysis
+    name: SQL-aggregated signal frequency analysis
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,45 +26,29 @@ jobs:
 
       - name: Guard DATABASE_URL
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL: \${{ secrets.DATABASE_URL }}
         shell: bash
         run: |
-          if [ -z "${DATABASE_URL:-}" ]; then
+          if [ -z "\${DATABASE_URL:-}" ]; then
             echo "DATABASE_URL secret is not configured; refusing database access." >&2
             exit 1
           fi
           echo "DATABASE_URL is configured (value hidden)."
 
-      - name: Export signal observations
+      - name: Build aggregate report directly from PostgreSQL
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: node scripts/export-signals.mjs > signals.json
-
-      - name: Export recorded fills
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: node scripts/export-fills.mjs > fills.json
-
-      - name: Export Tradetron events
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: node scripts/export-tradetron-events.mjs > events.json
-
-      - name: Build signal frequency report
+          DATABASE_URL: \${{ secrets.DATABASE_URL }}
         shell: bash
         run: |
           set -o pipefail
-          node scripts/signal-frequency-report.mjs --signals=signals.json --fills=fills.json --events=events.json | tee /tmp/signal-frequency-report.txt
+          node scripts/signal-frequency-report.mjs --output=signal-frequency-report.json 2>&1 | tee /tmp/signal-frequency-report.txt || report_status=$?
           head -n 60 /tmp/signal-frequency-report.txt >> "$GITHUB_STEP_SUMMARY"
+          exit "\${report_status:-0}"
 
-      - name: Upload report data (7 days)
+      - name: Upload aggregate report (7 days)
         uses: actions/upload-artifact@v4
         with:
-          name: signal-frequency-report-${{ github.run_id }}
+          name: signal-frequency-report-\${{ github.run_id }}
           retention-days: 7
           if-no-files-found: error
-          path: |
-            signals.json
-            fills.json
-            events.json
-            signal-frequency-report.json
+          path: signal-frequency-report.json
