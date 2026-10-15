@@ -744,8 +744,7 @@ async function main() {
     console.log('dd_signals null captured_at (all-time): ' + count(allTime.null_captured_at));
     console.log('dd_signals rows older than 7 days: ' + rowsOlderThan7Days);
     if (rowsOlderThan7Days > 0) {
-      console.warn('⚠️ Found ' + rowsOlderThan7Days + ' rows older than 7 days. Disk pressure likely.');
-      console.warn('Run prune-signals workflow to reclaim space.');
+      console.warn('⚠️ Found ' + rowsOlderThan7Days + ' rows older than 7 days. Disk pressure likely. Run prune-signals workflow to reclaim space.');
     }
     console.log('dd_trades schema exists: ' + (tradeTableExists ? 'YES' : 'NO/UNKNOWN'));
     if (tradeTableExists) console.log('dd_trades schema columns: ' + tradeColumns.map(row => row.column_name + ' (' + row.data_type + ', nullable=' + row.is_nullable + ')').join('; '));
