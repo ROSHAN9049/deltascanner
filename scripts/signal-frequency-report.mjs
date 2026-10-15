@@ -501,7 +501,7 @@ async function main() {
     const confirmedScored = scoreBandCounts.reduce((sum, row) => sum + row.confirmed, 0);
 
     function formatPercent(value) {
-      return value === null ? 'N/A' : value.toFixed(2) + '%';
+      return value === null || value === undefined || !Number.isFinite(value) ? 'N/A' : value.toFixed(2) + '%';
     }
     function reasonSummary(queryResult) {
       if (!queryResult.ok) return { totalOccurrences: null, top10: [], byStrategy: [], available: false };
