@@ -45,7 +45,7 @@ test('stale or failed snapshots do not silently show zero current positions', ()
     now
   });
   assert.equal(result.count, null);
-  assert.ok(['SYNC_ERROR', 'UNVERIFIED'].includes(result.status));
+  assert.equal(result.status, 'STALE');
   assert.equal(result.lastKnownCount, 2);
 });
 
