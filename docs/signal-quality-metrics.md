@@ -18,7 +18,7 @@ The engine persistence path should also be interpreted carefully: dd_signals.blo
 2. **Unique symbols:** distinct non-empty symbol values in dd_signals.
 3. **CONFIRMED observations:** rows whose stage is exactly CONFIRMED. This is an observation count, not a unique-trade count.
 4. **CONFIRMED with empty blockers:** confirmed rows that explicitly have ready=true and an empty blocked_reasons field. Missing readiness data is UNKNOWN, not zero.
-5. **Tradetron delivery (correlated):** confirmed/ready signal observations uniquely correlated with dd_tradetron_events using symbol, compatible side when available, and event timestamp within five minutes. Ambiguous or incomplete correlation is UNKNOWN.
+5. **Tradetron event correlation (proxy):** confirmed/ready signal observations uniquely correlated with dd_tradetron_events using symbol, compatible side when available, and event timestamp within five minutes. That table stores received/synchronized events; a match is not proof of outbound signal delivery. Ambiguous or incomplete correlation is UNKNOWN.
 6. **Actual fills (correlated):** recorded dd_fills rows uniquely correlated after delivery using symbol, compatible side when available, and a timestamp heuristic within fifteen minutes of the signal. This is not an order-ID match because the requested event export does not include a shared order identifier. Treat the count as an estimate, not proof of causality.
 
 A position record is not proof of an exchange fill. dd_fills is the more direct recorded-fill source.
@@ -53,7 +53,7 @@ The report prints aligned human-readable tables and writes signal-frequency-repo
 - **Unique symbols** indicates breadth, not actionability.
 - **CONFIRMED observations** measures the frequency of the stage emitted by the strategy pipeline.
 - **CONFIRMED with empty blockers** requires ready=true as well as no persisted blocker reasons.
-- **Tradetron delivery** uses heuristic correlation. UNKNOWN means the inputs do not support a reliable count; it must not be read as zero deliveries.
+- **Tradetron event correlation** uses heuristic correlation and is not proof of outbound delivery. UNKNOWN means the inputs do not support a reliable count; it must not be read as zero events.
 - **Recorded fills** are rows in dd_fills. A single trade can generate multiple partial-fill rows, and one signal may not map cleanly to one fill.
 
 The report shows averages over days with observations and a separate full-30-calendar-day average. Review actual oldest-row age, timestamp span, missing timestamp percentages, ambiguous matches, and score validity before using a daily average. Frequencies are provisional when history is short.
@@ -69,7 +69,7 @@ Recalibrate a score only after sufficient history shows a persistent signal-freq
 - dd_signal_cache is a latest snapshot per symbol/strategy and is not used as historical signal evidence.
 - Correlation is heuristic: events use a five-minute window, and fill matching uses a fifteen-minute window. Repeated observations for the same symbol can make a match ambiguous.
 - The event export has no order ID, and the fill export has no execution ID; direct event-to-fill linkage is therefore unavailable in these exports.
-- Tradetron event rows may be missing or incomplete. Missing identifiers, timestamps, ambiguous matches, insufficient key coverage, or suspicious timestamp gaps produce UNKNOWN rather than a zero count.
+- Tradetron event rows may be missing or incomplete. The table stores received/synchronized events and may not record outbound signal delivery. A match is a proxy, not proof of delivery. Missing identifiers, timestamps, ambiguous matches, insufficient key coverage, or suspicious timestamp gaps produce UNKNOWN rather than a zero count.
 - Partial fills can create multiple dd_fills rows for one order or trade.
 - The score distribution excludes missing or out-of-range scores from its band percentages; the excluded count is shown separately.
 - Exported strings and nested JSON are capped/sanitized to avoid leaking suspicious credential-like values or oversized payloads.
