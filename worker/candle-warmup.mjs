@@ -71,3 +71,52 @@ export function planCandleWarmup(
     scanned
   };
 }
+
+
+// Dedicated hourly BTC history, deliberately separate from the rotating
+// 1m/5m/15m market-universe warmup.
+const BTC_HOURLY_CACHE_KEY = '1h:BTCUSD';
+const BTC_HOURLY_REFRESH_MS = 60 * 60 * 1000;
+const BTC_HOURLY_CANDLE_LIMIT = 250;
+const btcHourlyFetchedAt = new WeakMap();
+
+/**
+ * Refresh BTCUSD's 1h history independently from the rotating candle batch.
+ * The Map key follows the existing resolution:symbol convention.
+ */
+export async function warmupBTCHourly(adapter, cache) {
+  if (!adapter || typeof adapter.candles !== 'function') {
+    console.warn('[DeltaScanner] BTC 1h warmup skipped: candle adapter unavailable');
+    return { ok: false, skipped: true, reason: 'adapter unavailable' };
+  }
+  if (!(cache instanceof Map)) {
+    console.warn('[DeltaScanner] BTC 1h warmup skipped: candle cache unavailable');
+    return { ok: false, skipped: true, reason: 'cache unavailable' };
+  }
+
+  const now = Date.now();
+  const lastFetched = btcHourlyFetchedAt.get(cache) || 0;
+  if (cache.has(BTC_HOURLY_CACHE_KEY) && lastFetched > 0 && now - lastFetched < BTC_HOURLY_REFRESH_MS) {
+    return {
+      ok: true,
+      skipped: true,
+      candleCount: Array.isArray(cache.get(BTC_HOURLY_CACHE_KEY)) ? cache.get(BTC_HOURLY_CACHE_KEY).length : 0,
+      fetchedAt: new Date(lastFetched).toISOString()
+    };
+  }
+
+  try {
+    const rows = await adapter.candles('BTCUSD', '1h', BTC_HOURLY_CANDLE_LIMIT);
+    if (!Array.isArray(rows)) throw new Error('Delta candle endpoint returned a non-array response');
+    cache.set(BTC_HOURLY_CACHE_KEY, rows);
+    const fetchedAt = Date.now();
+    btcHourlyFetchedAt.set(cache, fetchedAt);
+    console.log('[DeltaScanner] BTC 1h warmup refreshed:', rows.length, 'candles');
+    return { ok: true, skipped: false, candleCount: rows.length, fetchedAt: new Date(fetchedAt).toISOString() };
+  } catch (error) {
+    // Preserve the last known cache on request failure; the next hourly timer
+    // can retry without disturbing the scanner's existing resolutions.
+    console.warn('[DeltaScanner] BTC 1h warmup failed:', String(error?.message || error).slice(0, 240));
+    return { ok: false, skipped: false, reason: String(error?.message || error).slice(0, 240) };
+  }
+}

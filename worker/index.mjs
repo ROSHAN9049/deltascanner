@@ -3,6 +3,7 @@ import { CONFIG } from '../server/config.js';
 import * as db from '../server/db.js';
 import { log } from '../server/db.js';
 import { isGithubActionsPublicScanOnly } from './runtime-mode.mjs';
+import { warmupBTCHourly } from './candle-warmup.mjs';
 
 const githubActionsPublicScanOnly = isGithubActionsPublicScanOnly();
 
@@ -14,6 +15,7 @@ if (!CONFIG.tradetronBridgeEnabled && !githubActionsPublicScanOnly) {
 if (!CONFIG.supabaseUrl || !CONFIG.supabaseAdminKey) throw new Error('SUPABASE_URL / Supabase server key is required.');
 
 const engine = new DeltaEngine();
+let btcHourlyWarmupTimer = null;
 
 async function getOutboundIp() {
   try {
@@ -72,8 +74,8 @@ async function startupPreflight() {
   }
 }
 
-process.on('SIGTERM', async () => { console.log('[DeltaScanner] SIGTERM received; stopping safely'); await engine.stop(); process.exit(0); });
-process.on('SIGINT', async () => { console.log('[DeltaScanner] SIGINT received; stopping safely'); await engine.stop(); process.exit(0); });
+process.on('SIGTERM', async () => { console.log('[DeltaScanner] SIGTERM received; stopping safely'); if (btcHourlyWarmupTimer) clearInterval(btcHourlyWarmupTimer); await engine.stop(); process.exit(0); });
+process.on('SIGINT', async () => { console.log('[DeltaScanner] SIGINT received; stopping safely'); if (btcHourlyWarmupTimer) clearInterval(btcHourlyWarmupTimer); await engine.stop(); process.exit(0); });
 
 process.on('unhandledRejection', async error => {
   console.error('[DeltaScanner] Unhandled rejection:', String(error?.message || error));
@@ -120,6 +122,14 @@ async function runTradetronSelfTest() {
 }
 
 await runTradetronSelfTest();
+
+// Fetch the global BTC hourly regime data immediately, then refresh it hourly.
+// This schedule is independent of the rotating 1m/5m/15m warmup and WebSocket.
+await warmupBTCHourly(engine.adapter, engine.candles);
+btcHourlyWarmupTimer = setInterval(() => {
+  void warmupBTCHourly(engine.adapter, engine.candles);
+}, 60 * 60 * 1000);
+btcHourlyWarmupTimer.unref?.();
 
 console.log('[DeltaScanner] Production SIGNAL_ONLY worker entering engine loop');
 engine.run().catch(async error => {
