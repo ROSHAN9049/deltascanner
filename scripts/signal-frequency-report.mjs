@@ -164,15 +164,14 @@ function reasonSql(jsonExpression) {
     "      WHEN raw_reason ~* '(fee.*spread|spread.*fee|cost.*risk|1r cost)' THEN 'Fee+spread'",
     "      WHEN raw_reason ~* 'spread' THEN 'Spread'",
     "      WHEN raw_reason ~* '(invalid.*(price|stop)|price.*stop)' THEN 'Invalid price/stop'",
-    "      ELSE COALESCE(NULLIF(LEFT(BTRIM(raw_reason), 120), ''), 'Other/Uncategorized')",
+    "      ELSE 'Other/Uncategorized'",
     '    END AS reason_category',
     '  FROM reason_values',
     ')',
     'SELECT reason_category, strategy, COUNT(*)::text AS occurrences',
     'FROM categorized',
     'GROUP BY reason_category, strategy',
-    'ORDER BY COUNT(*) DESC, reason_category, strategy',
-    'LIMIT 100'
+    'ORDER BY COUNT(*) DESC, reason_category, strategy'
   ].join('\n');
 }
 
