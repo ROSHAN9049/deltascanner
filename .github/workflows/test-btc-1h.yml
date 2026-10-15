@@ -57,7 +57,7 @@ jobs:
               console.log("");
               console.log("| Field | Value |");
               console.log("|---|---|");
-              for (const key of ["symbol", "requestedResolution", "requestedLimit", "firstTimestamp", "lastTimestamp", "durationHours", "expectedDurationHours", "durationMatch"]) {
+              for (const key of ["symbol", "requestedResolution", "requestedLimit", "firstTimestamp", "lastTimestamp", "durationHours", "expectedDurationHours", "medianSpacingMinutes", "durationMatch"]) {
                 console.log("| " + key + " | " + String(r[key] ?? "unavailable") + " |");
               }
               if (r.error) console.log("\n**Sanitized error:** " + r.error);
