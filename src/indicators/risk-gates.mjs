@@ -47,7 +47,9 @@ function limitOrDefault(value, fallback, allowZero = true) {
 }
 
 function withinLimit(observed, limit, label, unit = '') {
-  if (observed <= limit) {
+  // Treat harmless floating-point rounding at a stated boundary as equal.
+  const tolerance = Number.EPSILON * 16 * Math.max(1, Math.abs(limit));
+  if (observed <= limit + tolerance) {
     return gateResult('PASS', observed, limit, `${label}: ${observed.toFixed(4)}${unit} is within limit ${limit}${unit}`);
   }
   return gateResult('BLOCK', observed, limit, `${label}: ${observed.toFixed(4)}${unit} exceeds limit ${limit}${unit}`);
@@ -134,14 +136,16 @@ export function gateBTCRegime(btcCandles1h, btcPrice) {
   // CHOPPY must be checked first; otherwise ATR > 4% is swallowed by the
   // broader high-volatility bull/bear cases and can never be classified.
   let regime;
+  const emaDifference = ema50 - ema200;
+  const flatTolerance = Math.max(1, Math.abs(ema50), Math.abs(ema200)) * 1e-12;
   if (atrPct > 4) {
     regime = 'CHOPPY';
-  } else if (ema50 > ema200) {
-    regime = atrPct < 2 ? 'BULL_LOW_VOL' : 'BULL_HIGH_VOL';
-  } else if (ema50 < ema200) {
-    regime = atrPct < 2 ? 'BEAR_LOW_VOL' : 'BEAR_HIGH_VOL';
-  } else {
+  } else if (Math.abs(emaDifference) <= flatTolerance) {
     regime = 'NEUTRAL';
+  } else if (emaDifference > 0) {
+    regime = atrPct < 2 ? 'BULL_LOW_VOL' : 'BULL_HIGH_VOL';
+  } else {
+    regime = atrPct < 2 ? 'BEAR_LOW_VOL' : 'BEAR_HIGH_VOL';
   }
 
   const allowedRegimes = new Set(['BULL_LOW_VOL', 'BULL_HIGH_VOL', 'BEAR_LOW_VOL', 'BEAR_HIGH_VOL']);
