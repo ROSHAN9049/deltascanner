@@ -83,7 +83,7 @@ function makeHarness({
   return { app, db, positionLedger, handler: handlers.at(-1), handlers };
 }
 
-function makeRequest(body, signature = 'test-signature') {
+function makeRequest(body, signature = crypto.createHmac('sha256', 'unit-test').update(body).digest('hex')) {
   return {
     headers: { 'x-tradetron-signature': signature },
     body: Buffer.from(body, 'utf8')
