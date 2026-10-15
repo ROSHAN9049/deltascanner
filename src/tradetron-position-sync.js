@@ -157,10 +157,21 @@ export function summarizeTradetronSnapshots(deployments = []) {
   const reportedOpenCounts = rows
     .map(row => numericValue(row?.open_positions))
     .filter(value => value !== null && value >= 0);
+  const reportedOpenCountComplete = rows.length > 0 && rows.every(row => {
+    const value = numericValue(row?.open_positions);
+    return value !== null && value >= 0;
+  });
   const reportedOpenCount = reportedOpenCounts.length
     ? reportedOpenCounts.reduce((total, value) => total + value, 0)
-    : 0;
-  const openCount = Math.max(reportedOpenCount, openRows.length);
+    : null;
+  // A hidden or incomplete snapshot cannot prove there are zero open legs.
+  // Use the reported aggregate only when every deployment has a valid count;
+  // otherwise use identifiable rows only if positions are not hidden.
+  const openCount = reportedOpenCountComplete
+    ? Math.max(reportedOpenCount, openRows.length)
+    : rows.some(row => row?.positions_hidden === true)
+      ? null
+      : openRows.length;
   const pnlValues = rows.map(row => numericValue(row?.pnl));
   const reportedCurrencyCodes = rows.map(row =>
     clean(row?.currency_code || row?.currencyCode || '').toUpperCase()
@@ -220,6 +231,71 @@ export function summarizeTradetronSnapshots(deployments = []) {
 }
 
 export const TRADETRON_SNAPSHOT_MAX_AGE_MS = 180000;
+
+/**
+ * Canonical dashboard count for current positions. A private event ledger and
+ * a read-only Tradetron snapshot have different meanings, so this helper never
+ * silently substitutes a missing/stale API snapshot with zero.
+ */
+export function summarizeCurrentPositionCount({
+  eventPositions = [],
+  deployments = [],
+  syncState = null,
+  configured = false,
+  now = Date.now(),
+  maxAgeMs = TRADETRON_SNAPSHOT_MAX_AGE_MS
+} = {}) {
+  const mirror = summarizeTradetronSnapshots(deployments);
+  const eventCount = (Array.isArray(eventPositions) ? eventPositions : []).filter(row =>
+    Math.abs(Number(row?.qty ?? row?.quantity) || 0) > 0
+  ).length;
+
+  if (!configured) {
+    return {
+      status: 'EVENT_LEDGER_ONLY',
+      source: 'authenticated-event-ledger',
+      count: eventCount,
+      lastKnownCount: null,
+      lastSuccessAt: null,
+      ageMs: null,
+      detail: 'Tradetron Developer API snapshot is not configured; count reflects the authenticated event ledger only.'
+    };
+  }
+
+  const lastSuccessMs = Date.parse(syncState?.last_success_at || '');
+  const ageMs = Number.isFinite(lastSuccessMs) ? now - lastSuccessMs : null;
+  const fresh = String(syncState?.status || '').toUpperCase() === 'OK' &&
+    ageMs !== null && ageMs >= 0 && ageMs <= maxAgeMs;
+
+  if (!fresh || mirror.openCount === null) {
+    const status = ageMs !== null && ageMs > maxAgeMs
+      ? 'STALE'
+      : String(syncState?.status || 'WAITING_FOR_SYNC').toUpperCase() === 'PARTIAL'
+        ? 'INCOMPLETE'
+        : String(syncState?.status || 'WAITING_FOR_SYNC').toUpperCase() === 'ERROR'
+          ? 'SYNC_ERROR'
+          : mirror.openCount === null && fresh ? 'COUNT_UNKNOWN' : 'UNVERIFIED';
+    return {
+      status,
+      source: 'tradetron-developer-api',
+      count: null,
+      lastKnownCount: mirror.openCount,
+      lastSuccessAt: syncState?.last_success_at || null,
+      ageMs,
+      detail: 'Current open-position count is not confirmed by a fresh, complete Tradetron snapshot; do not interpret this as zero.'
+    };
+  }
+
+  return {
+    status: 'FRESH',
+    source: 'tradetron-developer-api',
+    count: mirror.openCount,
+    lastKnownCount: mirror.openCount,
+    lastSuccessAt: syncState?.last_success_at || null,
+    ageMs,
+    detail: 'Current position count comes from the fresh read-only Tradetron API snapshot; it is not proof of authenticated fill events.'
+  };
+}
 
 /**
  * Turn only a complete, fresh, read-only snapshot into duplicate-entry blockers.
