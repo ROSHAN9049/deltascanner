@@ -11,8 +11,6 @@ jobs:
     name: Read-only signal frequency analysis
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    env:
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,6 +25,8 @@ jobs:
         run: npm install --no-audit --no-fund
 
       - name: Guard DATABASE_URL
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         shell: bash
         run: |
           if [ -z "${DATABASE_URL:-}" ]; then
@@ -36,12 +36,18 @@ jobs:
           echo "DATABASE_URL is configured (value hidden)."
 
       - name: Export signal observations
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: node scripts/export-signals.mjs > signals.json
 
       - name: Export recorded fills
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: node scripts/export-fills.mjs > fills.json
 
       - name: Export Tradetron events
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: node scripts/export-tradetron-events.mjs > events.json
 
       - name: Build signal frequency report
