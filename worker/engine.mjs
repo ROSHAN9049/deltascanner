@@ -483,6 +483,30 @@ export class DeltaEngine {
             executionId,
             strategy: 'GRID'
           });
+          if (sent?.positionSafetyBlocked === true) {
+            await db.update('dd_orders', 'client_order_id=eq.' + encodeURIComponent(executionId), {
+              state: 'FAILED',
+              updated_at: iso(),
+              raw: { ...rawEntry, position_safety_blocked: true, global_position_cap_blocked: sent.globalPositionCapBlocked === true, block_reason: sent.reason || 'POSITION_SAFETY_BLOCKED' }
+            });
+            gridState.positions = (gridState.positions || []).filter(row =>
+              String(row?.id ?? '') !== String(position?.id ?? '') &&
+              String(row?.bridgeExecutionId || '') !== executionId
+            );
+            gridState.openRiskUsd = gridState.positions.reduce((sum, row) => sum + Math.max(0, n(row.riskUsd)), 0);
+            gridState.events = [...(gridState.events || []), {
+              type: 'BLOCK',
+              reason: sent.globalPositionCapBlocked === true ? 'GLOBAL_OPEN_POSITION_LIMIT' : 'POSITION_SAFETY_BLOCKED',
+              detail: sent.reason || null,
+              symbol, at: iso(), price: mark, levelIndex: n(position.levelIndex)
+            }].slice(-80);
+            await this.log('WARN', 'Grid entry blocked by final Tradetron position-cap safety guard', {
+              symbol, qty: n(position.qty), gridLevel: n(position.levelIndex) + 1,
+              executionId, reason: sent.reason || 'POSITION_SAFETY_BLOCKED',
+              globalPositionCapBlocked: sent.globalPositionCapBlocked === true
+            });
+            continue;
+          }
           if (!sent?.ok) throw new Error(sent?.reason || 'Tradetron Grid entry was not accepted');
           await db.update('dd_orders', 'client_order_id=eq.' + encodeURIComponent(executionId), {
             state: 'SIGNAL_SENT',
