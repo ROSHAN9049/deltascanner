@@ -235,7 +235,7 @@ function App() {
     {tab === 'grid' && <GridStrategy settings={settings} market={market} busy={busy} mutate={mutate} accountDataProtected={accountDataProtected} gridEntrySafety={executionCoverage?.gridEntrySafety || null} />}
     {tab === 'options' && <OptionsView signals={signals} settings={settings} optionCache={state?.optionCache || []} executionCoverage={state?.executionCoverage || null} />}
     {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
-    {tab === 'positions' && <><Positions rows={positions} tradetronDeployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} snapshotsLocked={state?.tradetronDeveloperDataProtected === true} accountDataProtected={accountDataProtected} /><TradetronReconciliation deployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} signalOrders={state?.signalOrders || []} sync={state?.tradetronDeveloperSync || null} snapshotsLocked={state?.tradetronDeveloperDataProtected === true} accountDataProtected={accountDataProtected} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
+    {tab === 'positions' && <><Positions rows={positions} tradetronDeployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} snapshotsLocked={state?.tradetronDeveloperDataProtected === true} accountDataProtected={accountDataProtected} /><TradetronReconciliationBoundary><TradetronReconciliation deployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} signalOrders={state?.signalOrders || []} sync={state?.tradetronDeveloperSync || null} snapshotsLocked={state?.tradetronDeveloperDataProtected === true} accountDataProtected={accountDataProtected} /></TradetronReconciliationBoundary><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
     {tab === 'trade-history' && <><TradeHistory trades={trades} title="Trade History · Webhook-Synced Tradetron Records" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} /><TradetronActivity events={state?.tradetronEvents || []} signalStats={state?.signalOrderStats || null} webhookSecretConfigured={executionCoverage?.webhookSecretConfigured === true} accountDataProtected={accountDataProtected} /></>}
     {tab === 'pnl' && <><PNL trades={trades} settings={settings} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.tradeRowCount ?? null} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
     {tab === 'paper' && <Panel title="Paper Trading"><div className="lockedText">Scanner is signal-only. No Delta order is placed here; Tradetron Live Offline runs the simulated execution.</div></Panel>}
@@ -609,6 +609,34 @@ function Positions({ rows = [], tradetronDeployments = [], snapshotsLocked = fal
     </table></div>
   </Panel>;
 }
+class TradetronReconciliationBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error) {
+    console.error('[TradetronReconciliation] isolated render error:', error);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return <Panel title="Tradetron Position Reconciliation · Temporarily unavailable">
+        <div className="lockedText">
+          <b className="apiStateWarn">RECONCILIATION PANEL ERROR</b>
+          <p>The position table is still available above. This diagnostic panel had a display error and was isolated so it cannot block the Positions tab.</p>
+          <p>Refresh the dashboard after checking the saved position data. Existing positions and execution settings are not modified.</p>
+        </div>
+      </Panel>;
+    }
+    return this.props.children;
+  }
+}
+
 function TradetronReconciliation({ deployments = [], signalOrders = [], sync = null, snapshotsLocked = false, accountDataProtected = false }) {
   if (accountDataProtected) return <Panel title="Tradetron Position Reconciliation · Protected"><div className="lockedText">Unlock the private dashboard session in Settings to compare current Tradetron snapshots with accepted scanner signal records.</div></Panel>;
   if (snapshotsLocked) return <Panel title="Tradetron Position Reconciliation · Locked"><div className="lockedText">The current Tradetron snapshot is private and remains locked. No position reconciliation is inferred from hidden data.</div></Panel>;
