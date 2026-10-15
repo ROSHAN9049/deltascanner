@@ -107,8 +107,16 @@ async function run() {
     }
   }
 
-  console.log('[6/6] Checking read-only Tradetron snapshot and reconciliation...');
-  try {
+  if (!readiness.databaseUrl) {
+    // Preserve the old fail-closed behavior: without a DB URL, do not make
+    // an unrelated outbound Tradetron API request.
+    readiness.snapshotOk = false;
+    readiness.reconciliationOk = false;
+    readiness.isSynced = null;
+    console.warn('Tradetron snapshot and reconciliation skipped because DATABASE_URL is not set.');
+  } else {
+    console.log('[6/6] Checking read-only Tradetron snapshot and reconciliation...');
+    try {
     const adapterModule = await import('../src/adapters/tradetron-snapshot-adapter.mjs');
     snapshotAdapter = adapterModule.tradetronAPI;
     const snapshot = await snapshotAdapter.getSnapshot();
@@ -138,11 +146,12 @@ async function run() {
       readiness.isSynced = null;
       sanitizedFailure('Reconciliation skipped because the database or ledger check was unavailable');
     }
-  } catch {
-    readiness.snapshotOk = false;
-    readiness.reconciliationOk = false;
-    readiness.isSynced = null;
-    sanitizedFailure('Tradetron snapshot fetch failed');
+    } catch {
+      readiness.snapshotOk = false;
+      readiness.reconciliationOk = false;
+      readiness.isSynced = null;
+      sanitizedFailure('Tradetron snapshot fetch failed');
+    }
   }
 }
 
