@@ -163,7 +163,7 @@ export function buildRiskGovernorGates({
     ? GATE_BLOCK
     : status(true, rangeAtr <= rangeLimit);
   const rangeBlockReason = rangeBlocked
-    ? 'Worker reported the 5m range blocker'
+    ? 'Worker reported the entry-candle range blocker'
     : rangeAtr === null
       ? 'Cached rangeAtr observation missing; dashboard fails closed'
       : !supportedStrategy
@@ -240,7 +240,7 @@ export function buildRiskGovernorGates({
     gateResult({ gate: 'Tradetron futures route', result: routeStatus, observedValue: symbol || null, unit: 'symbol', blockReason: routeStatus === GATE_BLOCK ? (entrySafetyTrusted === false ? 'Fresh complete Tradetron position snapshot is unavailable; new entries fail closed' : 'Symbol has no usable Tradetron route') : routeStatus === GATE_UNKNOWN ? 'Worker-confirmed route data unavailable' : '' }),
     gateResult({ gate: 'Fee + spread vs 1R', result: feeStatus, observedValue: feeRiskRatio, unit: 'R', threshold: feeRiskLimit, thresholdUnit: 'R', blockReason: feeStatus === GATE_BLOCK ? 'Fee/spread cost exceeds configured limit or is explicitly blocked' : feeStatus === GATE_UNKNOWN ? 'Cost ratio missing' : '' }),
     gateResult({ gate: '24h anti-chase', result: antiChaseStatus, observedValue: change24h, unit: '%', threshold: side === 'BUY' ? 15 : -15, thresholdUnit: '%', blockReason: antiChaseStatus === GATE_BLOCK ? 'Anti-chase gate blocked' : antiChaseStatus === GATE_UNKNOWN ? '24h change or side missing' : '' }),
-    gateResult({ gate: `5m range <= ${rangeLimit} ATR`, result: rangeStatus, observedValue: rangeAtr, unit: 'ATR', threshold: rangeLimit, thresholdUnit: 'ATR', blockReason: rangeBlockReason }),
+    gateResult({ gate: `Entry candle range <= ${rangeLimit} ATR`, result: rangeStatus, observedValue: rangeAtr, unit: 'ATR', threshold: rangeLimit, thresholdUnit: 'ATR', blockReason: rangeBlockReason }),
     gateResult({ gate: `EMA21 distance <= ${emaDistanceLimit.toFixed(2)} ATR`, result: emaStatus, observedValue: emaDistance, unit: 'ATR', threshold: emaDistanceLimit, thresholdUnit: 'ATR', blockReason: emaBlockReason }),
     gateResult({ gate: 'BTC regime', result: btcStatus, observedValue: btcApproximation.observed, blockReason: btcApproximation.reason }),
     gateResult({ gate: 'Spread', result: spreadStatus, observedValue: spreadPct, unit: '%', threshold: 0.35, thresholdUnit: '%', blockReason: spreadStatus === GATE_BLOCK ? 'Spread above limit or explicitly blocked' : spreadStatus === GATE_UNKNOWN ? 'Spread observation missing' : '' }),

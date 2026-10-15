@@ -17,7 +17,7 @@ test('missing risk observations fail closed for range and EMA gates instead of d
   assert.equal(gate(rows, 'Tradetron futures route'), GATE_UNKNOWN);
   assert.equal(gate(rows, 'Fee + spread vs 1R'), GATE_UNKNOWN);
   assert.equal(gate(rows, '24h anti-chase'), GATE_UNKNOWN);
-  assert.equal(gate(rows, '5m range <= 4 ATR'), GATE_BLOCK);
+  assert.equal(gate(rows, 'Entry candle range <= 4 ATR'), GATE_BLOCK);
   assert.equal(gate(rows, 'EMA21 distance <= 3.50 ATR'), GATE_BLOCK);
   assert.equal(gate(rows, 'BTC regime'), GATE_BLOCK);
   assert.equal(gate(rows, 'Spread'), GATE_UNKNOWN);
@@ -62,7 +62,7 @@ test('observed values can pass only the gate they actually verify', () => {
   });
   for (const name of [
     'Signal CONFIRMED','Tradetron futures route','Fee + spread vs 1R','24h anti-chase',
-    '5m range <= 4 ATR','EMA21 distance <= 3.50 ATR','BTC regime','Spread',
+    'Entry candle range <= 4 ATR','EMA21 distance <= 3.50 ATR','BTC regime','Spread',
     'Fresh closed candles','API / worker healthy','Duplicate symbol','Margin / min size'
   ]) assert.equal(gate(rows,name), GATE_PASS, name + ' expected PASS');
 });
@@ -86,7 +86,7 @@ test('explicit backend blocker takes precedence over a low/missing observed valu
     routeDataVerified: true
   });
   assert.equal(gate(rows, 'Spread'), GATE_BLOCK);
-  assert.equal(gate(rows, '5m range <= 3 ATR'), GATE_BLOCK);
+  assert.equal(gate(rows, 'Entry candle range <= 3 ATR'), GATE_BLOCK);
   assert.equal(gate(rows, 'Fresh closed candles'), GATE_BLOCK);
 });
 
@@ -117,14 +117,14 @@ test('Momentum and Scalp use their own worker-aligned range and EMA thresholds',
     symbol: 'BTCUSD', strategy: 'MOMENTUM', stage: 'CONFIRMED', score: 91,
     details: { rangeAtr: 3.8, emaDistanceAtr: 3.4 }
   }});
-  assert.equal(gate(momentum, '5m range <= 4 ATR'), GATE_PASS);
+  assert.equal(gate(momentum, 'Entry candle range <= 4 ATR'), GATE_PASS);
   assert.equal(gate(momentum, 'EMA21 distance <= 3.50 ATR'), GATE_PASS);
 
   const scalp = buildRiskGovernorGates({ selected: {
     symbol: 'BTCUSD', strategy: 'SCALPING', stage: 'CONFIRMED', score: 91,
     details: { rangeAtr: 3.8, emaDistanceAtr: 3.4 }
   }});
-  assert.equal(gate(scalp, '5m range <= 3 ATR'), GATE_BLOCK);
+  assert.equal(gate(scalp, 'Entry candle range <= 3 ATR'), GATE_BLOCK);
   assert.equal(gate(scalp, 'EMA21 distance <= 2.50 ATR'), GATE_BLOCK);
 });
 
@@ -133,7 +133,7 @@ test('SCALP alias uses the same dashboard thresholds as SCALPING', () => {
     symbol: 'ETHUSD', strategy: 'SCALP',
     details: { rangeAtr: 2.9, emaDistanceAtr: 2.4 }
   }});
-  assert.equal(gate(rows, '5m range <= 3 ATR'), GATE_PASS);
+  assert.equal(gate(rows, 'Entry candle range <= 3 ATR'), GATE_PASS);
   assert.equal(gate(rows, 'EMA21 distance <= 2.50 ATR'), GATE_PASS);
 });
 
