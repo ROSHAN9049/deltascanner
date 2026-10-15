@@ -26,10 +26,10 @@ jobs:
 
       - name: Guard DATABASE_URL
         env:
-          DATABASE_URL: \${{ secrets.DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         shell: bash
         run: |
-          if [ -z "\${DATABASE_URL:-}" ]; then
+          if [ -z "${DATABASE_URL:-}" ]; then
             echo "DATABASE_URL secret is not configured; refusing database access." >&2
             exit 1
           fi
@@ -37,7 +37,7 @@ jobs:
 
       - name: Run raw diagnostics
         env:
-          DATABASE_URL: \${{ secrets.DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         shell: bash
         run: |
           set -o pipefail
