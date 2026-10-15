@@ -12,7 +12,8 @@ const MIGRATIONS = [
   'db/migrations/20261010151000_tradetron_event_processing.sql',
   'db/migrations/20261011055500_secure_open_positions_summary_view.sql',
   'db/migrations/20261012080000_tradetron_developer_api_sync.sql',
-  'db/migrations/20261013090000_tradetron_developer_notifications_history.sql'
+  'db/migrations/20261013090000_tradetron_developer_notifications_history.sql',
+  'db/migrations/20261016000000_postgrest_schema_refresh.sql'
 ];
 
 // These are the four "already exists" SQLSTATEs explicitly approved for skipping.
@@ -157,6 +158,11 @@ async function main() {
         return;
       }
     }
+
+    await pool.query(
+      "NOTIFY pgrst, 'reload schema'"
+    );
+    console.log("✅ PostgREST schema cache reload notification sent.\n");
 
     const result = await pool.query(
       "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name"
