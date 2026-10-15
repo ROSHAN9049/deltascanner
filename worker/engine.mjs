@@ -1110,6 +1110,8 @@ export class DeltaEngine {
             rsi: s.rsi, vwap: s.vwap, fee: s.takerFee, candlesFresh: s.candlesFresh,
             localScore: s.localScore, btcRegimeOverride: s.btcRegimeOverride,
             btcOverrideScoreMin: s.btcOverrideScoreMin, btcOverrideVolumeMin: s.btcOverrideVolumeMin,
+            rangeAtr: s.rangeAtr,
+            emaDistanceAtr: s.emaDistanceAtr,
             fullMarketScan: true
           }
         };
