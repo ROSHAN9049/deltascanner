@@ -5,7 +5,7 @@ import { GATE_BLOCK, GATE_PASS, GATE_UNKNOWN } from '../src/gate-result.js';
 
 const gate = (rows, name) => rows.find(row => row.gate === name)?.result;
 
-test('missing risk observations remain UNKNOWN instead of displaying false PASS', () => {
+test('missing risk observations fail closed for range and EMA gates instead of displaying UNKNOWN/PASS', () => {
   const rows = buildRiskGovernorGates({
     selected: { symbol: 'BTCUSD', strategy: 'MOMENTUM', stage: 'CONFIRMED', score: 90 },
     health: {},
@@ -17,8 +17,8 @@ test('missing risk observations remain UNKNOWN instead of displaying false PASS'
   assert.equal(gate(rows, 'Tradetron futures route'), GATE_UNKNOWN);
   assert.equal(gate(rows, 'Fee + spread vs 1R'), GATE_UNKNOWN);
   assert.equal(gate(rows, '24h anti-chase'), GATE_UNKNOWN);
-  assert.equal(gate(rows, '5m range <= 3 ATR'), GATE_UNKNOWN);
-  assert.equal(gate(rows, 'EMA21 distance <= 2.50 ATR'), GATE_UNKNOWN);
+  assert.equal(gate(rows, '5m range <= 4 ATR'), GATE_BLOCK);
+  assert.equal(gate(rows, 'EMA21 distance <= 3.50 ATR'), GATE_BLOCK);
   assert.equal(gate(rows, 'BTC regime'), GATE_UNKNOWN);
   assert.equal(gate(rows, 'Spread'), GATE_UNKNOWN);
   assert.equal(gate(rows, 'Fresh closed candles'), GATE_UNKNOWN);
@@ -53,7 +53,7 @@ test('observed values can pass only the gate they actually verify', () => {
       spread_pct: 0.2,
       qty_contracts: 2,
       notional: 25,
-      details: { candlesFresh: true, emaDistanceAtr: 1.2, rangeAtrRatio: 2.1, btcRegimeOverride: true }
+      details: { candlesFresh: true, emaDistanceAtr: 1.2, rangeAtr: 2.1, btcRegimeOverride: true }
     },
     health: { workerLeaseActive: true, exchangeHealthy: true, tickFresh: true },
     positions: [],
@@ -62,7 +62,7 @@ test('observed values can pass only the gate they actually verify', () => {
   });
   for (const name of [
     'Signal CONFIRMED','Tradetron futures route','Fee + spread vs 1R','24h anti-chase',
-    '5m range <= 3 ATR','EMA21 distance <= 2.50 ATR','BTC regime','Spread',
+    '5m range <= 4 ATR','EMA21 distance <= 3.50 ATR','BTC regime','Spread',
     'Fresh closed candles','API / worker healthy','Duplicate symbol','Margin / min size'
   ]) assert.equal(gate(rows,name), GATE_PASS, name + ' expected PASS');
 });
@@ -110,4 +110,29 @@ test('an open position blocks the duplicate-symbol check', () => {
     positions: [{ symbol: 'btcusd', qty: 1 }]
   });
   assert.equal(gate(rows, 'Duplicate symbol'), GATE_BLOCK);
+});
+
+test('Momentum and Scalp use their own worker-aligned range and EMA thresholds', () => {
+  const momentum = buildRiskGovernorGates({ selected: {
+    symbol: 'BTCUSD', strategy: 'MOMENTUM', stage: 'CONFIRMED', score: 91,
+    details: { rangeAtr: 3.8, emaDistanceAtr: 3.4 }
+  }});
+  assert.equal(gate(momentum, '5m range <= 4 ATR'), GATE_PASS);
+  assert.equal(gate(momentum, 'EMA21 distance <= 3.50 ATR'), GATE_PASS);
+
+  const scalp = buildRiskGovernorGates({ selected: {
+    symbol: 'BTCUSD', strategy: 'SCALPING', stage: 'CONFIRMED', score: 91,
+    details: { rangeAtr: 3.8, emaDistanceAtr: 3.4 }
+  }});
+  assert.equal(gate(scalp, '5m range <= 3 ATR'), GATE_BLOCK);
+  assert.equal(gate(scalp, 'EMA21 distance <= 2.50 ATR'), GATE_BLOCK);
+});
+
+test('SCALP alias uses the same dashboard thresholds as SCALPING', () => {
+  const rows = buildRiskGovernorGates({ selected: {
+    symbol: 'ETHUSD', strategy: 'SCALP',
+    details: { rangeAtr: 2.9, emaDistanceAtr: 2.4 }
+  }});
+  assert.equal(gate(rows, '5m range <= 3 ATR'), GATE_PASS);
+  assert.equal(gate(rows, 'EMA21 distance <= 2.50 ATR'), GATE_PASS);
 });

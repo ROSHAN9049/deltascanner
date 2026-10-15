@@ -83,20 +83,44 @@ export function buildRiskGovernorGates({
       ? status(true, antiChasePass)
       : GATE_UNKNOWN;
 
-  const rangeAtr = safeNum(details.rangeAtrRatio ?? details.range_atr_ratio);
+  const strategy = String(selected.strategy || '').trim().toUpperCase();
+  const momentumStrategy = strategy === 'MOMENTUM';
+  const scalpStrategy = strategy === 'SCALP' || strategy === 'SCALPING';
+  const supportedStrategy = momentumStrategy || scalpStrategy;
+  const rangeLimit = momentumStrategy ? 4 : 3;
+  const emaDistanceLimit = momentumStrategy ? 3.5 : 2.5;
+
+  // The worker persists these exact observation keys. Legacy aliases remain
+  // read-only compatibility fallbacks; missing observations fail closed.
+  const rangeAtr = safeNum(details.rangeAtr ?? details.rangeAtrRatio ?? details.range_atr_ratio);
   const rangeBlocked = hasReason(reasonText, '5m range') || hasReason(reasonText, 'range >');
-  const rangeStatus = rangeBlocked
+  const rangeStatus = rangeBlocked || rangeAtr === null || !supportedStrategy
     ? GATE_BLOCK
-    : rangeAtr !== null
-      ? status(true, rangeAtr <= 3)
-      : GATE_UNKNOWN;
+    : status(true, rangeAtr <= rangeLimit);
+  const rangeBlockReason = rangeBlocked
+    ? 'Worker reported the 5m range blocker'
+    : rangeAtr === null
+      ? 'Cached rangeAtr observation missing; dashboard fails closed'
+      : !supportedStrategy
+        ? 'Strategy missing or unsupported; cannot select a matching range threshold'
+        : rangeStatus === GATE_BLOCK
+          ? 'Observed range/ATR exceeds the selected strategy limit'
+          : '';
 
   const emaDistance = safeNum(details.emaDistanceAtr ?? details.ema21DistanceAtr ?? details.ema_distance_atr);
-  const emaStatus = hasReason(reasonText, 'price > 2.50')
+  const emaBlocked = hasReason(reasonText, 'price >') || hasReason(reasonText, 'EMA21 distance');
+  const emaStatus = emaBlocked || emaDistance === null || !supportedStrategy
     ? GATE_BLOCK
-    : emaDistance !== null
-      ? status(true, emaDistance <= 2.5)
-      : GATE_UNKNOWN;
+    : status(true, emaDistance <= emaDistanceLimit);
+  const emaBlockReason = emaBlocked
+    ? 'Worker reported the EMA-distance blocker'
+    : emaDistance === null
+      ? 'Cached emaDistanceAtr observation missing; dashboard fails closed'
+      : !supportedStrategy
+        ? 'Strategy missing or unsupported; cannot select a matching EMA threshold'
+        : emaStatus === GATE_BLOCK
+          ? 'Observed EMA21 distance/ATR exceeds the selected strategy limit'
+          : '';
 
   const btcOverride = details.btcRegimeOverride === true;
   const btcStatus = btcOverride
@@ -153,8 +177,8 @@ export function buildRiskGovernorGates({
     gateResult({ gate: 'Tradetron futures route', result: routeStatus, observedValue: symbol || null, unit: 'symbol', blockReason: routeStatus === GATE_BLOCK ? (entrySafetyTrusted === false ? 'Fresh complete Tradetron position snapshot is unavailable; new entries fail closed' : 'Symbol has no usable Tradetron route') : routeStatus === GATE_UNKNOWN ? 'Worker-confirmed route data unavailable' : '' }),
     gateResult({ gate: 'Fee + spread vs 1R', result: feeStatus, observedValue: feeRiskRatio, unit: 'R', threshold: feeRiskLimit, thresholdUnit: 'R', blockReason: feeStatus === GATE_BLOCK ? 'Fee/spread cost exceeds configured limit or is explicitly blocked' : feeStatus === GATE_UNKNOWN ? 'Cost ratio missing' : '' }),
     gateResult({ gate: '24h anti-chase', result: antiChaseStatus, observedValue: change24h, unit: '%', threshold: side === 'BUY' ? 15 : -15, thresholdUnit: '%', blockReason: antiChaseStatus === GATE_BLOCK ? 'Anti-chase gate blocked' : antiChaseStatus === GATE_UNKNOWN ? '24h change or side missing' : '' }),
-    gateResult({ gate: '5m range <= 3 ATR', result: rangeStatus, observedValue: rangeAtr, unit: 'ATR', threshold: 3, thresholdUnit: 'ATR', blockReason: rangeStatus === GATE_BLOCK ? 'Range gate blocked' : rangeStatus === GATE_UNKNOWN ? 'Comparable range/ATR observation unavailable' : '' }),
-    gateResult({ gate: 'EMA21 distance <= 2.50 ATR', result: emaStatus, observedValue: emaDistance, unit: 'ATR', threshold: 2.5, thresholdUnit: 'ATR', blockReason: emaStatus === GATE_BLOCK ? 'EMA21 distance gate blocked' : emaStatus === GATE_UNKNOWN ? 'Comparable EMA-distance observation unavailable' : '' }),
+    gateResult({ gate: `5m range <= ${rangeLimit} ATR`, result: rangeStatus, observedValue: rangeAtr, unit: 'ATR', threshold: rangeLimit, thresholdUnit: 'ATR', blockReason: rangeBlockReason }),
+    gateResult({ gate: `EMA21 distance <= ${emaDistanceLimit.toFixed(2)} ATR`, result: emaStatus, observedValue: emaDistance, unit: 'ATR', threshold: emaDistanceLimit, thresholdUnit: 'ATR', blockReason: emaBlockReason }),
     gateResult({ gate: 'BTC regime', result: btcStatus, observedValue: selected.btc_trend ?? null, blockReason: btcStatus === GATE_BLOCK ? 'BTC regime gate blocked' : btcStatus === GATE_UNKNOWN ? 'A trend label alone does not prove the regime gate passed' : 'Explicit adaptive override supplied' }),
     gateResult({ gate: 'Spread', result: spreadStatus, observedValue: spreadPct, unit: '%', threshold: 0.35, thresholdUnit: '%', blockReason: spreadStatus === GATE_BLOCK ? 'Spread above limit or explicitly blocked' : spreadStatus === GATE_UNKNOWN ? 'Spread observation missing' : '' }),
     gateResult({ gate: 'Fresh closed candles', result: freshnessStatus, observedValue: candlesFresh ?? null, blockReason: freshnessStatus === GATE_BLOCK ? 'Candle freshness blocked' : freshnessStatus === GATE_UNKNOWN ? 'Candle freshness was not supplied' : '' }),
