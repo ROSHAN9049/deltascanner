@@ -428,7 +428,7 @@ async function main() {
     const tradeColumnNames = tradeColumns.map(row => row.column_name);
     const tradeMissingColumns = REQUIRED_TRADE_COLUMNS.filter(name => !tradeColumnNames.includes(name));
     const tradeTableExists = tradeColumns.length > 0;
-    let tradeSummary = { tableExists: tradeTableExists, schemaAvailable: tradeColumnsResult.ok, missingRequiredColumns: tradeMissingColumns, total: null, allTime: null, min: null, max: null };
+    let tradeSummary = { tableExists: tradeTableExists, schemaAvailable: tradeColumnsResult.ok, columns: tradeColumns.map(row => ({ name: row.column_name, dataType: row.data_type, nullable: row.is_nullable === 'YES' })), missingRequiredColumns: tradeMissingColumns, total: null, allTime: null, min: null, max: null };
     let tradeCorrelation = null;
     let tradeCorrelationError = null;
     if (tradeTableExists && tradeMissingColumns.length === 0) {
@@ -687,12 +687,14 @@ async function main() {
       blockReasons: {
         persistedBlockedReasons: {
           sourceField: 'dd_signals.blocked_reasons',
-          note: 'Reported independently. In the current persistence path this may contain downstream gate reasons; it is not assumed to be exclusively strategy-level.',
+          level: 'ENGINE/DOWNSTREAM GATES',
+          note: 'The current engine persistence path writes gate.reasons here. Kept separate from strategy analysis reasons in details.blocked.',
           ...strategyReasons
         },
         detailsBlocked: {
           sourceField: 'dd_signals.details.blocked',
-          note: 'Reported independently and not merged with blocked_reasons.',
+          level: 'STRATEGY ANALYSIS',
+          note: 'Strategy evaluation reasons preserved in details.blocked. Reported independently and not merged with blocked_reasons.',
           ...detailReasons
         }
       },
@@ -760,9 +762,9 @@ async function main() {
     console.log('Missing/out-of-range scores: ALL=' + count(score.invalid_score) + '; CONFIRMED=' + count(score.confirmed_invalid_score));
     console.log('');
 
-    renderTable('SECTION 5A — PERSISTED blocked_reasons (separate source)', ['Reason category', 'Count'], strategyReasons.top10.map(row => [row.reason, row.count]), 42);
-    renderTable('Top persisted reason counts by strategy', ['Strategy', 'Reason category', 'Count'], strategyReasons.byStrategy.slice(0, 20).map(row => [row.strategy, row.reason, row.count]), 42);
-    renderTable('SECTION 5B — details.blocked (not merged with blocked_reasons)', ['Reason category', 'Count'], detailReasons.top10.map(row => [row.reason, row.count]), 42);
+    renderTable('SECTION 5A — ENGINE/DOWNSTREAM GATES: blocked_reasons', ['Reason category', 'Count'], strategyReasons.top10.map(row => [row.reason, row.count]), 42);
+    renderTable('Top engine/downstream reason counts by strategy', ['Strategy', 'Reason category', 'Count'], strategyReasons.byStrategy.slice(0, 20).map(row => [row.strategy, row.reason, row.count]), 42);
+    renderTable('SECTION 5B — STRATEGY-LEVEL details.blocked', ['Reason category', 'Count'], detailReasons.top10.map(row => [row.reason, row.count]), 42);
     console.log('Persisted reason occurrences: ' + (strategyReasons.totalOccurrences === null ? 'UNAVAILABLE' : strategyReasons.totalOccurrences));
     console.log('details.blocked reason occurrences: ' + (detailReasons.totalOccurrences === null ? 'UNAVAILABLE' : detailReasons.totalOccurrences));
     console.log('');
