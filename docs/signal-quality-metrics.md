@@ -2,84 +2,94 @@
 
 ## 1. Why measure before recalibrating
 
-The scanner writes repeated observations, not one row per unique trade. A score histogram by itself cannot show how many actionable signals survive readiness gates, whether Tradetron received them, or whether an exchange fill was recorded. Establish a measured baseline before changing any score thresholds or gates. This workflow is analysis-only and does not change live trading behavior.
+The scanner writes repeated dd_signals observations. A single symbol/strategy can appear many times during a day, so a raw row count or score histogram is not the same as a count of distinct actionable opportunities. Measure stage, readiness, blockers, correlated events, and recorded closed trades separately before changing any score threshold or gate.
 
-The exports read only the last 30 days. The actual history may be shorter, and the database schema does not establish an automatic 30-day retention policy.
+The current Signal frequency report performs counting and grouping inside PostgreSQL. It does not export or transfer millions of dd_signals rows. Its 30-day signal aggregates have no 100,000-row sample limit. The report also inspects all-time signal count and oldest/newest timestamps so observed history coverage is measured rather than assumed.
 
-## 2. Score versus readiness
+## 2. Score, stage, readiness, and blockers are different
 
-A score is one input to readiness; it is not proof that a signal can be acted on. A row can have a high score but fail a separate gate for direction, RSI/VWAP, volume, anti-chase, candle range, EMA distance, BTC compatibility, spread, estimated cost versus risk, or stop validity. A row labelled CONFIRMED, an accepted Tradetron delivery, and an actual fill are three distinct events and must be counted separately.
+A score is not proof a signal is action-ready.
 
-The engine persistence path should also be interpreted carefully: dd_signals.blocked_reasons is the persisted gate-reason field, while details.blocked may preserve strategy-evaluation reasons. The report presents these sources separately and does not merge their counts. Consult current worker persistence logic before interpreting either field as exclusively strategy-level or engine-level.
+- **CONFIRMED stage** is a persisted stage label. Do not assume it guarantees ready=true.
+- **ready=true** is the worker's readiness flag.
+- **ready=true and an empty blocked_reasons array** is the report's stricter action-ready subset.
+- **Unique (symbol, strategy, UTC date) tuples** for ready rows collapse repeated scans within a single day. This is a useful frequency proxy, not a unique entry/trade ID.
 
-## 3. The six counts
+The report counts these metrics separately. dd_signals.blocked_reasons and dd_signals.details.blocked are also reported separately: the current engine persistence path writes downstream gate reasons to blocked_reasons, while details.blocked may retain strategy-evaluation reasons. Do not combine the two counts or infer that every reason came from the same stage of evaluation.
 
-1. **Total observations:** number of exported dd_signals rows. Repeated scans can create multiple rows for the same symbol and strategy.
-2. **Unique symbols:** distinct non-empty symbol values in dd_signals.
-3. **CONFIRMED observations:** rows whose stage is exactly CONFIRMED. This is an observation count, not a unique-trade count.
-4. **CONFIRMED with empty blockers:** confirmed rows that explicitly have ready=true and an empty blocked_reasons field. Missing readiness data is UNKNOWN, not zero.
-5. **Tradetron event correlation (proxy):** confirmed/ready signal observations uniquely correlated with dd_tradetron_events using symbol, compatible side when available, and event timestamp within five minutes. That table stores received/synchronized events; a match is not proof of outbound signal delivery. Ambiguous or incomplete correlation is UNKNOWN.
-6. **Actual fills (correlated):** recorded dd_fills rows uniquely correlated after delivery using symbol, compatible side when available, and a timestamp heuristic within fifteen minutes of the signal. This is not an order-ID match because the requested event export does not include a shared order identifier. Treat the count as an estimate, not proof of causality.
+## 3. Key counts and the signal-to-action view
 
-A position record is not proof of an exchange fill. dd_fills is the more direct recorded-fill source.
+The report returns these counts for the rolling 30-day window unless noted otherwise:
+
+1. **Total observations:** all dd_signals rows with captured_at > NOW() - INTERVAL '30 days'. These are repeated observations, not unique trades.
+2. **Unique symbols:** distinct non-empty symbols.
+3. **CONFIRMED stage:** rows with stage = 'CONFIRMED'.
+4. **ready=true:** rows explicitly marked ready by the worker, regardless of the stage label.
+5. **ready=true and no blockers:** rows with ready IS TRUE and a JSON array of blockers with length zero.
+6. **Unique ready (symbol, strategy) combinations:** distinct combinations with at least one ready observation in 30 days.
+7. **Unique ready (symbol, strategy, UTC date) tuples:** the same tuple counted once per day over the last seven days. The report also shows this count divided by seven to provide a daily frequency proxy.
+8. **Tradetron event correlation:** a heuristic signal-to-event join on symbol, compatible side when available, and timestamps within ±5 minutes. dd_tradetron_events holds received/synchronized events; an event match is **not proof of outbound delivery**.
+9. **Closed-trade correlation:** the report uses dd_trades, not dd_fills, for recorded trade history. A heuristic joins an action-ready signal to a trade by symbol, compatible side when available, and opened_at within ±5 minutes. dd_trades records closed trades, not every raw exchange fill.
+
+When an event or trade table is empty, identifiers are missing, key coverage is poor, or matches are ambiguous, correlation is reported as UNKNOWN rather than assuming zero. The actual table row count remains visible as a separate metric.
 
 ## 4. How to run
 
 ### GitHub Actions
 
-1. In the repository, open Actions.
+1. Open the repository's **Actions** tab.
 2. Select **Signal frequency report**.
 3. Choose **Run workflow** on the main branch.
-4. Ensure the repository secret DATABASE_URL is configured. The workflow will not print its value.
-5. Open the run summary and download the report artifact. Artifact retention is seven days.
+4. Confirm the repository secret DATABASE_URL is configured. Its value is not printed.
+5. Read the run summary and download signal-frequency-report.json from the artifact. The report artifact is retained for seven days.
 
-The workflow is triggered by workflow_dispatch only; it does not run on pushes or on a schedule.
+The workflow is workflow_dispatch only. It does not run on pushes or on a schedule. It uses Node 22 and runs SQL aggregates directly against the database.
 
 ### Manual
 
-Set DATABASE_URL in the local shell without putting the connection string into a command log, then run:
+Set DATABASE_URL in the local environment without putting the connection string in a command or log, then run:
 
     npm install --no-audit --no-fund
-    node scripts/export-signals.mjs > signals.json
-    node scripts/export-fills.mjs > fills.json
-    node scripts/export-tradetron-events.mjs > events.json
-    node scripts/signal-frequency-report.mjs --signals=signals.json --fills=fills.json --events=events.json
+    node scripts/signal-frequency-report.mjs --output=signal-frequency-report.json
 
-The report prints aligned human-readable tables and writes signal-frequency-report.json. The three exporters write only the selected records as JSON to stdout; diagnostics go to stderr. All database interactions are SELECT-only and the scripts close their pool in a finally block.
+To export closed trades separately for manual inspection:
 
-## 5. Interpreting results
+    node scripts/export-trades.mjs > trades.json
 
-- **Total observations** measures scan-history volume, not unique trades.
-- **Unique symbols** indicates breadth, not actionability.
-- **CONFIRMED observations** measures the frequency of the stage emitted by the strategy pipeline.
-- **CONFIRMED with empty blockers** requires ready=true as well as no persisted blocker reasons.
-- **Tradetron event correlation** uses heuristic correlation and is not proof of outbound delivery. UNKNOWN means the inputs do not support a reliable count; it must not be read as zero events.
-- **Recorded fills** are rows in dd_fills. A single trade can generate multiple partial-fill rows, and one signal may not map cleanly to one fill.
+The report prints aligned human-readable tables and writes signal-frequency-report.json. The separate trade exporter writes selected dd_trades rows to stdout and status messages to stderr. All database scripts use read-only queries and close the pool in a finally block.
 
-The report shows averages over days with observations and a separate full-30-calendar-day average. Review actual oldest-row age, timestamp span, missing timestamp percentages, ambiguous matches, and score validity before using a daily average. Frequencies are provisional when history is short.
+## 5. Interpreting the numbers
 
-The report's quick triage bands are approximately 0–2 CONFIRMED observations per observed day (review gates and coverage), 3–10/day (potentially healthy for initial ₹5,000-capital monitoring), and above 10/day (investigate possible over-signaling). This is a review heuristic, not a performance guarantee or a risk recommendation. Do not recalibrate from frequency alone.
+- **CONFIRMED/day** is not the actionable opportunity frequency.
+- **ready=true/day** is a repeated-observation count, so it can still be inflated by repeated scans.
+- **ready=true and no blockers/day** is a stricter repeated-observation metric.
+- **Unique ready (symbol, strategy, UTC date) per day over seven days** is the report's conservative frequency proxy because it collapses repeated scans within a symbol/strategy/day. It may undercount multiple legitimate entries on the same day and must not be treated as a definitive trade count.
+- **Recorded dd_trades rows** are aggregate closed-trade records. One trade may refer to multiple entry or exit fill IDs. The source does not record every raw exchange fill as its own row.
+- **Tradetron event matches** are heuristic correlations, not confirmation that a signal was delivered or executed.
 
-Recalibrate a score only after sufficient history shows a persistent signal-frequency or quality problem and after blocker, correlation, and fill quality have been reviewed. Investigate block reasons instead when most observations are WATCH/SETUP, confirmed-ready counts are low, or one gate accounts for a large proportion of blocks. If CONFIRMED observations materially exceed correlated deliveries or fills, investigate event coverage, routing, and data linkage before changing the score. If fills greatly exceed CONFIRMED observations, check date windows, partial fills, and data integrity before assuming a scanner defect.
+For the initial 2–8 actionable opportunities/day target, use the seven-day unique ready-tuple metric as a rough measurement—not a performance guarantee or risk recommendation. Below two/day, review data coverage and readiness blockers. At 2–8/day, validate delivery/trade evidence. Above eight/day, investigate possible over-signaling and repeated opportunities before considering any reviewed recalibration.
 
-## 6. Known limitations
+Do not recalibrate the score from CONFIRMED counts alone. Review readiness, unique ready-tuple frequency, blocker distributions, event-table population, and recorded trade counts together. If confirmed counts are large but ready metrics are small, investigate the gates that separate these counts. If events or trades cannot be correlated reliably, investigate data linkage before interpreting the funnel.
 
-- Exports ask for the last 30 days, capped at 100,000 signal rows and 10,000 rows per fills/events source. Older rows outside the query or records beyond the limit are not included.
-- Observed oldest-row age is a measurement of the returned sample, not a guarantee of the configured retention policy.
-- dd_signal_cache is a latest snapshot per symbol/strategy and is not used as historical signal evidence.
-- Correlation is heuristic: events use a five-minute window, and fill matching uses a fifteen-minute window. Repeated observations for the same symbol can make a match ambiguous.
-- The event export has no order ID, and the fill export has no execution ID; direct event-to-fill linkage is therefore unavailable in these exports.
-- Tradetron event rows may be missing or incomplete. The table stores received/synchronized events and may not record outbound signal delivery. A match is a proxy, not proof of delivery. Missing identifiers, timestamps, ambiguous matches, insufficient key coverage, or suspicious timestamp gaps produce UNKNOWN rather than a zero count.
-- Partial fills can create multiple dd_fills rows for one order or trade.
-- The score distribution excludes missing or out-of-range scores from its band percentages; the excluded count is shown separately.
-- Exported strings and nested JSON are capped/sanitized to avoid leaking suspicious credential-like values or oversized payloads.
+## 6. Coverage and known limitations
 
-## 7. Decision tree
+- The report uses exact aggregate queries for all dd_signals records in the rolling 30-day window; it does not apply the former 100,000-row raw-export limit.
+- The all-time signal count and oldest row timestamp measure the retained history currently present in the table. They do not establish the database's retention policy or guarantee that history is never pruned.
+- dd_signal_cache remains a latest snapshot per symbol/strategy and is not used as historical signal evidence.
+- Daily grouping uses UTC calendar dates. The rolling 30-day window can overlap 31 UTC dates because it begins and ends partway through a day.
+- dd_tradetron_events may be empty or may contain events unrelated to outbound signal delivery. Empty event history produces UNKNOWN correlation, not an assertion that no delivery happened.
+- Signal-to-event and signal-to-trade correlation uses ±5-minute windows. Repeated same-symbol observations can make a match ambiguous; ambiguous/incomplete correlation is not converted into zero.
+- dd_trades contains closed-trade aggregate records. The dd_fills table is not used by the report because the inspected worker path does not write raw exchange fills into it.
+- The score distribution excludes missing or out-of-range scores from its band percentages and reports the excluded count separately.
+- Block-reason analysis maps known reason types into categories and aggregates unknown reasons into Other/Uncategorized. Engine/downstream reasons and strategy-evaluation reasons remain separate.
 
-- **Below 2 CONFIRMED observations/day:** investigate restrictive gates and verify that the history window is long enough.
-- **2–8/day:** a provisional healthy-frequency zone for current capital; verify routing and fills before concluding quality is good.
-- **Above 8/day:** review over-signaling and consider recalibrating the score or tightening gates only after evidence review.
-- **CONFIRMED materially exceeds correlated fills:** investigate routing, Tradetron event coverage, and correlation limitations first.
-- **Fills materially exceed CONFIRMED observations:** investigate partial fills, time-window mismatch, and data integrity rather than immediately treating it as a strategy problem.
+## 7. Decision guide
 
-The decision-tree thresholds are a conservative operational guide and differ slightly from the quick triage bands above; neither is an automated trigger to change live behavior.
+- **Fewer than 2 unique ready tuples/day:** check date coverage and investigate readiness blockers before changing a score.
+- **2–8 unique ready tuples/day:** reasonable initial monitoring range; still verify event coverage and recorded trades.
+- **More than 8 unique ready tuples/day:** investigate potential over-signaling and duplicate/repeated observations before changing thresholds.
+- **CONFIRMED much higher than ready/action-ready:** review gate results rather than assuming a score problem.
+- **Event correlation is UNKNOWN or event rows are absent:** investigate webhook configuration, event capture, and linkage; do not interpret UNKNOWN as zero deliveries.
+- **Trade correlation is UNKNOWN or no recent closed trades are recorded:** investigate trade-history persistence and linkage separately; remember dd_trades only stores closed-trade aggregates.
+
+These are review guidelines, not automated trading controls. The report makes no live setting changes, and live score/gate recalibration remains on hold until the measured ready-signal data has been reviewed.
