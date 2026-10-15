@@ -1,0 +1,65 @@
+name: Apply migrations
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type APPLY to confirm"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  apply-migrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Guard confirmation
+        shell: bash
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          if [ "$CONFIRMATION" != "APPLY" ]; then
+            echo "::error::Type APPLY in the confirmation input"
+            exit 1
+          fi
+          echo "Confirmation accepted."
+
+      - name: Guard DATABASE_URL secret
+        shell: bash
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "::error::DATABASE_URL GitHub secret is missing"
+            exit 1
+          fi
+          echo "DATABASE_URL secret is present."
+
+      - name: Apply migrations and write summary
+        shell: bash
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -o pipefail
+          {
+            echo "## Apply migrations"
+            echo
+            echo "- Started (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
+            echo
+            node scripts/apply-all-migrations.mjs
+          } 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
