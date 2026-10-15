@@ -74,3 +74,32 @@ test('settings endpoint does not report success when the database updates zero r
     globalThis.fetch = originalFetch;
   }
 });
+
+test('settings endpoint accepts a valid same-origin HttpOnly engine session cookie', async () => {
+  const originalFetch = globalThis.fetch;
+  const { createEngineSessionCookie } = await import('../server/engine-session.js');
+  const initial = [{ id: 1, risk_pct: 0.3, momentum_rr: 2, scalping_rr: 2, tp1_pct: 33, max_hold_minutes: 240 }];
+  const fake = fakeFetch({
+    initialRows: initial,
+    savedRows: (rows, patch) => [{ ...rows[0], ...patch }]
+  });
+  globalThis.fetch = fake.fetch;
+  try {
+    const res = makeResponse();
+    const cookie = createEngineSessionCookie('settings-test-secret', { production: false }).split(';')[0];
+    await handler({
+      method: 'POST',
+      headers: {
+        cookie,
+        origin: 'https://scanner.test',
+        host: 'scanner.test'
+      },
+      body: { riskPct: 1.2 }
+    }, res);
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.payload.success, true);
+    assert.equal(res.payload.persisted.risk_pct, 1.2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
