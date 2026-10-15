@@ -8,7 +8,7 @@
 BEGIN;
 
 -- Source of truth for positions received through authenticated webhooks.
-CREATE TABLE position_ledger (
+CREATE TABLE IF NOT EXISTS position_ledger (
     id SERIAL PRIMARY KEY,
     tradetron_order_id VARCHAR(64) NOT NULL UNIQUE,
     webhook_event_id VARCHAR(64) NOT NULL UNIQUE,
@@ -28,16 +28,16 @@ CREATE TABLE position_ledger (
     updated_at TIMESTAMP DEFAULT NOW()
 );
 
-CREATE INDEX idx_position_ledger_status
+CREATE INDEX IF NOT EXISTS idx_position_ledger_status
     ON position_ledger (status);
 
-CREATE INDEX idx_position_ledger_symbol
+CREATE INDEX IF NOT EXISTS idx_position_ledger_symbol
     ON position_ledger (symbol);
 
 -- Audit every incoming event, including invalid JSON and signature failures.
 -- raw_payload must always be valid JSON because PostgreSQL JSONB rejects
 -- malformed JSON; malformed request bodies are stored as a JSON wrapper.
-CREATE TABLE webhook_events (
+CREATE TABLE IF NOT EXISTS webhook_events (
     id SERIAL PRIMARY KEY,
     event_id VARCHAR(64) NOT NULL UNIQUE,
     event_type VARCHAR(32) NOT NULL,
@@ -51,14 +51,14 @@ CREATE TABLE webhook_events (
     processed_at TIMESTAMP
 );
 
-CREATE INDEX idx_webhook_events_status
+CREATE INDEX IF NOT EXISTS idx_webhook_events_status
     ON webhook_events (status);
 
-CREATE INDEX idx_webhook_events_received_at
+CREATE INDEX IF NOT EXISTS idx_webhook_events_received_at
     ON webhook_events (received_at DESC);
 
 -- Rebuildable cache for observability only; it is not authoritative.
-CREATE TABLE system_meta (
+CREATE TABLE IF NOT EXISTS system_meta (
     key VARCHAR(64) PRIMARY KEY,
     value JSONB NOT NULL,
     updated_at TIMESTAMP DEFAULT NOW()
