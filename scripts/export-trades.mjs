@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * Export closed-trade records from dd_trades for the last 30 days.
- * This is a read-only export; the main frequency report computes aggregates
- * inside PostgreSQL rather than exporting raw signal observations.
+ * This is a read-only export of closed trades. The main frequency report
+ * uses dd_trades directly for SQL aggregates instead of exporting raw signals.
  */
 import pg from 'pg';
 
