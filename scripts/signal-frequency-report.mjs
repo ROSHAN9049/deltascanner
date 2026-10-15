@@ -13,7 +13,7 @@ import pg from 'pg';
 const { Pool } = pg;
 const DAY_MS = 86400000;
 const REQUIRED_TRADE_COLUMNS = [
-  'id', 'symbol', 'side', 'strategy', 'net_pnl',
+  'id', 'symbol', 'side', 'strategy', 'entry_price', 'exit_price', 'qty', 'net_pnl',
   'entry_fill_ids', 'exit_fill_ids', 'opened_at', 'closed_at'
 ];
 const SCORE_BANDS = [
