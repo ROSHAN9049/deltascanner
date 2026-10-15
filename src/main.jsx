@@ -160,7 +160,7 @@ function App() {
         <div className="sub">DELTA INDIA · PERPETUAL FUTURES COMMAND CENTER</div>
       </div>
       <div className="headerRight">
-        <span>BUILD v2.0.20261014.02</span>
+        <span>BUILD v2.0.20261015.01</span>
         <span>UTC {new Date(clock).toISOString().slice(11,19)}</span>
         <span>LOCAL {new Date(clock).toLocaleTimeString('en-IN')}</span>
         <b className="badge test">LIVE MARKET · SIGNAL ONLY</b>
@@ -262,7 +262,7 @@ function Dashboard({ market, settings, health, trades, positions, accountDataPro
       <Card label="FEES TODAY" value={accountDataProtected ? 'LOCKED' : !tradesComplete ? 'INCOMPLETE DATA' : !todayTrades.length ? '—' : todayFeesComplete ? money(todayFees) : 'NO DATA'} sub={accountDataProtected ? 'enter ENGINE_SECRET to view verified trade fees' : !tradesComplete ? 'full trade-history coverage is not confirmed' : !todayTrades.length ? 'no authenticated closed-trade rows today' : todayFeesComplete ? 'sum of recorded today-trade fees' : 'one or more today-trade fee values are missing'}/>
       <Card label="OPEN POSITIONS" value={accountDataProtected ? 'LOCKED' : positions.length} sub={accountDataProtected ? 'hidden data is not zero' : 'webhook-confirmed position ledger'}/>
       <Card label="TT OPEN LEGS" value={developerDataProtected ? 'LOCKED' : developerApiConfigured ? tradetronMirror.openCount : '—'} sub="current Tradetron Developer API snapshot"/>
-      <Card label="TRADETRON SNAPSHOT P&L" value={developerDataProtected ? 'LOCKED' : (developerApiConfigured && tradetronMirror.reportedPnl !== null ? fmtRawPrice(tradetronMirror.reportedPnl, 2) : 'NO DATA')} sub="Raw Tradetron deployment P&L; unit/currency unverified, separate from scanner ledger"/>
+      <Card label="TRADETRON SNAPSHOT P&L" value={developerDataProtected ? 'LOCKED' : (developerApiConfigured && tradetronMirror.reportedPnl !== null ? fmtRawPrice(tradetronMirror.reportedPnl, 2) : 'NO DATA')} sub={"Raw deployment P&L; " + (tradetronMirror.reportedPnlCurrencyCode ? "API reports " + tradetronMirror.reportedPnlCurrencyCode + " currency; " : "currency not identified by API; ") + "P&L meaning is not independently verified; separate from scanner ledger"}/>
       <Card label="TT SNAPSHOT ROWS" value={developerDataProtected ? 'LOCKED' : developerApiConfigured ? developerSnapshotRowCount : '—'} sub="raw API rows, including closed rows"/>
       <Card label="TT SIGNAL RECORDS" value={accountDataProtected ? 'LOCKED' : signalOrderStats?.total ?? '—'} sub={accountDataProtected ? 'private signal history' : 'all states including expired; not fills'}/>
       <Card label="TT SENT" value={accountDataProtected ? 'LOCKED' : signalOrderStats?.sent ?? '—'} sub={accountDataProtected ? 'private signal submission history' : 'API accepted historically; may now be expired; not fills'}/>
@@ -486,6 +486,7 @@ function Positions({ rows = [], tradetronDeployments = [], snapshotsLocked = fal
     origin: 'TRADETRON API',
     snapshot_only: true,
     snapshot_pnl: position.pnl,
+    snapshot_pnl_source: position.pnlSource,
     snapshot_value: position.marketValue,
     snapshot_status: position.status
   }));
@@ -509,6 +510,7 @@ function Positions({ rows = [], tradetronDeployments = [], snapshotsLocked = fal
       execution_id: position.execution_id || 'engine:' + matchKey(position) + ':' + index,
       display_origin: snapshot ? 'ENGINE + TT API MATCH' : (position.origin || 'ENGINE / EVENT LEDGER'),
       snapshot_pnl: snapshot?.snapshot_pnl ?? null,
+      snapshot_pnl_source: snapshot?.snapshot_pnl_source ?? null,
       snapshot_value: snapshot?.snapshot_value ?? null,
       current_price: snapshot?.current_price ?? position.current_price,
       snapshot_only: false
@@ -525,7 +527,7 @@ function Positions({ rows = [], tradetronDeployments = [], snapshotsLocked = fal
       {snapshotsLocked ? <p className="apiStateWarn">Private Tradetron snapshot is locked. Enter the configured ENGINE_SECRET in Settings to load current Tradetron rows.</p> : null}
     </div>
     <div className="tablewrap"><table>
-      <thead><tr><th>TIME / SNAPSHOT</th><th>COIN</th><th>STRATEGY / SOURCE</th><th>SIDE</th><th>QTY</th><th>ENTRY</th><th>MARK</th><th>API VALUE RAW (UNIT UNVERIFIED)</th><th>API P&amp;L RAW (UNIT UNVERIFIED)</th><th>SL</th><th>TP1</th><th>TP</th><th>PROTECTION</th><th>ORIGIN</th></tr></thead>
+      <thead><tr><th>TIME / SNAPSHOT</th><th>COIN</th><th>STRATEGY / SOURCE</th><th>SIDE</th><th>QTY</th><th>ENTRY</th><th>MARK</th><th>API VALUE RAW (UNIT UNVERIFIED)</th><th>API P&amp;L FIELD (RAW; source shown)</th><th>SL</th><th>TP1</th><th>TP</th><th>PROTECTION</th><th>ORIGIN</th></tr></thead>
       <tbody>{displayRows.map((p, index) => {
         const snapshotOnly = p.snapshot_only === true;
         const protection = snapshotOnly ? 'NOT IN API' : (p.protection_verified ? 'VERIFIED' : (p.stop_price != null || p.tp_price != null ? 'LEVELS PRESENT' : 'NOT CONFIRMED'));
@@ -539,7 +541,7 @@ function Positions({ rows = [], tradetronDeployments = [], snapshotsLocked = fal
           <td>{p.entry_price == null ? '—' : price(p.entry_price)}</td>
           <td>{p.current_price == null ? '—' : price(p.current_price)}</td>
           <td>{p.snapshot_value == null ? '—' : fmtRawPrice(p.snapshot_value, 2)}</td>
-          <td>{p.snapshot_pnl == null ? '—' : fmtRawPrice(p.snapshot_pnl, 2)}</td>
+          <td title={p.snapshot_pnl_source ? "Raw Developer API field: " + p.snapshot_pnl_source + ". Generic pnl is not verified M2M." : "No P&L source field was identified."}><div>{p.snapshot_pnl == null ? '—' : fmtRawPrice(p.snapshot_pnl, 2)}</div><small className="muted">{p.snapshot_pnl_source ? "API field: " + p.snapshot_pnl_source + (["m2m","mtm","unrealized_pnl","unrealizedPnl","open_pnl","openPnl","mark_to_market","markToMarket"].includes(p.snapshot_pnl_source) ? " · M2M-named" : " · semantics unverified") : "source unavailable"}</small></td>
           <td>{p.stop_price == null ? '—' : price(p.stop_price)}</td>
           <td>{p.tp1_price == null ? '—' : price(p.tp1_price)}</td>
           <td>{p.tp_price == null ? '—' : price(p.tp_price)}</td>
@@ -852,7 +854,7 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
     </div>
     <section className="cards">
       <Card label="TT OPEN LEGS" value={configured ? mirror.openCount : '—'} sub={mirror.positionsHidden ? 'some position rows hidden by Tradetron' : 'reported by current API snapshot'} />
-      <Card label="TT DEPLOYMENT P&L RAW" value={mirror.reportedPnl === null ? '—' : fmtRawPrice(mirror.reportedPnl, 2)} sub="Raw aggregate Tradetron value; unit/currency unverified, not scanner ledger P&L" />
+      <Card label="TT DEPLOYMENT P&L RAW" value={mirror.reportedPnl === null ? '—' : fmtRawPrice(mirror.reportedPnl, 2)} sub={"Raw deployment value; " + (mirror.reportedPnlCurrencyCode ? "API currency " + mirror.reportedPnlCurrencyCode + "; " : "currency not identified; ") + "P&L semantics not independently verified; not scanner ledger P&L"} />
       <Card label="TT OPEN P&L RAW" value={mirror.openPnl === null ? '—' : fmtRawPrice(mirror.openPnl, 2)} sub="Raw sum of explicitly named M2M fields; currency/unit still unverified" />
       <Card label="TT DEPLOYMENTS" value={mirror.deployments} sub="returned by read-only API" />
     </section>
@@ -878,7 +880,7 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
         <td>{row.entryPrice === null ? '—' : price(row.entryPrice)}</td>
         <td>{row.markPrice === null ? '—' : price(row.markPrice)}</td>
         <td>{fmtRawPrice(row.marketValue, 2)}</td>
-        <td className={safeNum(row.pnl) === null ? 'muted' : 'mono'}>{fmtRawPrice(row.pnl, 2)}</td>
+        <td className={safeNum(row.pnl) === null ? 'muted' : 'mono'} title={row.pnlSource ? "Raw Developer API field: " + row.pnlSource + ". A generic pnl field is not verified M2M and is not included in open P&L." : "No P&L source field was identified in this API row."}><div>{fmtRawPrice(row.pnl, 2)}</div><small className="muted">{row.pnlSource ? "API field: " + row.pnlSource + (["m2m","mtm","unrealized_pnl","unrealizedPnl","open_pnl","openPnl","mark_to_market","markToMarket"].includes(row.pnlSource) ? " · M2M-named" : " · semantics unverified") : "source unavailable"}</small></td>
         <td>{row.status}</td>
       </tr>)}</tbody>
     </table></div> : <div className="lockedText">
