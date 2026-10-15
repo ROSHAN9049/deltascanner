@@ -301,10 +301,10 @@ function summaryAction(confirmedPerDay, activeDays, coverageDays, confirmedCount
     actions.push('CONFIRMED/day is above 10: investigate over-signaling and consider a reviewed score/gate recalibration; do not change live settings automatically.');
   }
   if (confirmedCount > 0 && funnel?.tradetron?.count === 'UNKNOWN') {
-    actions.push('Tradetron delivery correlation is UNKNOWN. Do not interpret it as zero deliveries; inspect identifiers and event timestamp coverage.');
+    actions.push('Tradetron event correlation is UNKNOWN. Do not interpret it as zero events; inspect identifiers and event timestamp coverage. A correlated event is not proof of outbound signal delivery.');
   } else if (confirmedCount > 0 && typeof funnel?.tradetron?.count === 'number' &&
              funnel.tradetron.count < confirmedCount * 0.5) {
-    actions.push('CONFIRMED observations substantially exceed correlated Tradetron deliveries; inspect routing, event coverage, and duplicate signal observations.');
+    actions.push('CONFIRMED observations substantially exceed correlated Tradetron event rows; inspect event coverage and duplicate signal observations. Event-table correlation is not proof of outbound delivery.');
   }
   if (confirmedCount > 0 && fillsCount > confirmedCount * 2) {
     actions.push('Recorded fill rows exceed CONFIRMED observations by more than 2×. Investigate time-window/data-integrity mismatch; multiple partial fills per trade may explain some of the difference.');
@@ -432,6 +432,7 @@ function main() {
   const eventCorrelation = correlateUnique(readyConfirmed, events, {
     sourceTime: 'captured_at', targetTime: 'event_at', windowMs: 5 * MINUTE_MS, checkLongGaps: true
   });
+  eventCorrelation.notes += ' dd_tradetron_events stores received/synchronized events in this schema; a match is not proof of outbound notification delivery.';
   let fillCorrelation;
   if (eventCorrelation.count === 'UNKNOWN') {
     fillCorrelation = {
@@ -530,6 +531,7 @@ function main() {
       confirmedCount,
       readyConfirmedCount: readinessStepCount,
       tradetronCorrelation: {
+        sourceNote: 'A matching dd_tradetron_events row is only a correlation proxy; the table stores received/synchronized events and does not prove outbound signal delivery.',
         count: readinessStepCount === 'UNKNOWN' || readinessStepCount === 0 ? 'UNKNOWN' : eventCorrelation.count,
         confidence: readinessStepCount === 'UNKNOWN' || readinessStepCount === 0 ? 'UNKNOWN' : eventCorrelation.confidence,
         diagnostics: {
