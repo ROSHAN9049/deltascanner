@@ -525,15 +525,19 @@ async function main() {
     const strategyReasons = reasonSummary(persistedBlocks);
     const detailReasons = reasonSummary(detailBlocks);
     const publishedEventCorrelation = publicCorrelation(eventCorrelation, eventSummary.total, 'dd_tradetron_events within ±5 minutes');
-    if (!eventSummary.total && eventSummary.tableExists) {
+    if (eventSummary.total === 0 && eventSummary.tableExists) {
       publishedEventCorrelation.count = 'UNKNOWN';
       publishedEventCorrelation.confidence = 'UNKNOWN';
-      publishedEventCorrelation.note = 'No event rows exist in the 30-day export window; this does not prove that no outbound delivery occurred.';
+      publishedEventCorrelation.note = 'No event rows exist in the 30-day window; this does not prove that no outbound delivery occurred.';
       publishedEventCorrelation.diagnostics = { targetRows: 0, definiteMatches: 0 };
     } else if (!eventSummary.tableExists) {
       publishedEventCorrelation.count = 'UNKNOWN';
       publishedEventCorrelation.confidence = 'UNKNOWN';
       publishedEventCorrelation.note = 'dd_tradetron_events is unavailable or its required columns do not exist.';
+    } else if (eventSummary.total === null) {
+      publishedEventCorrelation.count = 'UNKNOWN';
+      publishedEventCorrelation.confidence = 'UNKNOWN';
+      publishedEventCorrelation.note = 'Event schema/coverage could not be verified; event count and correlation are UNKNOWN.';
     } else if (eventCorrelationError) {
       publishedEventCorrelation.count = 'UNKNOWN';
       publishedEventCorrelation.confidence = 'UNKNOWN';
