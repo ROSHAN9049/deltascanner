@@ -82,13 +82,24 @@ function makeSummary({ symbol, limit, candles = [], error = null }) {
   const durationHours = first !== null && last !== null
     ? Number(((last - first) / 3600000).toFixed(2))
     : 0;
+  const gapsMinutes = timestamps.slice(1)
+    .map((timestamp, index) => (timestamp - timestamps[index]) / 60000)
+    .filter(value => Number.isFinite(value) && value > 0)
+    .sort((a, b) => a - b);
+  const middleGap = Math.floor(gapsMinutes.length / 2);
+  const medianSpacingMinutes = gapsMinutes.length
+    ? Number((gapsMinutes.length % 2
+      ? gapsMinutes[middleGap]
+      : (gapsMinutes[middleGap - 1] + gapsMinutes[middleGap]) / 2).toFixed(2))
+    : null;
 
   // For N candles, hourly candle starts should span approximately N - 1 hours.
-  // Comparing this span with the requested-resolution expectation catches a
-  // shorter cadence (for example 5m candles returned instead of hourly data).
+  // Both the span and the median adjacent-candle spacing must indicate 1h data.
   const expectedDurationHours = Math.max(0, candleCount - 1);
   const toleranceHours = Math.max(0.25, expectedDurationHours * 0.02);
   const durationMatch = timestamps.length >= 2 &&
+    medianSpacingMinutes !== null &&
+    Math.abs(medianSpacingMinutes - 60) <= 5 &&
     Math.abs(durationHours - expectedDurationHours) <= toleranceHours;
 
   let verdict;
@@ -106,6 +117,7 @@ function makeSummary({ symbol, limit, candles = [], error = null }) {
     lastTimestamp: last === null ? null : new Date(last).toISOString(),
     durationHours,
     expectedDurationHours,
+    medianSpacingMinutes,
     durationMatch,
     verdict
   };
