@@ -5,7 +5,7 @@ process.env.ENGINE_SECRET = 'session-test-secret';
 process.env.VERCEL_ENV = 'production';
 
 const { default: handler } = await import('../api/engine/session.js?engine-session-test');
-const { isEngineSessionValid } = await import('../server/engine-session.js');
+const { ENGINE_SESSION_TTL_SECONDS, createEngineSessionCookie, isEngineSessionValid } = await import('../server/engine-session.js');
 
 function makeResponse() {
   return {
@@ -94,6 +94,12 @@ test('session status and logout do not reveal the original secret', async () => 
 
 test('malformed, expired, and tampered session cookies fail closed', () => {
   assert.equal(isEngineSessionValid({ headers: { cookie: 'dd_engine_session=malformed' } }, 'session-test-secret'), false);
+  const expiredCookie = createEngineSessionCookie('session-test-secret', {
+    now: Date.now() - (ENGINE_SESSION_TTL_SECONDS + 60) * 1000,
+    production: false
+  }).split(';')[0];
+  assert.equal(isEngineSessionValid({ headers: { cookie: expiredCookie } }, 'session-test-secret'), false);
+
   const future = Math.floor(Date.now() / 1000) + 60;
   assert.equal(isEngineSessionValid({
     headers: { cookie: 'dd_engine_session=' + future + '.not-a-valid-signature' }
