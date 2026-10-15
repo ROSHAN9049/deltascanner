@@ -39,8 +39,8 @@ function parseArgs(argv) {
   const symbol = String(values.symbol || '').trim().toUpperCase();
   const limit = Number(values.limit);
   if (!/^[A-Z0-9_-]+$/.test(symbol)) throw new Error('Invalid symbol format');
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) {
-    throw new Error('--limit must be an integer from 1 through 1000');
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    throw new Error('--limit must be a positive safe integer');
   }
   return { symbol, limit };
 }
