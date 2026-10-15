@@ -49,8 +49,8 @@ try {
   const rows = result.rows.map(row => sanitize(row));
   process.stdout.write(JSON.stringify(rows, null, 2) + '\n');
   const times = rows.map(row => Date.parse(row.captured_at)).filter(Number.isFinite);
-  const min = times.length ? new Date(Math.min(...times)).toISOString() : 'none';
-  const max = times.length ? new Date(Math.max(...times)).toISOString() : 'none';
+  const min = times.length ? new Date(times.reduce((value, time) => Math.min(value, time), Infinity)).toISOString() : 'none';
+  const max = times.length ? new Date(times.reduce((value, time) => Math.max(value, time), -Infinity)).toISOString() : 'none';
   console.error('Exported ' + rows.length + ' rows (range: ' + min + ' to ' + max + ')');
 } catch (error) {
   console.error('Signal export failed: ' + (error?.message === 'DATABASE_URL is required; value was not printed.' ? error.message : 'database query failed; connection details suppressed.'));
