@@ -134,7 +134,15 @@ export class DeltaAdapter {
     }, null, false);
   }
   candles(symbol, resolution, limit) {
-    const seconds = ({ '1m': 60, '5m': 300, '15m': 900 })[resolution] || 300;
+    // Resolution → seconds per candle. Unknown resolutions fall back
+    // to 300s (5m) with a 20% safety margin on the request window.
+    // Add new resolutions here when the Delta API supports them.
+    const seconds = ({
+      '1m': 60,
+      '5m': 300,
+      '15m': 900,
+      '1h': 3600
+    })[resolution] || 300;
     const end = Math.floor((Date.now() + this.offsetMs) / 1000);
     const start = end - seconds * ((limit || 120) + 3);
     return this.request('GET', '/v2/history/candles', { resolution, symbol, start, end }, null, false);
