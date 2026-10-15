@@ -11,6 +11,7 @@ import { indiaDateKey } from '../src/date-utils.js';
 import { createGridState, evaluateGridTick } from './grid-strategy.mjs';
 import { CANDLE_WARMUP_BATCH_SIZE, CANDLE_WARMUP_RETRY_MS, planCandleWarmup } from './candle-warmup.mjs';
 import { isOptionsExecutionAllowed, OPTIONS_EXECUTION_LOCK_REASON } from './options-execution-lock.mjs';
+import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const n = v => Number.isFinite(+v) ? +v : 0;
@@ -1054,6 +1055,29 @@ export class DeltaEngine {
     }
     const btc5 = this.getCandles(btc, '5m');
     const btc15 = this.getCandles(btc, '15m');
+
+    // Shadow-only hourly BTC regime: deliberately separate from the legacy
+    // btc5/btc15 arrays passed into analyse(), so live signal decisions remain unchanged.
+    let shadowRegime = null;
+    const btc1h = this.getCandles('BTCUSD', '1h');
+    if (btc1h && btc1h.length >= 201) {
+      try {
+        const btcTicker = this.tickerMap.get('BTCUSD') || this.tickerMap.get(btc);
+        const currentBtcPrice = n(btcTicker?.mark_price || btcTicker?.close || btcTicker?.price);
+        const result = gateBTCRegime(btc1h, currentBtcPrice);
+        shadowRegime = {
+          btcRegime: result.regime ?? 'UNAVAILABLE',
+          btcRegimeStatus: result.status ?? 'BLOCK',
+          btcRegimeReason: result.reason ?? 'BTC shadow regime returned no reason',
+          btcRegimeSource: 'live-1h',
+          btcAtrPct: Number.isFinite(result.observed) ? result.observed : null,
+          btcRegimeComputedAt: new Date().toISOString()
+        };
+      } catch (err) {
+        console.warn('[DeltaScanner] BTC shadow regime failed:', String(err?.message || err).slice(0, 240));
+      }
+    }
+
     const out = [];
     const signalCacheRows = [];
     const signalHistoryRows = [];
@@ -1112,6 +1136,15 @@ export class DeltaEngine {
             btcOverrideScoreMin: s.btcOverrideScoreMin, btcOverrideVolumeMin: s.btcOverrideVolumeMin,
             rangeAtr: s.rangeAtr,
             emaDistanceAtr: s.emaDistanceAtr,
+            // Persist the existing 5m/15m BTC trend labels for offline comparison.
+            btcTrend5m: s.btcTrend,
+            btcTrend15m: s.btcConfirmTrend,
+            btcRegime: shadowRegime?.btcRegime ?? null,
+            btcRegimeStatus: shadowRegime?.btcRegimeStatus ?? null,
+            btcRegimeReason: shadowRegime?.btcRegimeReason ?? null,
+            btcRegimeSource: shadowRegime ? 'live-1h' : null,
+            btcAtrPct: shadowRegime?.btcAtrPct ?? null,
+            btcRegimeComputedAt: shadowRegime?.btcRegimeComputedAt ?? null,
             fullMarketScan: true
           }
         };
