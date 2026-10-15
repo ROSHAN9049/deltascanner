@@ -149,7 +149,7 @@ function reasonSql(jsonExpression) {
     '  CROSS JOIN LATERAL jsonb_array_elements(',
     "    CASE WHEN jsonb_typeof(" + jsonExpression + ") = 'array' THEN " + jsonExpression + " ELSE '[]'::jsonb END",
     '  ) AS reason_item(value)',
-    "  WHERE s.captured_at > NOW() - INTERVAL '30 days'",
+    "  WHERE s.captured_at > NOW() - INTERVAL '7 days'",
     '), categorized AS (',
     '  SELECT strategy,',
     '    CASE',
@@ -180,13 +180,13 @@ function buildEventCorrelationSql() {
     'WITH actionable AS (',
     '  SELECT id, UPPER(symbol) AS symbol_key, UPPER(COALESCE(side, \'\')) AS side_key, captured_at',
     '  FROM public.dd_signals',
-    "  WHERE captured_at > NOW() - INTERVAL '30 days'",
+    "  WHERE captured_at > NOW() - INTERVAL '7 days'",
     '    AND ready IS TRUE',
     "    AND CASE WHEN jsonb_typeof(blocked_reasons) = 'array' THEN jsonb_array_length(blocked_reasons) = 0 ELSE FALSE END",
     '), targets AS (',
     '  SELECT event_id AS target_id, UPPER(symbol) AS symbol_key, UPPER(COALESCE(side, \'\')) AS side_key, event_at AS target_at',
     '  FROM public.dd_tradetron_events',
-    "  WHERE event_at > NOW() - INTERVAL '30 days' AND event_at IS NOT NULL AND NULLIF(BTRIM(symbol), '') IS NOT NULL",
+    "  WHERE event_at > NOW() - INTERVAL '7 days' AND event_at IS NOT NULL AND NULLIF(BTRIM(symbol), '') IS NOT NULL",
     '), pairs AS (',
     '  SELECT s.id AS signal_id, t.target_id,',
     '    COUNT(*) OVER (PARTITION BY s.id) AS signal_candidates,',
@@ -225,13 +225,13 @@ function buildTradeCorrelationSql() {
     'WITH actionable AS (',
     '  SELECT id, UPPER(symbol) AS symbol_key, UPPER(COALESCE(side, \'\')) AS side_key, captured_at',
     '  FROM public.dd_signals',
-    "  WHERE captured_at > NOW() - INTERVAL '30 days'",
+    "  WHERE captured_at > NOW() - INTERVAL '7 days'",
     '    AND ready IS TRUE',
     "    AND CASE WHEN jsonb_typeof(blocked_reasons) = 'array' THEN jsonb_array_length(blocked_reasons) = 0 ELSE FALSE END",
     '), targets AS (',
     '  SELECT id AS target_id, UPPER(symbol) AS symbol_key, UPPER(COALESCE(side, \'\')) AS side_key, opened_at AS target_at',
     '  FROM public.dd_trades',
-    "  WHERE opened_at > NOW() - INTERVAL '30 days' AND opened_at IS NOT NULL AND NULLIF(BTRIM(symbol), '') IS NOT NULL",
+    "  WHERE opened_at > NOW() - INTERVAL '7 days' AND opened_at IS NOT NULL AND NULLIF(BTRIM(symbol), '') IS NOT NULL",
     '), pairs AS (',
     '  SELECT s.id AS signal_id, t.target_id,',
     '    COUNT(*) OVER (PARTITION BY s.id) AS signal_candidates,',
@@ -280,7 +280,7 @@ async function main() {
 
   try {
     console.log('SIGNAL FREQUENCY / READY-SIGNAL REPORT (SQL AGGREGATES)');
-    console.log('Window: rolling 30 days; actionable symbol/strategy/day tuples: rolling 7 days');
+    console.log('Window: rolling 7 days; actionable symbol/strategy/day tuples: rolling 7 days');
     console.log('No raw dd_signals rows are exported; all counts and groupings are computed in PostgreSQL.');
     console.log('');
 
@@ -288,7 +288,8 @@ async function main() {
       'SELECT COUNT(*)::text AS all_time_rows,',
       '       MIN(captured_at) AS oldest_captured_at,',
       '       MAX(captured_at) AS newest_captured_at,',
-      '       COUNT(*) FILTER (WHERE captured_at IS NULL)::text AS null_captured_at',
+      '       COUNT(*) FILTER (WHERE captured_at IS NULL)::text AS null_captured_at,',
+      "       COUNT(*) FILTER (WHERE captured_at < NOW() - INTERVAL '7 days')::text AS rows_older_than_7_days",
       'FROM public.dd_signals'
     ].join('\n');
     const allTime = await queryOne(pool, allTimeSql);
@@ -309,7 +310,7 @@ async function main() {
       '  MAX(captured_at) AS max_captured_at,',
       '  COUNT(*) FILTER (WHERE captured_at IS NULL)::text AS null_captured_at',
       'FROM public.dd_signals',
-      "WHERE captured_at > NOW() - INTERVAL '30 days'"
+      "WHERE captured_at > NOW() - INTERVAL '7 days'"
     ].join('\n');
     const summary = await queryOne(pool, summarySql);
 
@@ -321,7 +322,7 @@ async function main() {
       "  COUNT(*) FILTER (WHERE ready IS TRUE AND CASE WHEN jsonb_typeof(blocked_reasons) = 'array' THEN jsonb_array_length(blocked_reasons) = 0 ELSE FALSE END)::text AS action_ready,",
       '  COUNT(DISTINCT (symbol, strategy)) FILTER (WHERE ready IS TRUE)::text AS ready_symbol_strategy',
       'FROM public.dd_signals',
-      "WHERE captured_at > NOW() - INTERVAL '30 days'",
+      "WHERE captured_at > NOW() - INTERVAL '7 days'",
       "GROUP BY (captured_at AT TIME ZONE 'UTC')::date",
       'ORDER BY (captured_at AT TIME ZONE \'UTC\')::date DESC'
     ].join('\n');
@@ -338,7 +339,7 @@ async function main() {
     const stageResult = await pool.query([
       'SELECT COALESCE(stage, \'UNKNOWN\') AS stage, COUNT(*)::text AS count',
       'FROM public.dd_signals',
-      "WHERE captured_at > NOW() - INTERVAL '30 days'",
+      "WHERE captured_at > NOW() - INTERVAL '7 days'",
       'GROUP BY stage ORDER BY COUNT(*) DESC, stage'
     ].join('\n'));
     const strategyResult = await pool.query([
@@ -347,7 +348,7 @@ async function main() {
       '  COUNT(*) FILTER (WHERE ready IS TRUE)::text AS ready,',
       "  COUNT(*) FILTER (WHERE ready IS TRUE AND CASE WHEN jsonb_typeof(blocked_reasons) = 'array' THEN jsonb_array_length(blocked_reasons) = 0 ELSE FALSE END)::text AS action_ready",
       'FROM public.dd_signals',
-      "WHERE captured_at > NOW() - INTERVAL '30 days'",
+      "WHERE captured_at > NOW() - INTERVAL '7 days'",
       'GROUP BY strategy ORDER BY COUNT(*) DESC, strategy'
     ].join('\n'));
 
@@ -364,7 +365,7 @@ async function main() {
       "  COUNT(*) FILTER (WHERE stage = 'CONFIRMED' AND score >= 85 AND score <= 100)::text AS confirmed_85_100,",
       "  COUNT(*) FILTER (WHERE stage = 'CONFIRMED' AND (score IS NULL OR score < 0 OR score > 100))::text AS confirmed_invalid_score",
       'FROM public.dd_signals',
-      "WHERE captured_at > NOW() - INTERVAL '30 days'"
+      "WHERE captured_at > NOW() - INTERVAL '7 days'"
     ].join('\n');
     const score = await queryOne(pool, scoreSql);
 
@@ -387,7 +388,7 @@ async function main() {
         '  COUNT(*) FILTER (WHERE event_at IS NOT NULL)::text AS valid_timestamps,',
         '  MIN(event_at) AS min_event_at, MAX(event_at) AS max_event_at',
         'FROM public.dd_tradetron_events',
-        "WHERE event_at > NOW() - INTERVAL '30 days'"
+        "WHERE event_at > NOW() - INTERVAL '7 days'"
       ].join('\n'), 'Tradetron event coverage');
       if (eventSummaryResult.ok) {
         const row = eventSummaryResult.rows[0] || {};
@@ -434,9 +435,9 @@ async function main() {
     if (tradeTableExists && tradeMissingColumns.length === 0) {
       const tradeStatsResult = await optionalQuery(pool, [
         'SELECT COUNT(*)::text AS all_time,',
-        "  COUNT(*) FILTER (WHERE opened_at > NOW() - INTERVAL '30 days')::text AS total,",
-        "  MIN(opened_at) FILTER (WHERE opened_at > NOW() - INTERVAL '30 days') AS min_opened_at,",
-        "  MAX(opened_at) FILTER (WHERE opened_at > NOW() - INTERVAL '30 days') AS max_opened_at,",
+        "  COUNT(*) FILTER (WHERE opened_at > NOW() - INTERVAL '7 days')::text AS total,",
+        "  MIN(opened_at) FILTER (WHERE opened_at > NOW() - INTERVAL '7 days') AS min_opened_at,",
+        "  MAX(opened_at) FILTER (WHERE opened_at > NOW() - INTERVAL '7 days') AS max_opened_at,",
         "  COUNT(*) FILTER (WHERE opened_at IS NULL)::text AS null_opened_at",
         'FROM public.dd_trades'
       ].join('\n'), 'dd_trades coverage');
@@ -487,14 +488,15 @@ async function main() {
     const activeDayReadyCombos = daily.reduce((sum, row) => sum + row.readySymbolStrategy, 0);
     const activeDays = daily.filter(row => row.observations > 0).length;
     const allTimeRows = count(allTime.all_time_rows);
+    const rowsOlderThan7Days = count(allTime.rows_older_than_7_days);
     const oldest = dateIso(allTime.oldest_captured_at);
     const newest = dateIso(allTime.newest_captured_at);
     const retentionDays = oldest ? Math.max(0, (Date.now() - new Date(oldest).getTime()) / DAY_MS) : null;
-    const total30PerDay = total / 30;
-    const confirmedPerDay = confirmed / 30;
-    const readyPerDay = ready / 30;
-    const actionReadyPerDay = actionReady / 30;
-    const readyComboPerDay = activeDayReadyCombos / 30;
+    const total7PerDay = total / 7;
+    const confirmedPerDay = confirmed / 7;
+    const readyPerDay = ready / 7;
+    const actionReadyPerDay = actionReady / 7;
+    const readyComboPerDay = activeDayReadyCombos / 7;
     const scoreBandCounts = SCORE_BANDS.map(band => ({
       band: band.key,
       all: count(score[band.count]),
@@ -531,7 +533,7 @@ async function main() {
     if (eventSummary.total === 0 && eventSummary.tableExists) {
       publishedEventCorrelation.count = 'UNKNOWN';
       publishedEventCorrelation.confidence = 'UNKNOWN';
-      publishedEventCorrelation.note = 'No event rows exist in the 30-day window; this does not prove that no outbound delivery occurred.';
+      publishedEventCorrelation.note = 'No event rows exist in the 7-day window; this does not prove that no outbound delivery occurred.';
       publishedEventCorrelation.diagnostics = { targetRows: 0, definiteMatches: 0 };
     } else if (!eventSummary.tableExists) {
       publishedEventCorrelation.count = 'UNKNOWN';
@@ -558,7 +560,7 @@ async function main() {
     } else if (!tradeSummary.total) {
       publishedTradeCorrelation.count = 'UNKNOWN';
       publishedTradeCorrelation.confidence = 'UNKNOWN';
-      publishedTradeCorrelation.note = 'No dd_trades rows with opened_at in the last 30 days; correlation is UNKNOWN, not proof of zero fills.';
+      publishedTradeCorrelation.note = 'No dd_trades rows with opened_at in the last 7 days; correlation is UNKNOWN, not proof of zero fills.';
     } else if (tradeCorrelationError) {
       publishedTradeCorrelation.count = 'UNKNOWN';
       publishedTradeCorrelation.confidence = 'UNKNOWN';
@@ -591,19 +593,19 @@ async function main() {
       recommendedActions.push('Unique ready (symbol, strategy, date) tuples average above 8/day; investigate repeated opportunities/over-signaling before any reviewed recalibration.');
     }
     if (eventSummary.tableExists && eventSummary.total === 0) {
-      recommendedActions.push('dd_tradetron_events has zero rows in the last 30 days. Event correlation is UNKNOWN; investigate webhook delivery/configuration separately, without treating the event count as proof no deliveries occurred.');
+      recommendedActions.push('dd_tradetron_events has zero rows in the last 7 days. Event correlation is UNKNOWN; investigate webhook delivery/configuration separately, without treating the event count as proof no deliveries occurred.');
     }
     if (tradeTableExists && tradeSummary.total === 0) {
-      recommendedActions.push('dd_trades has zero rows with opened_at in the last 30 days. Check closed-trade recording/history separately; this table only records closed trades and is not a raw-fill ledger.');
+      recommendedActions.push('dd_trades has zero rows with opened_at in the last 7 days. Check closed-trade recording/history separately; this table only records closed trades and is not a raw-fill ledger.');
     }
-    if (!total) recommendedActions.push('No signal observations were returned for the last 30 days. Verify database access, table population and timestamp filters.');
+    if (!total) recommendedActions.push('No signal observations were returned for the last 7 days. Verify database access, table population and timestamp filters.');
     recommendedActions.push('Keep live scoring, gates and trading code unchanged until these measured results are reviewed.');
 
     const report = {
       generatedAt: new Date().toISOString(),
       queryWindow: {
-        signalWindow: 'captured_at > NOW() - INTERVAL 30 days',
-        tradeWindow: 'opened_at > NOW() - INTERVAL 30 days',
+        signalWindow: 'captured_at > NOW() - INTERVAL 7 days',
+        tradeWindow: 'opened_at > NOW() - INTERVAL 7 days',
         correlationWindowMinutes: 5,
         signalRowsTransferred: 0,
         rowLimitAppliedToSignalAggregation: false
@@ -611,14 +613,15 @@ async function main() {
       dataCoverage: {
         dd_signals: {
           allTimeRows: allTimeRows,
-          last30DaysRows: total,
-          minCapturedAtLast30Days: dateIso(summary.min_captured_at),
-          maxCapturedAtLast30Days: dateIso(summary.max_captured_at),
+          rowsOlderThan7Days: rowsOlderThan7Days,
+          last7DaysRows: total,
+          minCapturedAtLast7Days: dateIso(summary.min_captured_at),
+          maxCapturedAtLast7Days: dateIso(summary.max_captured_at),
           allTimeOldestCapturedAt: oldest,
           allTimeNewestCapturedAt: newest,
           actualOldestRowAgeDays: retentionDays === null ? null : round(retentionDays),
           nullCapturedAtAllTime: count(allTime.null_captured_at),
-          nullCapturedAtLast30Days: count(summary.null_captured_at),
+          nullCapturedAtLast7Days: count(summary.null_captured_at),
           uniqueSymbols: count(summary.unique_symbols),
           uniqueStrategies: count(summary.unique_strategies),
           uniqueSymbolStrategyCombos: count(summary.unique_symbol_strategy),
@@ -627,7 +630,7 @@ async function main() {
         },
         dd_tradetron_events: {
           tableExists: eventSummary.tableExists,
-          last30DaysRows: eventSummary.total,
+          last7DaysRows: eventSummary.total,
           validTimestampRows: eventSummary.validTimestamps,
           minEventAt: eventSummary.min,
           maxEventAt: eventSummary.max,
@@ -643,11 +646,11 @@ async function main() {
         }
       },
       readySignalMetrics: {
-        totalObservations: { count: total, pctOfTotal: total ? 100 : null, per30CalendarDays: round(total30PerDay) },
-        confirmedStage: { count: confirmed, pctOfTotal: percent(confirmed, total), per30CalendarDays: round(confirmedPerDay) },
-        readyTrue: { count: ready, pctOfTotal: percent(ready, total), per30CalendarDays: round(readyPerDay) },
-        readyTrueAndNoBlockers: { count: actionReady, pctOfTotal: percent(actionReady, total), per30CalendarDays: round(actionReadyPerDay) },
-        uniqueSymbolStrategyReady30d: { count: readyCombos, pctOfTotal: null, per30CalendarDays: round(readyComboPerDay) },
+        totalObservations: { count: total, pctOfTotal: total ? 100 : null, per7CalendarDays: round(total7PerDay) },
+        confirmedStage: { count: confirmed, pctOfTotal: percent(confirmed, total), per7CalendarDays: round(confirmedPerDay) },
+        readyTrue: { count: ready, pctOfTotal: percent(ready, total), per7CalendarDays: round(readyPerDay) },
+        readyTrueAndNoBlockers: { count: actionReady, pctOfTotal: percent(actionReady, total), per7CalendarDays: round(actionReadyPerDay) },
+        uniqueSymbolStrategyReady7d: { count: readyCombos, pctOfTotal: null, per7CalendarDays: round(readyComboPerDay) },
         uniqueSymbolStrategyDateReady7d: {
           count: readySymbolStrategyDate7d,
           pctOfTotal: null,
@@ -669,8 +672,8 @@ async function main() {
       })),
       signalFrequency: {
         daily: daily,
-        averagePer30CalendarDays: {
-          observations: round(total30PerDay),
+        averagePer7CalendarDays: {
+          observations: round(total7PerDay),
           confirmedStage: round(confirmedPerDay),
           readyTrue: round(readyPerDay),
           readyTrueAndNoBlockers: round(actionReadyPerDay),
@@ -715,7 +718,7 @@ async function main() {
         step3ReadyAndNoBlockers: { count: actionReady, note: 'ready IS TRUE and blocked_reasons is a JSON array of length zero.' },
         step4TradetronEventCorrelation: publishedEventCorrelation,
         step5ClosedTradeCorrelation: publishedTradeCorrelation,
-        recordedClosedTradesLast30Days: tradeSummary.total,
+        recordedClosedTradesLast7Days: tradeSummary.total,
         correlationConfidence: {
           tradetronEvents: publishedEventCorrelation.confidence,
           closedTrades: publishedTradeCorrelation.confidence
@@ -731,14 +734,19 @@ async function main() {
     console.log('SECTION 1 — DATA COVERAGE (all-time counts and actual date coverage)');
     renderTable('Coverage', ['Source', 'Rows', 'Min time', 'Max time', 'Notes'], [
       ['dd_signals all-time', allTimeRows, oldest || 'N/A', newest || 'N/A', 'Actual oldest-row age: ' + (retentionDays === null ? 'N/A' : round(retentionDays) + ' days')],
-      ['dd_signals last 30d', total, dateIso(summary.min_captured_at) || 'N/A', dateIso(summary.max_captured_at) || 'N/A', 'No LIMIT; aggregate query'],
-      ['dd_tradetron_events last 30d', eventSummary.total === null ? 'UNKNOWN' : eventSummary.total, eventSummary.min || 'N/A', eventSummary.max || 'N/A', eventSummary.tableExists ? 'Event rows are not proof of outbound delivery' : 'Table/schema unavailable'],
-      ['dd_trades opened last 30d', tradeSummary.total === null ? 'UNKNOWN' : tradeSummary.total, tradeSummary.min || 'N/A', tradeSummary.max || 'N/A', tradeTableExists ? 'Closed trades, not raw fills' : 'Table unavailable']
+      ['dd_signals last 7d', total, dateIso(summary.min_captured_at) || 'N/A', dateIso(summary.max_captured_at) || 'N/A', 'No LIMIT; aggregate query'],
+      ['dd_tradetron_events last 7d', eventSummary.total === null ? 'UNKNOWN' : eventSummary.total, eventSummary.min || 'N/A', eventSummary.max || 'N/A', eventSummary.tableExists ? 'Event rows are not proof of outbound delivery' : 'Table/schema unavailable'],
+      ['dd_trades opened last 7d', tradeSummary.total === null ? 'UNKNOWN' : tradeSummary.total, tradeSummary.min || 'N/A', tradeSummary.max || 'N/A', tradeTableExists ? 'Closed trades, not raw fills' : 'Table unavailable']
     ], 35);
     console.log('dd_signals unique symbols: ' + count(summary.unique_symbols));
     console.log('dd_signals unique strategies: ' + count(summary.unique_strategies));
     console.log('dd_signals unique (symbol,strategy): ' + count(summary.unique_symbol_strategy));
     console.log('dd_signals null captured_at (all-time): ' + count(allTime.null_captured_at));
+    console.log('dd_signals rows older than 7 days: ' + rowsOlderThan7Days);
+    if (rowsOlderThan7Days > 0) {
+      console.warn('⚠️ Found ' + rowsOlderThan7Days + ' rows older than 7 days. Disk pressure likely.');
+      console.warn('Run prune-signals workflow to reclaim space.');
+    }
     console.log('dd_trades schema exists: ' + (tradeTableExists ? 'YES' : 'NO/UNKNOWN'));
     if (tradeTableExists) console.log('dd_trades schema columns: ' + tradeColumns.map(row => row.column_name + ' (' + row.data_type + ', nullable=' + row.is_nullable + ')').join('; '));
     if (tradeMissingColumns.length) console.log('dd_trades missing expected columns: ' + tradeMissingColumns.join(', '));
@@ -749,8 +757,8 @@ async function main() {
       ...strategyRows.map(row => ['Strategy ' + row.strategy, row.count, formatPercent(row.pctOfTotal)])
     ], 31);
 
-    renderTable('SECTION 2B — READY VS CONFIRMED VS ACTION-READY (rolling 30 days)', ['Metric', 'Count', '% of total', 'Per day'], [
-      ['Total observations', total, formatPercent(total ? 100 : null), round(total30PerDay)],
+    renderTable('SECTION 2B — READY VS CONFIRMED VS ACTION-READY (rolling 7 days)', ['Metric', 'Count', '% of total', 'Per day'], [
+      ['Total observations', total, formatPercent(total ? 100 : null), round(total7PerDay)],
       ['CONFIRMED stage', confirmed, formatPercent(percent(confirmed, total)), round(confirmedPerDay)],
       ['ready=true', ready, formatPercent(percent(ready, total)), round(readyPerDay)],
       ['ready=true AND no blockers', actionReady, formatPercent(percent(actionReady, total)), round(actionReadyPerDay)],
@@ -763,7 +771,7 @@ async function main() {
     console.log('Caution: a symbol/strategy/day tuple is a conservative opportunity proxy, not a distinct entry ID.');
     console.log('');
 
-    renderTable('SECTION 3 — DAILY BREAKDOWN (SQL aggregates; rolling 30-day window)', ['UTC date', 'Observations', 'CONFIRMED', 'ready=true', 'ready+empty blockers', 'Unique ready combos'], daily.map(row => [
+    renderTable('SECTION 3 — DAILY BREAKDOWN (SQL aggregates; rolling 7-day window)', ['UTC date', 'Observations', 'CONFIRMED', 'ready=true', 'ready+empty blockers', 'Unique ready combos'], daily.map(row => [
       row.date, row.observations, row.confirmed, row.ready, row.actionReady, row.readySymbolStrategy
     ]), 24);
     console.log('Active UTC dates represented: ' + activeDays);
@@ -788,7 +796,7 @@ async function main() {
       ['3. ready=true + no blockers', actionReady, 'Blocker array must be empty'],
       ['4. Tradetron event correlation', publishedEventCorrelation.count, publishedEventCorrelation.note],
       ['5. dd_trades correlation', publishedTradeCorrelation.count, publishedTradeCorrelation.note],
-      ['Recorded dd_trades rows', tradeSummary.total === null ? 'UNKNOWN' : tradeSummary.total, 'Actual closed-trade records opened in the last 30 days']
+      ['Recorded dd_trades rows', tradeSummary.total === null ? 'UNKNOWN' : tradeSummary.total, 'Actual closed-trade records opened in the last 7 days']
     ], 44);
     console.log('Event correlation confidence: ' + publishedEventCorrelation.confidence);
     console.log('Trade correlation confidence: ' + publishedTradeCorrelation.confidence);
@@ -797,8 +805,8 @@ async function main() {
     console.log('');
 
     console.log('SECTION 7 — SUMMARY & RECOMMENDED ACTION');
-    console.log('CONFIRMED/day (rolling 30 days): ' + round(confirmedPerDay));
-    console.log('ready=true/day (rolling 30 days): ' + round(readyPerDay));
+    console.log('CONFIRMED/day (rolling 7 days): ' + round(confirmedPerDay));
+    console.log('ready=true/day (rolling 7 days): ' + round(readyPerDay));
     console.log('ready=true and no blockers/day: ' + round(actionReadyPerDay));
     console.log('Unique ready (symbol,strategy,date)/observed day over last 7 days: ' + (readyUniqueTuplePerObservedDay7d === null ? 'N/A' : round(readyUniqueTuplePerObservedDay7d)));
     for (const action of recommendedActions) console.log('- ' + action);
