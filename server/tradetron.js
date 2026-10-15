@@ -1,4 +1,7 @@
 import { CONFIG } from './config.js';
+import * as db from './db.js';
+import { buildTradetronSnapshotRiskState, TRADETRON_SNAPSHOT_MAX_AGE_MS } from '../src/tradetron-position-sync.js';
+import { countOpenPositionSymbols, globalOpenPositionCapBlocker, normalizeMaxOpenPositions } from '../src/open-position-cap.js';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const clean = v => String(v ?? '').trim();
@@ -112,6 +115,8 @@ export class TradetronBridge {
     this.supportedSymbols = [...new Set((Array.isArray(supportedSymbols) ? supportedSymbols : [])
       .map(x => clean(x).toUpperCase()).filter(x => /^[A-Z0-9]+USD$/.test(x) && x !== 'USD'))];
     this.timeoutMs = Math.max(2000, Number(CONFIG.tradetronTimeoutMs) || 10000);
+    this.positionCapCache = null;
+    this.lastPositionCapWarningAt = 0;
   }
 
   isConfigured() {
@@ -121,6 +126,139 @@ export class TradetronBridge {
   supportsFuturesSymbol(symbol) {
     const selected = clean(symbol).toUpperCase();
     return this.supportedSymbols.includes(selected);
+  }
+
+  async getEntryPositionCapState(executionId) {
+    const now = Date.now();
+    if (this.positionCapCache && now - this.positionCapCache.cachedAt < 3000) {
+      return this.positionCapCache;
+    }
+
+    const [settingsRows, syncRows, snapshotRows] = await Promise.all([
+      db.select('dd_settings', 'id=eq.1&select=max_open_positions'),
+      db.select('dd_tradetron_developer_sync_state', 'id=eq.1&select=id,status,last_success_at,details'),
+      db.select('dd_tradetron_developer_snapshots', 'order=deployment_id.asc')
+    ]);
+    const settings = Array.isArray(settingsRows) ? settingsRows[0] || null : null;
+    if (!settings) {
+      return {
+        cachedAt: now, maxOpenPositions: normalizeMaxOpenPositions(null),
+        positions: [], pendingSignals: [], trusted: false,
+        reason: 'POSITION_CAP_SETTINGS_UNAVAILABLE'
+      };
+    }
+
+    const syncState = Array.isArray(syncRows) ? syncRows[0] || null : null;
+    const deploymentIds = Array.isArray(syncState?.details?.deploymentIds)
+      ? syncState.details.deploymentIds.map(value => String(value))
+      : [];
+    const deployments = (Array.isArray(snapshotRows) ? snapshotRows : []).filter(row =>
+      deploymentIds.includes(String(row?.deployment_id ?? ''))
+    );
+    const snapshot = buildTradetronSnapshotRiskState({
+      syncState,
+      deployments,
+      now,
+      maxAgeMs: TRADETRON_SNAPSHOT_MAX_AGE_MS
+    });
+    if (snapshot.trusted !== true) {
+      return {
+        cachedAt: now, maxOpenPositions: normalizeMaxOpenPositions(settings.max_open_positions),
+        positions: [], pendingSignals: [], trusted: false,
+        reason: 'POSITION_SNAPSHOT_UNTRUSTED:' + String(snapshot.reason || 'UNKNOWN')
+      };
+    }
+
+    const cutoff = new Date(now - SIGNAL_RESERVATION_TTL_MS).toISOString();
+    const pendingSignals = await db.select(
+      'dd_orders',
+      'order_type=eq.tradetron_signal&state=in.(PENDING,SIGNAL_SENT)' +
+        '&updated_at=gte.' + encodeURIComponent(cutoff) +
+        '&select=symbol,size,execution_id,client_order_id,created_at,updated_at,state' +
+        '&order=updated_at.desc&limit=500'
+    );
+    if (!Array.isArray(pendingSignals)) {
+      return {
+        cachedAt: now, maxOpenPositions: normalizeMaxOpenPositions(settings.max_open_positions),
+        positions: [], pendingSignals: [], trusted: false,
+        reason: 'POSITION_RESERVATION_LOOKUP_UNAVAILABLE'
+      };
+    }
+
+    const state = {
+      cachedAt: now,
+      maxOpenPositions: normalizeMaxOpenPositions(settings.max_open_positions),
+      positions: snapshot.openPositions,
+      pendingSignals,
+      trusted: true,
+      reason: null
+    };
+    this.positionCapCache = state;
+    return state;
+  }
+
+  async checkGlobalPositionCap({ symbol, executionId }) {
+    if (!CONFIG.signalOnly) return { blocked: false };
+    try {
+      const state = await this.getEntryPositionCapState(executionId);
+      if (state.trusted !== true) {
+        return {
+          blocked: true,
+          positionSafetyBlocked: true,
+          globalPositionCapBlocked: false,
+          reason: state.reason || 'POSITION_SAFETY_UNVERIFIED',
+          openPositionSymbols: null,
+          maxOpenPositions: state.maxOpenPositions
+        };
+      }
+
+      const ignoredExecutionId = clean(executionId);
+      const pending = state.pendingSignals.filter(row =>
+        clean(row?.execution_id || row?.client_order_id) !== ignoredExecutionId &&
+        clean(row?.client_order_id) !== ignoredExecutionId
+      );
+      const occupied = withSignalReservations(state.positions, pending);
+      const target = clean(symbol).toUpperCase();
+      if (occupied.some(row => clean(row?.symbol).toUpperCase() === target &&
+          Math.abs(Number(row?.qty) || 0) > 0)) {
+        return {
+          blocked: true,
+          positionSafetyBlocked: true,
+          globalPositionCapBlocked: false,
+          reason: 'DUPLICATE_SYMBOL_POSITION_OR_RESERVATION',
+          openPositionSymbols: countOpenPositionSymbols(occupied),
+          maxOpenPositions: state.maxOpenPositions
+        };
+      }
+
+      const blocker = globalOpenPositionCapBlocker(occupied, target, state.maxOpenPositions);
+      if (blocker) {
+        return {
+          blocked: true,
+          positionSafetyBlocked: true,
+          globalPositionCapBlocked: true,
+          reason: blocker,
+          openPositionSymbols: countOpenPositionSymbols(occupied),
+          maxOpenPositions: state.maxOpenPositions
+        };
+      }
+      return {
+        blocked: false,
+        positionSafetyBlocked: false,
+        globalPositionCapBlocked: false,
+        openPositionSymbols: countOpenPositionSymbols(occupied),
+        maxOpenPositions: state.maxOpenPositions
+      };
+    } catch (error) {
+      return {
+        blocked: true,
+        positionSafetyBlocked: true,
+        globalPositionCapBlocked: false,
+        reason: 'POSITION_CAP_LOOKUP_FAILED:' + String(error?.message || error).slice(0, 180),
+        openPositionSymbols: null,
+        maxOpenPositions: normalizeMaxOpenPositions(null)
+      };
+    }
   }
 
   async sendPairs(pairs) {
@@ -193,6 +331,31 @@ export class TradetronBridge {
     if (!/^[A-Z0-9]+USD$/.test(selected)||selected==='USD') throw new Error('Tradetron futures bridge symbol is invalid: '+selected);
 
     const execution=clean(executionId), triggerKey=normalizedSide==='BUY'?'api_buy':'api_sell';
+    const capCheck = await this.checkGlobalPositionCap({ symbol: selected, executionId: execution });
+    if (capCheck.blocked) {
+      if (Date.now() - this.lastPositionCapWarningAt >= 60_000) {
+        this.lastPositionCapWarningAt = Date.now();
+        await db.log('WARN', 'Tradetron entry blocked by final position-cap safety guard', {
+          symbol: selected,
+          executionId: execution,
+          reason: capCheck.reason,
+          currentOpenPositionSymbols: capCheck.openPositionSymbols,
+          configuredMaxOpenPositions: capCheck.maxOpenPositions,
+          globalPositionCapBlocked: capCheck.globalPositionCapBlocked === true,
+          note: 'No Tradetron entry trigger was sent; existing positions are not closed by this guard'
+        });
+      }
+      return {
+        ok: false,
+        skipped: true,
+        positionSafetyBlocked: true,
+        globalPositionCapBlocked: capCheck.globalPositionCapBlocked === true,
+        symbol: selected,
+        executionId: execution,
+        reason: capCheck.reason
+      };
+    }
+
     // Tradetron's existing Signal Bridge reads <SYMBOL>_q (not only
     // <SYMBOL>_qty). Set quantity and price metadata before raising any entry
     // trigger so the strategy cannot consume stale runtime values.
@@ -212,6 +375,7 @@ export class TradetronBridge {
       [triggerKey,1]
     ];
     const result=await this.sendPairs(writes);
+    this.positionCapCache = null;
     setTimeout(()=>this.sendPairs([[selected+'_el',0],[selected+'_es',0],[triggerKey,0],['tt_buy',0],['tt_sell',0]]).catch(()=>{}),3000);
     return {ok:!!result.ok,symbol:selected,side:normalizedSide,qty:quantity,executionId:execution,triggerKey,entryVariableKey:selected+(normalizedSide==='BUY'?'_el':'_es'),globalTriggerKey:triggerKey,actionCode:normalizedSide==='BUY'?1:3,response:result.body,payloadVariableKeys:writes.map(([key])=>key),payloadVariableCount:writes.length,dynamic:true,engine,contract:'legacy_symbol_el_es+dynamic_tt_v3'};
   }
