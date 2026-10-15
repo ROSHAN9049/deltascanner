@@ -97,6 +97,12 @@ function makeBridge(supportedSymbols = ['BTCUSD', 'ETHUSD']) {
     authToken: 'unit-test-token',
     supportedSymbols
   });
+  // These tests validate payload construction, not the live database-backed cap gate.
+  bridge.checkGlobalPositionCap = async () => ({
+    blocked: false,
+    positionSafetyBlocked: false,
+    globalPositionCapBlocked: false
+  });
   let lastPairs = [];
   bridge.sendPairs = async pairs => {
     lastPairs = pairs;

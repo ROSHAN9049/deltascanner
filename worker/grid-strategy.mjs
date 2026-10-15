@@ -301,9 +301,16 @@ export function evaluateGridTick({
 
   const firstEnabledTick = cfg.enabled && !wasEnabled;
   const canEnter = cfg.enabled && cfg.valid && !state.pausedReason && !momentum.paused &&
-    dataFresh && previousPrice > 0 && !firstEnabledTick && !emergencyStop && !protectiveStopHit;
+    dataFresh && previousPrice > 0 && !firstEnabledTick && !emergencyStop && !protectiveStopHit &&
+    settings.globalPositionCapReached !== true;
   if (cfg.enabled && !cfg.valid) {
     pushEvent(state, { type: 'BLOCK', reason: 'SET_VALID_GRID_RANGE' }, at);
+  }
+  if (cfg.enabled && settings.globalPositionCapReached === true && !state.pausedReason) {
+    pushEvent(state, {
+      type: 'BLOCK',
+      reason: String(settings.globalPositionCapReason || 'GLOBAL_OPEN_POSITION_LIMIT')
+    }, at);
   }
   if (cfg.enabled && !dataFresh && !state.pausedReason) {
     pushEvent(state, { type: 'BLOCK', reason: 'GRID_CANDLE_DATA_STALE' }, at);
