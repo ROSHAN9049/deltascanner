@@ -583,17 +583,20 @@ async function main() {
     recommendedActions.push('Score recalibration is on hold. Use action-ready counts and the 7-day unique (symbol, strategy, date) proxy before reviewing any threshold.');
     if (retentionDays === null || retentionDays < 7) {
       recommendedActions.push('Observed signal history spans fewer than seven days; the seven-day frequency proxy is provisional. Collect sufficient history before any score recalibration.');
-    } else if (activeSignalDates7d === 0) {
-      recommendedActions.push('No signal-observation dates are present in the last seven days. Investigate worker/data coverage before interpreting a zero actionable frequency.');
-    } else if (activeSignalDates7d < 7) {
-      recommendedActions.push('Signal observations exist on only ' + activeSignalDates7d + ' of the last 7 UTC dates. Check worker/data coverage; the actionable rate is averaged over all 7 calendar days.');
     }
-    if (activeSignalDates7d > 0 && readyUniqueTuplePerDay7d < 2) {
-      recommendedActions.push('Unique ready (symbol, strategy, date) tuples average below 2/day; verify the history window and investigate readiness blockers before considering any score change.');
-    } else if (readyUniqueTuplePerDay7d <= 8) {
-      recommendedActions.push('Unique ready (symbol, strategy, date) tuples average 2–8/day, within the requested monitoring range; validate delivery/trade evidence before judging signal quality.');
+    if (activeSignalDates7d === 0) {
+      recommendedActions.push('No signal-observation dates are present in the last seven days. Investigate worker/data coverage before interpreting a zero actionable frequency.');
     } else {
-      recommendedActions.push('Unique ready (symbol, strategy, date) tuples average above 8/day; investigate repeated opportunities/over-signaling before any reviewed recalibration.');
+      if (activeSignalDates7d < 7) {
+        recommendedActions.push('Signal observations exist on only ' + activeSignalDates7d + ' of the last 7 UTC dates. Check worker/data coverage; the actionable rate is averaged over all 7 calendar days.');
+      }
+      if (readyUniqueTuplePerDay7d < 2) {
+        recommendedActions.push('Unique ready (symbol, strategy, date) tuples average below 2/day; verify the history window and investigate readiness blockers before considering any score change.');
+      } else if (readyUniqueTuplePerDay7d <= 8) {
+        recommendedActions.push('Unique ready (symbol, strategy, date) tuples average 2–8/day, within the requested monitoring range; validate delivery/trade evidence before judging signal quality.');
+      } else {
+        recommendedActions.push('Unique ready (symbol, strategy, date) tuples average above 8/day; investigate repeated opportunities/over-signaling before any reviewed recalibration.');
+      }
     }
     if (eventSummary.tableExists && eventSummary.total === 0) {
       recommendedActions.push('dd_tradetron_events has zero rows in the last 7 days. Event correlation is UNKNOWN; investigate webhook delivery/configuration separately, without treating the event count as proof no deliveries occurred.');
