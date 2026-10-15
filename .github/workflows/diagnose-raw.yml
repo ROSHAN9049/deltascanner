@@ -41,5 +41,6 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          node scripts/diagnose-raw.mjs 2>&1 | tee /tmp/diagnose-raw.log
+          node scripts/diagnose-raw.mjs 2>&1 | tee /tmp/diagnose-raw.log || diagnostic_status=$?
           cat /tmp/diagnose-raw.log >> "$GITHUB_STEP_SUMMARY"
+          exit "${diagnostic_status:-0}"
