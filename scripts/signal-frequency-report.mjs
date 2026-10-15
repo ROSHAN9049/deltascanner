@@ -467,9 +467,12 @@ function main() {
   funnelRows[2].pctPrevious = typeof funnelRows[2].count === 'number' ? pct(funnelRows[2].count, typeof readinessStepCount === 'number' ? readinessStepCount : 0) : null;
   funnelRows[3].pctPrevious = typeof funnelRows[3].count === 'number' ? pct(funnelRows[3].count, typeof funnelRows[2].count === 'number' ? funnelRows[2].count : 0) : null;
 
-  const correlationConfidence = readinessStepCount === 'UNKNOWN' ? 'UNKNOWN' :
-    (eventCorrelation.count === 'UNKNOWN' ? 'UNKNOWN' :
-      (fillCorrelation.count === 'UNKNOWN' ? eventCorrelation.confidence : fillCorrelation.confidence));
+  const correlationConfidence = readinessStepCount === 'UNKNOWN' || readinessStepCount === 0 ||
+    eventCorrelation.count === 'UNKNOWN' || fillCorrelation.count === 'UNKNOWN'
+    ? 'UNKNOWN'
+    : (eventCorrelation.confidence === 'LOW' || fillCorrelation.confidence === 'LOW'
+      ? 'LOW'
+      : (eventCorrelation.confidence === 'MEDIUM' || fillCorrelation.confidence === 'MEDIUM' ? 'MEDIUM' : 'HIGH'));
   const report = {
     generatedAt: new Date(now).toISOString(),
     queryWindow: { requestedDays: 30, signalLimit: 100000, fillLimit: 10000, eventLimit: 10000 },
