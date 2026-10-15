@@ -47,7 +47,7 @@ try {
   });
   const result = await pool.query(
     "SELECT id, symbol, side, strategy, entry_price, exit_price, qty, " +
-    "net_pnl AS pnl, entry_fill_ids AS entry_fill_id, exit_fill_ids AS exit_fill_id, " +
+    "net_pnl AS pnl, entry_fill_ids, exit_fill_ids, " +
     "opened_at, closed_at " +
     "FROM public.dd_trades " +
     "WHERE opened_at > NOW() - INTERVAL '30 days' " +
