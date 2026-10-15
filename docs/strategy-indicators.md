@@ -40,13 +40,40 @@ The pure helper module exports `gateRangeATR`, `gateEMADistance`, `gateBTCRegime
 
 The anti-chase diagnostic thresholds are absolute moves of **15% over 24h**, **8% over 1h**, and **5% over 15m**. The existing live `analyse()` currently evaluates its own 24h anti-chase rule; these additional timeframe checks are diagnostics and must not be assumed to be active in live signal generation.
 
-## BTC Regime: Data Limitation and Dashboard Approximation
+## BTC Regime — Shadow Rollout
 
-The intended full BTC regime calculation uses 1h candles with EMA50, EMA200, and ATR14. However, `worker/delta-adapter.mjs` currently maps only `1m`, `5m`, and `15m` to their proper durations; an unrecognized resolution such as `1h` falls back to **300 seconds**. Calling `candles('BTCUSD', '1h', 250)` consequently requests a time window of approximately `(250 + 3) × 300` seconds, or **21.1 hours**, not approximately 253 hours. That window cannot provide 200 hourly observations for EMA200. This is a request-window limitation in the current adapter; it is not proof that Delta's endpoint itself lacks 1h support.
+### Current data path
 
-Until the adapter can request an adequate hourly history, the dashboard's labeled approximation can use BTC's 5m and 15m trend labels **only when both are explicitly present**. Matching BULL/BULL or BEAR/BEAR is a provisional dashboard PASS; mixed or FLAT trends BLOCK. Current signal-cache rows include the BTC 5m label `btc_trend` but do not persist a separate BTC 15m label, so the dashboard currently fails closed with a reason rather than inferring the missing BTC trend from the selected coin's own 15m trend. The approximation is not EMA50/EMA200 + ATR and must be read as a diagnostic only.
+- **Live decision source:** unchanged. `worker/strategy.mjs` still receives BTC 5m and 15m candle arrays and applies the existing legacy trend logic. The shadow calculation does not feed `analyse()`, `riskGate()`, or `openTrade()`.
+- **Shadow computation:** the engine calls the existing `gateBTCRegime()` helper from `src/indicators/risk-gates.mjs` using BTCUSD 1h candles and the current BTC price. The helper validates history, computes EMA50/EMA200 and ATR14, and classifies BULL_LOW_VOL, BULL_HIGH_VOL, BEAR_LOW_VOL, BEAR_HIGH_VOL, CHOPPY, or NEUTRAL.
+- **Cache key:** `1h:BTCUSD`, following the existing `resolution:symbol` convention.
+- **Refresh:** 250 BTCUSD 1h candles are fetched immediately after worker startup, then refreshed by a dedicated 60-minute timer. This request is independent of the rotating 1m/5m/15m warmup and does not change its batch.
+- **Minimum history:** `gateBTCRegime()` requires at least 201 raw hourly candles so its existing worker indicators can exclude the potentially forming final candle and still calculate EMA200 over 200 closed candles.
+- **Persistence:** `dd_signal_cache.details` receives `btcRegime`, `btcRegimeStatus`, `btcRegimeReason`, `btcRegimeSource`, `btcAtrPct`, and `btcRegimeComputedAt`. The existing BTC trend labels are also retained in `details.btcTrend5m` and `details.btcTrend15m` to support offline comparison.
+- **Dashboard:** where the existing higher-priority worker blocker does not take precedence, the dashboard can display `BTC regime (live 1h shadow): <REGIME>`. Its reason is prefixed with `(shadow)`. This is read-only diagnostic information and does not make shadow PASS/BLOCK the live entry decision.
+- **Comparison tool:** `scripts/btc-regime-compare.mjs` compares legacy 5m/15m directional labels with the equivalent directional class from the live-1h shadow regime. Run it with `npm run btc:regime:compare -- path/to/scores.json`. For a multi-day comparison, combine exports captured on different days; `dd_signal_cache` stores each symbol's latest row, not a historical time series.
 
-High-volatility-aware position sizing (for example, scaling risk down when volatility rises) remains **future work**. No sizing behavior is changed by these indicator or dashboard utilities.
+### Regime classification
+
+| Condition | Shadow regime |
+| --- | --- |
+| EMA50 > EMA200 and ATR14 percentage < 2% | `BULL_LOW_VOL` |
+| EMA50 > EMA200 and ATR14 percentage >= 2% (and <= 4%) | `BULL_HIGH_VOL` |
+| EMA50 < EMA200 and ATR14 percentage < 2% | `BEAR_LOW_VOL` |
+| EMA50 < EMA200 and ATR14 percentage >= 2% (and <= 4%) | `BEAR_HIGH_VOL` |
+| ATR14 percentage > 4% | `CHOPPY` |
+| Otherwise, including effectively equal EMA50/EMA200 | `NEUTRAL` |
+
+The existing `gateBTCRegime()` helper determines whether the diagnostic status is PASS or BLOCK. A BLOCK in the shadow status is an observation, not a change to the current strategy gate.
+
+## Rollout Plan
+
+1. **[CURRENT] Shadow mode:** fetch hourly BTC history, compute the regime, persist it, display it as `(shadow)`, and keep live signals on the existing 5m/15m trends.
+2. **[AFTER 7 DAYS] Compare:** run the comparison tool on exports spanning at least seven days and inspect the agreement rate and disagreements. A single current `dd_signal_cache` export is not a seven-day sample.
+3. **[MANUAL APPROVAL] Consider switching:** only after the shadow comparison shows **less than 10% disagreement** (more than 90% agreement) over seven days, request a separate manual decision. No automatic source flip is implemented.
+4. **[MONITOR] After an approved switch:** monitor signal quality for seven more days and check for regressions.
+
+**Do NOT switch to `live-1h` until shadow comparison shows <10% disagreement over 7 days.** The current implementation does not activate a source-switch flag and leaves the live BTC decision logic unchanged.
 
 ## Score Distribution and Calibration Target
 
