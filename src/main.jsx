@@ -6,6 +6,7 @@ import GridStrategy from './GridStrategy.jsx';
 import { routeStatusForSymbol } from './market-route-status.js';
 import { getTradetronDiagnosticDetails } from './tradetron-diagnostics.js';
 import { summarizeCurrentPositionCount, summarizeTradetronSnapshots } from './tradetron-position-sync.js';
+import { buildTradetronPositionReconciliation } from './tradetron-reconciliation.js';
 import { DEFAULT_VISIBLE_MARKET_LIMIT, selectVisibleMarketRows, selectVisibleSignalRows } from './market-view.js';
 import { assessDeltaRange, fmtMultiplier, fmtPrice as fmtRawPrice, fmtRsi, safeNum } from './formatters.js';
 import { blockersDisplay, gateTooltip } from './gate-result.js';
@@ -234,7 +235,7 @@ function App() {
     {tab === 'grid' && <GridStrategy settings={settings} market={market} busy={busy} mutate={mutate} accountDataProtected={accountDataProtected} gridEntrySafety={executionCoverage?.gridEntrySafety || null} />}
     {tab === 'options' && <OptionsView signals={signals} settings={settings} optionCache={state?.optionCache || []} executionCoverage={state?.executionCoverage || null} />}
     {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
-    {tab === 'positions' && <><Positions rows={positions} tradetronDeployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} snapshotsLocked={state?.tradetronDeveloperDataProtected === true} accountDataProtected={accountDataProtected} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
+    {tab === 'positions' && <><Positions rows={positions} tradetronDeployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} snapshotsLocked={state?.tradetronDeveloperDataProtected === true} accountDataProtected={accountDataProtected} /><TradetronReconciliation deployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} signalOrders={state?.signalOrders || []} sync={state?.tradetronDeveloperSync || null} snapshotsLocked={state?.tradetronDeveloperDataProtected === true} accountDataProtected={accountDataProtected} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
     {tab === 'trade-history' && <><TradeHistory trades={trades} title="Trade History · Webhook-Synced Tradetron Records" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} /><TradetronActivity events={state?.tradetronEvents || []} signalStats={state?.signalOrderStats || null} webhookSecretConfigured={executionCoverage?.webhookSecretConfigured === true} accountDataProtected={accountDataProtected} /></>}
     {tab === 'pnl' && <><PNL trades={trades} settings={settings} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.tradeRowCount ?? null} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
     {tab === 'paper' && <Panel title="Paper Trading"><div className="lockedText">Scanner is signal-only. No Delta order is placed here; Tradetron Live Offline runs the simulated execution.</div></Panel>}
@@ -608,6 +609,65 @@ function Positions({ rows = [], tradetronDeployments = [], snapshotsLocked = fal
     </table></div>
   </Panel>;
 }
+function TradetronReconciliation({ deployments = [], signalOrders = [], sync = null, snapshotsLocked = false, accountDataProtected = false }) {
+  if (accountDataProtected) return <Panel title="Tradetron Position Reconciliation · Protected"><div className="lockedText">Unlock the private dashboard session in Settings to compare current Tradetron snapshots with accepted scanner signal records.</div></Panel>;
+  if (snapshotsLocked) return <Panel title="Tradetron Position Reconciliation · Locked"><div className="lockedText">The current Tradetron snapshot is private and remains locked. No position reconciliation is inferred from hidden data.</div></Panel>;
+
+  const report = buildTradetronPositionReconciliation({ deployments, signalOrders });
+  const lastSuccessMs = Date.parse(sync?.last_success_at || '');
+  const ageMs = Number.isFinite(lastSuccessMs) ? Date.now() - lastSuccessMs : null;
+  const fresh = String(sync?.status || '').toUpperCase() === 'OK' && ageMs !== null && ageMs >= 0 && ageMs <= 180000;
+  const statusText = !report.snapshotAvailable
+    ? (report.positionsHidden ? 'POSITIONS HIDDEN BY SOURCE' : 'NO CURRENT SNAPSHOT')
+    : fresh ? 'SNAPSHOT FRESH' : 'SNAPSHOT NOT FRESHLY VERIFIED';
+  const statusClass = fresh && report.snapshotAvailable ? 'apiStateOk' : 'apiStateWarn';
+  const fmtTime = value => {
+    if (!value || !Number.isFinite(Date.parse(value))) return '—';
+    return new Date(value).toLocaleString('en-IN', { hour12: false });
+  };
+  const label = status => ({
+    MATCH: 'SIDE + QTY MATCH',
+    DIRECTION_MISMATCH: 'DIRECTION MISMATCH',
+    QUANTITY_MISMATCH: 'QTY MISMATCH',
+    DIRECTION_AND_QUANTITY_MISMATCH: 'DIRECTION + QTY MISMATCH',
+    NO_ACCEPTED_SIGNAL: 'NO ACCEPTED SIGNAL FOUND',
+    SIGNAL_NEWER_THAN_SNAPSHOT: 'SIGNAL NEWER THAN SNAPSHOT',
+    SIGNAL_DATA_INCOMPLETE: 'SIGNAL DATA INCOMPLETE'
+  }[status] || status);
+  const statusTone = status => status === 'MATCH' ? 'up'
+    : ['DIRECTION_MISMATCH', 'QUANTITY_MISMATCH', 'DIRECTION_AND_QUANTITY_MISMATCH'].includes(status) ? 'down'
+      : status === 'SIGNAL_NEWER_THAN_SNAPSHOT' || status === 'SIGNAL_DATA_INCOMPLETE' ? 'warn' : 'muted';
+
+  return <Panel title="Tradetron Position Reconciliation · Read-only comparison">
+    <div className="lockedText">
+      <b className={statusClass}>{statusText}</b>
+      <p>This compares each current Developer API position with the most recent accepted scanner signal for that symbol. It does <b>not</b> verify a fill, identify the original entry, or prove an exit/reversal. Tradetron has not provided an outbound callback path for this account.</p>
+      <p className="apiStateWarn">Important: <b>EXPIRED</b> below means the scanner's 15-minute signal-reservation TTL elapsed. It is not evidence that a Tradetron position was closed.</p>
+      <div className="micro">
+        <span>Snapshot open legs: {report.openPositionCount == null ? 'UNKNOWN' : report.openPositionCount}</span>
+        <span>Snapshot as of: {fmtTime(report.snapshotAsOf)}</span>
+        <span>Comparable matches: {report.matchedCount}</span>
+        <span>Direction/quantity differences: {report.mismatchCount}</span>
+        <span>No accepted signal found: {report.noAcceptedSignalCount}</span>
+        <span>Signal newer than snapshot: {report.newerSignalCount}</span>
+        <span>Accepted signal symbols loaded: {report.latestAcceptedSignalSymbols}</span>
+      </div>
+    </div>
+    <div className="tablewrap"><table>
+      <thead><tr><th>SYMBOL</th><th>TT SNAPSHOT SIDE / QTY</th><th>LATEST ACCEPTED SIGNAL</th><th>SIGNAL TIME</th><th>RESERVATION STATE</th><th>COMPARISON</th></tr></thead>
+      <tbody>{report.rows.map((row, index) => <tr key={row.snapshotKey || row.symbol + ':' + index}>
+        <td className="symbol">{row.symbol || '—'}</td>
+        <td className={row.currentSide === 'BUY' ? 'up' : row.currentSide === 'SELL' ? 'down' : 'muted'}>{row.currentSide || '—'} / {row.currentQuantity == null ? '—' : fmtQty(row.currentQuantity)}</td>
+        <td className={row.signalSide === 'BUY' ? 'up' : row.signalSide === 'SELL' ? 'down' : 'muted'}>{row.signalSide ? row.signalSide + ' / ' + (row.signalQuantity == null ? '—' : fmtQty(row.signalQuantity)) : '—'}</td>
+        <td>{fmtTime(row.signalCreatedAt)}</td>
+        <td title={row.signalState === 'EXPIRED' ? 'Reservation expired after its TTL; this does not prove a fill or close.' : 'Signal reservation lifecycle state, not an exchange fill confirmation.'}>{row.signalState === 'EXPIRED' ? 'EXPIRED · TTL ONLY' : row.signalState || '—'}</td>
+        <td className={statusTone(row.comparisonStatus)}>{label(row.comparisonStatus)}</td>
+      </tr>)}{!report.rows.length ? <tr><td colSpan={6}>{report.snapshotAvailable ? 'No open position rows are available in this snapshot.' : 'A current complete Tradetron snapshot is unavailable. No zero-position state is inferred.'}</td></tr> : null}</tbody>
+    </table></div>
+    <div className="micro"><span>Signal acknowledgements are not fill confirmations.</span><span>Current Tradetron positions remain read-only.</span><span>No positions, entry settings, or execution mode were changed by this panel.</span></div>
+  </Panel>;
+}
+
 function HistoryEmptyState({ engine }) {
   return <div className="lockedText">
     <b>NO VERIFIED CLOSED TRADE RECORDS — {String(engine || 'TRADE').toUpperCase()}</b>
