@@ -89,9 +89,25 @@ function assertOnlySignalVacuum(sql) {
     throw new Error('SAFETY ABORT: VACUUM target must be exactly public.dd_signals.');
   }
 }
+async function safeQuery(pool, sql, params) {
+  const statement = String(sql);
+  if (/^\s*VACUUM\b/i.test(statement)) {
+    assertOnlySignalVacuum(statement);
+    return pool.query(statement, params);
+  }
+  if (/\bDELETE\b/i.test(statement)) {
+    assertOnlySignalDelete(statement);
+    return pool.query(statement, params);
+  }
+  if (/^\s*(SELECT|WITH)\b/i.test(statement) &&
+      !/\b(INSERT|UPDATE|TRUNCATE|CREATE|ALTER|DROP|VACUUM)\b/i.test(statement)) {
+    return pool.query(statement, params);
+  }
+  throw new Error('SAFETY ABORT: only SELECT queries, the guarded dd_signals DELETE, and the guarded dd_signals VACUUM are permitted.');
+}
 async function assertSignalTableExists(pool) {
   assertExpectedTable();
-  const result = await pool.query(
+  const result = await safeQuery(pool,
     "SELECT table_schema, table_name, table_type " +
     "FROM information_schema.tables " +
     "WHERE table_schema = 'public' AND table_name = $1",
@@ -105,7 +121,7 @@ async function assertSignalTableExists(pool) {
   }
 }
 async function getDiagnostics(pool, days) {
-  const result = await pool.query(
+  const result = await safeQuery(pool,
     "SELECT " +
     "COUNT(*)::text AS total_rows, " +
     "COUNT(*) FILTER (WHERE captured_at < NOW() - ($1::int * INTERVAL '1 day'))::text AS old_rows, " +
@@ -195,7 +211,7 @@ async function main() {
     let batchNumber = 0;
     try {
       while (true) {
-        const result = await pool.query(DELETE_BATCH_SQL, [options.days, options.batchSize]);
+        const result = await safeQuery(pool, DELETE_BATCH_SQL, [options.days, options.batchSize]);
         const deleted = result.rows.length;
         batchNumber += 1;
         totalDeleted += deleted;
@@ -216,7 +232,7 @@ async function main() {
       try {
         assertOnlySignalVacuum(vacuumSql);
         // pool.query sends this as a standalone command, not inside BEGIN/COMMIT.
-        await pool.query(vacuumSql);
+        await safeQuery(pool, vacuumSql);
         vacuumStatus = 'SUCCESS';
         console.log('VACUUM ANALYZE public.dd_signals: SUCCESS');
         console.log('Note: standard VACUUM generally makes freed space reusable; it may not reduce pg_database_size.');
