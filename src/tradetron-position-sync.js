@@ -264,8 +264,19 @@ export function summarizeCurrentPositionCount({
 
   const lastSuccessMs = Date.parse(syncState?.last_success_at || '');
   const ageMs = Number.isFinite(lastSuccessMs) ? now - lastSuccessMs : null;
+  const expectedIds = Array.isArray(syncState?.details?.deploymentIds)
+    ? [...new Set(syncState.details.deploymentIds.map(value => String(value ?? '').trim()).filter(Boolean))]
+    : null;
+  const actualIds = new Set((Array.isArray(deployments) ? deployments : [])
+    .map(row => String(row?.deployment_id ?? '').trim()).filter(Boolean));
+  const expectedDeploymentCount = numericValue(syncState?.deployment_count);
+  const snapshotCoverageComplete = expectedIds
+    ? expectedIds.every(id => actualIds.has(id)) && actualIds.size === expectedIds.length
+    : expectedDeploymentCount !== null
+      ? expectedDeploymentCount === (Array.isArray(deployments) ? deployments.length : 0)
+      : (Array.isArray(deployments) ? deployments.length : 0) > 0;
   const fresh = String(syncState?.status || '').toUpperCase() === 'OK' &&
-    ageMs !== null && ageMs >= 0 && ageMs <= maxAgeMs;
+    ageMs !== null && ageMs >= 0 && ageMs <= maxAgeMs && snapshotCoverageComplete;
 
   if (!fresh || mirror.openCount === null) {
     const status = ageMs !== null && ageMs > maxAgeMs
