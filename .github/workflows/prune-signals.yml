@@ -1,0 +1,104 @@
+name: Prune dd_signals safely
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: Delete dd_signals rows older than N days
+        required: true
+        default: "3"
+        type: string
+      confirm:
+        description: Actually delete rows (false means dry run)
+        required: true
+        default: false
+        type: boolean
+      batch_size:
+        description: Maximum rows to delete per batch
+        required: true
+        default: "5000"
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  prune:
+    name: Manually controlled batched dd_signals prune
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Guard DATABASE_URL
+        id: guard
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        shell: bash
+        run: |
+          if [ -z "\${DATABASE_URL:-}" ]; then
+            echo "DATABASE_URL secret is not configured; refusing database access." >&2
+            exit 1
+          fi
+          echo "DATABASE_URL is configured (value hidden)."
+
+      - name: Diagnose disk BEFORE prune
+        id: diagnose_before
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        shell: bash
+        run: |
+          set -o pipefail
+          node scripts/diagnose-disk.mjs 2>&1 | tee /tmp/diagnose-before.log
+
+      - name: Prune dd_signals (dry run unless confirm=true)
+        id: prune
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PRUNE_DAYS: ${{ inputs.days }}
+          PRUNE_BATCH_SIZE: ${{ inputs.batch_size }}
+          PRUNE_CONFIRM: ${{ inputs.confirm }}
+        shell: bash
+        run: |
+          set -o pipefail
+          args=( "--days=${PRUNE_DAYS}" "--batch-size=${PRUNE_BATCH_SIZE}" )
+          if [[ "${PRUNE_CONFIRM}" == "true" ]]; then
+            args+=( "--confirm" )
+          fi
+          node scripts/prune-signals-safe.mjs "${args[@]}" 2>&1 | tee /tmp/prune-output.log
+
+      - name: Diagnose disk AFTER prune
+        id: diagnose_after
+        if: always() && steps.guard.outcome == 'success' && steps.diagnose_before.outcome == 'success'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        shell: bash
+        run: |
+          set -o pipefail
+          node scripts/diagnose-disk.mjs 2>&1 | tee /tmp/diagnose-after.log
+
+      - name: Add diagnostics and prune output to summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Disk diagnostic BEFORE prune"
+            if [ -f /tmp/diagnose-before.log ]; then cat /tmp/diagnose-before.log; else echo "No before-diagnostic log was produced."; fi
+            echo
+            echo "## Prune output"
+            if [ -f /tmp/prune-output.log ]; then cat /tmp/prune-output.log; else echo "Prune step did not produce a log."; fi
+            echo
+            echo "## Disk diagnostic AFTER prune"
+            if [ -f /tmp/diagnose-after.log ]; then cat /tmp/diagnose-after.log; else echo "After-diagnostic did not run or did not produce a log."; fi
+          } >> "$GITHUB_STEP_SUMMARY"
