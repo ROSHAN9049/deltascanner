@@ -483,7 +483,7 @@ async function main() {
     const activeSignalDates7d = count(summary.active_signal_dates_7d);
     const readyUniqueTuplePerCalendarDay7d = readySymbolStrategyDate7d / 7;
     const readyUniqueTuplePerObservedDay7d = activeSignalDates7d ? readySymbolStrategyDate7d / activeSignalDates7d : null;
-    const readyUniqueTuplePerDay7d = readyUniqueTuplePerObservedDay7d;
+    const readyUniqueTuplePerDay7d = readyUniqueTuplePerCalendarDay7d;
     const observedDates = daily.length;
     const activeDayReadyCombos = daily.reduce((sum, row) => sum + row.readySymbolStrategy, 0);
     const activeDays = daily.filter(row => row.observations > 0).length;
@@ -585,7 +585,10 @@ async function main() {
       recommendedActions.push('Observed signal history spans fewer than seven days; the seven-day frequency proxy is provisional. Collect sufficient history before any score recalibration.');
     } else if (activeSignalDates7d === 0) {
       recommendedActions.push('No signal-observation dates are present in the last seven days. Investigate worker/data coverage before interpreting a zero actionable frequency.');
-    } else if (readyUniqueTuplePerDay7d < 2) {
+    } else if (activeSignalDates7d < 7) {
+      recommendedActions.push('Signal observations exist on only ' + activeSignalDates7d + ' of the last 7 UTC dates. Check worker/data coverage; the actionable rate is averaged over all 7 calendar days.');
+    }
+    if (activeSignalDates7d > 0 && readyUniqueTuplePerDay7d < 2) {
       recommendedActions.push('Unique ready (symbol, strategy, date) tuples average below 2/day; verify the history window and investigate readiness blockers before considering any score change.');
     } else if (readyUniqueTuplePerDay7d <= 8) {
       recommendedActions.push('Unique ready (symbol, strategy, date) tuples average 2–8/day, within the requested monitoring range; validate delivery/trade evidence before judging signal quality.');
