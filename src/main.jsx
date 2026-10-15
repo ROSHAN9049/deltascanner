@@ -5,7 +5,7 @@ import { indiaDateKey } from './date-utils.js';
 import GridStrategy from './GridStrategy.jsx';
 import { routeStatusForSymbol } from './market-route-status.js';
 import { getTradetronDiagnosticDetails } from './tradetron-diagnostics.js';
-import { summarizeTradetronSnapshots } from './tradetron-position-sync.js';
+import { summarizeCurrentPositionCount, summarizeTradetronSnapshots } from './tradetron-position-sync.js';
 import { DEFAULT_VISIBLE_MARKET_LIMIT, selectVisibleMarketRows, selectVisibleSignalRows } from './market-view.js';
 import { assessDeltaRange, fmtMultiplier, fmtPrice as fmtRawPrice, fmtRsi, safeNum } from './formatters.js';
 import { blockersDisplay, gateTooltip } from './gate-result.js';
@@ -36,7 +36,7 @@ function App() {
   const [state, setState] = useState(null);
   const [market, setMarket] = useState([]);
   const [health, setHealth] = useState(null);
-  const [secret, setSecret] = useState(sessionStorage.getItem('delta-engine-secret') || '');
+  const [secret, setSecret] = useState('');
   const secretRef = useRef(secret);
   const [error, setError] = useState('');
   const [marketError, setMarketError] = useState('');
@@ -46,7 +46,6 @@ function App() {
 
   const load = async () => {
     const cacheBust = '?t=' + Date.now();
-    const privateHeaders = secretRef.current ? { 'x-engine-secret': secretRef.current } : {};
     // Market rendering is independent of the slower health / engine-state requests.
     const marketRequest = (async () => {
       const response = await fetch('/api/market' + cacheBust, { cache: 'no-store' });
@@ -59,7 +58,7 @@ function App() {
     const stateRequest = (async () => {
       const responses = await Promise.all([
         fetch('/api/health' + cacheBust, { cache: 'no-store' }).then(r => r.json()),
-        fetch('/api/engine/state' + cacheBust, { cache: 'no-store', headers: privateHeaders }).then(r => r.json())
+        fetch('/api/engine/state' + cacheBust, { cache: 'no-store', credentials: 'same-origin' }).then(r => r.json())
       ]);
       setHealth(responses[0]);
       if (responses[1].success) {
@@ -72,7 +71,58 @@ function App() {
 
     await Promise.allSettled([marketRequest, stateRequest]);
   };
-  useEffect(() => { load(); const id = setInterval(load, 10000); return () => clearInterval(id); }, []);
+  const unlockSession = async () => {
+    const candidate = secretRef.current;
+    if (!candidate) {
+      setError('Enter ENGINE_SECRET once to unlock private dashboard data.');
+      return false;
+    }
+    setBusy(true);
+    try {
+      const response = await fetch('/api/engine/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        cache: 'no-store',
+        body: JSON.stringify({ secret: candidate })
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) throw new Error(data.error || 'Session authentication failed');
+      secretRef.current = '';
+      setSecret('');
+      setError('');
+      await load();
+      return true;
+    } catch (e) {
+      setError(e.message || 'Session authentication failed');
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const lockSession = async () => {
+    setBusy(true);
+    try {
+      const response = await fetch('/api/engine/session', {
+        method: 'DELETE',
+        credentials: 'same-origin',
+        cache: 'no-store'
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) throw new Error(data.error || 'Could not lock session');
+      secretRef.current = '';
+      setSecret('');
+      setError('');
+      await load();
+    } catch (e) {
+      setError(e.message || 'Could not lock session');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => { load(); const id = setInterval(load, 10000); return () => clearInterval(id); });
   useEffect(() => { const id = setInterval(() => setClock(Date.now()), 1000); return () => clearInterval(id); }, []);
 
   const settings = state?.settings || {};
@@ -89,12 +139,13 @@ function App() {
   const losses = todayTrades.filter(t => num(t.net_pnl) < 0).length;
 
   const mutate = async patch => {
-    if (!secret) { setTab('settings'); setError('ENGINE_SECRET is required for control actions.'); return false; }
+    if (!state || state.accountDataProtected === true) { setTab('settings'); setError('Unlock the private dashboard session in Settings before using controls.'); return false; }
     setBusy(true);
     try {
       const res = await fetch('/api/engine/toggle', {
         method: 'POST',
-        headers: { 'Content-Type':'application/json', 'x-engine-secret': secret },
+        headers: { 'Content-Type':'application/json' },
+        credentials: 'same-origin',
         body: JSON.stringify(patch)
       });
       const data = await res.json();
@@ -165,7 +216,7 @@ function App() {
         <span>LOCAL {new Date(clock).toLocaleTimeString('en-IN')}</span>
         <b className="badge test">LIVE MARKET · SIGNAL ONLY</b>
         <b className="badge lock">LIVE LOCKED</b>
-        <button className="estop" disabled={busy || !secret} onClick={() => mutate({ emergencyStop: !settings.emergency_stop })}>
+        <button className="estop" disabled={busy || !state || accountDataProtected} onClick={() => mutate({ emergencyStop: !settings.emergency_stop })}>
           {settings.emergency_stop ? 'RELEASE E-STOP' : 'EMERGENCY STOP'}
         </button>
       </div>
@@ -187,10 +238,10 @@ function App() {
     {tab === 'trade-history' && <><TradeHistory trades={trades} title="Trade History · Webhook-Synced Tradetron Records" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} /><TradetronActivity events={state?.tradetronEvents || []} signalStats={state?.signalOrderStats || null} webhookSecretConfigured={executionCoverage?.webhookSecretConfigured === true} accountDataProtected={accountDataProtected} /></>}
     {tab === 'pnl' && <><PNL trades={trades} settings={settings} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.tradeRowCount ?? null} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
     {tab === 'paper' && <Panel title="Paper Trading"><div className="lockedText">Scanner is signal-only. No Delta order is placed here; Tradetron Live Offline runs the simulated execution.</div></Panel>}
-    {tab === 'testnet' && <Testnet settings={settings} health={health} busy={busy} mutate={mutate} positions={positions} accountDataProtected={accountDataProtected} />}
+    {tab === 'testnet' && <Testnet settings={settings} health={health} busy={busy} mutate={mutate} positions={positions} tradetronDeployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} developerSync={state?.tradetronDeveloperSync || null} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} accountDataProtected={accountDataProtected} />}
     {tab === 'live' && <Panel title="Live Trading"><div className="liveLock">🔒 DIRECT DELTA EXECUTION LOCKED<br/><small>The scanner never sends production orders. Future live execution must be enabled manually in Tradetron.</small></div></Panel>}
     {tab === 'analytics' && <Analytics trades={trades} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.tradeRowCount ?? null} />}
-    {tab === 'settings' && <Settings settings={settings} secret={secret} setSecret={v => { secretRef.current = v; setSecret(v); sessionStorage.setItem('delta-engine-secret', v); }} busy={busy} mutate={mutate} />}
+    {tab === 'settings' && <Settings settings={settings} secret={secret} setSecret={v => { secretRef.current = v; setSecret(v); }} busy={busy} mutate={mutate} onUnlock={unlockSession} onLock={lockSession} authenticated={state?.accountDataProtected === false} />}
     <footer>Delta Exchange India · production market feed · Tradetron signal-only · no direct orders · no guaranteed win rate</footer>
   </div>;
 }
@@ -203,6 +254,7 @@ function Card({ label, value, sub }) {
 }
 function Dashboard({ market, settings, health, trades, positions, accountDataProtected = false, signals, signalOrderStats = null, tradesComplete = false, tradeRowCount = null, tradetronEvents = [], executionCoverage = null, developerSync = null, developerSnapshots = [], developerApiConfigured = false, developerDataProtected = false, developerNotifications = [], developerNotificationSync = null, developerPnlHistory = [], onInspect, inspect, logs }) {
   const today = indiaDateKey(new Date());
+  const currentPositionSummary = summarizeCurrentPositionCount({ eventPositions: positions, deployments: developerSnapshots, syncState: developerSync, configured: developerApiConfigured });
   const configuredRouteSymbols = new Set(executionCoverage?.routedSymbols || []);
   const activeRoutedCount = configuredRouteSymbols.size
     ? (market || []).filter(row => configuredRouteSymbols.has(String(row.symbol || '').toUpperCase())).length
@@ -236,10 +288,13 @@ function Dashboard({ market, settings, health, trades, positions, accountDataPro
   const loss = measuredTodayTrades.filter(t => safeNum(t.net_pnl) < 0).length;
   const unrealizedPnl = safeNum(settings.unrealized_pnl);
   const openPnlComplete = positions.length === 0 || unrealizedPnl !== null;
-  // An open position without any authenticated closed-trade history cannot
-  // prove that realized P&L is zero. Require a complete realized ledger before
-  // showing a combined total.
-  const totalPnlComplete = closedPnlComplete && openPnlComplete;
+  // A configured Tradetron account must also have a fresh, complete zero-open
+  // snapshot before scanner-ledger P&L can be presented as a complete account
+  // total. Raw deployment P&L is intentionally not merged without verified
+  // semantics, currency, and mark-to-market meaning.
+  const apiPositionCoverageComplete = !developerApiConfigured ||
+    (currentPositionSummary.status === 'FRESH' && currentPositionSummary.count === 0 && positions.length === 0);
+  const totalPnlComplete = closedPnlComplete && openPnlComplete && apiPositionCoverageComplete;
   const totalPnl = totalPnlComplete
     ? (closedPnlComplete ? realizedPnl : 0) + (positions.length > 0 ? unrealizedPnl : 0)
     : null;
@@ -257,11 +312,12 @@ function Dashboard({ market, settings, health, trades, positions, accountDataPro
       <Card label="EQUITY" value={accountDataProtected ? 'LOCKED' : money(settings.equity)} sub={accountDataProtected ? 'enter ENGINE_SECRET to view balance' : 'USD ledger converted at approx ₹' + USD_INR_RATE.toFixed(2) + '/USD'}/>
       <Card label="AVAILABLE" value={accountDataProtected ? 'LOCKED' : money(settings.available_balance)} sub={accountDataProtected ? 'account-specific sizing is hidden' : 'signal sizing reference'}/>
       <Card label="REALIZED PNL" value={accountDataProtected ? 'LOCKED' : !tradesComplete ? 'INCOMPLETE DATA' : !trades.length ? '—' : closedPnlComplete ? money(realizedPnl) : 'INCOMPLETE DATA'} sub={accountDataProtected ? 'enter ENGINE_SECRET to view verified closed-trade P&L' : !tradesComplete ? 'loaded ' + trades.length + ' of ' + (tradeRowCount ?? 'an unknown number of') + ' stored rows; total P&L not complete' : !trades.length ? 'no authenticated closed trades recorded' : closedPnlComplete ? 'all stored closed-trade P&L values present' : 'one or more closed-trade P&L values are missing'}/>
-      <Card label="UNREALIZED PNL" value={accountDataProtected ? 'LOCKED' : !positions.length ? '—' : unrealizedPnl === null ? 'NO DATA' : money(unrealizedPnl)} sub={accountDataProtected ? 'enter ENGINE_SECRET to view position-ledger M2M' : !positions.length ? 'no webhook-confirmed open positions' : unrealizedPnl === null ? 'open positions exist; verified mark-to-market is unavailable' : 'engine/webhook position ledger'}/>
-      <Card label="TOTAL PNL" value={accountDataProtected ? 'LOCKED' : !tradesComplete ? 'INCOMPLETE DATA' : totalPnlComplete ? money(totalPnl) : (trades.length || positions.length ? 'INCOMPLETE DATA' : '—')} sub={accountDataProtected ? 'account ledger is private' : !tradesComplete ? 'full closed-trade history is not loaded' : 'only shown when each included ledger component is available'}/>
+      <Card label="UNREALIZED PNL" value={accountDataProtected ? 'LOCKED' : positions.length ? (unrealizedPnl === null ? 'NO DATA' : money(unrealizedPnl)) : developerApiConfigured && (currentPositionSummary.status !== 'FRESH' || currentPositionSummary.count > 0) ? 'NO DATA' : '—'} sub={accountDataProtected ? 'enter ENGINE_SECRET to view position-ledger M2M' : positions.length ? (unrealizedPnl === null ? 'open positions exist; verified mark-to-market is unavailable' : 'engine/webhook position ledger') : developerApiConfigured && currentPositionSummary.status !== 'FRESH' ? 'Tradetron position state is ' + currentPositionSummary.status + '; no webhook rows does not prove flat' : developerApiConfigured && currentPositionSummary.count > 0 ? 'Tradetron reports open positions; verified mark-to-market and units are unavailable' : developerApiConfigured ? 'fresh Tradetron snapshot reports no open positions; scanner M2M remains separate' : 'no webhook-confirmed open positions'}/>
+      <Card label="TOTAL PNL" value={accountDataProtected ? 'LOCKED' : !tradesComplete ? 'INCOMPLETE DATA' : totalPnlComplete ? money(totalPnl) : (trades.length || positions.length || developerApiConfigured ? 'INCOMPLETE DATA' : '—')} sub={accountDataProtected ? 'account ledger is private' : developerApiConfigured && !apiPositionCoverageComplete ? 'Tradetron position coverage is not reconciled into confirmed scanner P&L; raw deployment P&L remains separate' : !tradesComplete ? 'full closed-trade history is not loaded' : 'only shown when each included ledger component is available'}/>
       <Card label="FEES TODAY" value={accountDataProtected ? 'LOCKED' : !tradesComplete ? 'INCOMPLETE DATA' : !todayTrades.length ? '—' : todayFeesComplete ? money(todayFees) : 'NO DATA'} sub={accountDataProtected ? 'enter ENGINE_SECRET to view verified trade fees' : !tradesComplete ? 'full trade-history coverage is not confirmed' : !todayTrades.length ? 'no authenticated closed-trade rows today' : todayFeesComplete ? 'sum of recorded today-trade fees' : 'one or more today-trade fee values are missing'}/>
-      <Card label="OPEN POSITIONS" value={accountDataProtected ? 'LOCKED' : positions.length} sub={accountDataProtected ? 'hidden data is not zero' : 'webhook-confirmed position ledger'}/>
-      <Card label="TT OPEN LEGS" value={developerDataProtected ? 'LOCKED' : developerApiConfigured ? tradetronMirror.openCount : '—'} sub="current Tradetron Developer API snapshot"/>
+      <Card label="OPEN POSITIONS" value={accountDataProtected ? 'LOCKED' : currentPositionSummary.count === null ? currentPositionSummary.status : currentPositionSummary.count} sub={accountDataProtected ? 'hidden data is not zero' : currentPositionSummary.detail}/>
+      <Card label="WEBHOOK POSITION LEDGER" value={accountDataProtected ? 'LOCKED' : positions.length} sub={accountDataProtected ? 'private event ledger' : 'positions confirmed by authenticated callback processing; distinct from current API snapshots'}/>
+      <Card label="TT OPEN LEGS" value={developerDataProtected ? 'LOCKED' : developerApiConfigured ? (tradetronMirror.openCount === null ? 'UNKNOWN' : tradetronMirror.openCount) : '—'} sub={developerDataProtected ? 'private account snapshot' : tradetronMirror.openCount === null ? 'no verified count; do not interpret as zero' : 'current Tradetron Developer API snapshot'}/>
       <Card label="TRADETRON SNAPSHOT P&L" value={developerDataProtected ? 'LOCKED' : (developerApiConfigured && tradetronMirror.reportedPnl !== null ? fmtRawPrice(tradetronMirror.reportedPnl, 2) : 'NO DATA')} sub={"Raw deployment P&L; " + (tradetronMirror.reportedPnlCurrencyCode ? "API reports " + tradetronMirror.reportedPnlCurrencyCode + " currency; " : "currency not identified by API; ") + "P&L meaning is not independently verified; separate from scanner ledger"}/>
       <Card label="TT SNAPSHOT ROWS" value={developerDataProtected ? 'LOCKED' : developerApiConfigured ? developerSnapshotRowCount : '—'} sub="raw API rows, including closed rows"/>
       <Card label="TT SIGNAL RECORDS" value={accountDataProtected ? 'LOCKED' : signalOrderStats?.total ?? '—'} sub={accountDataProtected ? 'private signal history' : 'all states including expired; not fills'}/>
@@ -703,10 +759,11 @@ function equityPoints(trades) {
     return [{delta:total,label:money(total)}];
   });
 }
-function Testnet({ settings, health, busy, mutate, positions, accountDataProtected = false }) {
-  return <><section className="cards"><Card label="ENVIRONMENT" value="SIGNAL ONLY" sub="production market feed"/><Card label="AUTO TRADE" value={settings.auto_trade === true ? 'ON' : 'OFF'} sub={settings.enabled === false ? 'scanner is disabled' : 'scanner master switch is enabled'}/><Card label="CONTINUOUS MODE" value={settings.continuous_mode === true ? 'ON' : 'OFF'} sub={settings.continuous_mode === true ? 'route qualifying opportunities without a global position cap' : 'only scanner-configured opportunity flow'}/><Card label="VERIFIED OPEN POSITIONS" value={accountDataProtected ? 'LOCKED' : positions.length} sub={accountDataProtected ? 'enter ENGINE_SECRET to load position records' : 'from authenticated event ledger only'}/></section><Panel title="Worker Status · Signal Only"><div className="lockedText">Direct Delta execution is disabled. Tradetron Live Offline is the simulation layer; only verified callbacks create the scanner's event-ledger positions and closed trades.</div><div className="statusLine">Worker {health?.workerLeaseActive?'ONLINE':'OFFLINE'} · Tick {health?.tickFresh?'FRESH':'STALE'} · Exchange {health?.exchangeHealthy?'HEALTHY':'DOWN'} · Emergency stop {settings.emergency_stop === true ? 'ACTIVE' : 'RELEASED'}</div><p className="muted">Entries require a valid signal, configured Tradetron route, trusted position snapshot when the Developer API is configured, fresh market data, acceptable risk/margin and same-symbol duplicate protection. This panel is status-only; direct Delta orders cannot be enabled here.</p></Panel></>;
+function Testnet({ settings, health, busy, mutate, positions, tradetronDeployments = [], developerSync = null, developerApiConfigured = false, accountDataProtected = false }) {
+  const currentPositionSummary = summarizeCurrentPositionCount({ eventPositions: positions, deployments: tradetronDeployments, syncState: developerSync, configured: developerApiConfigured });
+  return <><section className="cards"><Card label="ENVIRONMENT" value="SIGNAL ONLY" sub="production market feed"/><Card label="AUTO TRADE" value={settings.auto_trade === true ? 'ON' : 'OFF'} sub={settings.enabled === false ? 'scanner is disabled' : 'scanner master switch is enabled'}/><Card label="CONTINUOUS MODE" value={settings.continuous_mode === true ? 'ON' : 'OFF'} sub={settings.continuous_mode === true ? 'route qualifying opportunities without a global position cap' : 'only scanner-configured opportunity flow'}/><Card label="CURRENT OPEN POSITIONS" value={accountDataProtected ? 'LOCKED' : currentPositionSummary.count === null ? currentPositionSummary.status : currentPositionSummary.count} sub={accountDataProtected ? 'enter ENGINE_SECRET to load position records' : currentPositionSummary.detail}/></section><Panel title="Worker Status · Signal Only"><div className="lockedText">Direct Delta execution is disabled. Tradetron Live Offline is the simulation layer; only verified callbacks create the scanner's event-ledger positions and closed trades.</div><div className="statusLine">Worker {health?.workerLeaseActive?'ONLINE':'OFFLINE'} · Tick {health?.tickFresh?'FRESH':'STALE'} · Exchange {health?.exchangeHealthy?'HEALTHY':'DOWN'} · Emergency stop {settings.emergency_stop === true ? 'ACTIVE' : 'RELEASED'}</div><p className="muted">Entries require a valid signal, configured Tradetron route, trusted position snapshot when the Developer API is configured, fresh market data, acceptable risk/margin and same-symbol duplicate protection. This panel is status-only; direct Delta orders cannot be enabled here.</p></Panel></>;
 }
-function Settings({ settings, secret, setSecret, busy, mutate }) {
+function Settings({ settings, secret, setSecret, busy, mutate, onUnlock, onLock, authenticated = false }) {
   const serverValues = useMemo(() => ({
     riskPct: settings.risk_pct ?? 0.3,
     momentumRr: settings.momentum_rr ?? 2.0,
@@ -777,7 +834,7 @@ function Settings({ settings, secret, setSecret, busy, mutate }) {
   const statusClass = dirty ? 'pending' : saveState === 'Settings saved to server.' ? 'saved' : '';
   return <><Panel title="Server Controls"><div className="padSettings"><form className="settingsForm" onSubmit={saveSettings}>
     <div className="settings">
-      <label>ENGINE_SECRET<input type="password" value={secret} onChange={e=>setSecret(e.target.value)} placeholder="Stored in this browser session only" autoComplete="current-password"/><small className="settingHint">This key stays in this browser session; it is not saved to scanner settings.</small></label>
+      <label>ENGINE_SECRET<input type="password" value={secret} onChange={e=>setSecret(e.target.value)} placeholder={authenticated ? "Session active — enter again only if needed" : "Enter once to unlock private data"} autoComplete="current-password"/><small className="settingHint">The secret is sent once to establish a signed HttpOnly session cookie. It is not kept in localStorage or sessionStorage. The 7-day session renews while the dashboard is actively used and expires after 7 days of inactivity.</small></label>
       <label>Risk % per trade<input type="number" min="0.1" max="5" step="0.1" value={draft.riskPct} onChange={e=>changeDraft('riskPct',e.target.value)} disabled={busy} required/></label>
       <div className="lockedText"><b>Global scanner position cap: DISABLED.</b> Entries still require a valid signal, an available Tradetron route, acceptable margin and duplicate-symbol checks.</div>
       <label>Momentum RR<input type="number" min="1" max="5" step="0.1" value={draft.momentumRr} onChange={e=>changeDraft('momentumRr',e.target.value)} disabled={busy} required/></label>
@@ -787,7 +844,7 @@ function Settings({ settings, secret, setSecret, busy, mutate }) {
     </div>
     <div className="settingsActions">
       <span className={`saveStatus ${statusClass}`} aria-live="polite">{saveState || 'Save the current values to the server. Changes are kept only after a successful save.'}</span>
-      <div className="settingsButtons"><button className="action" type="button" onClick={discardChanges} disabled={busy || !dirty}>Discard</button><button className="saveSettings" type="submit" disabled={busy} title="Persist these settings to the server">{busy ? 'Saving…' : 'Save Settings'}</button></div>
+      <div className="settingsButtons"><button className="action" type="button" onClick={onUnlock} disabled={busy || !secret}>{authenticated ? 'Refresh Session' : 'Unlock Private Data'}</button>{authenticated ? <button className="action" type="button" onClick={onLock} disabled={busy}>Lock Session</button> : null}<button className="action" type="button" onClick={discardChanges} disabled={busy || !dirty}>Discard</button><button className="saveSettings" type="submit" disabled={busy} title="Persist these settings to the server">{busy ? 'Saving…' : 'Save Settings'}</button></div>
     </div>
   </form></div></Panel><Panel title="Strategy / Safety Defaults"><div className="ruleGrid"><span>Momentum: EMA9/21/50 + RSI 54–68 / 32–46 + adaptive volume gate + ATR stop ≥0.95%</span><span>Scalping: 1m/5m EMA + RSI + VWAP + adaptive volume gate + stop ≥0.75%</span><span>Confirmed score: ≥80 (hard floor)</span><span>Volume qualification: momentum default 0.75x with controlled sparse-volume fallback; scalping default 1.25x</span><span>Entry candle-range gate: Momentum ≤4.00x ATR; Scalping ≤3.00x ATR</span><span>Price-to-EMA21 distance: Momentum ≤3.50x ATR; Scalping ≤2.50x ATR</span><span>BTC regime: FLAT/mixed is neutral; only fully opposing BTC 5m+15m blocks; extreme opposing regimes can use the strong-local override</span><span>Fee + spread budget: 20% of 1R Momentum / 25% Scalping</span><span>Risk sizing: configurable per-trade equity risk (database default 1%), whole contracts, max 3x configurable notional cap</span><span>BTC override still respects spread, cost, stop, margin and duplicate-symbol prevention; scanner daily loss / trade-count quotas are disabled</span><span>Exits: TP1 33% at 1R, BE+fees, trail 1R, final TP default 2.5R</span></div></Panel><Panel title="Environment Lock"><div className="liveLock">PRODUCTION MARKET · SIGNAL ONLY. The scanner reads Delta India production market data and sends signals only; direct Delta order APIs are hard-locked.</div></Panel></>;
 }
@@ -846,14 +903,14 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
       <b className={statusClass}>API sync: {status}{stale ? ' · STALE' : ''}</b><br/>
       <span>API key: {configured ? 'configured on the Railway worker' : 'not configured on the Railway worker'}</span><br/>
       <span>Last successful sync: {sync?.last_success_at ? new Date(sync.last_success_at).toLocaleString('en-IN') : '—'}</span><br/>
-      <span>Deployments: {sync?.deployment_count ?? deployments.length} · Raw position rows: {sync?.position_count ?? mirror.totalRows} · Reported open legs: {mirror.openCount}</span>
+      <span>Deployments: {sync?.deployment_count ?? deployments.length} · Raw position rows: {sync?.position_count ?? mirror.totalRows} · Reported open legs: {mirror.openCount === null ? 'UNKNOWN' : mirror.openCount}</span>
       {sync?.last_error ? <p className="apiStateError">Last sync warning/error: {sync.last_error}</p> : null}
       {!configured ? <p>Add the read-only TRADETRON_DEVELOPER_API_KEY to the Railway worker, then apply the migration documented in db/migrations/20261012080000_tradetron_developer_api_sync.sql.</p> : null}
       {configured && !sync ? <p>Waiting for the worker's first sync. If this persists, confirm the Supabase migration has been applied.</p> : null}
       <p><b>Source of truth:</b> current open legs and deployment P&amp;L below come from the read-only Tradetron API snapshot. Closed-trade details, exit prices and fees require authenticated Tradetron activity callbacks; they are not inferred from a position snapshot.</p>
     </div>
     <section className="cards">
-      <Card label="TT OPEN LEGS" value={configured ? mirror.openCount : '—'} sub={mirror.positionsHidden ? 'some position rows hidden by Tradetron' : 'reported by current API snapshot'} />
+      <Card label="TT OPEN LEGS" value={configured ? (mirror.openCount === null ? 'UNKNOWN' : mirror.openCount) : '—'} sub={mirror.openCount === null ? (mirror.positionsHidden ? 'position rows hidden; count unavailable' : 'no verified open-leg count') : mirror.positionsHidden ? 'some position rows hidden by Tradetron' : 'reported by current API snapshot'} />
       <Card label="TT DEPLOYMENT P&L RAW" value={mirror.reportedPnl === null ? '—' : fmtRawPrice(mirror.reportedPnl, 2)} sub={"Raw deployment value; " + (mirror.reportedPnlCurrencyCode ? "API currency " + mirror.reportedPnlCurrencyCode + "; " : "currency not identified; ") + "P&L semantics not independently verified; not scanner ledger P&L"} />
       <Card label="TT OPEN P&L RAW" value={mirror.openPnl === null ? '—' : fmtRawPrice(mirror.openPnl, 2)} sub="Raw sum of explicitly named M2M fields; currency/unit still unverified" />
       <Card label="TT DEPLOYMENTS" value={mirror.deployments} sub="returned by read-only API" />

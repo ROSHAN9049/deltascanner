@@ -1,9 +1,15 @@
 import { CONFIG } from '../../server/config.js';
 import { count, select } from '../../server/db.js';
 import { protectEngineState } from '../../server/engine-state-privacy.js';
+import { createEngineSessionCookie, hasEngineAccess, isEngineSessionValid } from '../../server/engine-session.js';
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate');
+  // Sliding inactivity expiry: keep a valid HttpOnly session alive while the
+  // dashboard is actively polling, without ever returning the original secret.
+  if (CONFIG.engineSecret && isEngineSessionValid(req, CONFIG.engineSecret)) {
+    res.setHeader('Set-Cookie', createEngineSessionCookie(CONFIG.engineSecret));
+  }
   try {
     const [settings, positions, signals, signalCache, marketCache, optionCache, trades, logs, ledger, counters, daily, signalOrders, tradetronEvents, signalOrderCount, signalSentCount, signalPendingCount, signalExpiredCount, signalFailedCount, tradetronEventCount, tradeRowCount, ledgerRowCount] = await Promise.all([
       select('dd_settings', 'id=eq.1&select=*'),
@@ -63,8 +69,7 @@ export default async function handler(req, res) {
     const workerTradetronDeveloperApi = heartbeatLog?.data?.tradetronDeveloperApi || null;
     // Tradetron positions/P&L are account-private. Do not query or serialize
     // the private snapshot tables for unauthenticated dashboard requests.
-    const privateDataAuthorized = Boolean(CONFIG.engineSecret) &&
-      req.headers['x-engine-secret'] === CONFIG.engineSecret;
+    const privateDataAuthorized = Boolean(CONFIG.engineSecret) && hasEngineAccess(req, CONFIG.engineSecret);
     const [
       developerSyncRows,
       developerSnapshotRows,

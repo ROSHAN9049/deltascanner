@@ -1,10 +1,13 @@
 import { CONFIG } from '../../server/config.js';
+import { hasValidEngineSecretHeader, isEngineSessionValid, isSameOriginRequest } from '../../server/engine-session.js';
 import { select, updateReturning } from '../../server/db.js';
 import { GRID_MAX_POSITION_CHOICES, GRID_RISK_PER_TRADE_CHOICES, GRID_DAILY_LOSS_CHOICES, GRID_MOMENTUM_PAUSE_CHOICES } from '../../shared/grid-settings.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ success: false, error: 'POST only' });
-  if (!CONFIG.engineSecret || req.headers['x-engine-secret'] !== CONFIG.engineSecret) {
+  const headerAuthorized = Boolean(CONFIG.engineSecret) && hasValidEngineSecretHeader(req, CONFIG.engineSecret);
+  const cookieAuthorized = Boolean(CONFIG.engineSecret) && isEngineSessionValid(req, CONFIG.engineSecret) && isSameOriginRequest(req);
+  if (!CONFIG.engineSecret || (!headerAuthorized && !cookieAuthorized)) {
     return res.status(401).json({ success: false, error: 'Unauthorized' });
   }
   try {
