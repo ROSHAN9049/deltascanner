@@ -101,6 +101,26 @@ test('extracts Delta contract symbol from a Tradetron instrument identifier', ()
   assert.equal(row.pnl, -0.04);
 });
 
+test('generic pnl remains explicitly source-labeled when it duplicates the mark price', () => {
+  const row = normalizeTradetronPosition({
+    instrument: 'FUTCRYPTO_DIN-SNDKBUSD_31DEC2099_XX_0',
+    quantity: 1,
+    ltp: 1369.9,
+    pnl: 1369.9,
+    open: true
+  }, { deployment_id: 999273394 });
+  assert.equal(row.markPrice, 1369.9);
+  assert.equal(row.pnl, 1369.9);
+  assert.equal(row.pnlSource, 'pnl');
+  const summary = summarizeTradetronSnapshots([{
+    deployment_id: 999273394,
+    currency_code: 'USD',
+    open_positions: 1,
+    positions: [{ instrument: 'FUTCRYPTO_DIN-SNDKBUSD_31DEC2099_XX_0', quantity: 1, ltp: 1369.9, pnl: 1369.9, open: true }]
+  }]);
+  assert.equal(summary.openPnl, null);
+});
+
 test('generic row-level pnl is not treated as verified open M2M or summed into open P&L', () => {
   const summary = summarizeTradetronSnapshots([{
     deployment_id: 999273394,
