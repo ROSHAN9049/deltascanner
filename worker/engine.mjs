@@ -1579,29 +1579,27 @@ export class DeltaEngine {
           }, strategyName)
         };
         signalCacheRows.push(cacheRow);
-        // Keep durable signal history for actionable states only. WATCH states
-        // remain in the low-cost cache and do not fill the history table every minute.
-        if (s.stage !== 'WATCH' || cacheRow.ready) {
-          signalHistoryRows.push({
-            symbol: s.symbol, product_id: s.productId, rank: i + 1,
-            strategy: strategyName, price: s.price, change_24h: s.change,
-            turnover_usd: s.turnover, spread_pct: s.spreadPct, volume_spike: s.volumeSpike,
-            score: s.score, stage: s.stage, side: s.side, rsi: s.rsi, trend: s.trend,
-            confirm_trend: s.confirmTrend, btc_trend: s.btcTrend, ema21: s.ema21,
-            atr_5m: s.atr5, atr_15m: s.atr15, support: s.support, resistance: s.resistance,
-            stop_price: s.sl, tp1_price: s.tp1, tp_price: s.tp,
-            qty_contracts: size ? size.qty : 0, notional: size ? size.notional : 0,
-            risk_usd: size ? size.risk : 0, fee_risk_ratio: s.feeRiskRatio,
-            ready: cacheRow.ready, blocked_reasons: gate.reasons,
-            details: cacheRow.details
-          });
-        }
+        // Persist every stage observation to the history candidate batch. The
+        // in-memory deduplicator suppresses unchanged WATCH rows but always allows
+        // stage/side transitions such as WATCH -> SETUP -> CONFIRMED.
+        signalHistoryRows.push({
+          symbol: s.symbol, product_id: s.productId, rank: i + 1,
+          strategy: strategyName, price: s.price, change_24h: s.change,
+          turnover_usd: s.turnover, spread_pct: s.spreadPct, volume_spike: s.volumeSpike,
+          score: s.score, stage: s.stage, side: s.side, rsi: s.rsi, trend: s.trend,
+          confirm_trend: s.confirmTrend, btc_trend: s.btcTrend, ema21: s.ema21,
+          atr_5m: s.atr5, atr_15m: s.atr15, support: s.support, resistance: s.resistance,
+          stop_price: s.sl, tp1_price: s.tp1, tp_price: s.tp,
+          qty_contracts: size ? size.qty : 0, notional: size ? size.notional : 0,
+          risk_usd: size ? size.risk : 0, fee_risk_ratio: s.feeRiskRatio,
+          ready: cacheRow.ready, blocked_reasons: gate.reasons,
+          details: cacheRow.details
+        });
       }
       out.push({ ticker, product: p, mom, scalp });
     }
-    // Persist actionable history in one request before caching/routing signals.
-    // This keeps the 231-symbol scanner from spending hundreds of sequential
-    // HTTP round-trips on routine SETUP/CONFIRMED records.
+    // Persist compact stage history in one request before caching/routing.
+    // Unchanged observations (including WATCH) are filtered by the dedup cache.
     if (signalHistoryRows.length) await this.insertSignalHistoryBatch(signalHistoryRows);
     const optionSignals = await this.analyseOptions(out, account, settings, openPositions || []);
     const byUnderlying = new Map();
