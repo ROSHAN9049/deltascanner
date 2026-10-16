@@ -6,6 +6,78 @@ const optionalNumber = value => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
+const MAIN_DETAIL_FIELDS = Object.freeze([
+  'fee',
+  'localScore',
+  'candlesFresh',
+  'btcRegimeOverride',
+  'btcOverrideScoreMin',
+  'btcOverrideVolumeMin',
+  'rangeAtr',
+  'emaDistanceAtr',
+  'btcRegime',
+  'btcRegimeStatus',
+  'btcRegimeSource',
+  'btcAtrPct',
+  'btcRegimeComputedAt'
+]);
+
+// Core contract fields are preferred first. The explicit 15-field cap keeps
+// options history bounded while preserving the important compact contract and
+// route context. Fields absent from a strategy's existing details are omitted.
+const OPTIONS_DETAIL_FIELDS = Object.freeze([
+  'strike',
+  'expiryMs',
+  'optionType',
+  'delta',
+  'gamma',
+  'theta',
+  'vega',
+  'bid',
+  'ask',
+  'volume',
+  'openInterest',
+  'dte',
+  'engine',
+  'signalOnly',
+  'tradetronRoute',
+  'executionLocked',
+  'routeConfigured',
+  'optionRouteReady',
+  'underlyingScore',
+  'underlyingSymbol'
+]);
+
+function trimAllowedDetails(details, allowlist, maxFields) {
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return {};
+
+  const trimmed = {};
+  for (const field of allowlist) {
+    if (Object.keys(trimmed).length >= maxFields) break;
+    if (!Object.prototype.hasOwnProperty.call(details, field)) continue;
+
+    const value = details[field];
+    if (value === null || value === undefined) continue;
+    if (typeof value === 'string' && value.length > 200) continue;
+    if (typeof value === 'number' && !Number.isFinite(value)) continue;
+    if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') continue;
+    trimmed[field] = value;
+  }
+  return trimmed;
+}
+
+/**
+ * Keep persisted signal details compact and predictable. This helper changes
+ * only history/cache payloads, not the values used to calculate live signals.
+ */
+export function trimDetails(details, strategy) {
+  const normalizedStrategy = String(strategy || '').toUpperCase();
+  if (normalizedStrategy === 'OPTIONS_BUY' || normalizedStrategy === 'OPTIONS_SELL') {
+    return trimAllowedDetails(details, OPTIONS_DETAIL_FIELDS, 15);
+  }
+  return trimAllowedDetails(details, MAIN_DETAIL_FIELDS, MAIN_DETAIL_FIELDS.length);
+}
+
 export function closed(candles) {
   return Array.isArray(candles) && candles.length > 2 ? candles.slice(0, -1) : [];
 }
