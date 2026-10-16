@@ -145,7 +145,7 @@ After retention, deduplication, and detail trimming are active:
 - **Retention does not run:** check Railway has `DATABASE_URL` set for the new Supabase project and search the logs for `[Retention]`. A missing variable disables maintenance but does not stop the scanner.
 - **Disk monitor is absent:** check `DATABASE_URL` and search for `[Disk]`. The growth-rate warning appears only after a sample roughly 24 hours old is available.
 - **Dedup seems too aggressive:** decrease `DEDUP_WINDOW_MINUTES` or temporarily set `DEDUP_ENABLED=false`. Compare `[Dedup]` skipped/candidate stats and remember that the cache is cold after restarts.
-- **Signals appear missing:** the history table intentionally does not persist routine `WATCH` rows. It records eligible `SETUP`/`CONFIRMED` rows, with stage and side changes not suppressed by dedup. Check the cache window and the signal stage before interpreting row count.
+- **Signals appear missing:** stage observations, including `WATCH`, are candidates for history; the in-memory deduplicator suppresses only unchanged score/stage/side observations inside the configured window. Stage changes such as `WATCH` → `SETUP` → `CONFIRMED` remain recordable. Check the dedup window and stage before interpreting row count.
 - **Details fields are absent:** review the approved main/options allowlists in `worker/strategy.mjs`. Main fields such as RSI/VWAP and redundant BTC trend/reason strings are intentionally omitted; options have their own 15-field cap.
 - **Database size stays high after cleanup:** this is expected with normal PostgreSQL vacuum behavior. Check row count and growth rate; `pg_database_size()` may not shrink after deletions.
 
