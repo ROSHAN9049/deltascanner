@@ -114,6 +114,22 @@ function dashboardBtcTrendApproximation({ selected, details, reasonText }) {
   };
 }
 
+function healthAgeDetail(health, ageField, timestampField, label) {
+  let ageMs = safeNum(health?.[ageField]);
+  if (ageMs === null) {
+    const timestamp = typeof health?.[timestampField] === 'string'
+      ? Date.parse(health[timestampField])
+      : NaN;
+    if (Number.isFinite(timestamp)) ageMs = Math.max(0, Date.now() - timestamp);
+  }
+  if (ageMs === null) {
+    return health?.[timestampField]
+      ? `; last ${label}: timestamp age unavailable`
+      : `; last ${label}: timestamp unavailable`;
+  }
+  return `; last ${label}: ${(Math.max(0, ageMs) / 60000).toFixed(1)} min ago`;
+}
+
 export function buildRiskGovernorGates({
   selected,
   health = null,
@@ -224,14 +240,72 @@ export function buildRiskGovernorGates({
   const healthValues = [
     health?.workerLeaseActive,
     health?.exchangeHealthy,
-    health?.tickFresh
+    health?.tickFresh,
+    health?.heartbeatFresh
   ];
   const healthKnown = healthValues.every(value => typeof value === 'boolean');
-  const healthStatus = healthKnown
-    ? status(true, healthValues.every(value => value === true))
-    : healthValues.some(value => value === false)
-      ? GATE_BLOCK
-      : GATE_UNKNOWN;
+  const healthObservedFields = [
+    typeof health?.success === 'boolean' ? `success=${health.success}` : null,
+    typeof health?.workerLeaseActive === 'boolean' ? `workerLeaseActive=${health.workerLeaseActive}` : null,
+    typeof health?.tickFresh === 'boolean' ? `tickFresh=${health.tickFresh}` : null,
+    typeof health?.heartbeatFresh === 'boolean' ? `heartbeatFresh=${health.heartbeatFresh}` : null,
+    typeof health?.exchangeHealthy === 'boolean' ? `exchangeHealthy=${health.exchangeHealthy}` : null
+  ].filter(Boolean).join(', ');
+
+  const healthError = typeof health?.error === 'string' ? health.error.trim().slice(0, 240) : '';
+  const healthEndpointFailed = health?.success === false || Boolean(healthError);
+  const healthFailureReasons = [];
+  if (healthEndpointFailed) {
+    // A failed health endpoint returns fail-safe false values for checks it
+    // could not read. Report the endpoint error rather than mislabeling those
+    // placeholders as a stale heartbeat or expired lease.
+    healthFailureReasons.push(healthError
+      ? `Health endpoint failed: ${healthError}`
+      : 'Health endpoint reported success=false');
+  } else {
+    if (health?.workerLeaseActive === false) {
+      healthFailureReasons.push('Worker lease inactive or expired');
+    }
+    if (health?.tickFresh === false) {
+      healthFailureReasons.push('Worker tick stale' +
+        healthAgeDetail(health, 'tickAgeMs', 'lastTickAt', 'tick'));
+    }
+    if (health?.heartbeatFresh === false) {
+      healthFailureReasons.push('Worker heartbeat stale' +
+        healthAgeDetail(health, 'heartbeatAgeMs', 'workerHeartbeat', 'heartbeat'));
+    }
+
+    if (health?.exchangeHealthy === false) {
+      const underlyingChecks = [
+        health?.workerLeaseActive,
+        health?.tickFresh,
+        health?.heartbeatFresh
+      ];
+      if (underlyingChecks.every(value => value === true)) {
+        healthFailureReasons.push('Inconsistent health response; aggregate reports unhealthy');
+      } else if (!underlyingChecks.some(value => value === false)) {
+        healthFailureReasons.push('Aggregate reports unhealthy; one or more underlying health checks are unavailable');
+      }
+    }
+  }
+
+  const healthStatus = healthFailureReasons.length > 0
+    ? GATE_BLOCK
+    : healthKnown
+      ? status(true, healthValues.every(value => value === true))
+      : healthValues.some(value => value === false)
+        ? GATE_BLOCK
+        : GATE_UNKNOWN;
+  const healthBlockReason = healthStatus === GATE_BLOCK
+    ? (healthFailureReasons.join('; ') || 'Health checks explicitly failed; specific failure could not be determined')
+    : healthStatus === GATE_UNKNOWN
+      ? 'Health checks unavailable: ' + [
+          ['workerLeaseActive', health?.workerLeaseActive],
+          ['tickFresh', health?.tickFresh],
+          ['heartbeatFresh', health?.heartbeatFresh],
+          ['exchangeHealthy', health?.exchangeHealthy]
+        ].filter(([, value]) => typeof value !== 'boolean').map(([name]) => name).join(', ')
+      : '';
 
   const positionsKnown = Array.isArray(positions) && Boolean(symbol);
   const duplicatePosition = positionsKnown && positions.some(position =>
@@ -262,7 +336,7 @@ export function buildRiskGovernorGates({
     gateResult({ gate: 'BTC regime', result: btcStatus, observedValue: btcApproximation.observed, blockReason: btcApproximation.reason }),
     gateResult({ gate: 'Spread', result: spreadStatus, observedValue: spreadPct, unit: '%', threshold: 0.35, thresholdUnit: '%', blockReason: spreadStatus === GATE_BLOCK ? 'Spread above limit or explicitly blocked' : spreadStatus === GATE_UNKNOWN ? 'Spread observation missing' : '' }),
     gateResult({ gate: 'Fresh closed candles', result: freshnessStatus, observedValue: candlesFresh ?? null, blockReason: freshnessStatus === GATE_BLOCK ? 'Candle freshness blocked' : freshnessStatus === GATE_UNKNOWN ? 'Candle freshness was not supplied' : '' }),
-    gateResult({ gate: 'API / worker healthy', result: healthStatus, blockReason: healthStatus === GATE_BLOCK ? 'At least one health check explicitly failed' : healthStatus === GATE_UNKNOWN ? 'One or more health checks unavailable' : '' }),
+    gateResult({ gate: 'API / worker healthy', result: healthStatus, observedValue: healthObservedFields || null, blockReason: healthBlockReason }),
     gateResult({ gate: 'Duplicate symbol', result: duplicateStatus, observedValue: symbol || null, blockReason: duplicateStatus === GATE_BLOCK ? 'An open position already uses this symbol' : duplicateStatus === GATE_UNKNOWN ? 'Position data or symbol unavailable' : '' }),
     gateResult({ gate: 'Margin / min size', result: marginStatus, observedValue: qty, unit: 'contracts', threshold: 1, thresholdUnit: 'contract', blockReason: marginStatus === GATE_BLOCK ? 'Quantity or notional fails the minimum-size check' : marginStatus === GATE_UNKNOWN ? 'Quantity or notional missing' : '' })
   ];

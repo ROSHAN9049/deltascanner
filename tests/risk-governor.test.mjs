@@ -30,7 +30,7 @@ test('missing risk observations fail closed for range and EMA gates instead of d
 test('route and entry are blocked when Tradetron position snapshots are untrusted', () => {
   const rows = buildRiskGovernorGates({
     selected: { symbol: 'BTCUSD', strategy: 'MOMENTUM', stage: 'CONFIRMED', score: 92 },
-    health: { workerLeaseActive: true, exchangeHealthy: true, tickFresh: true },
+    health: { success: true, workerLeaseActive: true, tickFresh: true, heartbeatFresh: true, exchangeHealthy: true },
     positions: null,
     routedSymbols: ['BTCUSD'],
     routeDataVerified: true,
@@ -55,7 +55,7 @@ test('observed values can pass only the gate they actually verify', () => {
       notional: 25,
       details: { candlesFresh: true, emaDistanceAtr: 1.2, rangeAtr: 2.1, btcRegimeOverride: true }
     },
-    health: { workerLeaseActive: true, exchangeHealthy: true, tickFresh: true },
+    health: { success: true, workerLeaseActive: true, tickFresh: true, heartbeatFresh: true, exchangeHealthy: true },
     positions: [],
     routedSymbols: ['BTCUSD'],
     routeDataVerified: true
@@ -80,7 +80,7 @@ test('explicit backend blocker takes precedence over a low/missing observed valu
       change_24h: 0,
       blocked_reasons: ['SPREAD_TOO_WIDE', '5m range too high', 'Fresh closed candles unavailable']
     },
-    health: { workerLeaseActive: true, exchangeHealthy: true, tickFresh: true },
+    health: { success: true, workerLeaseActive: true, tickFresh: true, heartbeatFresh: true, exchangeHealthy: true },
     positions: [],
     routedSymbols: ['ETHUSD'],
     routeDataVerified: true
@@ -217,4 +217,98 @@ test('BTC regime fails closed with an explicit adapter-window reason when 15m BT
   assert.equal(gate(rows, 'BTC regime'), GATE_BLOCK);
   assert.match(rows.find(row => row.gate === 'BTC regime').blockReason, /about 21 hours/);
   assert.match(rows.find(row => row.gate === 'BTC regime').blockReason, /not BTC 15m/);
+});
+
+
+test('health gate reports a stale worker heartbeat with its last-known age', () => {
+  const rows = buildRiskGovernorGates({
+    selected: { symbol: 'BTCUSD', strategy: 'MOMENTUM', stage: 'CONFIRMED', score: 90 },
+    health: {
+      success: true,
+      workerLeaseActive: true,
+      tickFresh: true,
+      heartbeatFresh: false,
+      exchangeHealthy: false,
+      heartbeatAgeMs: 300000,
+      workerHeartbeat: '2026-10-16T15:45:00.000Z'
+    }
+  });
+  const record = rows.find(row => row.gate === 'API / worker healthy');
+  assert.equal(record.result, GATE_BLOCK);
+  assert.match(record.blockReason, /Worker heartbeat stale; last heartbeat: 5\.0 min ago/);
+  assert.match(record.observedValue, /heartbeatFresh=false/);
+  assert.match(record.observedValue, /success=true/);
+});
+
+test('health gate reports stale tick age and an inactive lease individually', () => {
+  const staleTick = buildRiskGovernorGates({
+    selected: { symbol: 'BTCUSD', strategy: 'MOMENTUM' },
+    health: {
+      success: true,
+      workerLeaseActive: true,
+      tickFresh: false,
+      heartbeatFresh: true,
+      exchangeHealthy: false,
+      tickAgeMs: 240000,
+      lastTickAt: '2026-10-16T15:45:00.000Z'
+    }
+  }).find(row => row.gate === 'API / worker healthy');
+  assert.equal(staleTick.result, GATE_BLOCK);
+  assert.match(staleTick.blockReason, /Worker tick stale; last tick: 4\.0 min ago/);
+  assert.match(staleTick.observedValue, /tickFresh=false/);
+
+  const inactiveLease = buildRiskGovernorGates({
+    selected: { symbol: 'BTCUSD', strategy: 'MOMENTUM' },
+    health: {
+      success: true,
+      workerLeaseActive: false,
+      tickFresh: true,
+      heartbeatFresh: true,
+      exchangeHealthy: false
+    }
+  }).find(row => row.gate === 'API / worker healthy');
+  assert.equal(inactiveLease.result, GATE_BLOCK);
+  assert.match(inactiveLease.blockReason, /Worker lease inactive or expired/);
+  assert.match(inactiveLease.observedValue, /workerLeaseActive=false/);
+});
+
+test('health gate surfaces the API error instead of interpreting fallback false values', () => {
+  const record = buildRiskGovernorGates({
+    selected: { symbol: 'BTCUSD', strategy: 'MOMENTUM' },
+    health: {
+      success: false,
+      error: 'Supabase 503: connection timeout',
+      workerLeaseActive: false,
+      tickFresh: false,
+      exchangeHealthy: false
+    }
+  }).find(row => row.gate === 'API / worker healthy');
+  assert.equal(record.result, GATE_BLOCK);
+  assert.match(record.blockReason, /Health endpoint failed: Supabase 503: connection timeout/);
+  assert.doesNotMatch(record.blockReason, /Worker lease inactive|Worker tick stale/);
+  assert.match(record.observedValue, /success=false/);
+});
+
+test('health gate explains an unhealthy aggregate when all individual checks pass', () => {
+  const record = buildRiskGovernorGates({
+    selected: { symbol: 'BTCUSD', strategy: 'MOMENTUM' },
+    health: {
+      success: true,
+      workerLeaseActive: true,
+      tickFresh: true,
+      heartbeatFresh: true,
+      exchangeHealthy: false
+    }
+  }).find(row => row.gate === 'API / worker healthy');
+  assert.equal(record.result, GATE_BLOCK);
+  assert.match(record.blockReason, /Inconsistent health response; aggregate reports unhealthy/);
+});
+
+test('health gate reports which required values are missing without changing BLOCK safety', () => {
+  const record = buildRiskGovernorGates({
+    selected: { symbol: 'BTCUSD', strategy: 'MOMENTUM' },
+    health: {}
+  }).find(row => row.gate === 'API / worker healthy');
+  assert.equal(record.result, GATE_UNKNOWN);
+  assert.match(record.blockReason, /workerLeaseActive, tickFresh, heartbeatFresh, exchangeHealthy/);
 });
