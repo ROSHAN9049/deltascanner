@@ -8,6 +8,8 @@ const optionalNumber = value => {
 
 const MAIN_DETAIL_FIELDS = Object.freeze([
   'fee',
+  'rsi',
+  'vwap',
   'localScore',
   'candlesFresh',
   'btcRegimeOverride',
@@ -22,13 +24,15 @@ const MAIN_DETAIL_FIELDS = Object.freeze([
   'btcRegimeComputedAt'
 ]);
 
-// Option details have a hard 15-field cap. Prefer every core contract
-// measurement first, then execution safety/underlying identity. Strategy is
-// already a top-level dd_signals column, so it does not need a duplicate engine field.
-const OPTIONS_DETAIL_FIELDS = Object.freeze([
+// Options use an independent, strategy-aware allowlist. Keep each output to
+// 15 scalar fields and prioritize the metrics that distinguish long-option
+// selection from defined-risk short spreads. Strategy is already a top-level
+// dd_signals column and does not need a duplicate engine field.
+const OPTIONS_BUY_DETAIL_FIELDS = Object.freeze([
+  'optionType',
   'strike',
   'expiryMs',
-  'optionType',
+  'dte',
   'delta',
   'gamma',
   'theta',
@@ -37,15 +41,27 @@ const OPTIONS_DETAIL_FIELDS = Object.freeze([
   'ask',
   'volume',
   'openInterest',
-  'dte',
-  'executionLocked',
-  'routeConfigured',
   'underlyingSymbol',
-  'optionRouteReady',
   'underlyingScore',
-  'engine',
-  'signalOnly',
-  'tradetronRoute'
+  'executionLocked'
+]);
+
+const OPTIONS_SELL_DETAIL_FIELDS = Object.freeze([
+  'optionType',
+  'strike',
+  'expiryMs',
+  'dte',
+  'delta',
+  'bid',
+  'ask',
+  'volume',
+  'openInterest',
+  'underlyingSymbol',
+  'hedgeSymbol',
+  'hedgeStrike',
+  'hedgeDelta',
+  'credit',
+  'maxRiskPerSpread'
 ]);
 
 function trimAllowedDetails(details, allowlist, maxFields) {
@@ -70,8 +86,11 @@ function trimMainDetails(details) {
   return trimAllowedDetails(details, MAIN_DETAIL_FIELDS, MAIN_DETAIL_FIELDS.length);
 }
 
-function trimOptionsDetails(details) {
-  return trimAllowedDetails(details, OPTIONS_DETAIL_FIELDS, 15);
+function trimOptionsDetails(details, strategy) {
+  const allowlist = strategy === 'OPTIONS_SELL'
+    ? OPTIONS_SELL_DETAIL_FIELDS
+    : OPTIONS_BUY_DETAIL_FIELDS;
+  return trimAllowedDetails(details, allowlist, allowlist.length);
 }
 
 /**
@@ -81,7 +100,7 @@ function trimOptionsDetails(details) {
 export function trimDetails(details, strategy) {
   const normalizedStrategy = String(strategy || '').toUpperCase();
   if (normalizedStrategy === 'OPTIONS_BUY' || normalizedStrategy === 'OPTIONS_SELL') {
-    return trimOptionsDetails(details);
+    return trimOptionsDetails(details, normalizedStrategy);
   }
   return trimMainDetails(details);
 }

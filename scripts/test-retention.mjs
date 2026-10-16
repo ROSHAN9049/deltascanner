@@ -5,6 +5,8 @@ import { DeltaEngine } from '../worker/engine.mjs';
 const MB = 1024 * 1024;
 const originalDatabaseUrl = process.env.DATABASE_URL;
 const hadDatabaseUrl = Object.prototype.hasOwnProperty.call(process.env, 'DATABASE_URL');
+const originalSupabaseDbUrl = process.env.SUPABASE_DB_URL;
+const hadSupabaseDbUrl = Object.prototype.hasOwnProperty.call(process.env, 'SUPABASE_DB_URL');
 process.env.DATABASE_URL = 'postgres://retention-test:secret@127.0.0.1/test';
 
 const engineSource = await readFile(new URL('../worker/engine.mjs', import.meta.url), 'utf8');
@@ -41,6 +43,39 @@ try {
       'score change greater than one must be recorded');
     assert.equal(engine.isDuplicateSignalObservation(row, now + 6 * 60_000), false,
       'observation after the window must be recorded');
+  });
+
+  await run('retention accepts SUPABASE_DB_URL when DATABASE_URL is absent', async () => {
+    const savedDatabaseUrl = process.env.DATABASE_URL;
+    const hadSavedDatabaseUrl = Object.prototype.hasOwnProperty.call(process.env, 'DATABASE_URL');
+    const savedSupabaseDbUrl = process.env.SUPABASE_DB_URL;
+    const hadSavedSupabaseDbUrl = Object.prototype.hasOwnProperty.call(process.env, 'SUPABASE_DB_URL');
+    try {
+      delete process.env.DATABASE_URL;
+      process.env.SUPABASE_DB_URL = 'postgres://retention-test:secret@127.0.0.1/test';
+      const engine = new DeltaEngine();
+      const logs = [];
+      engine.maintenanceLog = async (level, message, data = {}) => logs.push({ level, message, data });
+      engine.getMaintenancePool = async () => ({
+        query: async sql => {
+          if (/SELECT COUNT\(\*\)::text AS signal_rows/i.test(sql)) {
+            return { rows: [{ signal_rows: '0' }] };
+          }
+          if (/WITH batch AS/i.test(sql) && /DELETE FROM public\.dd_signals/i.test(sql)) {
+            return { rows: [] };
+          }
+          throw new Error('Unexpected SQL in env-fallback test');
+        }
+      });
+      await engine.runSignalRetention({ daysOverride: 1, reason: 'env-fallback' });
+      assert.ok(logs.some(log => /Starting 1-day dd_signals retention/.test(log.message)),
+        'SUPABASE_DB_URL should enable the retention path without DATABASE_URL');
+    } finally {
+      if (hadSavedDatabaseUrl) process.env.DATABASE_URL = savedDatabaseUrl;
+      else delete process.env.DATABASE_URL;
+      if (hadSavedSupabaseDbUrl) process.env.SUPABASE_DB_URL = savedSupabaseDbUrl;
+      else delete process.env.SUPABASE_DB_URL;
+    }
   });
 
   await run('retention forces 3-day mode above 500,000 rows and batches dd_signals only', async () => {
@@ -101,8 +136,27 @@ try {
     assert.deepEqual(retentionRequest, { daysOverride: 3, reason: 'disk-critical' });
   });
 
+  await run('dedup summary cadence is every 1,000 analysis cycles', async () => {
+    assert.match(engineSource, /dedupAnalysisCycles % 1000 !== 0/);
+    const engine = new DeltaEngine();
+    const messages = [];
+    engine.log = async (level, message, data) => messages.push({ level, message, data });
+    engine.dedupAnalysisCycles = 999;
+    engine.dedupTotalCandidates = 1000;
+    engine.dedupSkippedCount = 700;
+    engine.dedupInsertedCount = 300;
+    await engine.logDedupStatsIfDue();
+    assert.equal(messages.length, 0, 'must not log before cycle 1,000');
+    engine.dedupAnalysisCycles = 1000;
+    await engine.logDedupStatsIfDue();
+    assert.equal(messages.length, 1, 'must log at cycle 1,000');
+    assert.equal(messages[0].data.reductionPct, 70);
+  });
+
   console.log('[RetentionTest] All maintenance safeguards passed.');
 } finally {
   if (hadDatabaseUrl) process.env.DATABASE_URL = originalDatabaseUrl;
   else delete process.env.DATABASE_URL;
+  if (hadSupabaseDbUrl) process.env.SUPABASE_DB_URL = originalSupabaseDbUrl;
+  else delete process.env.SUPABASE_DB_URL;
 }

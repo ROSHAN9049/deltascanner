@@ -1,10 +1,12 @@
 import pg from 'pg';
 
 const { Pool } = pg;
-const connectionString = process.env.DATABASE_URL || process.env.SUPABASE_DB_URL;
+const connectionString = [process.env.DATABASE_URL, process.env.SUPABASE_DB_URL]
+  .map(value => String(value || '').trim())
+  .find(Boolean);
 
 if (!connectionString) {
-  throw new Error('DATABASE_URL is required for PositionLedger. Add it to .env.');
+  throw new Error('DATABASE_URL or SUPABASE_DB_URL is required for PostgreSQL access.');
 }
 
 // This Pool connects to the Supabase PostgreSQL database directly. It is

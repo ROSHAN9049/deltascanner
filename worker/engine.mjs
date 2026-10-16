@@ -43,6 +43,11 @@ function envInteger(name, fallback, min, max) {
   return parsed;
 }
 
+function hasMaintenanceDatabaseUrl() {
+  return [process.env.DATABASE_URL, process.env.SUPABASE_DB_URL]
+    .some(value => typeof value === 'string' && value.trim().length > 0);
+}
+
 function safeMaintenanceError(error) {
   let message = String(error?.message || error || 'Unknown maintenance error');
   if (process.env.DATABASE_URL) message = message.split(process.env.DATABASE_URL).join('[REDACTED]');
@@ -987,7 +992,7 @@ export class DeltaEngine {
   }
 
   async getMaintenancePool() {
-    if (!process.env.DATABASE_URL || !process.env.DATABASE_URL.trim()) return null;
+    if (!hasMaintenanceDatabaseUrl()) return null;
     if (this.maintenancePool) return this.maintenancePool;
     if (!this.maintenancePoolPromise) {
       this.maintenancePoolPromise = import('../src/ledger/pg-adapter.mjs')
@@ -1008,9 +1013,9 @@ export class DeltaEngine {
     if (this.maintenanceStarted) return;
     this.maintenanceStarted = true;
 
-    if (!process.env.DATABASE_URL || !process.env.DATABASE_URL.trim()) {
-      const retentionMessage = '[Retention] Retention disabled (no DATABASE_URL)';
-      const diskMessage = '[Disk] Disk monitor disabled (no DATABASE_URL)';
+    if (!hasMaintenanceDatabaseUrl()) {
+      const retentionMessage = '[Retention] Retention disabled (no DATABASE_URL or SUPABASE_DB_URL)';
+      const diskMessage = '[Disk] Disk monitor disabled (no DATABASE_URL or SUPABASE_DB_URL)';
       console.warn(retentionMessage);
       console.warn(diskMessage);
       void this.log('WARN', retentionMessage, {}).catch(() => {});
@@ -1047,8 +1052,8 @@ export class DeltaEngine {
   }
 
   async runSignalRetention({ daysOverride = null, reason = 'scheduled' } = {}) {
-    if (!process.env.DATABASE_URL || !process.env.DATABASE_URL.trim()) {
-      await this.maintenanceLog('WARN', '[Retention] Retention disabled (no DATABASE_URL)', { reason });
+    if (!hasMaintenanceDatabaseUrl()) {
+      await this.maintenanceLog('WARN', '[Retention] Retention disabled (no DATABASE_URL or SUPABASE_DB_URL)', { reason });
       return;
     }
     if (!RETENTION_ENABLED) {
@@ -1139,8 +1144,8 @@ export class DeltaEngine {
   }
 
   async checkDiskHealth() {
-    if (!process.env.DATABASE_URL || !process.env.DATABASE_URL.trim()) {
-      await this.maintenanceLog('WARN', '[Disk] Disk monitor disabled (no DATABASE_URL)', {});
+    if (!hasMaintenanceDatabaseUrl()) {
+      await this.maintenanceLog('WARN', '[Disk] Disk monitor disabled (no DATABASE_URL or SUPABASE_DB_URL)', {});
       return;
     }
 
@@ -1312,7 +1317,7 @@ export class DeltaEngine {
   }
 
   async logDedupStatsIfDue() {
-    if (this.dedupAnalysisCycles === 0 || this.dedupAnalysisCycles % 100 !== 0) return;
+    if (this.dedupAnalysisCycles === 0 || this.dedupAnalysisCycles % 1000 !== 0) return;
     const reduction = this.dedupTotalCandidates
       ? (this.dedupSkippedCount / this.dedupTotalCandidates) * 100
       : 0;
