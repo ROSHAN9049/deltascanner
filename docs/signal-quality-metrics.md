@@ -87,40 +87,77 @@ Do not recalibrate the score from CONFIRMED counts alone. Review readiness, uniq
 
 ## 7. Disk Management (Free Tier)
 
-- **Reported limit:** 500 MB for the current free-tier plan. Confirm the active plan and actual storage meter in the provider dashboard; plan limits and accounting can vary.
-- **Observed write rate:** approximately 250,000 signal rows/day. The reported database size divided by row count suggests roughly 780 bytes per signal observation as a rough, database-wide estimate—not a direct measurement of the dd_signals table row size.
-- **Retention policy:** start by measuring the exact rows that would be deleted with a dry run. A 3–5 day policy is only an operational starting point, not a guarantee that the database will fit in 500 MB.
-- **Important capacity arithmetic:** 250,000 rows/day × 780 bytes/row is about 195 MB/day. Three days would be about 585 MB before accounting for other tables, indexes and database overhead. Therefore a 3-day retention target may still exceed a 500 MB limit; use the actual table/database-size diagnostics rather than assuming it fits.
-- **Weekly manual prune command:** npm run db:prune-signals -- --days=3 --confirm. The command is destructive: first run without --confirm to preview the exact count; add the flag only after reviewing the preview.
-- **Emergency run:** if the database remains over 500 MB after a reviewed 3-day prune, run the prune workflow again with days=2, confirm=false first. Inspect the dry-run count and the disk diagnostic before choosing confirm=true.
-- **No scheduled cleanup:** prune is manual-only. Neither workflow runs automatically on a schedule.
-- The prune script deletes only from public.dd_signals, in small committed batches, and runs VACUUM (ANALYZE) on that same table after rows were deleted. It never targets closed trades, positions, orders, Tradetron events or the position ledger.
-- **Vacuum caveat:** standard VACUUM ANALYZE makes deleted-row space reusable by PostgreSQL but usually does not return most of that space to the operating system, so pg_database_size may not drop by the full number of deleted bytes. Check both the before/after report and the hosting provider's storage meter. Do not run VACUUM FULL as an improvised emergency action: it takes an exclusive lock and requires temporary disk space for a new copy of the table.
+- **Reported limit:** 500 MB for the prior free-tier setup. Confirm the current plan and storage meter in Supabase; plan limits and provider accounting can change.
+- **Observed old-project footprint:** 2,060,499 rows over about eight days, `dd_signals` table plus indexes about 1,537 MB, `details` JSONB about 504 MB, and `blocked_reasons` about 140 MB. The figures are historical observations from the old project, not a measurement of the new database.
+- **Retention is now automatic in the worker** when `DATABASE_URL` exists: the first maintenance run is scheduled five minutes after worker startup, then repeats every six hours. It removes expired `public.dd_signals` rows only, with separate autocommitted deletes in batches of at most 5,000 and a 100 ms pause between full batches.
+- **Emergency row-count rule:** if `dd_signals` is above 500,000 rows, the retention task tightens its target to at most three days. The disk monitor also requests three-day retention when physical database size exceeds the critical threshold. If `RETENTION_ENABLED=false`, deletion remains disabled.
+- **Physical-size caveat:** standard `VACUUM` lets PostgreSQL reuse dead-row space inside the database but does not return most space to the operating system. The `pg_database_size()` figure may stay high after pruning. The new monitor therefore logs both the current database size and signal row count, and calculates growth per day when a roughly 24-hour-old sample is available.
+- **Manual recovery remains available:** run **Diagnose database disk usage** first, then use **Prune dd_signals safely** with `confirm=false` to preview before choosing a confirmed prune. Automatic maintenance does not replace checking the provider's current storage meter.
 
-### Safe GitHub Actions sequence
+Never use an improvised `VACUUM FULL` as an emergency action: it takes an exclusive lock and needs temporary disk space for a new copy of the table. Reclaiming physical space from the operating system may require a planned `pg_repack` operation or a dump/restore, neither of which is performed by this worker change.
 
-1. Run **Diagnose database disk usage** and save the reported database size, largest tables, row-age buckets, and payload-size estimates.
-2. Run **Prune dd_signals safely** with days=3, batch_size=5000, and confirm=false. This is a dry run; it must delete nothing.
-3. Review the exact row count that would be removed. If acceptable, run the workflow again with days=3, batch_size=5000, and confirm=true.
-4. Run **Diagnose database disk usage** again and verify table count, database size, and provider-reported storage.
-5. Re-run **Signal frequency report** to measure ready/action-ready signal frequency on the seven-day window.
+## 8. Retention & Deduplication
 
-If the pre-prune diagnostic or the dry run fails, do not proceed to the confirmed prune until the error has been understood.
+### Implemented worker behavior
 
-## 8. Root Cause: Worker Write Rate
+- **Auto-retention:** seven days by default, configured through `RETENTION_DAYS`. Runs every six hours, with the first run five minutes after startup, using a direct PostgreSQL pool loaded from `src/ledger/pg-adapter.mjs`. This pool is separate from the scanner's REST database adapter.
+- **Emergency retention:** when `dd_signals` exceeds 500,000 rows, retain at most the most recent three days. A database size above `DISK_CRITICAL_MB` also requests three-day retention.
+- **Batched deletion:** deletes target only `public.dd_signals`. The batch size is configurable up to 5,000 rows and every full batch is followed by a 100 ms pause. The maintenance path never issues deletes against `dd_trades`, `dd_positions`, `dd_orders`, `dd_tradetron_events`, `position_ledger`, `webhook_events`, or `system_meta`.
+- **Deduplication:** five-minute default window through `DEDUP_WINDOW_MINUTES`. The in-memory key is `symbol:strategy`; same score within ±1, same stage, and same side are skipped only while within the window from the last successful insert. Stage or side changes still persist. Cache is process-local and capped by `DEDUP_CACHE_MAX`; a restart intentionally starts cold and stores the first eligible observation.
+- **Details trimming:** `trimDetails()` uses a dedicated main-signal allowlist and a separate options allowlist capped at 15 scalar fields. Null/undefined values, nested objects, non-finite numbers, and strings longer than 200 characters are omitted. Main signal details are intended to average below about 200 bytes per row; measure the actual stored JSONB size after deployment because records containing every BTC-regime field may be larger than that target. Options retain their core contract measurements and prioritized route/underlying context within the explicit field cap.
+- **Disk monitor:** checks every 30 minutes and logs `[Disk] dd_signals: X rows, db: Y MB`. It warns above `DISK_WARN_MB` (default 400 MB), requests emergency retention above `DISK_CRITICAL_MB` (default 450 MB), and reports growth above 50 MB/day when a baseline sample about 24 hours old is available.
+- **Failure policy:** maintenance errors are logged as warnings and do not terminate the scan loop. If `DATABASE_URL` is absent, retention and the disk monitor are disabled; the REST-based scanner continues unchanged. Set `DATABASE_URL` in Railway to the new Supabase PostgreSQL connection string without exposing it in logs.
 
-Approximately 250,000 observations/day is abnormally high for a scanner history table whose intended purpose is to measure actionable signal flow. The current engine inserts signal-history rows for each scanned MOMENTUM/SCALPING candidate whose stage is not WATCH, plus any WATCH row considered ready. With a broad instrument universe and repeated scan cycles, that can create a large history-write rate.
+### Expected impact (estimates, not guarantees)
 
-Investigate, without changing live behavior first:
+Baseline measured on the old project:
 
-- Whether the worker persists repeated (symbol, strategy) observations on every scan even when score, side, stage, and readiness have not changed.
-- Whether the worker has an intended sampling interval or should record only state transitions.
-- Whether scan frequency and the instrument universe changed around the period where the database grew rapidly.
-- Whether indexes and JSON payloads (details, blocked_reasons) significantly increase the table's actual total relation size.
+| Measure | Observed value |
+|---|---:|
+| Signal rows | 2,060,499 over about eight days |
+| `dd_signals` table plus indexes | 1,537 MB |
+| `details` JSONB | 504 MB |
+| `blocked_reasons` JSONB | 140 MB |
+| Estimated full-row footprint | Roughly 780 bytes/row (not the details-column size) |
+| Estimated `details` column average | Roughly 257 bytes/row |
 
-A possible future fix is to deduplicate identical (symbol, strategy, score) observations within five-minute buckets or store only meaningful transitions. That would require a separate reviewed worker/data design change and measurement plan. **This request does not change worker code, schema, score logic, or write behavior.**
+After retention, deduplication, and detail trimming are active:
 
-## 9. Decision guide
+- **Estimated write reduction:** 60–70%, depending on how often scores, stages, or sides change. This is an estimate; the worker's `[Dedup]` counters provide the actual skip rate.
+- **Estimated details reduction:** around 22% from the measured 257-byte average is the initial planning estimate, with a target main-signal average below about 200 bytes. Verify with the database diagnostics after real traffic; the trim allowlist by itself does not guarantee every JSON object is under 200 bytes.
+- **Combined growth estimate:** approximately 50–60% of the former growth rate. Actual database growth also includes indexes and writes to other tables, so monitor rather than assuming this target is achieved.
+
+### Configuration (environment variables)
+
+| Variable | Default | Effect |
+|---|---:|---|
+| `RETENTION_DAYS` | `7` | Days of signal history to retain in the ordinary run |
+| `RETENTION_ENABLED` | `true` | Master switch for automatic deletion |
+| `RETENTION_BATCH_SIZE` | `5000` | Rows per delete batch; values above 5,000 are rejected in favor of the default |
+| `DEDUP_ENABLED` | `true` | Enable the in-memory signal-observation cache |
+| `DEDUP_WINDOW_MINUTES` | `5` | Window for suppressing unchanged signal observations |
+| `DEDUP_CACHE_MAX` | `5000` | Maximum in-memory dedup entries |
+| `DISK_WARN_MB` | `400` | Database-size warning threshold |
+| `DISK_CRITICAL_MB` | `450` | Threshold that requests three-day retention |
+
+### Troubleshooting
+
+- **Retention does not run:** check Railway has `DATABASE_URL` set for the new Supabase project and search the logs for `[Retention]`. A missing variable disables maintenance but does not stop the scanner.
+- **Disk monitor is absent:** check `DATABASE_URL` and search for `[Disk]`. The growth-rate warning appears only after a sample roughly 24 hours old is available.
+- **Dedup seems too aggressive:** decrease `DEDUP_WINDOW_MINUTES` or temporarily set `DEDUP_ENABLED=false`. Compare `[Dedup]` skipped/candidate stats and remember that the cache is cold after restarts.
+- **Signals appear missing:** the history table intentionally does not persist routine `WATCH` rows. It records eligible `SETUP`/`CONFIRMED` rows, with stage and side changes not suppressed by dedup. Check the cache window and the signal stage before interpreting row count.
+- **Details fields are absent:** review the approved main/options allowlists in `worker/strategy.mjs`. Main fields such as RSI/VWAP and redundant BTC trend/reason strings are intentionally omitted; options have their own 15-field cap.
+- **Database size stays high after cleanup:** this is expected with normal PostgreSQL vacuum behavior. Check row count and growth rate; `pg_database_size()` may not shrink after deletions.
+
+## 9. Root Cause: Worker Write Rate
+
+The old worker persisted qualifying Momentum/Scalping signal history on each roughly one-minute analysis pass. It also wrote candidate options rows individually. With a broad universe, repeated observations of essentially unchanged signal states created high write amplification. A manual-only pruning workflow could not keep up with the rate at which history accumulated.
+
+The implemented deduplication limits repeated writes for the same `symbol:strategy` when score, stage, and side remain effectively unchanged within the configured window. Changes to stage or side continue to be written so the history still captures signal-state transitions. The disk monitor makes growth visible, while batched retention controls the age of rows left in `dd_signals`.
+
+These are persistence/operations changes only: signal scoring, risk gates, position handling, order handling, and trade logic are not changed by this policy.
+
+## 10. Decision guide
 
 - **Fewer than 2 unique ready tuples/day:** check date coverage and investigate readiness blockers before changing a score.
 - **2–8 unique ready tuples/day:** reasonable initial monitoring range; still verify event coverage and recorded trades.
