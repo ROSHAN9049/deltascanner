@@ -159,7 +159,6 @@ test('BTC live 1h shadow regime is displayed read-only when available', () => {
       btcTrend15m: 'BEAR',
       btcRegime: 'BULL_LOW_VOL',
       btcRegimeStatus: 'PASS',
-      btcRegimeReason: 'BTC regime: BULL_LOW_VOL (ATR 1.20%)',
       btcRegimeSource: 'live-1h',
       btcAtrPct: 1.2
     }
@@ -167,7 +166,8 @@ test('BTC live 1h shadow regime is displayed read-only when available', () => {
   const record = rows.find(row => row.gate === 'BTC regime');
   assert.equal(record.result, GATE_PASS);
   assert.equal(record.observedValue, 'BTC regime (live 1h shadow): BULL_LOW_VOL');
-  assert.match(record.blockReason, /^\(shadow\)/);
+  assert.equal(record.blockReason, 'shadow status PASS.');
+  assert.doesNotMatch(record.blockReason, /unavailable/i);
 });
 
 test('BTC live 1h shadow BLOCK is displayed but a worker BTC blocker retains priority', () => {
@@ -177,13 +177,13 @@ test('BTC live 1h shadow BLOCK is displayed but a worker BTC blocker retains pri
     details: {
       btcRegime: 'CHOPPY',
       btcRegimeStatus: 'BLOCK',
-      btcRegimeReason: 'BTC regime: CHOPPY (ATR 4.50%)',
       btcRegimeSource: 'live-1h'
     }
   }});
   const shadowRecord = shadowRows.find(row => row.gate === 'BTC regime');
   assert.equal(shadowRecord.result, GATE_BLOCK);
-  assert.match(shadowRecord.blockReason, /^\(shadow\)/);
+  assert.equal(shadowRecord.blockReason, 'shadow status BLOCK.');
+  assert.doesNotMatch(shadowRecord.blockReason, /unavailable/i);
 
   const blockedRows = buildRiskGovernorGates({ selected: {
     symbol: 'ETHUSD',

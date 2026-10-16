@@ -75,7 +75,9 @@ function dashboardBtcTrendApproximation({ selected, details, reasonText }) {
     return {
       status: shadowStatus,
       observed: `BTC regime (live 1h shadow): ${regime}`,
-      reason: `(shadow) ${String(details.btcRegimeReason || 'BTC 1h shadow status unavailable')}`
+      reason: shadowStatusValue === 'PASS' || shadowStatusValue === 'BLOCK'
+        ? `shadow status ${shadowStatusValue}.`
+        : 'BTC 1h shadow status unavailable'
     };
   }
 
