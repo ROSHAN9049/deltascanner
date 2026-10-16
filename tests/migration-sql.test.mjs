@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 const migrationUrl = new URL('../src/ledger/migrations/001_position_ledger.sql', import.meta.url);
 const migrationPath = fileURLToPath(migrationUrl);
 const sql = readFileSync(migrationPath, 'utf8');
-const positionLedgerBlock = sql.match(/CREATE TABLE\s+position_ledger\s*\(([\s\S]*?)\);/i)?.[1] ?? '';
+const positionLedgerBlock = sql.match(/CREATE TABLE(?:\s+IF NOT EXISTS)?\s+position_ledger\s*\(([\s\S]*?)\);/i)?.[1] ?? '';
 
 describe('PositionLedger migration SQL structure (text-only)', () => {
   test('migration file exists and is readable', () => {
@@ -19,12 +19,12 @@ describe('PositionLedger migration SQL structure (text-only)', () => {
   });
 
   test('migration creates exactly three tables', () => {
-    const matches = [...sql.matchAll(/CREATE TABLE\s+(\w+)/gi)];
+    const matches = [...sql.matchAll(/CREATE TABLE(?:\s+IF NOT EXISTS)?\s+(\w+)/gi)];
     assert.strictEqual(matches.length, 3);
   });
 
   test('migration creates the expected three table names', () => {
-    const tableNames = [...sql.matchAll(/CREATE TABLE\s+(\w+)/gi)]
+    const tableNames = [...sql.matchAll(/CREATE TABLE(?:\s+IF NOT EXISTS)?\s+(\w+)/gi)]
       .map(match => match[1].toLowerCase());
     assert.deepStrictEqual(tableNames, ['position_ledger', 'webhook_events', 'system_meta']);
   });
