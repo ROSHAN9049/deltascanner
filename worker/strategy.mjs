@@ -22,9 +22,9 @@ const MAIN_DETAIL_FIELDS = Object.freeze([
   'btcRegimeComputedAt'
 ]);
 
-// Core contract fields are preferred first. The explicit 15-field cap keeps
-// options history bounded while preserving the important compact contract and
-// route context. Fields absent from a strategy's existing details are omitted.
+// Option details have a hard 15-field cap. Prefer every core contract
+// measurement first, then execution safety/underlying identity. Strategy is
+// already a top-level dd_signals column, so it does not need a duplicate engine field.
 const OPTIONS_DETAIL_FIELDS = Object.freeze([
   'strike',
   'expiryMs',
@@ -38,14 +38,14 @@ const OPTIONS_DETAIL_FIELDS = Object.freeze([
   'volume',
   'openInterest',
   'dte',
-  'engine',
-  'signalOnly',
-  'tradetronRoute',
   'executionLocked',
   'routeConfigured',
+  'underlyingSymbol',
   'optionRouteReady',
   'underlyingScore',
-  'underlyingSymbol'
+  'engine',
+  'signalOnly',
+  'tradetronRoute'
 ]);
 
 function trimAllowedDetails(details, allowlist, maxFields) {
@@ -66,6 +66,14 @@ function trimAllowedDetails(details, allowlist, maxFields) {
   return trimmed;
 }
 
+function trimMainDetails(details) {
+  return trimAllowedDetails(details, MAIN_DETAIL_FIELDS, MAIN_DETAIL_FIELDS.length);
+}
+
+function trimOptionsDetails(details) {
+  return trimAllowedDetails(details, OPTIONS_DETAIL_FIELDS, 15);
+}
+
 /**
  * Keep persisted signal details compact and predictable. This helper changes
  * only history/cache payloads, not the values used to calculate live signals.
@@ -73,9 +81,9 @@ function trimAllowedDetails(details, allowlist, maxFields) {
 export function trimDetails(details, strategy) {
   const normalizedStrategy = String(strategy || '').toUpperCase();
   if (normalizedStrategy === 'OPTIONS_BUY' || normalizedStrategy === 'OPTIONS_SELL') {
-    return trimAllowedDetails(details, OPTIONS_DETAIL_FIELDS, 15);
+    return trimOptionsDetails(details);
   }
-  return trimAllowedDetails(details, MAIN_DETAIL_FIELDS, MAIN_DETAIL_FIELDS.length);
+  return trimMainDetails(details);
 }
 
 export function closed(candles) {
