@@ -87,13 +87,16 @@ test('options details use a separate allowlist with no more than 15 fields', () 
   assert.equal('nested' in trimmed, false);
 });
 
-test('options sell details preserve defined-risk spread and hedge fields', () => {
+test('options sell details preserve defined-risk spread, hedge fields, and Greeks', () => {
   const trimmed = trimDetails({
     optionType: 'CALL',
     strike: 90000,
     expiryMs: 1790000000000,
     dte: 4,
     delta: 0.25,
+    gamma: 0.004,
+    theta: -0.8,
+    vega: 2.5,
     bid: 120,
     ask: 123,
     volume: 50,
@@ -111,7 +114,11 @@ test('options sell details preserve defined-risk spread and hedge fields', () =>
     nested: { bad: true }
   }, 'OPTIONS_SELL');
 
-  assert.equal(Object.keys(trimmed).length, 15);
+  assert.ok(Object.keys(trimmed).length <= 18);
+  assert.deepEqual(
+    { gamma: trimmed.gamma, theta: trimmed.theta, vega: trimmed.vega },
+    { gamma: 0.004, theta: -0.8, vega: 2.5 }
+  );
   assert.equal(trimmed.hedgeSymbol, 'C-BTC-95000-301026');
   assert.equal(trimmed.hedgeStrike, 95000);
   assert.equal(trimmed.hedgeDelta, 0.1);

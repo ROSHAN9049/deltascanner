@@ -24,10 +24,10 @@ const MAIN_DETAIL_FIELDS = Object.freeze([
   'btcRegimeComputedAt'
 ]);
 
-// Options use an independent, strategy-aware allowlist. Keep each output to
-// 15 scalar fields and prioritize the metrics that distinguish long-option
-// selection from defined-risk short spreads. Strategy is already a top-level
-// dd_signals column and does not need a duplicate engine field.
+// Options use independent, strategy-aware allowlists. OPTIONS_BUY keeps 15
+// scalar fields; OPTIONS_SELL keeps at most 18 so it can preserve the Greeks
+// needed for short-spread history. Strategy is already a top-level dd_signals
+// column and does not need a duplicate engine field.
 const OPTIONS_BUY_DETAIL_FIELDS = Object.freeze([
   'optionType',
   'strike',
@@ -52,6 +52,9 @@ const OPTIONS_SELL_DETAIL_FIELDS = Object.freeze([
   'expiryMs',
   'dte',
   'delta',
+  'gamma',
+  'theta',
+  'vega',
   'bid',
   'ask',
   'volume',
