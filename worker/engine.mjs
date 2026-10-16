@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import WebSocket from 'ws';
 import { CONFIG } from '../server/config.js';
 import { DeltaAdapter } from './delta-adapter.mjs';
-import { analyse, analyseOption } from './strategy.mjs';
+import { analyse, analyseOption, trimDetails } from './strategy.mjs';
 import * as db from '../server/db.js';
 import { SIGNAL_RESERVATION_TTL_MS, TradetronBridge, withSignalReservations } from '../server/tradetron.js';
 import { buildTradetronPnlHistoryRows, TradetronDeveloperApi } from '../server/tradetron-developer-api.mjs';
@@ -25,6 +25,60 @@ const roundDown = (v, step) => {
 };
 const roundTick = (v, tick) => tick > 0 ? Math.round(v / tick) * tick : v;
 export const OPTION_UNDERLYINGS = Object.freeze(['BTC', 'ETH', 'XAUT']);
+
+function envBoolean(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || String(raw).trim() === '') return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(String(raw).trim().toLowerCase());
+}
+
+function envInteger(name, fallback, min, max) {
+  const raw = process.env[name];
+  if (raw === undefined || String(raw).trim() === '') return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    console.warn(`[Config] Invalid ${name}; using default ${fallback}`);
+    return fallback;
+  }
+  return parsed;
+}
+
+function safeMaintenanceError(error) {
+  let message = String(error?.message || error || 'Unknown maintenance error');
+  if (process.env.DATABASE_URL) message = message.split(process.env.DATABASE_URL).join('[REDACTED]');
+  if (process.env.SUPABASE_DB_URL) message = message.split(process.env.SUPABASE_DB_URL).join('[REDACTED]');
+  return message
+    .replace(/postgres(?:ql)?:\/\/[^\s"'\x60]+/gi, '[REDACTED DATABASE URL]')
+    .replace(/[\r\n\t]+/g, ' ')
+    .slice(0, 300);
+}
+
+const RETENTION_ENABLED = envBoolean('RETENTION_ENABLED', true);
+const RETENTION_DAYS = envInteger('RETENTION_DAYS', 7, 1, 3650);
+const RETENTION_BATCH_SIZE = envInteger('RETENTION_BATCH_SIZE', 5000, 1, 5000);
+const DEDUP_ENABLED = envBoolean('DEDUP_ENABLED', true);
+const DEDUP_WINDOW_MINUTES = envInteger('DEDUP_WINDOW_MINUTES', 5, 1, 1440);
+const DEDUP_CACHE_MAX = envInteger('DEDUP_CACHE_MAX', 5000, 1, 100000);
+const DISK_WARN_MB = envInteger('DISK_WARN_MB', 400, 1, 1000000);
+const DISK_CRITICAL_MB = envInteger('DISK_CRITICAL_MB', 450, 1, 1000000);
+const MAINTENANCE_START_DELAY_MS = 5 * 60 * 1000;
+const RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const DISK_MONITOR_INTERVAL_MS = 30 * 60 * 1000;
+const DISK_SAMPLE_WINDOW_MS = 25 * 60 * 60 * 1000;
+const MB_BYTES = 1024 * 1024;
+const SIGNAL_RETENTION_DELETE_SQL = `
+  WITH batch AS (
+    SELECT id
+    FROM public.dd_signals
+    WHERE captured_at < NOW() - ($1::int * INTERVAL '1 day')
+    ORDER BY captured_at ASC
+    LIMIT $2::int
+  )
+  DELETE FROM public.dd_signals AS target
+  USING batch
+  WHERE target.id = batch.id
+  RETURNING target.id
+`;
 
 export function duplicatePositionBlocker(openPositions, symbol) {
   const selected = String(symbol || '').toUpperCase();
@@ -95,6 +149,26 @@ export class DeltaEngine {
     this.candleWarmCursor = 0;
     this.candleFetchAt = new Map();
     this.lastLeaseContentionLogAt = 0;
+
+    // Maintenance uses the direct PostgreSQL pool only; scanner writes remain
+    // on the existing Supabase REST adapter.
+    this.maintenancePool = null;
+    this.maintenancePoolPromise = null;
+    this.closeMaintenancePool = null;
+    this.maintenanceStarted = false;
+    this.retentionStartupTimer = null;
+    this.retentionInterval = null;
+    this.diskMonitorInterval = null;
+    this.retentionInFlight = null;
+    this.retentionInFlightDays = null;
+    this.pendingRetentionRequest = null;
+    this.diskSamples = [];
+
+    this.signalDedupCache = new Map();
+    this.dedupAnalysisCycles = 0;
+    this.dedupTotalCandidates = 0;
+    this.dedupSkippedCount = 0;
+    this.dedupInsertedCount = 0;
   }
 
   async log(level, message, data) {
@@ -902,6 +976,361 @@ export class DeltaEngine {
   }
 
 
+  async maintenanceLog(level, message, data = {}) {
+    const writer = level === 'ERROR' ? console.error : level === 'WARN' ? console.warn : console.log;
+    writer(message);
+    try {
+      await this.log(level, message, data);
+    } catch (error) {
+      console.warn('[Maintenance] Log persistence failed:', safeMaintenanceError(error));
+    }
+  }
+
+  async getMaintenancePool() {
+    if (!process.env.DATABASE_URL || !process.env.DATABASE_URL.trim()) return null;
+    if (this.maintenancePool) return this.maintenancePool;
+    if (!this.maintenancePoolPromise) {
+      this.maintenancePoolPromise = import('../src/ledger/pg-adapter.mjs')
+        .then(adapter => {
+          this.maintenancePool = adapter.pool;
+          this.closeMaintenancePool = adapter.closePool;
+          return adapter.pool;
+        })
+        .catch(error => {
+          this.maintenancePoolPromise = null;
+          throw error;
+        });
+    }
+    return this.maintenancePoolPromise;
+  }
+
+  startMaintenanceTasks() {
+    if (this.maintenanceStarted) return;
+    this.maintenanceStarted = true;
+
+    if (!process.env.DATABASE_URL || !process.env.DATABASE_URL.trim()) {
+      const retentionMessage = '[Retention] Retention disabled (no DATABASE_URL)';
+      const diskMessage = '[Disk] Disk monitor disabled (no DATABASE_URL)';
+      console.warn(retentionMessage);
+      console.warn(diskMessage);
+      void this.log('WARN', retentionMessage, {}).catch(() => {});
+      void this.log('WARN', diskMessage, {}).catch(() => {});
+      return;
+    }
+
+    if (RETENTION_ENABLED) {
+      this.retentionStartupTimer = setTimeout(() => {
+        this.retentionStartupTimer = null;
+        void (async () => {
+          await this.runSignalRetention({ reason: 'startup' });
+          if (this.running && !this.retentionInterval) {
+            this.retentionInterval = setInterval(() => {
+              void this.runSignalRetention({ reason: 'scheduled' });
+            }, RETENTION_INTERVAL_MS);
+            this.retentionInterval.unref?.();
+          }
+        })().catch(error => {
+          console.warn('[Retention] Scheduler error; worker continues:', safeMaintenanceError(error));
+        });
+      }, MAINTENANCE_START_DELAY_MS);
+      this.retentionStartupTimer.unref?.();
+    } else {
+      const message = '[Retention] Retention disabled (RETENTION_ENABLED=false)';
+      console.warn(message);
+      void this.log('WARN', message, {}).catch(() => {});
+    }
+
+    this.diskMonitorInterval = setInterval(() => {
+      void this.checkDiskHealth();
+    }, DISK_MONITOR_INTERVAL_MS);
+    this.diskMonitorInterval.unref?.();
+  }
+
+  async runSignalRetention({ daysOverride = null, reason = 'scheduled' } = {}) {
+    if (!process.env.DATABASE_URL || !process.env.DATABASE_URL.trim()) {
+      await this.maintenanceLog('WARN', '[Retention] Retention disabled (no DATABASE_URL)', { reason });
+      return;
+    }
+    if (!RETENTION_ENABLED) {
+      await this.maintenanceLog('WARN', '[Retention] Skipped because RETENTION_ENABLED=false', { reason });
+      return;
+    }
+
+    const requestedDays = Number.isInteger(daysOverride) && daysOverride >= 1 && daysOverride <= 3650
+      ? daysOverride
+      : RETENTION_DAYS;
+
+    if (this.retentionInFlight) {
+      if (requestedDays < (this.retentionInFlightDays ?? RETENTION_DAYS) &&
+          (!this.pendingRetentionRequest || requestedDays < this.pendingRetentionRequest.days)) {
+        this.pendingRetentionRequest = { daysOverride: requestedDays, days: requestedDays, reason };
+      }
+      await this.retentionInFlight;
+      return;
+    }
+
+    this.retentionInFlightDays = requestedDays;
+    this.retentionInFlight = this.performSignalRetention(requestedDays, reason);
+    let effectiveDays = requestedDays;
+    try {
+      const result = await this.retentionInFlight;
+      effectiveDays = result?.effectiveDays ?? requestedDays;
+    } catch (error) {
+      // performSignalRetention normally contains its own errors; retain this
+      // outer guard so maintenance can never bring down the scan loop.
+      await this.maintenanceLog('WARN', '[Retention] Task failed; worker continues: ' + safeMaintenanceError(error), { reason });
+    } finally {
+      this.retentionInFlight = null;
+      this.retentionInFlightDays = null;
+    }
+
+    const pending = this.pendingRetentionRequest;
+    this.pendingRetentionRequest = null;
+    if (pending && pending.days < effectiveDays && this.running) {
+      await this.runSignalRetention({ daysOverride: pending.daysOverride, reason: pending.reason });
+    }
+  }
+
+  async performSignalRetention(requestedDays, reason) {
+    const startedAt = Date.now();
+    let totalDeleted = 0;
+    let effectiveDays = requestedDays;
+
+    try {
+      const pool = await this.getMaintenancePool();
+      if (!pool) {
+        await this.maintenanceLog('WARN', '[Retention] Retention disabled (no DATABASE_URL)', { reason });
+        return { effectiveDays, totalDeleted };
+      }
+
+      const countResult = await pool.query('SELECT COUNT(*)::text AS signal_rows FROM public.dd_signals');
+      const rowCount = Number(countResult.rows?.[0]?.signal_rows || 0);
+      if (rowCount > 500000) {
+        effectiveDays = Math.min(effectiveDays, 3);
+        await this.maintenanceLog('WARN',
+          `[Retention] Emergency row-count threshold exceeded (${rowCount}); pruning to ${effectiveDays} days`,
+          { reason, signalRows: rowCount, requestedDays, effectiveDays });
+      } else {
+        await this.maintenanceLog('INFO',
+          `[Retention] Starting ${effectiveDays}-day dd_signals retention`,
+          { reason, signalRows: rowCount, batchSize: RETENTION_BATCH_SIZE });
+      }
+
+      while (true) {
+        const result = await pool.query(SIGNAL_RETENTION_DELETE_SQL, [effectiveDays, RETENTION_BATCH_SIZE]);
+        const deleted = Array.isArray(result.rows) ? result.rows.length : 0;
+        totalDeleted += deleted;
+        const elapsedSeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+        await this.maintenanceLog('INFO',
+          `[Retention] Deleted ${deleted} rows (total ${totalDeleted}, elapsed ${elapsedSeconds}s)`,
+          { reason, batch: deleted, totalDeleted, elapsedSeconds: Number(elapsedSeconds), retentionDays: effectiveDays });
+
+        if (deleted === 0 || deleted < RETENTION_BATCH_SIZE) break;
+        await sleep(100);
+      }
+
+      return { effectiveDays, totalDeleted };
+    } catch (error) {
+      await this.maintenanceLog('WARN',
+        '[Retention] Task failed; worker continues: ' + safeMaintenanceError(error),
+        { reason, totalDeleted, retentionDays: effectiveDays });
+      return { effectiveDays, totalDeleted };
+    }
+  }
+
+  async checkDiskHealth() {
+    if (!process.env.DATABASE_URL || !process.env.DATABASE_URL.trim()) {
+      await this.maintenanceLog('WARN', '[Disk] Disk monitor disabled (no DATABASE_URL)', {});
+      return;
+    }
+
+    try {
+      const pool = await this.getMaintenancePool();
+      if (!pool) return;
+      const result = await pool.query(`
+        SELECT
+          pg_database_size(current_database()) AS db_bytes,
+          (SELECT COUNT(*)::text FROM public.dd_signals) AS signal_rows
+      `);
+      const row = result.rows?.[0] || {};
+      const dbBytes = Number(row.db_bytes);
+      const signalRows = Number(row.signal_rows);
+      if (!Number.isFinite(dbBytes) || !Number.isFinite(signalRows)) {
+        throw new Error('Disk health query returned an invalid database size or signal row count');
+      }
+
+      const now = Date.now();
+      const current = { at: now, bytes: dbBytes, rows: signalRows };
+      this.diskSamples.push(current);
+      this.diskSamples = this.diskSamples.filter(sample => now - sample.at <= DISK_SAMPLE_WINDOW_MS);
+
+      const dbMb = dbBytes / MB_BYTES;
+      await this.maintenanceLog('INFO',
+        `[Disk] dd_signals: ${signalRows} rows, db: ${dbMb.toFixed(1)} MB`,
+        { signalRows, dbBytes, dbMb: Number(dbMb.toFixed(2)) });
+
+      if (dbMb > DISK_WARN_MB) {
+        await this.maintenanceLog('WARN',
+          `[Disk] WARNING: database size ${dbMb.toFixed(1)} MB exceeds ${DISK_WARN_MB} MB`,
+          { signalRows, dbMb: Number(dbMb.toFixed(2)), thresholdMb: DISK_WARN_MB });
+      }
+
+      const dayMs = 24 * 60 * 60 * 1000;
+      const baselineCandidates = this.diskSamples.filter(sample => {
+        const ageMs = now - sample.at;
+        return ageMs >= 23 * 60 * 60 * 1000 && ageMs <= 25 * 60 * 60 * 1000;
+      });
+      if (baselineCandidates.length > 0) {
+        const baseline = baselineCandidates.sort((a, b) =>
+          Math.abs((now - a.at) - dayMs) - Math.abs((now - b.at) - dayMs)
+        )[0];
+        const elapsedMs = now - baseline.at;
+        const growthMbPerDay = ((dbBytes - baseline.bytes) / elapsedMs) * dayMs / MB_BYTES;
+        if (growthMbPerDay > 50) {
+          await this.maintenanceLog('WARN',
+            `[Disk] ⚠️ Disk growth rate high: ${growthMbPerDay.toFixed(1)} MB/day`,
+            { growthMbPerDay: Number(growthMbPerDay.toFixed(2)), baselineAt: new Date(baseline.at).toISOString(), signalRows });
+        }
+      }
+
+      if (dbMb > DISK_CRITICAL_MB) {
+        await this.maintenanceLog('WARN',
+          `[Disk] CRITICAL: database size ${dbMb.toFixed(1)} MB exceeds ${DISK_CRITICAL_MB} MB; requesting 3-day retention`,
+          { signalRows, dbMb: Number(dbMb.toFixed(2)), thresholdMb: DISK_CRITICAL_MB });
+        await this.runSignalRetention({ daysOverride: 3, reason: 'disk-critical' });
+      }
+    } catch (error) {
+      await this.maintenanceLog('WARN',
+        '[Disk] Monitor check failed; worker continues: ' + safeMaintenanceError(error),
+        {});
+    }
+  }
+
+  async stopMaintenanceTasks() {
+    if (this.retentionStartupTimer) clearTimeout(this.retentionStartupTimer);
+    if (this.retentionInterval) clearInterval(this.retentionInterval);
+    if (this.diskMonitorInterval) clearInterval(this.diskMonitorInterval);
+    this.retentionStartupTimer = null;
+    this.retentionInterval = null;
+    this.diskMonitorInterval = null;
+
+    if (this.closeMaintenancePool) {
+      try {
+        await this.closeMaintenancePool();
+      } catch (error) {
+        console.warn('[Maintenance] Failed to close PostgreSQL pool:', safeMaintenanceError(error));
+      }
+    }
+    this.maintenancePool = null;
+    this.maintenancePoolPromise = null;
+    this.closeMaintenancePool = null;
+  }
+
+  isDuplicateSignalObservation(row, now = Date.now()) {
+    if (!DEDUP_ENABLED) return false;
+    const key = `${String(row?.symbol || '').toUpperCase()}:${String(row?.strategy || '').toUpperCase()}`;
+    const cached = this.signalDedupCache.get(key);
+    if (!cached) return false;
+    const sameScore = Math.abs(n(row?.score) - cached.score) <= 1;
+    const sameStage = String(row?.stage || '') === cached.stage;
+    const sameSide = String(row?.side || '') === cached.side;
+    return sameScore && sameStage && sameSide && (now - cached.insertedAt) < DEDUP_WINDOW_MINUTES * 60 * 1000;
+  }
+
+  rememberSignalObservation(row, insertedAt = Date.now()) {
+    if (!DEDUP_ENABLED) return;
+    const key = `${String(row?.symbol || '').toUpperCase()}:${String(row?.strategy || '').toUpperCase()}`;
+    if (!key || key === ':') return;
+    if (this.signalDedupCache.has(key)) this.signalDedupCache.delete(key);
+    this.signalDedupCache.set(key, {
+      score: n(row?.score),
+      stage: String(row?.stage || ''),
+      side: String(row?.side || ''),
+      insertedAt
+    });
+    while (this.signalDedupCache.size > DEDUP_CACHE_MAX) {
+      const oldest = this.signalDedupCache.keys().next().value;
+      if (oldest === undefined) break;
+      this.signalDedupCache.delete(oldest);
+    }
+  }
+
+  async insertSignalHistoryRow(row) {
+    this.dedupTotalCandidates += 1;
+    let duplicate = false;
+    try {
+      duplicate = this.isDuplicateSignalObservation(row);
+    } catch (error) {
+      console.warn('[Dedup] Cache check failed; persisting observation:', safeMaintenanceError(error));
+    }
+    if (duplicate) {
+      this.dedupSkippedCount += 1;
+      return false;
+    }
+
+    await db.insert('dd_signals', row);
+    this.dedupInsertedCount += 1;
+    try {
+      this.rememberSignalObservation(row);
+    } catch (error) {
+      console.warn('[Dedup] Cache update failed; persistence succeeded:', safeMaintenanceError(error));
+    }
+    return true;
+  }
+
+  async insertSignalHistoryBatch(rows) {
+    const candidates = Array.isArray(rows) ? rows : [];
+    this.dedupTotalCandidates += candidates.length;
+    const accepted = [];
+
+    for (const row of candidates) {
+      let duplicate = false;
+      try {
+        duplicate = this.isDuplicateSignalObservation(row);
+      } catch (error) {
+        // A broken cache must not suppress a database write.
+        console.warn('[Dedup] Cache check failed; persisting observation:', safeMaintenanceError(error));
+      }
+      if (duplicate) {
+        this.dedupSkippedCount += 1;
+      } else {
+        accepted.push(row);
+      }
+    }
+
+    if (accepted.length === 0) return 0;
+    await db.insertMany('dd_signals', accepted);
+    this.dedupInsertedCount += accepted.length;
+    for (const row of accepted) {
+      try {
+        this.rememberSignalObservation(row);
+      } catch (error) {
+        console.warn('[Dedup] Cache update failed; persistence succeeded:', safeMaintenanceError(error));
+      }
+    }
+    return accepted.length;
+  }
+
+  async logDedupStatsIfDue() {
+    if (this.dedupAnalysisCycles === 0 || this.dedupAnalysisCycles % 100 !== 0) return;
+    const reduction = this.dedupTotalCandidates
+      ? (this.dedupSkippedCount / this.dedupTotalCandidates) * 100
+      : 0;
+    const message = `[Dedup] Skipped ${this.dedupSkippedCount} / ${this.dedupTotalCandidates} (${reduction.toFixed(1)}% reduction)`;
+    console.log(message);
+    try {
+      await this.log('INFO', message, {
+        analysisCycles: this.dedupAnalysisCycles,
+        totalCandidates: this.dedupTotalCandidates,
+        skippedCount: this.dedupSkippedCount,
+        insertedCount: this.dedupInsertedCount,
+        reductionPct: Number(reduction.toFixed(2))
+      });
+    } catch (error) {
+      console.warn('[Dedup] Stats logging failed; worker continues:', safeMaintenanceError(error));
+    }
+  }
+
   async analyseOptions(futuresItems, account, settings, openPositions) {
     if (settings.options_enabled === false) {
       this.lastOptionSignals = [];
@@ -964,7 +1393,7 @@ export class DeltaEngine {
             notional: q * s.mark * cv,
             risk: q * s.mark * (Math.max(1, n(settings.options_buy_stop_pct || 25)) / 100) * cv,
             blocked, executionLocked, ready };
-          await db.insert('dd_signals', {
+          await this.insertSignalHistoryRow({
             symbol: row.symbol, product_id: n(best.ticker.product_id || best.ticker.id),
             rank: 1, strategy: 'OPTIONS_BUY', price: row.mark, change_24h: row.underlyingChange,
             turnover_usd: n(best.ticker.turnover_usd || best.ticker.turnover), spread_pct: row.spreadPct,
@@ -975,11 +1404,11 @@ export class DeltaEngine {
             stop_price: row.sl, tp1_price: row.tp1, tp_price: row.tp, qty_contracts: row.qty,
             notional: row.notional, risk_usd: row.risk, fee_risk_ratio: 0, ready,
             blocked_reasons: blocked,
-            details: { engine: 'OPTIONS_BUY', optionType: row.optionType, strike: row.strike,
+            details: trimDetails({ engine: 'OPTIONS_BUY', optionType: row.optionType, strike: row.strike,
               dte: row.dte, expiryMs: row.expiryMs, delta: row.delta, gamma: row.gamma, theta: row.theta,
               vega: row.vega, bid: row.bid, ask: row.ask, openInterest: row.oi, volume: row.volume,
               underlyingSymbol: row.underlyingSymbol, underlyingScore: row.underlyingScore,
-              executionLocked, routeConfigured, signalOnly: CONFIG.signalOnly, tradetronRoute: 'tt_option_*' }
+              executionLocked, routeConfigured, signalOnly: CONFIG.signalOnly, tradetronRoute: 'tt_option_*' }, 'OPTIONS_BUY')
           });
           out.push(row);
         }
@@ -1020,7 +1449,7 @@ export class DeltaEngine {
             hedgeSymbol: hedge?.symbol || '', hedgeStrike: hedge?.strike || 0, hedgeDelta: hedge?.delta || 0,
             credit, maxRiskPerSpread, notional: Math.max(0, credit * q), risk: maxRiskPerSpread * q,
             blocked, executionLocked, ready, optionRouteReady };
-          await db.insert('dd_signals', {
+          await this.insertSignalHistoryRow({
             symbol: row.symbol, product_id: n(best.ticker.product_id || best.ticker.id),
             rank: 1, strategy: 'OPTIONS_SELL', price: row.mark, change_24h: row.underlyingChange,
             turnover_usd: n(best.ticker.turnover_usd || best.ticker.turnover), spread_pct: row.spreadPct,
@@ -1031,12 +1460,12 @@ export class DeltaEngine {
             stop_price: 0, tp1_price: 0, tp_price: 0, qty_contracts: row.qty,
             notional: row.notional, risk_usd: row.risk, fee_risk_ratio: 0, ready: row.ready,
             blocked_reasons: blocked,
-            details: { engine: 'OPTIONS_SELL', optionType: row.optionType, strike: row.strike,
+            details: trimDetails({ engine: 'OPTIONS_SELL', optionType: row.optionType, strike: row.strike,
               dte: row.dte, expiryMs: row.expiryMs, delta: row.delta, bid: row.bid, ask: row.ask,
               openInterest: row.oi, volume: row.volume, hedgeSymbol: row.hedgeSymbol,
               hedgeStrike: row.hedgeStrike, hedgeDelta: row.hedgeDelta, credit: row.credit,
               maxRiskPerSpread: row.maxRiskPerSpread, executionLocked: true, optionRouteReady: row.optionRouteReady, signalOnly: CONFIG.signalOnly, tradetronRoute: 'tt_option_*',
-              definedRiskOnly: settings.options_sell_defined_risk_only !== false }
+              definedRiskOnly: settings.options_sell_defined_risk_only !== false }, 'OPTIONS_SELL')
           });
           out.push(row);
         }
@@ -1047,10 +1476,12 @@ export class DeltaEngine {
   }
 
   async analyseUniverse(account, settings, openPositions, trades) {
+    this.dedupAnalysisCycles += 1;
     const btc = this.btcSymbol();
     if (!btc) {
       this.lastSignals = [];
       await this.log('WARN', 'BTC regime unavailable; entries fail closed', {});
+      await this.logDedupStatsIfDue();
       return;
     }
     const btc5 = this.getCandles(btc, '5m');
@@ -1130,13 +1561,12 @@ export class DeltaEngine {
           risk_usd: size ? size.risk : 0, fee_risk_ratio: s.feeRiskRatio,
           ready: s.ready && gate.reasons.length === 0, blocked_reasons: gate.reasons,
           cached_at: iso(),
-          details: {
+          details: trimDetails({
             rsi: s.rsi, vwap: s.vwap, fee: s.takerFee, candlesFresh: s.candlesFresh,
             localScore: s.localScore, btcRegimeOverride: s.btcRegimeOverride,
             btcOverrideScoreMin: s.btcOverrideScoreMin, btcOverrideVolumeMin: s.btcOverrideVolumeMin,
             rangeAtr: s.rangeAtr,
             emaDistanceAtr: s.emaDistanceAtr,
-            // Persist the existing 5m/15m BTC trend labels for offline comparison.
             btcTrend5m: s.btcTrend,
             btcTrend15m: s.btcConfirmTrend,
             btcRegime: shadowRegime?.btcRegime ?? null,
@@ -1146,7 +1576,7 @@ export class DeltaEngine {
             btcAtrPct: shadowRegime?.btcAtrPct ?? null,
             btcRegimeComputedAt: shadowRegime?.btcRegimeComputedAt ?? null,
             fullMarketScan: true
-          }
+          }, strategyName)
         };
         signalCacheRows.push(cacheRow);
         // Keep durable signal history for actionable states only. WATCH states
@@ -1172,7 +1602,7 @@ export class DeltaEngine {
     // Persist actionable history in one request before caching/routing signals.
     // This keeps the 231-symbol scanner from spending hundreds of sequential
     // HTTP round-trips on routine SETUP/CONFIRMED records.
-    if (signalHistoryRows.length) await db.insertMany('dd_signals', signalHistoryRows);
+    if (signalHistoryRows.length) await this.insertSignalHistoryBatch(signalHistoryRows);
     const optionSignals = await this.analyseOptions(out, account, settings, openPositions || []);
     const byUnderlying = new Map();
     for (const s of optionSignals) {
@@ -1243,6 +1673,7 @@ export class DeltaEngine {
     await db.upsertMany('dd_option_cache', optionCacheRows, 'cache_key');
 
     this.lastSignals = out;
+    await this.logDedupStatsIfDue();
   }
 
   async findExistingClient(client) {
@@ -2581,6 +3012,7 @@ export class DeltaEngine {
   async run() {
     if (!CONFIG.signalOnly || CONFIG.directDeltaExecutionEnabled) throw new Error('Production direct execution disabled; scanner must be SIGNAL_ONLY');
     this.running = true;
+    this.startMaintenanceTasks();
     this.connectWs();
     await this.log('INFO', 'Delta production SIGNAL_ONLY worker started', { workerId: CONFIG.workerId });
     while (this.running) {
@@ -2611,6 +3043,7 @@ export class DeltaEngine {
   async stop() {
     this.running = false;
     try { this.ws?.close(); } catch {}
+    await this.stopMaintenanceTasks();
     await this.releaseLease();
   }
 }
