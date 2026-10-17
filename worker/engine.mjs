@@ -13,6 +13,7 @@ import { CANDLE_WARMUP_BATCH_SIZE, CANDLE_WARMUP_RETRY_MS, planCandleWarmup } fr
 import { isOptionsExecutionAllowed, OPTIONS_EXECUTION_LOCK_REASON } from './options-execution-lock.mjs';
 import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from './signal-failure-diagnostics.mjs';
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
+import { buildApiDerivedTrackingPlan } from './tradetron-derived-trades.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const n = v => Number.isFinite(+v) ? +v : 0;
@@ -214,6 +215,20 @@ export class DeltaEngine {
     this.tradetronDeveloperSyncInFlight = (async () => {
       try {
         const result = await this.tradetronDeveloperApi.fetchSnapshot();
+        let notificationResult = null;
+        let notificationFetchError = null;
+        try {
+          notificationResult = await this.tradetronDeveloperApi.listNotifications();
+        } catch (notificationError) {
+          notificationFetchError = notificationError;
+        }
+        // Record API poll transitions in a separate, display-only store. These
+        // observations never feed dd_trades, sizing, caps, gates or order logic.
+        await this.trackTradetronDerivedPositions(
+          result.snapshots,
+          notificationResult?.notifications || [],
+          attemptedAt
+        );
         // Save the verified read-only snapshot separately from webhook dd_positions.
         // Do not create fills or convert these records into trade-ledger rows.
         if (Array.isArray(result.snapshots) && result.snapshots.length) {
@@ -265,37 +280,40 @@ export class DeltaEngine {
         // The notifications endpoint is read-only and is persisted separately
         // from authenticated fill events. Notification text is never promoted
         // to a dd_positions/dd_trades ledger row.
-        try {
-          const notificationResult = await this.tradetronDeveloperApi.listNotifications();
-          if (notificationResult.notifications.length) {
-            await db.upsertMany('dd_tradetron_developer_notifications', notificationResult.notifications, 'notification_id');
+        if (notificationResult) {
+          try {
+            if (notificationResult.notifications.length) {
+              await db.upsertMany('dd_tradetron_developer_notifications', notificationResult.notifications, 'notification_id');
+            }
+            await db.upsert('dd_tradetron_developer_notification_sync_state', {
+              id: 1,
+              status: 'OK',
+              last_attempt_at: attemptedAt,
+              last_success_at: notificationResult.capturedAt,
+              notification_count: notificationResult.returnedCount,
+              last_error: null,
+              updated_at: iso()
+            }, 'id');
+            await this.log('INFO', 'Tradetron Developer API notifications sync', {
+              returnedCount: notificationResult.returnedCount,
+              storedCount: notificationResult.storedCount
+            });
+          } catch (notificationError) {
+            const cleanMessage = String(notificationError?.message || 'Tradetron Developer API notifications sync failed').slice(0, 300);
+            await db.upsert('dd_tradetron_developer_notification_sync_state', {
+              id: 1, status: 'ERROR', last_attempt_at: attemptedAt, last_error: cleanMessage, updated_at: iso()
+            }, 'id').catch(() => {});
+            await this.log('WARN', 'Tradetron Developer API notifications persistence failed', {
+              code: notificationError?.code || null, status: notificationError?.status || null, error: cleanMessage
+            });
           }
+        } else if (notificationFetchError) {
+          const cleanMessage = String(notificationFetchError?.message || 'Tradetron Developer API notifications sync failed').slice(0, 300);
           await db.upsert('dd_tradetron_developer_notification_sync_state', {
-            id: 1,
-            status: 'OK',
-            last_attempt_at: attemptedAt,
-            last_success_at: notificationResult.capturedAt,
-            notification_count: notificationResult.returnedCount,
-            last_error: null,
-            updated_at: iso()
-          }, 'id');
-          await this.log('INFO', 'Tradetron Developer API notifications sync', {
-            returnedCount: notificationResult.returnedCount,
-            storedCount: notificationResult.storedCount
-          });
-        } catch (notificationError) {
-          const cleanMessage = String(notificationError?.message || 'Tradetron Developer API notifications sync failed').slice(0, 300);
-          await db.upsert('dd_tradetron_developer_notification_sync_state', {
-            id: 1,
-            status: 'ERROR',
-            last_attempt_at: attemptedAt,
-            last_error: cleanMessage,
-            updated_at: iso()
+            id: 1, status: 'ERROR', last_attempt_at: attemptedAt, last_error: cleanMessage, updated_at: iso()
           }, 'id').catch(() => {});
           await this.log('WARN', 'Tradetron Developer API notifications sync failed', {
-            code: notificationError?.code || null,
-            status: notificationError?.status || null,
-            error: cleanMessage
+            code: notificationFetchError?.code || null, status: notificationFetchError?.status || null, error: cleanMessage
           });
         }
       } catch (error) {
@@ -317,6 +335,60 @@ export class DeltaEngine {
 
     try { await this.tradetronDeveloperSyncInFlight; }
     finally { this.tradetronDeveloperSyncInFlight = null; }
+  }
+
+  async trackTradetronDerivedPositions(snapshots, notifications, detectedAt) {
+    try {
+      const previous = await db.select(
+        'dd_api_derived_position_snapshots',
+        'is_current=eq.true&select=*&limit=5000'
+      );
+      const plan = buildApiDerivedTrackingPlan({
+        previousObservations: previous || [],
+        snapshots: Array.isArray(snapshots) ? snapshots : [],
+        notifications: Array.isArray(notifications) ? notifications : [],
+        detectedAt
+      });
+
+      // Insert trade observations first; if persistence fails, do not advance the
+      // position cursor, so the next poll can retry the same close transition.
+      for (const trade of plan.trades) {
+        await db.insertIgnore('dd_api_derived_trades', trade, 'source_fingerprint');
+      }
+      for (const action of plan.observationActions) {
+        if (action.type === 'update') {
+          if (!action.previous_id) continue;
+          await db.update(
+            'dd_api_derived_position_snapshots',
+            'id=eq.' + encodeURIComponent(action.previous_id) + '&is_current=eq.true',
+            action.row
+          );
+          continue;
+        }
+        if (action.previous_id) {
+          await db.update(
+            'dd_api_derived_position_snapshots',
+            'id=eq.' + encodeURIComponent(action.previous_id) + '&is_current=eq.true',
+            { is_current: false }
+          );
+        }
+        await db.insert('dd_api_derived_position_snapshots', action.row);
+      }
+      if (plan.trades.length || plan.observationActions.length) {
+        await this.log('INFO', 'Tradetron API-derived position tracking', {
+          tradesObserved: plan.trades.length,
+          transitions: plan.trades.filter(row => row.derived_from === 'poll_transition').length,
+          closedSnapshotObservations: plan.trades.filter(row => row.derived_from === 'snapshot_closed').length,
+          observationWrites: plan.observationActions.length,
+          displayOnly: true,
+          verifiedFills: false
+        });
+      }
+    } catch (error) {
+      await this.log('WARN', 'Tradetron API-derived position tracking failed; read-only snapshot sync continues', {
+        error: String(error?.message || error).slice(0, 240)
+      });
+    }
   }
 
   async manageGridStrategy(settings, account) {

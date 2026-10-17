@@ -12,6 +12,29 @@ import { DEFAULT_VISIBLE_MARKET_LIMIT, selectVisibleMarketRows, selectVisibleSig
 import { assessDeltaRange, fmtMultiplier, fmtPrice as fmtRawPrice, fmtRsi, safeNum } from './formatters.js';
 import { blockersDisplay, gateTooltip } from './gate-result.js';
 import { buildRiskGovernorGates } from './risk-governor.js';
+import { buildPnlHistoryInsights } from './pnl-history-insights.js';
+
+const loggedPnlAnomalies = new Set();
+
+function hasRawPnlAnomaly(row) {
+  const qty = safeNum(row?.quantity ?? row?.qty);
+  const ltp = safeNum(row?.markPrice ?? row?.ltp);
+  const pnl = safeNum(row?.pnl ?? row?.raw_pnl);
+  if (qty === null || ltp === null || pnl === null) return false;
+  const notional = Math.abs(qty * ltp);
+  if (!(notional > 0) || Math.abs(pnl) <= notional * 0.5) return false;
+  const symbol = String(row?.symbol || row?.rawSymbol || 'UNKNOWN').toUpperCase();
+  const fingerprint = [symbol,qty,ltp,pnl].join(':');
+  if (!loggedPnlAnomalies.has(fingerprint)) {
+    loggedPnlAnomalies.add(fingerprint);
+    console.warn('[Tradetron P&L anomaly]', {
+      symbol, quantity: qty, ltp, rawPnl: pnl, absoluteNotional: notional,
+      rule: 'abs(pnl) > abs(quantity * ltp) * 0.5',
+      note: 'Raw API data is preserved; contract units/multiplier and P&L semantics are unverified.'
+    });
+  }
+  return true;
+}
 
 const tabs = [
   ['dashboard','Dashboard'],['rotation','Profit Rotation'],['momentum','Momentum'],['momentum-history','Mom History'],
@@ -291,7 +314,7 @@ function App() {
     {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'positions' && <><Positions rows={positions} tradetronDeployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} snapshotsLocked={state?.tradetronDeveloperDataProtected === true} accountDataProtected={accountDataProtected} /><TradetronPositionReconciliationPanel deployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} enginePositions={positions} syncState={state?.tradetronDeveloperSync || null} privateDataProtected={accountDataProtected || state?.tradetronDeveloperDataProtected === true} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
     {tab === 'trade-history' && <><TradeHistory trades={trades} title="Trade History · Webhook-Synced Tradetron Records" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} /><TradetronActivity events={state?.tradetronEvents || []} signalStats={state?.signalOrderStats || null} webhookSecretConfigured={executionCoverage?.webhookSecretConfigured === true} accountDataProtected={accountDataProtected} /></>}
-    {tab === 'pnl' && <><PNL trades={trades} settings={settings} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.tradeRowCount ?? null} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
+    {tab === 'pnl' && <><PNL trades={trades} settings={settings} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.tradeRowCount ?? null} apiDerivedTrades={state?.apiDerivedTrades || []} apiDerivedTradeCount={state?.apiDerivedTradeCount ?? null} developerSnapshots={state?.tradetronDeveloperSnapshots || []} developerDataProtected={state?.tradetronDeveloperDataProtected === true} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
     {tab === 'paper' && <Panel title="Paper Trading"><div className="lockedText">Scanner is signal-only. No Delta order is placed here; Tradetron Live Offline runs the simulated execution.</div></Panel>}
     {tab === 'testnet' && <Testnet settings={settings} health={health} busy={busy} mutate={mutate} positions={positions} tradetronDeployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} developerSync={state?.tradetronDeveloperSync || null} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} accountDataProtected={accountDataProtected} />}
     {tab === 'live' && <Panel title="Live Trading"><div className="liveLock">🔒 DIRECT DELTA EXECUTION LOCKED<br/><small>The scanner never sends production orders. Future live execution must be enabled manually in Tradetron.</small></div></Panel>}
@@ -701,7 +724,11 @@ function TradeHistory({ trades = [], title, accountDataProtected = false, trades
     </tbody></table></div>
   </Panel>;
 }
-function PNL({ trades = [], settings = {}, accountDataProtected = false, tradesComplete = false, tradeRowCount = null }) {
+function PNL({
+  trades = [], settings = {}, accountDataProtected = false, tradesComplete = false,
+  tradeRowCount = null, apiDerivedTrades = [], apiDerivedTradeCount = null,
+  developerSnapshots = [], developerDataProtected = false, developerApiConfigured = false
+}) {
   if (accountDataProtected) return <Panel title="PNL · Protected"><div className="lockedText">Private realized P&amp;L, fees and scanner equity are hidden. Enter ENGINE_SECRET in Settings to inspect them. Tradetron snapshots remain a separate read-only source.</div></Panel>;
   const hasClosedTrades = trades.length > 0;
   const netValues = trades.map(trade => safeNum(trade.net_pnl));
@@ -710,16 +737,82 @@ function PNL({ trades = [], settings = {}, accountDataProtected = false, tradesC
   const feesComplete = hasClosedTrades && tradesComplete && feeValues.every(value => value !== null);
   const net = netComplete ? netValues.reduce((sum, value) => sum + value, 0) : null;
   const fees = feesComplete ? feeValues.reduce((sum, value) => sum + value, 0) : null;
+  const derivedRows = Array.isArray(apiDerivedTrades) ? apiDerivedTrades : [];
+  const exactDerivedCount = apiDerivedTradeCount == null ? null : Number(apiDerivedTradeCount);
+  const derivedRowsComplete = exactDerivedCount !== null && exactDerivedCount === derivedRows.length;
+  const knownDerivedPnl = derivedRows.map(row => safeNum(row?.raw_pnl)).filter(value => value !== null);
+  const derivedRawSum = knownDerivedPnl.length
+    ? knownDerivedPnl.reduce((sum, value) => sum + value, 0) : null;
+  const derivedCountLabel = exactDerivedCount === null ? derivedRows.length + ' loaded row(s); total count unavailable'
+    : exactDerivedCount + ' trades detected (API-derived, unverified fills)' +
+      (!derivedRowsComplete ? ' · showing latest ' + derivedRows.length : '');
+  const rawExposure = summarizeTradetronSnapshots(developerSnapshots);
+  const openRows = rawExposure.openRows || [];
+  const openPnlValues = openRows.map(row => safeNum(row?.pnl));
+  const knownOpenPnl = openPnlValues.filter(value => value !== null);
+  const openRawPnlSum = knownOpenPnl.length ? knownOpenPnl.reduce((sum,value) => sum + value,0) : null;
+  const openPnlComplete = openRows.length > 0 && openPnlValues.every(value => value !== null);
   return <>
     <section className="cards">
-      <Card label="REALIZED NET" value={!hasClosedTrades ? '—' : netComplete ? money(net) : 'INCOMPLETE DATA'} sub={!hasClosedTrades ? 'waiting for authenticated closed-trade records' : !tradesComplete ? 'loaded ' + trades.length + ' of ' + (tradeRowCount ?? 'an unknown number of') + ' stored rows; not a complete total' : netComplete ? 'all stored closed-trade P&L values present' : 'one or more closed-trade P&L values are missing'}/>
-      <Card label="FEES" value={!hasClosedTrades ? '—' : feesComplete ? money(fees) : 'INCOMPLETE DATA'} sub={!hasClosedTrades ? 'no authenticated closed trades yet' : !tradesComplete ? 'full trade history is not loaded' : feesComplete ? 'sum of recorded trade fees' : 'one or more recorded trade fee values are missing'}/>
+      <Card label="REALIZED NET" value={!hasClosedTrades ? 'UNAVAILABLE' : netComplete ? money(net) : 'INCOMPLETE DATA'} sub={!hasClosedTrades ? 'waiting for authenticated closed-trade records' : !tradesComplete ? 'loaded ' + trades.length + ' of ' + (tradeRowCount ?? 'an unknown number of') + ' stored rows; not a complete total' : netComplete ? 'all stored closed-trade P&L values present' : 'one or more closed-trade P&L values are missing'}/>
+      <div className="card" title="Why? A position snapshot or generic P&amp;L field does not contain authenticated per-fill commission/fee records. No zero fee is assumed."><small>FEES · <span title="Why? Fees need authenticated per-fill commission records.">Why?</span></small><strong>{feesComplete ? money(fees) : 'UNAVAILABLE'}</strong><span>{feesComplete ? 'sum of recorded authenticated trade fees' : 'Fees cannot be computed without authenticated fills.'}</span></div>
       <Card label="EQUITY" value={settings.equity == null ? '—' : money(settings.equity)} sub="configured scanner ledger balance"/>
-      <Card label="UNREALIZED" value={settings.unrealized_pnl == null ? '—' : money(settings.unrealized_pnl)} sub="webhook/engine ledger only; Tradetron snapshot shown separately"/>
+      <Card label="UNREALIZED" value={settings.unrealized_pnl == null ? '—' : money(settings.unrealized_pnl)} sub="webhook/engine ledger only; Tradetron raw exposure is shown separately"/>
     </section>
     {!hasClosedTrades ? <div className="lockedText">Realized P&amp;L and fees are not confirmed as zero; the scanner has no authenticated closed-trade rows yet. Tradetron deployment snapshots are displayed separately and are not merged into this ledger.</div> : null}
+
+    <Panel title="API-Derived Realized P&L · UNVERIFIED">
+      {developerDataProtected ? <div className="lockedText">Private API-derived data is locked. Enter ENGINE_SECRET in Settings to view it.</div> : <>
+        <section className="cards">
+          <Card label="RAW P&L SUM" value={derivedRawSum === null ? (derivedRows.length ? 'UNKNOWN' : 'NO RECORDS') : fmtRawPrice(derivedRawSum,2) + ' RAW'} sub={derivedRows.length ? ('Sum of ' + knownDerivedPnl.length + ' known row-level raw_pnl value(s); currency and realized-P&L meaning are unverified.' + (!derivedRowsComplete ? ' Loaded-row sum only.' : '')) : 'No API-derived rows stored yet.'} title="Raw API/CSV fields only. This figure is not authenticated realized net P&L and is never used by risk logic."/>
+          <Card label="API-DERIVED RECORDS" value={exactDerivedCount ?? derivedRows.length} sub={derivedCountLabel}/>
+          <Card label="DATA QUALITY" value={derivedRows.length ? (derivedRows.filter(row=>row.data_quality==='FULL').length + ' FULL · ' + derivedRows.filter(row=>row.data_quality==='PARTIAL').length + ' PARTIAL · ' + derivedRows.filter(row=>row.data_quality==='MINIMAL').length + ' MINIMAL') : 'UNKNOWN'} sub="FULL means entry + exit fields present only; every row remains unverified"/>
+        </section>
+        <div className="lockedText">These are raw API-derived observations, not authenticated historical fills. Rows labelled snapshot_closed may reflect a currently visible closed snapshot rather than a newly detected close. Missing quantities, side, entry/exit prices and timestamps remain Unknown.</div>
+        {!derivedRows.length ? <div className="lockedText">{developerApiConfigured ? 'Monitoring active. Historical closes not tracked (would require fills). New closes will appear here.' : 'Tradetron Developer API is not configured; API-derived monitoring is inactive.'}</div> : null}
+        {derivedRows.length ? <div className="tablewrap"><table>
+          <thead><tr><th>DETECTED</th><th>SYMBOL</th><th>SIDE</th><th>QTY CLOSED</th><th>ENTRY</th><th>EXIT</th><th>LAST LTP RAW</th><th>RAW P&L</th><th>QUALITY / SOURCE</th><th>CLOSE TIME</th></tr></thead>
+          <tbody>{derivedRows.map(row=><tr key={row.id}>
+            <td>{row.detected_at ? new Date(row.detected_at).toLocaleString('en-IN') : 'Unknown'}</td>
+            <td className="symbol">{row.symbol || 'Unknown'}</td>
+            <td>{row.side || 'Unknown'}</td>
+            <td>{safeNum(row.qty_closed) === null ? 'Unknown' : fmtQty(row.qty_closed)}</td>
+            <td>{safeNum(row.entry_price) === null ? 'Unknown' : price(row.entry_price)}</td>
+            <td>{safeNum(row.exit_price) === null ? 'Unknown' : price(row.exit_price)}</td>
+            <td>{safeNum(row.last_known_ltp) === null ? 'Unknown' : fmtRawPrice(row.last_known_ltp,4) + ' RAW'}</td>
+            <td className={safeNum(row.raw_pnl) === null ? 'muted' : 'mono'}>{safeNum(row.raw_pnl) === null ? 'Unknown' : fmtRawPrice(row.raw_pnl,4) + ' RAW'}</td>
+            <td>{row.data_quality || 'Unknown'}<div className="muted">{row.derived_from || 'Unknown'} · Unverified</div></td>
+            <td>{row.closed_at_estimated || row.closed_at ? new Date(row.closed_at_estimated || row.closed_at).toLocaleString('en-IN') : 'Unknown'}</td>
+          </tr>)}</tbody>
+        </table></div> : null}
+      </>}
+    </Panel>
+
+    <Panel title="Current Open Exposure · Raw Tradetron API Fields">
+      {developerDataProtected ? <div className="lockedText">Private Tradetron snapshot data is locked. Enter ENGINE_SECRET in Settings to view raw exposure.</div> : <>
+        <section className="cards">
+          <Card label="OPEN RAW P&L SUM" value={!openRows.length ? 'NO IDENTIFIED ROWS' : openRawPnlSum === null ? 'UNKNOWN' : fmtRawPrice(openRawPnlSum,2) + ' RAW'} sub={'Raw sum of API row-level pnl fields (semantics unverified). ' + knownOpenPnl.length + '/' + openRows.length + ' open row(s) have numeric raw P&L.'}/>
+          <Card label="IDENTIFIED OPEN ROWS" value={openRows.length || (developerApiConfigured ? 'NONE IDENTIFIED' : '—')} sub="Only rows from the current readable snapshot; not authenticated exposure or unrealized P&L"/>
+        </section>
+        {openRows.length ? <div className="tablewrap"><table>
+          <thead><tr><th>SYMBOL</th><th>SIDE</th><th>QTY RAW</th><th>LTP RAW</th><th>ROW P&L RAW</th><th>CHECK</th></tr></thead>
+          <tbody>{openRows.map(row=>{
+            const anomaly = hasRawPnlAnomaly(row);
+            return <tr key={row.key}>
+              <td className="symbol">{row.symbol || 'Unknown'}</td>
+              <td>{row.side || 'Unknown'}</td>
+              <td>{safeNum(row.quantity) === null ? 'Unknown' : fmtQty(row.quantity)}</td>
+              <td>{safeNum(row.markPrice) === null ? 'Unknown' : fmtRawPrice(row.markPrice,4)}</td>
+              <td>{safeNum(row.pnl) === null ? 'Unknown' : fmtRawPrice(row.pnl,4) + ' RAW'}</td>
+              <td>{anomaly ? <b className="apiStateWarn">⚠ PnL anomaly</b> : <span className="muted">No threshold flag</span>}</td>
+            </tr>;
+          })}</tbody>
+        </table></div> : <div className="lockedText">{developerApiConfigured ? 'No current open row could be identified in the latest readable snapshot. This does not prove a verified flat account if positions are hidden or the snapshot is stale.' : 'Tradetron Developer API is not configured.'}</div>}
+      </>}
+    </Panel>
   </>;
 }
+
 function Rotation({ ledger = [], accountDataProtected = false, ledgerComplete = false, ledgerRowCount = null }) {
   if (accountDataProtected) return <Panel title="Profit Rotation V3 Ledger · Protected"><div className="lockedText">Rotation ledger rows and amounts are private. Enter ENGINE_SECRET in Settings to view them.</div></Panel>;
   const nowDay = indiaDateKey(new Date());
@@ -998,6 +1091,7 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
   const status = sync?.status || (configured ? 'WAITING FOR FIRST SYNC' : 'NOT CONFIGURED');
   const statusClass = status === 'OK' && !stale ? 'apiStateOk' : (status === 'ERROR' || stale ? 'apiStateError' : 'apiStateWarn');
   const mirror = summarizeTradetronSnapshots(deployments);
+  const pnlHistoryInsights = buildPnlHistoryInsights(pnlHistory);
   const positionRows = (deployments || []).flatMap(deployment =>
     (Array.isArray(deployment.positions) ? deployment.positions : []).map((position, index) => ({
       deployment: deployment.deployment_name || String(deployment.deployment_id),
@@ -1048,7 +1142,7 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
         <td>{row.entryPrice === null ? '—' : price(row.entryPrice)}</td>
         <td>{row.markPrice === null ? '—' : price(row.markPrice)}</td>
         <td>{fmtRawPrice(row.marketValue, 2)}</td>
-        <td className={safeNum(row.pnl) === null ? 'muted' : 'mono'} title={row.pnlSource ? "Raw Developer API field: " + row.pnlSource + ". A generic pnl field is not verified M2M and is not included in open P&L." : "No P&L source field was identified in this API row."}><div>{fmtRawPrice(row.pnl, 2)}</div><small className="muted">{row.pnlSource ? "API field: " + row.pnlSource + (["m2m","mtm","unrealized_pnl","unrealizedPnl","open_pnl","openPnl","mark_to_market","markToMarket"].includes(row.pnlSource) ? " · M2M-named" : " · semantics unverified") : "source unavailable"}</small></td>
+        <td className={safeNum(row.pnl) === null ? 'muted' : 'mono'} title={row.pnlSource ? "Raw Developer API field: " + row.pnlSource + ". A generic pnl field is not verified M2M and is not included in open P&L." : "No P&L source field was identified in this API row."}><div>{fmtRawPrice(row.pnl, 2)}</div><small className="muted">{row.pnlSource ? "API field: " + row.pnlSource + (["m2m","mtm","unrealized_pnl","unrealizedPnl","open_pnl","openPnl","mark_to_market","markToMarket"].includes(row.pnlSource) ? " · M2M-named" : " · semantics unverified") : "source unavailable"}</small>{hasRawPnlAnomaly(row) ? <div><b className="apiStateWarn">⚠ PnL anomaly</b></div> : null}</td>
         <td>{row.status}</td>
       </tr>)}</tbody>
     </table></div> : <div className="lockedText">
@@ -1068,8 +1162,30 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
     </details> : null}
     <div className="lockedText"><b>Trade history / exit reconciliation:</b> {sync?.status === 'OK' ? 'latest read-only position snapshot sync is healthy.' : 'position snapshot is not confirmed fresh.'} Developer API notifications below provide a read-only event timeline, but they are not converted to fill/trade rows. Actual per-trade entry/exit prices, fees and realized P&amp;L still require a verified trade-detail endpoint or authenticated fill data. Generic row-level “pnl” fields are displayed raw with no currency conversion and are not summed as open P&amp;L unless the API identifies them as M2M/unrealized P&amp;L.</div>
     <div className="panelTitle"><h3>Recent Tradetron P&amp;L History · 5-minute snapshots</h3></div>
-    <div className="lockedText"><span>Stored separately from closed-trade ledger. Repeated polls update the same five-minute bucket; old snapshots are pruned after 90 days.</span></div>
-    {pnlHistory.length ? <div className="tablewrap"><table><thead><tr><th>CAPTURED</th><th>DEPLOYMENT</th><th>REPORTED P&amp;L</th><th>OPEN / TOTAL</th><th>STATUS</th></tr></thead><tbody>{pnlHistory.slice(0, 36).map(row => <tr key={row.snapshot_id}><td>{row.captured_at ? new Date(row.captured_at).toLocaleString('en-IN') : '—'}</td><td>{row.deployment_name || row.deployment_id}<br/><small className="muted">ID {row.deployment_id}</small></td><td className={safeNum(row.reported_pnl) === null ? 'muted' : safeNum(row.reported_pnl) >= 0 ? 'up' : 'down'}>{safeNum(row.reported_pnl) === null ? '—' : row.currency_code ? row.currency_code + ' ' + fmtRawPrice(row.reported_pnl, 2) : fmtRawPrice(row.reported_pnl, 2) + ' (UNIT UNVERIFIED)'}</td><td>{row.open_positions ?? '—'} / {row.total_positions ?? '—'}</td><td>{row.status || '—'}</td></tr>)}</tbody></table></div> : <div className="lockedText">No P&amp;L history snapshots recorded yet. The first bucket is written after the next successful Developer API sync once the new database migration is applied.</div>}
+    <div className="lockedText"><span>Deployment-level only. Not per-trade. Repeated polls update the same five-minute bucket; snapshots older than 90 days are pruned. Day Change compares a matching time from yesterday when available; otherwise it falls back to the previous nonzero sample.</span></div>
+    {pnlHistory.length ? <div className="tablewrap"><table>
+      <thead><tr><th>TIME</th><th>DEPLOYMENT</th><th>REPORTED P&amp;L RAW</th><th>OPEN LEGS</th><th>DAY CHANGE</th><th>TREND</th><th>STATUS</th></tr></thead>
+      <tbody>{pnlHistory.slice(0, 36).map(row=>{
+        const insight = pnlHistoryInsights.get(String(row.snapshot_id)) || {};
+        const pnlValue = safeNum(row.reported_pnl);
+        const currency = row.currency_code || 'UNIT UNVERIFIED';
+        const dayValue = insight.dayChange;
+        const trendLabel = insight.trend === 'DOWN' ? '↓ Falling'
+          : insight.trend === 'UP' ? '↑ Recovering'
+            : insight.trend === 'FLAT' ? '→ Flat' : 'Unknown';
+        const trendClass = insight.trend === 'DOWN' ? 'down'
+          : insight.trend === 'UP' ? 'up' : 'muted';
+        return <tr key={row.snapshot_id}>
+          <td>{row.captured_at ? new Date(row.captured_at).toLocaleString('en-IN') : 'Unknown'}</td>
+          <td>{row.deployment_name || row.deployment_id}<br/><small className="muted">ID {row.deployment_id}</small></td>
+          <td className={pnlValue === null ? 'muted' : pnlValue >= 0 ? 'up' : 'down'}>{pnlValue === null ? 'Unknown' : currency + ' ' + fmtRawPrice(pnlValue,2)}</td>
+          <td>{row.open_positions ?? 'Unknown'}</td>
+          <td title={insight.dayChangeBasis || 'Not enough history'} className={dayValue === null ? 'muted' : dayValue >= 0 ? 'up' : 'down'}>{dayValue === null ? 'Unknown' : (row.currency_code || 'RAW') + ' ' + fmtRawPrice(dayValue,2)}<br/><small className="muted">{insight.dayChangeBasis || 'Not enough history'}</small></td>
+          <td className={trendClass} title={insight.trendDelta === null || insight.trendDelta === undefined ? 'Not enough prior nonzero P&L history' : 'Change versus the previous nonzero P&L sample: ' + fmtRawPrice(insight.trendDelta,2)}>{trendLabel}</td>
+          <td>{row.status || 'Unknown'}</td>
+        </tr>;
+      })}</tbody>
+    </table></div> : <div className="lockedText">No P&amp;L history snapshots recorded yet. The first bucket is written after the next successful Developer API sync once the new database migration is applied.</div>}
     <div className="panelTitle"><h3>Tradetron Developer API Notifications · read-only timeline</h3></div>
     <div className="lockedText"><b className={notificationSync?.status === 'OK' ? 'apiStateOk' : notificationSync?.status === 'ERROR' ? 'apiStateError' : 'apiStateWarn'}>Notification sync: {notificationSync?.status || (configured ? 'WAITING FOR FIRST SYNC' : 'NOT CONFIGURED')}</b><br/><span>Last successful sync: {notificationSync?.last_success_at ? new Date(notificationSync.last_success_at).toLocaleString('en-IN') : '—'} · Returned notifications: {notificationSync?.notification_count ?? '—'}</span>{notificationSync?.last_error ? <p className="apiStateError">Notification sync warning/error: {notificationSync.last_error}</p> : null}<p>These are Tradetron account/deployment notices polled through the read-only Developer API. They are shown for audit context and are not proof of a fill; the scanner never converts notification text into a position or closed trade.</p></div>
     {notifications.length ? <div className="tablewrap"><table><thead><tr><th>TIME</th><th>DEPLOYMENT</th><th>TYPE</th><th>NOTICE</th></tr></thead><tbody>{notifications.slice(0, 30).map(row => <tr key={row.notification_id}><td>{row.event_at ? new Date(row.event_at).toLocaleString('en-IN') : (row.updated_at ? new Date(row.updated_at).toLocaleString('en-IN') : '—')}</td><td>{row.deployment_id || '—'}</td><td>{row.notification_type || 'NOTICE'}</td><td><b>{row.title || '—'}</b>{row.description ? <div className="muted">{row.description}</div> : null}</td></tr>)}</tbody></table></div> : <div className="lockedText">No notifications returned yet. If Tradetron returns a notification format the API client cannot recognize, the sync status will show an error rather than guessing the payload shape.</div>}
