@@ -63,15 +63,36 @@ function stockTokenPnlTooltip(symbol, rawPnl, contractValue) {
   const value = safeNum(rawPnl);
   const cv = safeNum(contractValue);
   const raw = value === null ? 'unavailable' : String(value);
+  const note = '⚠️ Adjusted value is a HYPOTHESIS. Tradetron API docs do not confirm the P&L field unit. Do not rely on this for trading.';
   if (value === null || cv === null) {
     return 'Raw API field: ' + raw + ' USD. Delta contract_value: ' +
       (cv === null ? 'unavailable' : String(cv)) +
-      '. A possible adjusted value cannot be calculated from the available fields. ' +
-      '⚠️ Adjusted value is a HYPOTHESIS. Tradetron API docs do not confirm the P&L field unit. Do not rely on this for trading.';
+      '. A possible adjusted value cannot be calculated from the available fields. ' + note;
   }
-  return 'Raw API field: ' + raw + ' USD.\n' +
-    'Delta contract_value: ' + String(cv) + '.\n' +
-    'Possible adjusted value:  { const n = safeNum(v); return n === null ? '—' : n.toLocaleString('en-IN', { maximumFractionDigits: 8 }); };
+  return 'Raw API field: ' + raw + ' USD. Delta contract_value: ' + String(cv) +
+    '. Possible adjusted value: $' + (value * cv).toFixed(2) + '. ' + note;
+}
+function stockTokenOpenPnlTooltip(rows, marketCache, displayedRawPnl) {
+  const adjustedRows = (Array.isArray(rows) ? rows : []).flatMap(row => {
+    const symbol = String(row?.symbol || '').trim().toUpperCase();
+    const value = safeNum(row?.pnl ?? row?.raw_pnl);
+    const cv = contractValueForSymbol(marketCache, symbol);
+    return STOCK_TOKEN_SYMBOLS.has(symbol) && value !== null && cv !== null
+      ? [{ symbol, value, cv, adjusted: value * cv }]
+      : [];
+  });
+  const adjustedSubtotal = adjustedRows.reduce((sum, row) => sum + row.adjusted, 0);
+  const basis = displayedRawPnl === null || displayedRawPnl === undefined
+    ? 'Displayed raw open-P&L sum is unavailable.'
+    : 'Displayed raw open-P&L sum remains ' + String(displayedRawPnl) + ' and is not changed.';
+  const components = adjustedRows.length
+    ? 'Possible stock-token adjusted subtotal: $' + adjustedSubtotal.toFixed(2) +
+      ' from ' + adjustedRows.length + ' row(s): ' +
+      adjustedRows.map(row => row.symbol + ' (' + row.value + ' × ' + row.cv + ' = $' + row.adjusted.toFixed(2) + ')').join('; ') + '.'
+    : 'No stock-token row had both raw P&L and contract_value available for a hypothesis.';
+  return basis + ' ' + components + ' ⚠️ Adjusted subtotal is a HYPOTHESIS only. Tradetron API docs do not confirm the P&L field unit. Do not rely on this for trading.';
+}
+const price = v => { const n = safeNum(v); return n === null ? '—' : n.toLocaleString('en-IN', { maximumFractionDigits: 8 }); };
 const isPass = v => v === true;
 const latestSignals = list => {
   const m = new Map();
