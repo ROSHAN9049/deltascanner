@@ -18,6 +18,17 @@ test('classifies API response and connection errors', () => {
   assert.equal(classifyTradetronSignalFailure(new TypeError('fetch failed')), 'api_error');
 });
 
+test('does not mislabel untrusted snapshot or position-cap lookup failures as cap reached', () => {
+  assert.equal(classifyTradetronSignalFailure({
+    positionSafetyBlocked: true,
+    globalPositionCapBlocked: false,
+    reason: 'POSITION_SNAPSHOT_UNTRUSTED:OPEN_POSITION_COUNT_UNRECONCILED'
+  }), 'unknown');
+  assert.equal(classifyTradetronSignalFailure({
+    reason: 'POSITION_CAP_LOOKUP_FAILED:Supabase 502: Bad Gateway'
+  }), 'api_error');
+});
+
 test('classifies routing and signal expiry outcomes', () => {
   assert.equal(classifyTradetronSignalFailure({ reason: 'No configured bridge route for symbol' }), 'routing_error');
   assert.equal(classifyTradetronSignalFailure({ reason: 'Signal reservation expired before confirmation' }), 'signal_expired');
