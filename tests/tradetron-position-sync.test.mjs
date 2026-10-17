@@ -271,3 +271,79 @@ test('an open API row without signed quantity or side is not treated as a verifi
   });
   assert.equal(buildTradetronSnapshotRiskState(fixture).reason, 'OPEN_POSITION_ROW_UNVERIFIED');
 });
+
+
+test('treats a tiny nonzero quantity as closed even when the API open flag is true', () => {
+  const row = normalizeTradetronPosition({
+    instrument_symbol: 'DIN-PAXGUSD 31 DEC 2099 XX 0',
+    quantity: 0.00000009,
+    open: true
+  }, { deployment_id: 999273394 });
+
+  assert.equal(row.open, false);
+  assert.equal(row.closedDueToDust, true);
+  assert.equal(row.status, 'Closed (dust)');
+});
+
+test('keeps a meaningful position quantity open', () => {
+  const row = normalizeTradetronPosition({
+    instrument_symbol: 'DIN-BTCUSD 31 DEC 2099 XX 0',
+    quantity: 0.5,
+    open: true
+  }, { deployment_id: 999273394 });
+
+  assert.equal(row.open, true);
+  assert.equal(row.closedDueToDust, false);
+});
+
+test('zero quantity is closed regardless of a stale true open flag', () => {
+  const row = normalizeTradetronPosition({
+    instrument_symbol: 'DIN-ETHUSD 31 DEC 2099 XX 0',
+    quantity: 0,
+    open: true
+  }, { deployment_id: 999273394 });
+
+  assert.equal(row.open, false);
+  assert.equal(row.closedDueToDust, false);
+  assert.equal(row.status, 'Closed');
+});
+
+test('dust normalization reconciles the individual rows with a zero aggregate count', () => {
+  const now = Date.now();
+  const lastSuccessAt = new Date(now).toISOString();
+  const positions = [
+    { instrument: 'FUTCRYPTO_DIN-PAXGUSD_31DEC2099_XX_0', quantity: 0.00000009265, open: true },
+    ...Array.from({ length: 19 }, (_, index) => ({
+      instrument: 'FUTCRYPTO_DIN-CLOSED' + index + 'USD_31DEC2099_XX_0',
+      quantity: 0,
+      open: false
+    }))
+  ];
+  const snapshot = [{
+    deployment_id: 999273394,
+    open_positions: 0,
+    total_positions: 0,
+    positions_hidden: false,
+    last_success_at: lastSuccessAt,
+    as_of: lastSuccessAt,
+    positions
+  }];
+
+  const summary = summarizeTradetronSnapshots(snapshot);
+  assert.equal(summary.totalRows, 20);
+  assert.equal(summary.openRows.length, 0);
+  assert.equal(summary.openCount, 0);
+
+  const riskState = buildTradetronSnapshotRiskState({
+    syncState: {
+      status: 'OK',
+      last_success_at: lastSuccessAt,
+      details: { deploymentIds: [999273394] }
+    },
+    deployments: snapshot,
+    now
+  });
+  assert.equal(riskState.trusted, true);
+  assert.equal(riskState.positionCount, 0);
+  assert.deepEqual(riskState.openPositions, []);
+});

@@ -27,6 +27,18 @@ const POSITION_PNL_KEYS = [
   'mark_to_market', 'markToMarket', 'pnl'
 ];
 
+const DEFAULT_POSITION_DUST_THRESHOLD = 0.0001;
+const loggedDustSymbols = new Set();
+
+function configuredPositionDustThreshold() {
+  const raw = globalThis.process?.env?.POSITION_DUST_THRESHOLD;
+  if (raw === undefined || raw === null || String(raw).trim() === '') {
+    return DEFAULT_POSITION_DUST_THRESHOLD;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : DEFAULT_POSITION_DUST_THRESHOLD;
+}
+
 const clean = value => String(value ?? '').trim();
 
 function firstValue(row, keys) {
@@ -95,14 +107,33 @@ export function normalizeTradetronPosition(position, deployment = {}) {
   const quantity = numericValue(firstValue(position, POSITION_QTY_KEYS));
   const explicitOpen = booleanValue(firstValue(position, OPEN_FLAG_KEYS));
   const statusOpen = hasPositionStatus(position);
-  // Any explicit close signal wins over an original/nonzero historical quantity.
-  // This prevents exited snapshot rows from reappearing as current open positions.
+  const dustThreshold = configuredPositionDustThreshold();
+  const quantityBelowDustThreshold = quantity !== null && Math.abs(quantity) < dustThreshold;
+  const closedDueToDust = quantityBelowDustThreshold && Math.abs(quantity) > 0;
+
+  // Tiny nonzero quantities and zero quantity cannot represent a current open
+  // leg, even when a stale API flag still says open. Keep this threshold local
+  // to snapshot normalization; aggregate reconciliation remains strict.
+  if (closedDueToDust && globalThis.process?.versions?.node) {
+    const logKey = symbol;
+    if (!loggedDustSymbols.has(logKey)) {
+      loggedDustSymbols.add(logKey);
+      console.warn(
+        '[Tradetron Position Sync] Position treated as closed due to dust quantity: ' +
+        symbol + ', qty=' + quantity
+      );
+    }
+  }
+
+  // Explicit close flags still win for meaningful historical quantities.
   const explicitlyClosed = explicitOpen === false || statusOpen === false;
-  const open = explicitlyClosed
+  const open = quantityBelowDustThreshold
     ? false
-    : quantity !== null && quantity !== 0
-      ? true
-      : explicitOpen === true || statusOpen === true;
+    : explicitlyClosed
+      ? false
+      : quantity !== null && quantity !== 0
+        ? true
+        : explicitOpen === true || statusOpen === true;
 
   const price = numericValue(firstValue(position, ENTRY_PRICE_KEYS));
   const markPrice = numericValue(firstValue(position, MARK_PRICE_KEYS));
@@ -136,7 +167,10 @@ export function normalizeTradetronPosition(position, deployment = {}) {
     pnl,
     pnlSource,
     open,
-    status: clean(firstValue(position, POSITION_STATUS_KEYS)) || (open ? 'Open' : 'Closed'),
+    closedDueToDust,
+    status: quantityBelowDustThreshold
+      ? (closedDueToDust ? 'Closed (dust)' : 'Closed')
+      : clean(firstValue(position, POSITION_STATUS_KEYS)) || (open ? 'Open' : 'Closed'),
     raw: position
   };
 }
