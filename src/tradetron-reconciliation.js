@@ -1,4 +1,4 @@
-import { summarizeTradetronSnapshots } from './tradetron-position-sync.js';
+import { buildTradetronSnapshotRiskState, normalizeTradetronPositions, summarizeTradetronSnapshots } from './tradetron-position-sync.js';
 
 const clean = value => String(value ?? '').trim();
 const normalizedSide = value => {
@@ -69,10 +69,143 @@ function latestAcceptedSignals(signalOrders) {
  * or current strategy ownership. EXPIRED is the scanner's reservation TTL state,
  * not a fill/close result.
  */
-export function buildTradetronPositionReconciliation({
-  deployments = [],
-  signalOrders = []
-} = {}) {
+function buildEngineLedgerReconciliation({ deployments = [], enginePositions = [], syncState } = {}) {
+  const snapshotRows = Array.isArray(deployments) ? deployments : [];
+  const mirror = summarizeTradetronSnapshots(snapshotRows);
+  const normalizedSnapshots = normalizeTradetronPositions(snapshotRows);
+  const snapshotAsOf = mirror.asOf || snapshotRows
+    .map(row => row?.last_success_at || row?.as_of || null)
+    .filter(Boolean)
+    .sort((a, b) => (timeValue(b) ?? -Infinity) - (timeValue(a) ?? -Infinity))[0] || null;
+
+  const trust = syncState !== undefined
+    ? buildTradetronSnapshotRiskState({ syncState, deployments: snapshotRows })
+    : null;
+  const snapshotAvailable = snapshotRows.length > 0 && !mirror.positionsHidden;
+  const snapshotTrusted = trust ? trust.trusted === true : snapshotAvailable;
+  const snapshotReason = trust?.reason || null;
+
+  const snapshotBySymbol = new Map();
+  const snapshotPriority = row => row.open ? 3 : row.closedDueToDust ? 2 : 1;
+  for (const row of normalizedSnapshots) {
+    const symbol = String(row.symbol || '').toUpperCase();
+    if (!symbol) continue;
+    const previous = snapshotBySymbol.get(symbol);
+    if (!previous || snapshotPriority(row) > snapshotPriority(previous)) {
+      snapshotBySymbol.set(symbol, row);
+    }
+  }
+
+  const ledgerBySymbol = new Map();
+  for (const row of Array.isArray(enginePositions) ? enginePositions : []) {
+    const symbol = String(row?.symbol || '').trim().toUpperCase();
+    const quantity = absoluteQuantity(row?.qty ?? row?.quantity);
+    if (!symbol || quantity === null || quantity === 0) continue;
+    const previous = ledgerBySymbol.get(symbol);
+    const updatedAt = timeValue(row?.updated_at || row?.opened_at || row?.created_at);
+    const previousAt = timeValue(previous?.updated_at || previous?.opened_at || previous?.created_at);
+    if (!previous || (updatedAt !== null && (previousAt === null || updatedAt > previousAt))) {
+      ledgerBySymbol.set(symbol, row);
+    }
+  }
+
+  const symbols = new Set([
+    ...normalizedSnapshots.filter(row => row.open || row.closedDueToDust).map(row => String(row.symbol || '').toUpperCase()),
+    ...ledgerBySymbol.keys()
+  ]);
+  const rows = [...symbols].filter(Boolean).sort().map(symbol => {
+    const snapshot = snapshotBySymbol.get(symbol) || null;
+    const ledger = ledgerBySymbol.get(symbol) || null;
+    const snapshotSide = normalizedSide(snapshot?.side);
+    const snapshotQuantity = absoluteQuantity(snapshot?.quantity);
+    const ledgerSide = normalizedSide(ledger?.side || ledger?.position_side || ledger?.positionSide);
+    const ledgerQuantity = absoluteQuantity(ledger?.qty ?? ledger?.quantity);
+    const snapshotEntryPrice = absoluteQuantity(snapshot?.entryPrice);
+    const ledgerEntryPrice = absoluteQuantity(ledger?.entry_price ?? ledger?.entryPrice);
+    let comparisonStatus;
+
+    if (!snapshotTrusted) {
+      comparisonStatus = 'UNVERIFIED';
+    } else if (snapshot?.closedDueToDust) {
+      comparisonStatus = ledger ? 'MISMATCH' : 'CLOSED (dust)';
+    } else if (!snapshot && ledger) {
+      comparisonStatus = 'UNVERIFIED';
+    } else if (snapshot?.open && !ledger) {
+      comparisonStatus = 'UNVERIFIED';
+    } else if (!snapshot?.open && ledger) {
+      comparisonStatus = 'MISMATCH';
+    } else if (snapshot?.open && ledger) {
+      const quantityTolerance = Math.max(1e-9, Math.max(snapshotQuantity || 0, ledgerQuantity || 0) * 0.001);
+      comparisonStatus = snapshotSide === ledgerSide &&
+        snapshotQuantity !== null && ledgerQuantity !== null &&
+        Math.abs(snapshotQuantity - ledgerQuantity) <= quantityTolerance
+        ? 'MATCHED'
+        : 'MISMATCH';
+    } else {
+      comparisonStatus = 'UNVERIFIED';
+    }
+
+    const snapshotLabel = !snapshot
+      ? 'none'
+      : snapshot.closedDueToDust
+        ? 'CLOSED (dust) · qty=' + clean(snapshot.quantity)
+        : snapshot.open
+          ? 'OPEN ' + (snapshotSide || 'side unknown') + ' · qty=' + (snapshotQuantity ?? 'unknown')
+          : 'CLOSED · qty=' + (snapshotQuantity ?? 'unknown');
+    const ledgerLabel = !ledger
+      ? 'none'
+      : 'OPEN ' + (ledgerSide || 'side unknown') +
+        ' · qty=' + (ledgerQuantity ?? 'unknown') +
+        (ledgerEntryPrice === null ? '' : ' · entry=' + ledgerEntryPrice);
+
+    return {
+      symbol,
+      tradetronLabel: snapshotLabel,
+      engineLedgerLabel: ledgerLabel,
+      currentSide: snapshotSide,
+      currentQuantity: snapshotQuantity,
+      currentEntryPrice: snapshotEntryPrice,
+      ledgerSide,
+      ledgerQuantity,
+      ledgerEntryPrice,
+      comparisonStatus,
+      closedDueToDust: snapshot?.closedDueToDust === true,
+      snapshotKey: snapshot?.key || null,
+      ledgerId: clean(ledger?.id || ledger?.execution_id || '')
+    };
+  });
+
+  const count = status => rows.filter(row => row.comparisonStatus === status).length;
+  return {
+    mode: 'ENGINE_LEDGER',
+    snapshotAvailable,
+    snapshotTrusted,
+    snapshotReason,
+    positionsHidden: mirror.positionsHidden,
+    snapshotAsOf,
+    openPositionCount: snapshotRows.length > 0 ? mirror.openCount : null,
+    visibleOpenRowCount: mirror.openRows.length,
+    engineLedgerOpenCount: ledgerBySymbol.size,
+    mismatchCount: count('MISMATCH'),
+    matchedCount: count('MATCHED'),
+    unverifiedCount: count('UNVERIFIED'),
+    closedDustCount: count('CLOSED (dust)'),
+    rows
+  };
+}
+
+export function buildTradetronPositionReconciliation(options = {}) {
+  const {
+    deployments = [],
+    signalOrders = []
+  } = options || {};
+  if (Array.isArray(options?.enginePositions)) {
+    return buildEngineLedgerReconciliation({
+      deployments,
+      enginePositions: options.enginePositions,
+      syncState: Object.prototype.hasOwnProperty.call(options, 'syncState') ? options.syncState : undefined
+    });
+  }
   const snapshotRows = Array.isArray(deployments) ? deployments : [];
   const mirror = summarizeTradetronSnapshots(snapshotRows);
   const snapshotAsOf = mirror.asOf || snapshotRows
