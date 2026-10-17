@@ -233,7 +233,7 @@ export function buildApiDerivedTrackingPlan({
         records.push({
           kind: 'update', previous,
           row: {
-            quantity: current.quantity, side: current.side, ltp: current.ltp,
+            quantity: current.quantity, side: current.side || previous.side || null, ltp: current.ltp,
             raw_pnl: current.raw_pnl, is_open: current.is_open,
             raw_api_data: current.raw_api_data, last_observed_at: now,
             symbol: current.symbol
