@@ -111,3 +111,76 @@ test('global cap blocks new grid entries while still allowing existing grid posi
   assert.equal(result.state.positions.length, 0);
   assert.ok(result.state.events.some(event => event.type === 'BLOCK' && event.reason === 'GLOBAL_OPEN_POSITION_LIMIT'));
 });
+
+
+import {
+  evaluateGlobalPositionCap,
+  resolveMaxOpenPositionsCap
+} from '../worker/global-position-cap.mjs';
+
+const trustedSnapshot = openCount => ({
+  configured: true,
+  trusted: true,
+  positionCount: openCount,
+  lastSuccessAt: '2026-10-17T04:00:00.000Z'
+});
+
+test('worker cap blocks at 20/20 from a trusted Tradetron snapshot', () => {
+  const decision = evaluateGlobalPositionCap({
+    snapshotSafety: trustedSnapshot(20),
+    settings: { max_open_positions: 20 },
+    envOverride: ''
+  });
+  assert.equal(decision.blocked, true);
+  assert.equal(decision.reason, 'global_position_cap_reached');
+  assert.equal(decision.openCount, 20);
+  assert.equal(decision.maxOpenPositions, 20);
+});
+
+test('worker cap allows a new signal at 19/20', () => {
+  const decision = evaluateGlobalPositionCap({
+    snapshotSafety: trustedSnapshot(19),
+    settings: { max_open_positions: 20 },
+    envOverride: ''
+  });
+  assert.equal(decision.blocked, false);
+  assert.equal(decision.reason, null);
+  assert.equal(decision.openCount, 19);
+});
+
+test('worker cap fails closed when the position count is unavailable or untrusted', () => {
+  for (const snapshotSafety of [
+    null,
+    { configured: true, trusted: false, reason: 'SNAPSHOT_LOOKUP_FAILED' },
+    { configured: true, trusted: true, positionCount: null },
+    { configured: true, trusted: true, positionCount: -1 }
+  ]) {
+    const decision = evaluateGlobalPositionCap({
+      snapshotSafety,
+      settings: { max_open_positions: 20 },
+      envOverride: ''
+    });
+    assert.equal(decision.blocked, true);
+    assert.equal(decision.reason, 'global_position_count_untrusted');
+    assert.equal(decision.openCount, null);
+  }
+});
+
+test('MAX_OPEN_POSITIONS_CAP env override takes precedence and defaults remain safe', () => {
+  assert.equal(resolveMaxOpenPositionsCap({ max_open_positions: 20 }, '7'), 7);
+  assert.equal(resolveMaxOpenPositionsCap({ max_open_positions: 20 }, 'bad'), 20);
+  assert.equal(resolveMaxOpenPositionsCap({}, ''), 20);
+});
+
+test('a successful in-cycle route reserves capacity before API snapshot refresh', () => {
+  const decision = evaluateGlobalPositionCap({
+    snapshotSafety: trustedSnapshot(19),
+    settings: { max_open_positions: 20 },
+    envOverride: '',
+    baselineOpenCount: 19,
+    routedThisCycle: 1
+  });
+  assert.equal(decision.blocked, true);
+  assert.equal(decision.reason, 'global_position_cap_reached');
+  assert.equal(decision.openCount, 20);
+});
