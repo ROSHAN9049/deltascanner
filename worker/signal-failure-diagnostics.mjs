@@ -29,9 +29,8 @@ export function classifyTradetronSignalFailure(input = {}) {
   const message = clean(input?.message || (input instanceof Error ? input.message : ''));
   const combined = [reason, code, message, detail].filter(Boolean).join(' ').toLowerCase();
 
-  if (input?.positionSafetyBlocked === true ||
-      input?.globalPositionCapBlocked === true ||
-      /global open-position limit reached|position[_ -]cap|position safety blocked/.test(combined)) {
+  if (input?.globalPositionCapBlocked === true ||
+      /global open-position limit reached|global position cap reached|position cap reached/.test(combined)) {
     return 'position_cap_block';
   }
   if (/signal[_ -]?expired|reservation expired|ttl expired|expired before/.test(combined)) {
