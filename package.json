@@ -18,7 +18,8 @@
     "btc:regime:compare": "node scripts/btc-regime-compare.mjs",
     "db:diagnose-disk": "node scripts/diagnose-disk.mjs",
     "db:prune-signals": "node scripts/prune-signals-safe.mjs",
-    "db:retention:test": "node scripts/test-retention.mjs"
+    "db:retention:test": "node scripts/test-retention.mjs",
+    "diagnose:failed-signals": "node scripts/diagnose-failed-signals.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",
