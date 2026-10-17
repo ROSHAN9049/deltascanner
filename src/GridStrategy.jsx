@@ -106,8 +106,16 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
     if (!readyToStart) return;
     mutate({ ...payload, gridEnabled: true });
   };
-  const pause = () => mutate({ gridEnabled: false });
-  const reset = () => mutate({ gridReset: true });
+  const pause = () => {
+    if (window.confirm('Pause Grid new entries? Existing positions will continue to be managed.')) {
+      mutate({ gridEnabled: false });
+    }
+  };
+  const reset = () => {
+    if (window.confirm('Reset Grid state? This does not trigger the global Emergency Stop.')) {
+      mutate({ gridReset: true });
+    }
+  };
 
   return <>
     <section className="cards">
@@ -137,8 +145,8 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
       {gridSafetyBlocked ? <div className="errorText">Grid new entries are blocked by Tradetron position safety ({gridSafetyReason}). A fresh, complete position snapshot is required, and an existing same-symbol position prevents a new Grid entry. Existing Grid positions continue to follow their own exit rules.</div> : null}
         <button className="action" disabled={busy || !readyToStart} onClick={save}>Save Configuration</button>
         <button className="action gridStart" disabled={busy || !readyToStart || settings.grid_enabled === true || !!gridState.pausedReason || gridSafetyBlocked} onClick={start}>Start Tradetron Live Offline</button>
-        <button className="action" disabled={busy || settings.grid_enabled !== true} onClick={pause}>Pause New Entries</button>
-        <button className="dangerBtn" disabled={busy || lockedConfig || !gridState.pausedReason || settings.emergency_stop === true || ['DAILY_LOSS_LIMIT','OVERALL_DRAWDOWN_STOP'].includes(gridState.pausedReason)} onClick={reset}>Reset Range / E-Stop</button>
+        <button className="action" title="New entries stop. Existing positions continue to be managed." disabled={busy || settings.grid_enabled !== true} onClick={pause}>Pause Grid (Exit Only)</button>
+        <button className="dangerBtn" title="Resets grid state. Does NOT trigger global Emergency Stop." disabled={busy || lockedConfig || !gridState.pausedReason || settings.emergency_stop === true || ['DAILY_LOSS_LIMIT','OVERALL_DRAWDOWN_STOP'].includes(gridState.pausedReason)} onClick={reset}>Reset Grid Config</button>
       </div>
       {!valid ? <div className="errorText">Set a valid lower and upper price and choose 8–12 grid levels before starting. Upper must be greater than lower.</div> : null}
       {lockedConfig ? <div className="lockedText">Grid range and instrument edits are locked while a simulated position is open. Pause entries and let positions exit or reset only after positions are closed.</div> : null}
