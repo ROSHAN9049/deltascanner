@@ -62,3 +62,19 @@ export function evaluateGlobalPositionCap({
     lastSuccessAt: snapshotSafety?.lastSuccessAt || null
   };
 }
+
+/**
+ * Execute the pre-route callback only when the previously evaluated cap
+ * decision permits it. A missing/unknown decision fails closed.
+ */
+export async function routeUnlessGlobalPositionCapBlocked(decision, route) {
+  if (decision?.blocked !== false) {
+    return {
+      blocked: true,
+      reason: decision?.reason || 'global_position_count_untrusted',
+      result: undefined
+    };
+  }
+  if (typeof route !== 'function') throw new TypeError('route must be a function');
+  return { blocked: false, reason: null, result: await route() };
+}
