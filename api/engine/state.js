@@ -75,16 +75,23 @@ export default async function handler(req, res) {
       developerSnapshotRows,
       developerNotificationSyncRows,
       developerNotificationRows,
-      developerPnlHistoryRows
+      developerPnlHistoryRows,
+      apiDerivedTradeRows,
+      apiDerivedTradeCount
     ] = privateDataAuthorized
       ? await Promise.all([
           select('dd_tradetron_developer_sync_state', 'id=eq.1&select=*').catch(() => []),
           select('dd_tradetron_developer_snapshots', 'order=deployment_id.asc').catch(() => []),
           select('dd_tradetron_developer_notification_sync_state', 'id=eq.1&select=*').catch(() => []),
           select('dd_tradetron_developer_notifications', 'order=event_at.desc.nullslast,updated_at.desc&limit=200').catch(() => []),
-          select('dd_tradetron_developer_pnl_history', 'order=captured_at.desc&limit=200').catch(() => [])
+          select('dd_tradetron_developer_pnl_history', 'order=captured_at.desc&limit=1000').catch(() => []),
+          select('dd_api_derived_trades', 'order=detected_at.desc&limit=1000').catch(() => []),
+          count('dd_api_derived_trades', 'select=id').catch(error => {
+            console.error('[engine/state] exact API-derived trade count unavailable:', error.message);
+            return null;
+          })
         ])
-      : [[], [], [], [], []];
+      : [[], [], [], [], [], [], null];
     const tradetronDeveloperSync = developerSyncRows?.[0] || null;
     const knownDeploymentIds = tradetronDeveloperSync?.details?.deploymentIds;
     const tradetronDeveloperSnapshots = Array.isArray(knownDeploymentIds)
@@ -148,7 +155,9 @@ export default async function handler(req, res) {
       tradetronDeveloperSnapshots,
       tradetronDeveloperNotificationSync,
       tradetronDeveloperNotifications,
-      tradetronDeveloperPnlHistory
+      tradetronDeveloperPnlHistory,
+      apiDerivedTrades: apiDerivedTradeRows || [],
+      apiDerivedTradeCount: apiDerivedTradeCount == null ? null : Number(apiDerivedTradeCount)
     }, privateDataAuthorized));
   } catch (e) {
     return res.status(503).json({ success: false, environment: CONFIG.environment, error: e.message });
