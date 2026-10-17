@@ -11,6 +11,7 @@ import { indiaDateKey } from '../src/date-utils.js';
 import { createGridState, evaluateGridTick } from './grid-strategy.mjs';
 import { CANDLE_WARMUP_BATCH_SIZE, CANDLE_WARMUP_RETRY_MS, planCandleWarmup } from './candle-warmup.mjs';
 import { isOptionsExecutionAllowed, OPTIONS_EXECUTION_LOCK_REASON } from './options-execution-lock.mjs';
+import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from './signal-failure-diagnostics.mjs';
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -1795,12 +1796,19 @@ export class DeltaEngine {
           strategy
         });
         if (!result.ok) {
+          const failureReason = classifyTradetronSignalFailure(result);
+          const failureDetail = sanitizeTradetronFailureDetail(
+            result?.reason || result?.error || result?.message || 'Tradetron bridge returned ok=false without a reason'
+          );
           await db.update('dd_orders', 'client_order_id=eq.' + encodeURIComponent(executionId), {
             state: 'FAILED',
+            failure_reason: failureReason,
+            failure_detail: failureDetail,
             updated_at: iso()
           }).catch(() => {});
           await this.log('ERROR', 'Tradetron bridge signal failed; direct Delta entry blocked', {
-            symbol: signal.symbol, strategy, side: signal.side, executionId
+            symbol: signal.symbol, strategy, side: signal.side, executionId,
+            failureReason, failureDetail
           });
           return false;
         }
@@ -1834,11 +1842,18 @@ export class DeltaEngine {
         });
         return true;
       } catch (e) {
+        const failureReason = classifyTradetronSignalFailure(e);
+        const failureDetail = sanitizeTradetronFailureDetail(e?.message || e);
+        // Record diagnostics only; keep the pending-state and TTL behavior unchanged.
+        await db.update('dd_orders', 'client_order_id=eq.' + encodeURIComponent(executionId), {
+          failure_reason: failureReason,
+          failure_detail: failureDetail
+        }).catch(() => {});
         await this.log('ERROR', 'Tradetron bridge exception; direct Delta entry blocked', {
-          symbol: signal.symbol, strategy, side: signal.side,
+          symbol: signal.symbol, strategy, side: signal.side, executionId,
           entryVariableKey: String(signal.symbol || '').trim().toUpperCase() + (signal.side === 'BUY' ? '_el' : '_es'),
           globalTriggerKey: signal.side === 'BUY' ? 'api_buy' : 'api_sell',
-          error: e.message
+          failureReason, failureDetail
         });
         return false;
       }
@@ -2620,11 +2635,20 @@ export class DeltaEngine {
         'dd_orders',
         'order_type=eq.tradetron_signal&state=in.(PENDING,SIGNAL_SENT)' +
           '&updated_at=lt.' + encodeURIComponent(cutoff) +
-          '&select=id,symbol,state',
+          '&select=id,symbol,state,failure_reason',
         { state: 'EXPIRED', updated_at: new Date(nowMs).toISOString() }
       );
       const rows = Array.isArray(expired) ? expired : [];
       if (rows.length) {
+        await Promise.all(rows.filter(row => !String(row?.failure_reason || '').trim()).map(row =>
+          db.update('dd_orders',
+            'id=eq.' + encodeURIComponent(String(row.id || '')) + '&failure_reason=is.null',
+            {
+              failure_reason: 'signal_expired',
+              failure_detail: 'Signal reservation expired before authenticated confirmation'
+            }
+          ).catch(() => {})
+        ));
         await this.log('INFO', 'Stale Tradetron signal reservations expired', {
           count: rows.length,
           ttlMs: SIGNAL_RESERVATION_TTL_MS,
