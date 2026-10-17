@@ -14,6 +14,7 @@ import { isOptionsExecutionAllowed, OPTIONS_EXECUTION_LOCK_REASON } from './opti
 import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from './signal-failure-diagnostics.mjs';
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
 import { buildApiDerivedTrackingPlan } from './tradetron-derived-trades.mjs';
+import { evaluateGlobalPositionCap } from './global-position-cap.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const n = v => Number.isFinite(+v) ? +v : 0;
@@ -176,6 +177,7 @@ export class DeltaEngine {
     this.dedupTotalCandidates = 0;
     this.dedupSkippedCount = 0;
     this.dedupInsertedCount = 0;
+    this.globalPositionCapLogged = new Set();
   }
 
   async log(level, message, data) {
@@ -2838,6 +2840,55 @@ export class DeltaEngine {
     }
   }
 
+  async recordGlobalPositionCapBlock(candidate, decision) {
+    const symbol = String(candidate?.signal?.symbol || candidate?.item?.ticker?.symbol || '').toUpperCase();
+    const strategy = String(candidate?.strategy || '').toUpperCase();
+    const reason = decision?.reason || 'global_position_count_untrusted';
+    const message = reason === 'global_position_cap_reached'
+      ? 'Signal ' + symbol + ' blocked by global cap: openCount=' +
+        decision.openCount + '/' + decision.maxOpenPositions
+      : 'Signal ' + symbol + ' blocked because global position count is not trusted';
+
+    if (candidate?.signal && typeof candidate.signal === 'object') {
+      const priorReasons = Array.isArray(candidate.signal.blocked) ? candidate.signal.blocked : [];
+      candidate.signal.blocked = [...new Set([...priorReasons, reason])];
+      candidate.signal.ready = false;
+    }
+
+    // Persist the gate reason to the live signal cache so the UI explains the
+    // block. This write is diagnostic only; the gate remains fail-closed if it fails.
+    try {
+      const cacheKey = symbol + ':' + strategy;
+      const blockedReasons = Array.isArray(candidate?.signal?.blocked)
+        ? candidate.signal.blocked : [reason];
+      await db.update(
+        'dd_signal_cache',
+        'cache_key=eq.' + encodeURIComponent(cacheKey),
+        { ready: false, blocked_reasons: [...new Set([...blockedReasons, reason])], cached_at: iso() }
+      );
+    } catch (error) {
+      await this.log('ERROR', 'Global position cap block could not be persisted to signal cache', {
+        symbol, strategy, reason, error: String(error?.message || error).slice(0, 240)
+      });
+    }
+
+    const logKey = [symbol, strategy, reason, decision?.openCount ?? 'UNKNOWN', decision?.maxOpenPositions ?? 20].join(':');
+    if (!this.globalPositionCapLogged.has(logKey)) {
+      this.globalPositionCapLogged.add(logKey);
+      await this.log('WARN', message, {
+        symbol,
+        strategy,
+        reason,
+        openCount: decision?.openCount ?? null,
+        maxOpenPositions: decision?.maxOpenPositions ?? 20,
+        snapshotReason: decision?.snapshotReason || null,
+        lastSuccessAt: decision?.lastSuccessAt || null,
+        source: 'trusted Tradetron Developer API snapshot',
+        failClosed: true
+      });
+    }
+  }
+
   async manageTradetronPositions(rows, settings = {}) {
     if (!CONFIG.signalOnly || !CONFIG.tradetronBridgeEnabled) return;
     const marketAge = Date.now() - Math.max(this.lastTickerFetch || 0, this.lastTickAt || 0);
@@ -3032,11 +3083,36 @@ export class DeltaEngine {
         return (rank[b.strategy] || 0) - (rank[a.strategy] || 0);
       });
 
-      // Route every qualifying opportunity; no arbitrary max-open-position or
-      // rolling signal-count quota is applied. Idempotency, per-symbol duplicate
-      // checks, platform API responses, and fail-closed database lookups remain active.
+      // The global cap is a final pre-route gate, separate from riskGate/openTrade
+      // and the existing duplicate-symbol blocker. It uses the same trusted
+      // Tradetron snapshot source as the dashboard and fails closed on unknown counts.
+      let baselineTrustedOpenCount = null;
+      let routedThisCycle = 0;
       for (const c of candidates) {
         if (CONFIG.signalOnly && reservationLookupFailed) break;
+        if (CONFIG.signalOnly && CONFIG.tradetronBridgeEnabled) {
+          const snapshotSafety = await this.getTradetronSnapshotRiskState();
+          this.lastTradetronEntrySafety = snapshotSafety;
+          if (snapshotSafety?.trusted === true &&
+              Number.isSafeInteger(snapshotSafety.positionCount) &&
+              snapshotSafety.positionCount >= 0 &&
+              baselineTrustedOpenCount === null) {
+            baselineTrustedOpenCount = snapshotSafety.positionCount;
+          }
+
+          const capDecision = evaluateGlobalPositionCap({
+            snapshotSafety,
+            settings,
+            envOverride: process.env.MAX_OPEN_POSITIONS_CAP,
+            baselineOpenCount: baselineTrustedOpenCount,
+            routedThisCycle
+          });
+          if (capDecision.blocked) {
+            await this.recordGlobalPositionCapBlock(c, capDecision);
+            continue;
+          }
+          this.globalPositionCapLogged.clear();
+        }
         const freshAccount = await this.accountSnapshot(settings);
         const storedPositions = CONFIG.signalOnly ? await db.select('dd_positions', 'origin=eq.TRADETRON&qty=gt.0&order=updated_at.desc') : await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
         const freshPositions = CONFIG.signalOnly ? await this.getSignalOnlyPositions(storedPositions || []) : (storedPositions || []);
@@ -3045,7 +3121,10 @@ export class DeltaEngine {
           break;
         }
         const opened = await this.openTrade(c.item, c.strategy, c.signal, freshAccount, settings, freshPositions, trades);
-        if (opened) await sleep(1000);
+        if (opened) {
+          if (CONFIG.signalOnly && CONFIG.tradetronBridgeEnabled) routedThisCycle++;
+          await sleep(1000);
+        }
       }
     }
 
