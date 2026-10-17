@@ -13,7 +13,7 @@ import { CANDLE_WARMUP_BATCH_SIZE, CANDLE_WARMUP_RETRY_MS, planCandleWarmup } fr
 import { isOptionsExecutionAllowed, OPTIONS_EXECUTION_LOCK_REASON } from './options-execution-lock.mjs';
 import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from './signal-failure-diagnostics.mjs';
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
-import { buildApiDerivedTrackingPlan } from './tradetron-derived-trades.mjs';
+import { buildApiDerivedTrackingPlan, strategyForDerivedTrade } from './tradetron-derived-trades.mjs';
 import { evaluateGlobalPositionCap, routeUnlessGlobalPositionCapBlocked } from './global-position-cap.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -352,9 +352,38 @@ export class DeltaEngine {
         detectedAt
       });
 
-      // Insert trade observations first; if persistence fails, do not advance the
+      // Strategy is not included in Tradetron's raw position snapshots. Attach
+      // a display-only best-effort label from the current signal cache at the
+      // detection moment; this is never treated as authenticated trade provenance.
+      let signalCacheRows = [];
+      const closeSymbols = [...new Set(plan.trades
+        .map(trade => String(trade?.symbol || '').trim().toUpperCase())
+        .filter(Boolean))];
+      if (closeSymbols.length) {
+        try {
+          signalCacheRows = await db.select(
+            'dd_signal_cache',
+            'symbol=in.(' + closeSymbols.join(',') + ')' +
+              '&strategy=in.(MOMENTUM,SCALPING)' +
+              '&select=symbol,strategy,stage,score,ready,cached_at' +
+              '&order=ready.desc,score.desc,cached_at.desc&limit=1000'
+          ) || [];
+        } catch (error) {
+          await this.log('WARN', 'Could not annotate API-derived close strategy from signal cache', {
+            symbols: closeSymbols,
+            error: String(error?.message || error).slice(0, 240),
+            note: 'Close observations will still be stored with unknown strategy; display-only labels are best-effort.'
+          });
+        }
+      }
+      const derivedTrades = plan.trades.map(trade => ({
+        ...trade,
+        strategy: strategyForDerivedTrade(trade, signalCacheRows)
+      }));
+
+      // Insert close observations first; if persistence fails, do not advance the
       // position cursor, so the next poll can retry the same close transition.
-      for (const trade of plan.trades) {
+      for (const trade of derivedTrades) {
         await db.insertIgnore('dd_api_derived_trades', trade, 'source_fingerprint');
       }
       for (const action of plan.observationActions) {
@@ -378,9 +407,10 @@ export class DeltaEngine {
       }
       if (plan.trades.length || plan.observationActions.length) {
         await this.log('INFO', 'Tradetron API-derived position tracking', {
-          tradesObserved: plan.trades.length,
-          transitions: plan.trades.filter(row => row.derived_from === 'poll_transition').length,
-          closedSnapshotObservations: plan.trades.filter(row => row.derived_from === 'snapshot_closed').length,
+          tradesObserved: derivedTrades.length,
+          transitions: derivedTrades.filter(row => row.derived_from === 'poll_transition').length,
+          closedSnapshotObservations: derivedTrades.filter(row => row.derived_from === 'snapshot_closed').length,
+          strategyLabels: derivedTrades.filter(row => row.strategy).length,
           observationWrites: plan.observationActions.length,
           displayOnly: true,
           verifiedFills: false
