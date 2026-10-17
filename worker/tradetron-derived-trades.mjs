@@ -37,6 +37,38 @@ export function tradetronDerivedSymbol(value) {
   return raw.replace(/^DIN[-_]?/i, '').split(/[ _]/)[0].toUpperCase();
 }
 
+const STRATEGY_STAGE_RANK = Object.freeze({ CONFIRMED: 3, SETUP: 2, WATCH: 1 });
+
+/**
+ * API position rows don't expose the originating strategy. This is a display-only
+ * best-effort label from the live signal cache; it must never be treated as
+ * authenticated trade provenance or used by risk/execution logic.
+ */
+export function strategyForDerivedTrade(trade, signalCacheRows = []) {
+  const symbol = String(trade?.symbol || '').trim().toUpperCase();
+  if (!symbol) return null;
+  const candidates = (Array.isArray(signalCacheRows) ? signalCacheRows : [])
+    .filter(row =>
+      String(row?.symbol || '').trim().toUpperCase() === symbol &&
+      ['MOMENTUM', 'SCALPING'].includes(String(row?.strategy || '').trim().toUpperCase())
+    )
+    .map(row => ({
+      strategy: String(row.strategy).trim().toUpperCase(),
+      ready: row.ready === true,
+      stageRank: STRATEGY_STAGE_RANK[String(row.stage || '').trim().toUpperCase()] || 0,
+      score: numberOrNull(row.score) ?? -1,
+      cachedAt: Date.parse(row.cached_at || '') || 0
+    }))
+    .sort((a, b) =>
+      Number(b.ready) - Number(a.ready) ||
+      b.stageRank - a.stageRank ||
+      b.score - a.score ||
+      b.cachedAt - a.cachedAt ||
+      a.strategy.localeCompare(b.strategy)
+    );
+  return candidates[0]?.strategy || null;
+}
+
 function hash(value) {
   return createHash('sha256').update(String(value)).digest('hex');
 }

@@ -307,13 +307,13 @@ function App() {
     {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} trades={trades} positions={positions} accountDataProtected={accountDataProtected} signals={signals} signalOrderStats={state?.signalOrderStats || null} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.tradeRowCount ?? null} tradetronEvents={state?.tradetronEvents || []} executionCoverage={executionCoverage} developerSync={state?.tradetronDeveloperSync || null} developerSnapshots={state?.tradetronDeveloperSnapshots || []} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} developerDataProtected={state?.tradetronDeveloperDataProtected === true} developerNotifications={state?.tradetronDeveloperNotifications || []} developerNotificationSync={state?.tradetronDeveloperNotificationSync || null} developerPnlHistory={state?.tradetronDeveloperPnlHistory || []} onInspect={setInspect} inspect={selected} logs={state?.logs || []} />}
     {tab === 'rotation' && <Rotation ledger={rotationLedger} accountDataProtected={accountDataProtected} ledgerComplete={rotationLedgerComplete} ledgerRowCount={state?.ledgerRowCount ?? null} />}
     {tab === 'momentum' && <EngineView engine="MOMENTUM" signals={signals} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols} />}
-    {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
+    {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" strategy="MOMENTUM" apiDerivedTrades={state?.apiDerivedTrades || []} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'scalping' && <EngineView engine="SCALPING" signals={signals} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols} />}
     {tab === 'grid' && <GridStrategy settings={settings} market={market} busy={busy} mutate={mutate} accountDataProtected={accountDataProtected} gridEntrySafety={executionCoverage?.gridEntrySafety || null} />}
     {tab === 'options' && <OptionsView signals={signals} settings={settings} optionCache={state?.optionCache || []} executionCoverage={state?.executionCoverage || null} />}
-    {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
+    {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" strategy="SCALPING" apiDerivedTrades={state?.apiDerivedTrades || []} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'positions' && <><Positions rows={positions} tradetronDeployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} snapshotsLocked={state?.tradetronDeveloperDataProtected === true} accountDataProtected={accountDataProtected} /><TradetronPositionReconciliationPanel deployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} enginePositions={positions} syncState={state?.tradetronDeveloperSync || null} privateDataProtected={accountDataProtected || state?.tradetronDeveloperDataProtected === true} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
-    {tab === 'trade-history' && <><TradeHistory trades={trades} title="Trade History · Webhook-Synced Tradetron Records" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} /><TradetronActivity events={state?.tradetronEvents || []} signalStats={state?.signalOrderStats || null} webhookSecretConfigured={executionCoverage?.webhookSecretConfigured === true} accountDataProtected={accountDataProtected} /></>}
+    {tab === 'trade-history' && <><TradeHistory trades={trades} title="Trade History · Webhook-Synced Tradetron Records" apiDerivedTrades={state?.apiDerivedTrades || []} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} /><TradetronActivity events={state?.tradetronEvents || []} signalStats={state?.signalOrderStats || null} webhookSecretConfigured={executionCoverage?.webhookSecretConfigured === true} accountDataProtected={accountDataProtected} /></>}
     {tab === 'pnl' && <><PNL trades={trades} settings={settings} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.tradeRowCount ?? null} apiDerivedTrades={state?.apiDerivedTrades || []} apiDerivedTradeCount={state?.apiDerivedTradeCount ?? null} developerSnapshots={state?.tradetronDeveloperSnapshots || []} developerDataProtected={state?.tradetronDeveloperDataProtected === true} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
     {tab === 'paper' && <Panel title="Paper Trading"><div className="lockedText">Scanner is signal-only. No Delta order is placed here; Tradetron Live Offline runs the simulated execution.</div></Panel>}
     {tab === 'testnet' && <Testnet settings={settings} health={health} busy={busy} mutate={mutate} positions={positions} tradetronDeployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} developerSync={state?.tradetronDeveloperSync || null} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} accountDataProtected={accountDataProtected} />}
@@ -697,9 +697,11 @@ function HistoryEmptyState({ engine }) {
   </div>;
 }
 
-function TradeHistory({ trades = [], title, accountDataProtected = false, tradesComplete = false }) {
+function TradeHistory({ trades = [], title, strategy = undefined, apiDerivedTrades = [], accountDataProtected = false, tradesComplete = false }) {
   if (accountDataProtected) return <Panel title={title}><div className="lockedText">Closed-trade records are private and currently locked. Enter ENGINE_SECRET in Settings to view history. No trades are being inferred from snapshots.</div></Panel>;
   const engine = String(title || 'Trade History').split('·')[0].replace(/history/i, '').trim() || 'Trade';
+  const derivedRows = (Array.isArray(apiDerivedTrades) ? apiDerivedTrades : [])
+    .filter(row => !strategy || String(row?.strategy || '').toUpperCase() === String(strategy).toUpperCase());
   return <Panel title={title}>
     {!tradesComplete ? <div className="lockedText">Showing loaded trade rows only; the full trade-history ledger is not confirmed. Aggregate totals may therefore be incomplete.</div> : null}
     <div className="tablewrap"><table><thead><tr><th>TIME</th><th>COIN</th><th>MODE</th><th>STRATEGY</th><th>SIDE</th><th>ENTRY</th><th>EXIT</th><th>QTY</th><th>FEES</th><th>GROSS</th><th>NET</th><th>PNL%</th><th>R</th><th>EXIT REASON</th><th>RESULT</th></tr></thead><tbody>
@@ -722,6 +724,28 @@ function TradeHistory({ trades = [], title, accountDataProtected = false, trades
       </tr>)}
       {!trades.length ? <tr><td colSpan={15}><HistoryEmptyState engine={engine}/></td></tr> : null}
     </tbody></table></div>
+    <div className="panelTitle"><h3>API-Derived History · Unverified</h3></div>
+    <div className="lockedText apiStateWarn">
+      <b>⚠️ Derived from API snapshots. Not verified fills.</b>
+      <div>Strategy labels are best-effort matches to signal-cache rows when the API snapshot has no strategy field. These observations are display-only; they are not authenticated fills or verified closes.</div>
+    </div>
+    {derivedRows.length ? <div className="tablewrap"><table>
+      <thead><tr><th>TIME</th><th>SYMBOL</th><th>SIDE</th><th>QTY</th><th>ENTRY</th><th>EXIT</th><th>RAW P&amp;L</th><th>SOURCE</th><th>VERIFIED</th></tr></thead>
+      <tbody>{derivedRows.map(row => {
+        const displayTime = row.closed_at_estimated || row.closed_at || row.detected_at;
+        return <tr key={row.id || row.source_fingerprint || String(row.detected_at) + ':' + String(row.symbol)}>
+          <td title={row.detected_at ? 'Detected at ' + new Date(row.detected_at).toLocaleString('en-IN') : 'Detection time unavailable'}>{displayTime ? new Date(displayTime).toLocaleString('en-IN') : 'Unknown'}</td>
+          <td className="symbol">{row.symbol || 'Unknown'}</td>
+          <td>{row.side || 'Unknown'}</td>
+          <td>{safeNum(row.qty_closed) === null ? 'Unknown' : fmtQty(row.qty_closed)}</td>
+          <td>{safeNum(row.entry_price) === null ? 'Unknown' : price(row.entry_price)}</td>
+          <td>{safeNum(row.exit_price) === null ? 'Unknown' : price(row.exit_price)}</td>
+          <td className={safeNum(row.raw_pnl) === null ? 'muted' : 'mono'}>{safeNum(row.raw_pnl) === null ? 'Unknown' : fmtRawPrice(row.raw_pnl,4) + ' RAW'}</td>
+          <td>{row.derived_from || 'Unknown'}</td>
+          <td className="warn" title="This record is inferred from API snapshots, not authenticated fill events.">UNVERIFIED</td>
+        </tr>;
+      })}</tbody>
+    </table></div> : <div className="lockedText">No closes detected yet. Monitoring active.</div>}
   </Panel>;
 }
 function PNL({
