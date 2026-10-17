@@ -19,7 +19,8 @@
     "db:diagnose-disk": "node scripts/diagnose-disk.mjs",
     "db:prune-signals": "node scripts/prune-signals-safe.mjs",
     "db:retention:test": "node scripts/test-retention.mjs",
-    "diagnose:failed-signals": "node scripts/diagnose-failed-signals.mjs"
+    "diagnose:failed-signals": "node scripts/diagnose-failed-signals.mjs",
+    "test:derived-trades": "node --test tests/tradetron-derived-trades.test.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",
