@@ -7,6 +7,7 @@ import { routeStatusForSymbol } from './market-route-status.js';
 import { getTradetronDiagnosticDetails } from './tradetron-diagnostics.js';
 import { summarizeCurrentPositionCount, summarizeTradetronSnapshots } from './tradetron-position-sync.js';
 import { buildTradetronPositionReconciliation } from './tradetron-reconciliation.js';
+import { formatLastNonZeroPnlContext } from './tradetron-pnl-context.js';
 import { DEFAULT_VISIBLE_MARKET_LIMIT, selectVisibleMarketRows, selectVisibleSignalRows } from './market-view.js';
 import { assessDeltaRange, fmtMultiplier, fmtPrice as fmtRawPrice, fmtRsi, safeNum } from './formatters.js';
 import { blockersDisplay, gateTooltip } from './gate-result.js';
@@ -303,8 +304,8 @@ function App() {
 function Panel({ title, children }) {
   return <section className="panel"><div className="panelTitle"><h2>{title}</h2></div><div className="pad">{children}</div></section>;
 }
-function Card({ label, value, sub }) {
-  return <div className="card"><small>{label}</small><strong>{value}</strong><span>{sub}</span></div>;
+function Card({ label, value, sub, title }) {
+  return <div className="card" title={title}><small>{label}</small><strong>{value}</strong><span>{sub}</span></div>;
 }
 function Dashboard({ market, settings, health, trades, positions, accountDataProtected = false, signals, signalOrderStats = null, tradesComplete = false, tradeRowCount = null, tradetronEvents = [], executionCoverage = null, developerSync = null, developerSnapshots = [], developerApiConfigured = false, developerDataProtected = false, developerNotifications = [], developerNotificationSync = null, developerPnlHistory = [], onInspect, inspect, logs }) {
   const today = indiaDateKey(new Date());
@@ -318,6 +319,7 @@ function Dashboard({ market, settings, health, trades, positions, accountDataPro
     (count, deployment) => count + (Array.isArray(deployment?.positions) ? deployment.positions.length : 0), 0
   );
   const tradetronMirror = summarizeTradetronSnapshots(developerSnapshots);
+  const lastNonZeroPnlContext = formatLastNonZeroPnlContext(developerPnlHistory);
   const routeSafetyRequired = Number(executionCoverage?.configuredFuturesRoutes || 0) > 0;
   const routeSafetyBlocked = routeSafetyRequired && (executionCoverage?.tradetronEntrySafety?.trusted !== true || executionCoverage?.tradetronEntrySafety?.blocked === true || executionCoverage?.tradetronEntrySafety?.capReached === true);
   const routeSafetyReason = executionCoverage?.tradetronEntrySafety?.reason ||
@@ -372,7 +374,7 @@ function Dashboard({ market, settings, health, trades, positions, accountDataPro
       <Card label="OPEN POSITIONS" value={accountDataProtected ? 'LOCKED' : currentPositionSummary.count === null ? currentPositionSummary.status : currentPositionSummary.count} sub={accountDataProtected ? 'hidden data is not zero' : currentPositionSummary.detail}/>
       <Card label="WEBHOOK POSITION LEDGER" value={accountDataProtected ? 'LOCKED' : positions.length} sub={accountDataProtected ? 'private event ledger' : 'positions confirmed by authenticated callback processing; distinct from current API snapshots'}/>
       <Card label="TT OPEN LEGS" value={developerDataProtected ? 'LOCKED' : developerApiConfigured ? (tradetronMirror.openCount === null ? 'UNKNOWN' : tradetronMirror.openCount) : '—'} sub={developerDataProtected ? 'private account snapshot' : tradetronMirror.openCount === null ? 'no verified count; do not interpret as zero' : 'current Tradetron Developer API snapshot'}/>
-      <Card label="TRADETRON SNAPSHOT P&L" value={developerDataProtected ? 'LOCKED' : (developerApiConfigured && tradetronMirror.reportedPnl !== null ? fmtRawPrice(tradetronMirror.reportedPnl, 2) : 'NO DATA')} sub={"Raw deployment P&L; " + (tradetronMirror.reportedPnlCurrencyCode ? "API reports " + tradetronMirror.reportedPnlCurrencyCode + " currency; " : "currency not identified by API; ") + "P&L meaning is not independently verified; separate from scanner ledger"}/>
+      <Card label="TRADETRON SNAPSHOT P&L" value={developerDataProtected ? 'LOCKED' : (developerApiConfigured && tradetronMirror.reportedPnl !== null ? fmtRawPrice(tradetronMirror.reportedPnl, 2) : 'NO DATA')} title="Raw deployment-level value from API. Actual realized P&L requires authenticated trade-detail data." sub={"Raw deployment P&L; " + (tradetronMirror.reportedPnlCurrencyCode ? "API reports " + tradetronMirror.reportedPnlCurrencyCode + " currency; " : "currency not identified by API; ") + "P&L meaning is not independently verified; separate from scanner ledger" + (lastNonZeroPnlContext ? " · " + lastNonZeroPnlContext : "")}/>
       <Card label="TT SNAPSHOT ROWS" value={developerDataProtected ? 'LOCKED' : developerApiConfigured ? developerSnapshotRowCount : '—'} sub="raw API rows, including closed rows"/>
       <Card label="TT SIGNAL RECORDS" value={accountDataProtected ? 'LOCKED' : signalOrderStats?.total ?? '—'} sub={accountDataProtected ? 'private signal history' : 'all states including expired; not fills'}/>
       <Card label="TT SENT" value={accountDataProtected ? 'LOCKED' : signalOrderStats?.sent ?? '—'} sub={accountDataProtected ? 'private signal submission history' : 'API accepted historically; may now be expired; not fills'}/>
