@@ -754,8 +754,8 @@ function PNL({
   const openPnlComplete = openRows.length > 0 && openPnlValues.every(value => value !== null);
   return <>
     <section className="cards">
-      <Card label="REALIZED NET" value={!hasClosedTrades ? '—' : netComplete ? money(net) : 'INCOMPLETE DATA'} sub={!hasClosedTrades ? 'waiting for authenticated closed-trade records' : !tradesComplete ? 'loaded ' + trades.length + ' of ' + (tradeRowCount ?? 'an unknown number of') + ' stored rows; not a complete total' : netComplete ? 'all stored closed-trade P&L values present' : 'one or more closed-trade P&L values are missing'}/>
-      <Card label="FEES" value={feesComplete ? money(fees) : 'UNAVAILABLE'} sub="Fees cannot be computed without authenticated fills." title="Why? A position snapshot or generic P&L field does not contain authenticated per-fill commission/fee records. No zero fee is assumed."/>
+      <Card label="REALIZED NET" value={!hasClosedTrades ? 'UNAVAILABLE' : netComplete ? money(net) : 'INCOMPLETE DATA'} sub={!hasClosedTrades ? 'waiting for authenticated closed-trade records' : !tradesComplete ? 'loaded ' + trades.length + ' of ' + (tradeRowCount ?? 'an unknown number of') + ' stored rows; not a complete total' : netComplete ? 'all stored closed-trade P&L values present' : 'one or more closed-trade P&L values are missing'}/>
+      <div className="card" title="Why? A position snapshot or generic P&amp;L field does not contain authenticated per-fill commission/fee records. No zero fee is assumed."><small>FEES · <span title="Why? Fees need authenticated per-fill commission records.">Why?</span></small><strong>{feesComplete ? money(fees) : 'UNAVAILABLE'}</strong><span>{feesComplete ? 'sum of recorded authenticated trade fees' : 'Fees cannot be computed without authenticated fills.'}</span></div>
       <Card label="EQUITY" value={settings.equity == null ? '—' : money(settings.equity)} sub="configured scanner ledger balance"/>
       <Card label="UNREALIZED" value={settings.unrealized_pnl == null ? '—' : money(settings.unrealized_pnl)} sub="webhook/engine ledger only; Tradetron raw exposure is shown separately"/>
     </section>
@@ -768,6 +768,7 @@ function PNL({
           <Card label="API-DERIVED RECORDS" value={exactDerivedCount ?? derivedRows.length} sub={derivedCountLabel}/>
           <Card label="DATA QUALITY" value={derivedRows.length ? (derivedRows.filter(row=>row.data_quality==='FULL').length + ' FULL · ' + derivedRows.filter(row=>row.data_quality==='PARTIAL').length + ' PARTIAL · ' + derivedRows.filter(row=>row.data_quality==='MINIMAL').length + ' MINIMAL') : 'UNKNOWN'} sub="FULL means entry + exit fields present only; every row remains unverified"/>
         </section>
+        <div className="lockedText">These are raw API-derived observations, not authenticated historical fills. Rows labelled snapshot_closed may reflect a currently visible closed snapshot rather than a newly detected close. Missing quantities, side, entry/exit prices and timestamps remain Unknown.</div>
         {!derivedRows.length ? <div className="lockedText">{developerApiConfigured ? 'Monitoring active. Historical closes not tracked (would require fills). New closes will appear here.' : 'Tradetron Developer API is not configured; API-derived monitoring is inactive.'}</div> : null}
         {derivedRows.length ? <div className="tablewrap"><table>
           <thead><tr><th>DETECTED</th><th>SYMBOL</th><th>SIDE</th><th>QTY CLOSED</th><th>ENTRY</th><th>EXIT</th><th>LAST LTP RAW</th><th>RAW P&L</th><th>QUALITY / SOURCE</th><th>CLOSE TIME</th></tr></thead>
