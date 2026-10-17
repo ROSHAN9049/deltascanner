@@ -104,6 +104,8 @@ create table if not exists public.dd_orders (
   role text,
   strategy text,
   execution_id text,
+  failure_reason text,
+  failure_detail text,
   raw jsonb,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
