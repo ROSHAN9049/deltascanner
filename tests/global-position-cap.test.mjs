@@ -8,6 +8,11 @@ import {
   normalizeMaxOpenPositions
 } from '../src/open-position-cap.js';
 import { evaluateGridTick } from '../worker/grid-strategy.mjs';
+import {
+  evaluateGlobalPositionCap,
+  resolveMaxOpenPositionsCap,
+  routeUnlessGlobalPositionCapBlocked
+} from '../worker/global-position-cap.mjs';
 
 test('normalizes a positive integer cap and uses a conservative fallback', () => {
   assert.equal(normalizeMaxOpenPositions(3), 3);
@@ -113,10 +118,7 @@ test('global cap blocks new grid entries while still allowing existing grid posi
 });
 
 
-import {
-  evaluateGlobalPositionCap,
-  resolveMaxOpenPositionsCap
-} from '../worker/global-position-cap.mjs';
+
 
 const trustedSnapshot = openCount => ({
   configured: true,
@@ -183,4 +185,52 @@ test('a successful in-cycle route reserves capacity before API snapshot refresh'
   assert.equal(decision.blocked, true);
   assert.equal(decision.reason, 'global_position_cap_reached');
   assert.equal(decision.openCount, 20);
+});
+
+test('a cap-blocked signal never invokes the route callback', async () => {
+  let sent = false;
+  const decision = evaluateGlobalPositionCap({
+    snapshotSafety: trustedSnapshot(20),
+    settings: { max_open_positions: 20 },
+    envOverride: ''
+  });
+  const result = await routeUnlessGlobalPositionCapBlocked(decision, async () => {
+    sent = true;
+    return true;
+  });
+  assert.equal(result.blocked, true);
+  assert.equal(result.reason, 'global_position_cap_reached');
+  assert.equal(sent, false);
+});
+
+test('a signal below the cap invokes the route callback', async () => {
+  let sent = false;
+  const decision = evaluateGlobalPositionCap({
+    snapshotSafety: trustedSnapshot(19),
+    settings: { max_open_positions: 20 },
+    envOverride: ''
+  });
+  const result = await routeUnlessGlobalPositionCapBlocked(decision, async () => {
+    sent = true;
+    return true;
+  });
+  assert.equal(result.blocked, false);
+  assert.equal(result.result, true);
+  assert.equal(sent, true);
+});
+
+test('a failed count blocks the route callback (fail closed)', async () => {
+  let sent = false;
+  const decision = evaluateGlobalPositionCap({
+    snapshotSafety: { configured: true, trusted: false, reason: 'SNAPSHOT_LOOKUP_FAILED' },
+    settings: { max_open_positions: 20 },
+    envOverride: ''
+  });
+  const result = await routeUnlessGlobalPositionCapBlocked(decision, async () => {
+    sent = true;
+    return true;
+  });
+  assert.equal(result.blocked, true);
+  assert.equal(result.reason, 'global_position_count_untrusted');
+  assert.equal(sent, false);
 });
