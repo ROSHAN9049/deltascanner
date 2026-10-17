@@ -39,17 +39,17 @@ try {
         o.failure_detail,
         COALESCE(NULLIF(o.failure_reason, ''), CASE
           WHEN o.state = 'EXPIRED' THEN 'signal_expired'
-          WHEN COALESCE(o.raw->>'position_safety_blocked', 'false') = 'true'
-            OR COALESCE(l.reason, '') ILIKE '%Global open-position limit reached%'
-            OR COALESCE(l.reason, '') ILIKE '%POSITION_CAP_LOOKUP_FAILED%'
+          WHEN COALESCE(l.reason, '') ILIKE '%Global open-position limit reached%'
+            OR COALESCE(l.reason, '') ILIKE '%Global position cap reached%'
             THEN 'position_cap_block'
-          WHEN COALESCE(l.reason, '') ILIKE '%route%'
-            OR COALESCE(l.reason, '') ILIKE '%symbol%invalid%'
-            THEN 'routing_error'
-          WHEN COALESCE(l.reason, '') ILIKE '%API%'
+          WHEN COALESCE(l.reason, '') ILIKE '%POSITION_CAP_LOOKUP_FAILED%'
+            OR COALESCE(l.reason, '') ILIKE '%API%'
             OR COALESCE(l.reason, '') ILIKE '%HTTP%'
             OR COALESCE(l.reason, '') ILIKE '%502%'
             THEN 'api_error'
+          WHEN COALESCE(l.reason, '') ILIKE '%route%'
+            OR COALESCE(l.reason, '') ILIKE '%symbol%invalid%'
+            THEN 'routing_error'
           ELSE 'unknown'
         END) AS classified_reason
       FROM public.dd_orders o
