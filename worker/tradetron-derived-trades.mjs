@@ -232,7 +232,7 @@ export function buildApiDerivedTrackingPlan({
       const previous = previousByKey.get(mapKey) || null;
       const prevQty = numberOrNull(previous?.quantity);
       const transitionClose = !!previous && prevQty !== null && prevQty !== 0 &&
-        current.quantity === 0 && current.explicit_closed;
+        current.quantity === 0;
       const snapshotClosed = !previous && current.quantity === 0 && current.explicit_closed;
       if (transitionClose) {
         records.push({ kind: 'trade', row: null, trade: buildTrade({
