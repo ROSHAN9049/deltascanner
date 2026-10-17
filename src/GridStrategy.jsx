@@ -145,7 +145,7 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
       {gridState.pausedReason === 'DAILY_LOSS_LIMIT' ? <div className="errorText">Daily stop reached. It cannot be reset during the same India trading day; it will clear on the next trading day after a fresh engine tick.</div> : null}
       {gridState.pausedReason === 'OVERALL_DRAWDOWN_STOP' ? <div className="errorText">The 5% overall drawdown stop is terminal for this grid run. Keep this run halted; do not reset its capital baseline to resume.</div> : null}
       <div className="lockedText">
-        <b>Risk sizing guard:</b> The default target is 0.30%, matching Momentum/Scalping. Actual per-position risk is capped at the smaller of that target or daily-loss limit ÷ max positions, and rounded down to whole contracts. If one contract exceeds its risk budget, the entry is skipped. The 5% strategy drawdown limit and 1.2% full-range break close all simulated positions and hard-stop the grid.
+        <b>Risk sizing guard:</b> Current risk target: {Number(draft.gridRiskPerTradePct).toFixed(2)}% (capped at daily loss ÷ max positions). Actual per-position risk is rounded down to whole contracts. If one contract exceeds its risk budget, the entry is skipped. The 5% strategy drawdown limit and 1.2% full-range break close all simulated positions and hard-stop the grid.
       </div>
     </Panel>
 
