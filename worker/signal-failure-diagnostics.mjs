@@ -16,7 +16,7 @@ export function sanitizeTradetronFailureDetail(value, maxLength = 240) {
     .replace(/[\u0000-\u001f\u007f]+/g, ' ')
     .replace(/\s+/g, ' ')
     .replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [REDACTED]')
-    .replace(/((?:api[_ -]?key|access[_ -]?token|secret|password|authorization|credential)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1[REDACTED]')
+    .replace(/((?:api[_ -]?key|access[_ -]?token|token|secret|password|authorization|credential)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1[REDACTED]')
     .replace(/(postgres(?:ql)?:\/\/[^:\s/]+:)[^@\s]+@/gi, '$1[REDACTED]@')
     .replace(/\b(?:sk|pk|sb_secret_|sb_publishable_|sbp_)[A-Za-z0-9_-]{10,}\b/g, '[REDACTED]');
   return sanitized.slice(0, Math.max(0, Number(maxLength) || 240)) || 'No diagnostic details supplied';
