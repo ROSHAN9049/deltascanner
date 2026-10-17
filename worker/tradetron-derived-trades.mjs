@@ -98,6 +98,24 @@ export function normalizeDerivedPosition(position, deploymentId, asOf = new Date
   };
 }
 
+function observationRow(current) {
+  return {
+    id: current.id,
+    deployment_id: current.deployment_id,
+    position_key: current.position_key,
+    symbol: current.symbol,
+    quantity: current.quantity,
+    side: current.side,
+    ltp: current.ltp,
+    raw_pnl: current.raw_pnl,
+    is_open: current.is_open,
+    raw_api_data: current.raw_api_data,
+    observed_at: current.observed_at,
+    last_observed_at: current.last_observed_at,
+    is_current: true
+  };
+}
+
 function dataQuality({ side, entryPrice, exitPrice }) {
   if (entryPrice !== null && entryPrice !== undefined && exitPrice !== null && exitPrice !== undefined) return 'FULL';
   return side ? 'PARTIAL' : 'MINIMAL';
@@ -243,10 +261,10 @@ export function buildApiDerivedTrackingPlan({
       } else if (previous) {
         records.push({
           kind: 'replace', previous,
-          row: current, current, mapKey
+          row: observationRow(current), current, mapKey
         });
       } else {
-        records.push({ kind: 'insert', row: current, current, mapKey });
+        records.push({ kind: 'insert', row: observationRow(current), current, mapKey });
       }
       previousByKey.set(mapKey, previous && !transitionClose && previous.is_open === current.is_open &&
         numberOrNull(previous.quantity) === current.quantity
