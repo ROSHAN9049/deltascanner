@@ -142,7 +142,12 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
       </div>
       <label className="gridCheck"><input type="checkbox" checked={draft.gridReduceAfterLosses} onChange={e => update('gridReduceAfterLosses', e.target.checked)}/> Reduce position sizing by 50% after 2 consecutive losses</label>
       <div className="gridButtons">
-      {gridSafetyBlocked ? <div className="errorText">Grid new entries are blocked by Tradetron position safety ({gridSafetyReason}). A fresh, complete position snapshot is required, and an existing same-symbol position prevents a new Grid entry. Existing Grid positions continue to follow their own exit rules.</div> : null}
+      {gridSafetyBlocked ? <div className="errorText">
+        {gridSafetyReason === 'SAME_SYMBOL_OPEN_POSITION' && gridEntrySafety?.blockingSymbol
+          ? <>Grid new entries blocked: {String(gridEntrySafety.blockingSymbol).toUpperCase()} (qty {safeNum(gridEntrySafety.blockingQty) === null ? 'unknown' : safeNum(gridEntrySafety.blockingQty)}) is already open in your Tradetron account. Close it or select a different symbol.</>
+          : <>Grid new entries are blocked by Tradetron position safety ({gridSafetyReason}). A fresh, complete position snapshot is required, and an existing same-symbol position prevents a new Grid entry.</>}
+        {' '}Existing Grid positions continue to follow their own exit rules.
+      </div> : null}
         <button className="action" disabled={busy || !readyToStart} onClick={save}>Save Configuration</button>
         <button className="action gridStart" disabled={busy || !readyToStart || settings.grid_enabled === true || !!gridState.pausedReason || gridSafetyBlocked} onClick={start}>Start Tradetron Live Offline</button>
         <button className="action" title="New entries stop. Existing positions continue to be managed." disabled={busy || settings.grid_enabled !== true} onClick={pause}>Pause Grid (Exit Only)</button>

@@ -496,8 +496,10 @@ export class DeltaEngine {
     if (snapshotSafety.configured) this.lastTradetronEntrySafety = snapshotSafety;
     const localGridPositionOpen = Array.isArray(priorState.positions) &&
       priorState.positions.some(position => Math.abs(n(position?.qty)) > 0 && !!position?.bridgeExecutionId);
-    const snapshotPositionOnGridSymbol = snapshotSafety.configured && snapshotSafety.trusted === true &&
-      snapshotSafety.openPositions.some(position => String(position.symbol || '').toUpperCase() === symbol);
+    const blockingSnapshotPosition = snapshotSafety.configured && snapshotSafety.trusted === true
+      ? snapshotSafety.openPositions.find(position => String(position.symbol || '').toUpperCase() === symbol) || null
+      : null;
+    const snapshotPositionOnGridSymbol = !!blockingSnapshotPosition;
     const snapshotEntryBlocked = tradetronMode && CONFIG.tradetronBridgeEnabled && (
       snapshotSafety.trusted !== true || (snapshotPositionOnGridSymbol && !localGridPositionOpen)
     );
@@ -505,6 +507,12 @@ export class DeltaEngine {
       configured: snapshotSafety.configured === true,
       trusted: typeof snapshotSafety.trusted === 'boolean' ? snapshotSafety.trusted : null,
       blocked: snapshotEntryBlocked,
+      blockingSymbol: snapshotPositionOnGridSymbol && !localGridPositionOpen
+        ? String(blockingSnapshotPosition?.symbol || symbol).toUpperCase() : null,
+      blockingQty: snapshotPositionOnGridSymbol && !localGridPositionOpen && blockingSnapshotPosition
+        ? (['SELL', 'SHORT'].includes(String(blockingSnapshotPosition.side || '').toUpperCase())
+          ? -Math.abs(n(blockingSnapshotPosition.qty)) : Math.abs(n(blockingSnapshotPosition.qty)))
+        : null,
       reason: !snapshotSafety.configured ? 'DEVELOPER_API_NOT_CONFIGURED'
         : snapshotSafety.trusted !== true ? snapshotSafety.reason
           : snapshotPositionOnGridSymbol && !localGridPositionOpen ? 'SAME_SYMBOL_OPEN_POSITION' : null
