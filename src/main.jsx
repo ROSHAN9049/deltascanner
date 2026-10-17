@@ -13,6 +13,7 @@ import { assessDeltaRange, fmtMultiplier, fmtPrice as fmtRawPrice, fmtRsi, safeN
 import { blockersDisplay, gateTooltip } from './gate-result.js';
 import { buildRiskGovernorGates } from './risk-governor.js';
 import { buildPnlHistoryInsights } from './pnl-history-insights.js';
+import { contractValueForSymbol, stockTokenPnlTooltip, stockTokenOpenPnlTooltip } from './stock-token-pnl.js';
 
 const loggedPnlAnomalies = new Set();
 
@@ -312,9 +313,9 @@ function App() {
     {tab === 'grid' && <GridStrategy settings={settings} market={market} busy={busy} mutate={mutate} accountDataProtected={accountDataProtected} gridEntrySafety={executionCoverage?.gridEntrySafety || null} />}
     {tab === 'options' && <OptionsView signals={signals} settings={settings} optionCache={state?.optionCache || []} executionCoverage={state?.executionCoverage || null} />}
     {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" strategy="SCALPING" apiDerivedTrades={state?.apiDerivedTrades || []} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
-    {tab === 'positions' && <><Positions rows={positions} tradetronDeployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} snapshotsLocked={state?.tradetronDeveloperDataProtected === true} accountDataProtected={accountDataProtected} /><TradetronPositionReconciliationPanel deployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} enginePositions={positions} syncState={state?.tradetronDeveloperSync || null} privateDataProtected={accountDataProtected || state?.tradetronDeveloperDataProtected === true} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
+    {tab === 'positions' && <><Positions rows={positions} tradetronDeployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} marketCache={state?.marketCache || []} snapshotsLocked={state?.tradetronDeveloperDataProtected === true} accountDataProtected={accountDataProtected} /><TradetronPositionReconciliationPanel deployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} enginePositions={positions} syncState={state?.tradetronDeveloperSync || null} privateDataProtected={accountDataProtected || state?.tradetronDeveloperDataProtected === true} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} marketCache={state?.marketCache || []} /></>}
     {tab === 'trade-history' && <><TradeHistory trades={trades} title="Trade History · Webhook-Synced Tradetron Records" apiDerivedTrades={state?.apiDerivedTrades || []} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} /><TradetronActivity events={state?.tradetronEvents || []} signalStats={state?.signalOrderStats || null} webhookSecretConfigured={executionCoverage?.webhookSecretConfigured === true} accountDataProtected={accountDataProtected} /></>}
-    {tab === 'pnl' && <><PNL trades={trades} settings={settings} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.tradeRowCount ?? null} apiDerivedTrades={state?.apiDerivedTrades || []} apiDerivedTradeCount={state?.apiDerivedTradeCount ?? null} developerSnapshots={state?.tradetronDeveloperSnapshots || []} developerDataProtected={state?.tradetronDeveloperDataProtected === true} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
+    {tab === 'pnl' && <><PNL trades={trades} settings={settings} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.tradeRowCount ?? null} apiDerivedTrades={state?.apiDerivedTrades || []} apiDerivedTradeCount={state?.apiDerivedTradeCount ?? null} developerSnapshots={state?.tradetronDeveloperSnapshots || []} developerDataProtected={state?.tradetronDeveloperDataProtected === true} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} marketCache={state?.marketCache || []} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} marketCache={state?.marketCache || []} /></>}
     {tab === 'paper' && <Panel title="Paper Trading"><div className="lockedText">Scanner is signal-only. No Delta order is placed here; Tradetron Live Offline runs the simulated execution.</div></Panel>}
     {tab === 'testnet' && <Testnet settings={settings} health={health} busy={busy} mutate={mutate} positions={positions} tradetronDeployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} developerSync={state?.tradetronDeveloperSync || null} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} accountDataProtected={accountDataProtected} />}
     {tab === 'live' && <Panel title="Live Trading"><div className="liveLock">🔒 DIRECT DELTA EXECUTION LOCKED<br/><small>The scanner never sends production orders. Future live execution must be enabled manually in Tradetron.</small></div></Panel>}
@@ -603,7 +604,7 @@ function OptionTable({ rows, type, deltaMin, deltaMax }) {
   })}{!rows.length ? <tr><td colSpan={columnCount}>No option candidates returned for the current market snapshot. No missing values are substituted with zero.</td></tr> : null}</tbody></table></div>;
 }
 
-function Positions({ rows = [], tradetronDeployments = [], snapshotsLocked = false, accountDataProtected = false }) {
+function Positions({ rows = [], tradetronDeployments = [], marketCache = [], snapshotsLocked = false, accountDataProtected = false }) {
   if (accountDataProtected) return <Panel title="Positions · Protected"><div className="lockedText">Private engine positions and Tradetron snapshots are hidden. Enter ENGINE_SECRET in Settings. An empty protected response must not be interpreted as zero open positions.</div></Panel>;
   const mirror = summarizeTradetronSnapshots(tradetronDeployments);
   const pendingTradetronRows = mirror.openRows.map(position => ({
@@ -676,7 +677,7 @@ function Positions({ rows = [], tradetronDeployments = [], snapshotsLocked = fal
           <td>{p.entry_price == null ? '—' : price(p.entry_price)}</td>
           <td>{p.current_price == null ? '—' : price(p.current_price)}</td>
           <td>{p.snapshot_value == null ? '—' : fmtRawPrice(p.snapshot_value, 2)}</td>
-          <td title={p.snapshot_pnl_source ? "Raw Developer API field: " + p.snapshot_pnl_source + ". Generic pnl is not verified M2M." : "No P&L source field was identified."}><div>{p.snapshot_pnl == null ? '—' : fmtRawPrice(p.snapshot_pnl, 2)}</div><small className="muted">{p.snapshot_pnl_source ? "API field: " + p.snapshot_pnl_source + (["m2m","mtm","unrealized_pnl","unrealizedPnl","open_pnl","openPnl","mark_to_market","markToMarket"].includes(p.snapshot_pnl_source) ? " · M2M-named" : " · semantics unverified") : "source unavailable"}</small></td>
+          <td title={stockTokenPnlTooltip(p.symbol, p.snapshot_pnl, contractValueForSymbol(marketCache, p.symbol)) || (p.snapshot_pnl_source ? "Raw Developer API field: " + p.snapshot_pnl_source + ". Generic pnl is not verified M2M." : "No P&L source field was identified.")}><div>{p.snapshot_pnl == null ? '—' : fmtRawPrice(p.snapshot_pnl, 2)}</div><small className="muted">{p.snapshot_pnl_source ? "API field: " + p.snapshot_pnl_source + (["m2m","mtm","unrealized_pnl","unrealizedPnl","open_pnl","openPnl","mark_to_market","markToMarket"].includes(p.snapshot_pnl_source) ? " · M2M-named" : " · semantics unverified") : "source unavailable"}</small></td>
           <td>{p.stop_price == null ? '—' : price(p.stop_price)}</td>
           <td>{p.tp1_price == null ? '—' : price(p.tp1_price)}</td>
           <td>{p.tp_price == null ? '—' : price(p.tp_price)}</td>
@@ -751,7 +752,7 @@ function TradeHistory({ trades = [], title, strategy = undefined, apiDerivedTrad
 function PNL({
   trades = [], settings = {}, accountDataProtected = false, tradesComplete = false,
   tradeRowCount = null, apiDerivedTrades = [], apiDerivedTradeCount = null,
-  developerSnapshots = [], developerDataProtected = false, developerApiConfigured = false
+  developerSnapshots = [], developerDataProtected = false, developerApiConfigured = false, marketCache = []
 }) {
   if (accountDataProtected) return <Panel title="PNL · Protected"><div className="lockedText">Private realized P&amp;L, fees and scanner equity are hidden. Enter ENGINE_SECRET in Settings to inspect them. Tradetron snapshots remain a separate read-only source.</div></Panel>;
   const hasClosedTrades = trades.length > 0;
@@ -804,7 +805,7 @@ function PNL({
             <td>{safeNum(row.entry_price) === null ? 'Unknown' : price(row.entry_price)}</td>
             <td>{safeNum(row.exit_price) === null ? 'Unknown' : price(row.exit_price)}</td>
             <td>{safeNum(row.last_known_ltp) === null ? 'Unknown' : fmtRawPrice(row.last_known_ltp,4) + ' RAW'}</td>
-            <td className={safeNum(row.raw_pnl) === null ? 'muted' : 'mono'}>{safeNum(row.raw_pnl) === null ? 'Unknown' : fmtRawPrice(row.raw_pnl,4) + ' RAW'}</td>
+            <td className={safeNum(row.raw_pnl) === null ? 'muted' : 'mono'} title={stockTokenPnlTooltip(row.symbol, row.raw_pnl, contractValueForSymbol(marketCache, row.symbol)) || 'API-derived raw P&L field; not an authenticated realized P&L value.'}>{safeNum(row.raw_pnl) === null ? 'Unknown' : fmtRawPrice(row.raw_pnl,4) + ' RAW'}</td>
             <td>{row.data_quality || 'Unknown'}<div className="muted">{row.derived_from || 'Unknown'} · Unverified</div></td>
             <td>{row.closed_at_estimated || row.closed_at ? new Date(row.closed_at_estimated || row.closed_at).toLocaleString('en-IN') : 'Unknown'}</td>
           </tr>)}</tbody>
@@ -815,7 +816,7 @@ function PNL({
     <Panel title="Current Open Exposure · Raw Tradetron API Fields">
       {developerDataProtected ? <div className="lockedText">Private Tradetron snapshot data is locked. Enter ENGINE_SECRET in Settings to view raw exposure.</div> : <>
         <section className="cards">
-          <Card label="OPEN RAW P&L SUM" value={!openRows.length ? 'NO IDENTIFIED ROWS' : openRawPnlSum === null ? 'UNKNOWN' : fmtRawPrice(openRawPnlSum,2) + ' RAW'} sub={'Raw sum of API row-level pnl fields (semantics unverified). ' + knownOpenPnl.length + '/' + openRows.length + ' open row(s) have numeric raw P&L.'}/>
+          <Card label="OPEN RAW P&L SUM" value={!openRows.length ? 'NO IDENTIFIED ROWS' : openRawPnlSum === null ? 'UNKNOWN' : fmtRawPrice(openRawPnlSum,2) + ' RAW'} sub={'Raw sum of API row-level pnl fields (semantics unverified). ' + knownOpenPnl.length + '/' + openRows.length + ' open row(s) have numeric raw P&L.'} title={stockTokenOpenPnlTooltip(openRows, marketCache, openRawPnlSum)} />
           <Card label="IDENTIFIED OPEN ROWS" value={openRows.length || (developerApiConfigured ? 'NONE IDENTIFIED' : '—')} sub="Only rows from the current readable snapshot; not authenticated exposure or unrealized P&L"/>
         </section>
         {openRows.length ? <div className="tablewrap"><table>
@@ -827,7 +828,7 @@ function PNL({
               <td>{row.side || 'Unknown'}</td>
               <td>{safeNum(row.quantity) === null ? 'Unknown' : fmtQty(row.quantity)}</td>
               <td>{safeNum(row.markPrice) === null ? 'Unknown' : fmtRawPrice(row.markPrice,4)}</td>
-              <td>{safeNum(row.pnl) === null ? 'Unknown' : fmtRawPrice(row.pnl,4) + ' RAW'}</td>
+              <td title={stockTokenPnlTooltip(row.symbol, row.pnl, contractValueForSymbol(marketCache, row.symbol)) || 'Raw API field; semantics are unverified.'}>{safeNum(row.pnl) === null ? 'Unknown' : fmtRawPrice(row.pnl,4) + ' RAW'}</td>
               <td>{anomaly ? <b className="apiStateWarn">⚠ PnL anomaly</b> : <span className="muted">No threshold flag</span>}</td>
             </tr>;
           })}</tbody>
@@ -1107,7 +1108,7 @@ function safeDeveloperApiValue(value) {
   }
 }
 
-function TradetronDeveloperApiPanel({ configured = false, sync = null, deployments = [], privateDataProtected = false, notifications = [], notificationSync = null, pnlHistory = [] }) {
+function TradetronDeveloperApiPanel({ configured = false, sync = null, deployments = [], privateDataProtected = false, notifications = [], notificationSync = null, pnlHistory = [], marketCache = [] }) {
   if (privateDataProtected) {
     return <Panel title="Tradetron Live Mirror · read-only API + event callbacks"><div className="lockedText"><b className="apiStateWarn">PRIVATE ACCOUNT DATA LOCKED</b><p>For privacy, Tradetron deployment and position details are only returned when the correct ENGINE_SECRET is supplied. Enter it in Settings to view these read-only account snapshots.</p></div></Panel>;
   }
@@ -1115,6 +1116,7 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
   const status = sync?.status || (configured ? 'WAITING FOR FIRST SYNC' : 'NOT CONFIGURED');
   const statusClass = status === 'OK' && !stale ? 'apiStateOk' : (status === 'ERROR' || stale ? 'apiStateError' : 'apiStateWarn');
   const mirror = summarizeTradetronSnapshots(deployments);
+  const openPnlTooltip = stockTokenOpenPnlTooltip(mirror.openRows, marketCache, mirror.openPnl);
   const pnlHistoryInsights = buildPnlHistoryInsights(pnlHistory);
   const positionRows = (deployments || []).flatMap(deployment =>
     (Array.isArray(deployment.positions) ? deployment.positions : []).map((position, index) => ({
@@ -1141,7 +1143,7 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
     <section className="cards">
       <Card label="TT OPEN LEGS" value={configured ? (mirror.openCount === null ? 'UNKNOWN' : mirror.openCount) : '—'} sub={mirror.openCount === null ? (mirror.positionsHidden ? 'position rows hidden; count unavailable' : 'no verified open-leg count') : mirror.positionsHidden ? 'some position rows hidden by Tradetron' : 'reported by current API snapshot'} />
       <Card label="TT DEPLOYMENT P&L RAW" value={mirror.reportedPnl === null ? '—' : fmtRawPrice(mirror.reportedPnl, 2)} sub={"Raw deployment value; " + (mirror.reportedPnlCurrencyCode ? "API currency " + mirror.reportedPnlCurrencyCode + "; " : "currency not identified; ") + "P&L semantics not independently verified; not scanner ledger P&L"} />
-      <Card label="TT OPEN P&L RAW" value={mirror.openPnl === null ? '—' : fmtRawPrice(mirror.openPnl, 2)} sub="Raw sum of explicitly named M2M fields; currency/unit still unverified" />
+      <Card label="TT OPEN P&L RAW" value={mirror.openPnl === null ? '—' : fmtRawPrice(mirror.openPnl, 2)} sub="Raw sum of explicitly named M2M fields; currency/unit still unverified" title={openPnlTooltip} />
       <Card label="TT DEPLOYMENTS" value={mirror.deployments} sub="returned by read-only API" />
     </section>
     {mirror.openPnl !== null && mirror.reportedPnl !== null && Math.abs(mirror.openPnl - mirror.reportedPnl) > Math.max(1, Math.abs(mirror.reportedPnl) * 0.1) ? <div className="lockedText apiStateWarn"><b>P&amp;L reconciliation warning:</b> verified open/M2M rows and deployment aggregate differ materially. Both are preserved as separate read-only API figures; neither is merged into the scanner's realized-trade ledger.</div> : null}
@@ -1166,7 +1168,7 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
         <td>{row.entryPrice === null ? '—' : price(row.entryPrice)}</td>
         <td>{row.markPrice === null ? '—' : price(row.markPrice)}</td>
         <td>{fmtRawPrice(row.marketValue, 2)}</td>
-        <td className={safeNum(row.pnl) === null ? 'muted' : 'mono'} title={row.pnlSource ? "Raw Developer API field: " + row.pnlSource + ". A generic pnl field is not verified M2M and is not included in open P&L." : "No P&L source field was identified in this API row."}><div>{fmtRawPrice(row.pnl, 2)}</div><small className="muted">{row.pnlSource ? "API field: " + row.pnlSource + (["m2m","mtm","unrealized_pnl","unrealizedPnl","open_pnl","openPnl","mark_to_market","markToMarket"].includes(row.pnlSource) ? " · M2M-named" : " · semantics unverified") : "source unavailable"}</small>{hasRawPnlAnomaly(row) ? <div><b className="apiStateWarn">⚠ PnL anomaly</b></div> : null}</td>
+        <td className={safeNum(row.pnl) === null ? 'muted' : 'mono'} title={stockTokenPnlTooltip(row.symbol, row.pnl, contractValueForSymbol(marketCache, row.symbol)) || (row.pnlSource ? "Raw Developer API field: " + row.pnlSource + ". A generic pnl field is not verified M2M and is not included in open P&L." : "No P&L source field was identified in this API row.")}><div>{fmtRawPrice(row.pnl, 2)}</div><small className="muted">{row.pnlSource ? "API field: " + row.pnlSource + (["m2m","mtm","unrealized_pnl","unrealizedPnl","open_pnl","openPnl","mark_to_market","markToMarket"].includes(row.pnlSource) ? " · M2M-named" : " · semantics unverified") : "source unavailable"}</small>{hasRawPnlAnomaly(row) ? <div><b className="apiStateWarn">⚠ PnL anomaly</b></div> : null}</td>
         <td>{row.status}</td>
       </tr>)}</tbody>
     </table></div> : <div className="lockedText">
