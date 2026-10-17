@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildApiDerivedTrackingPlan, normalizeDerivedPosition } from '../worker/tradetron-derived-trades.mjs';
+import { buildApiDerivedTrackingPlan, normalizeDerivedPosition, strategyForDerivedTrade } from '../worker/tradetron-derived-trades.mjs';
 
 const now = '2026-10-17T04:00:00.000Z';
 const previous = (overrides = {}) => ({
@@ -108,4 +108,25 @@ test('CSV/full data quality helper semantics remain based on explicit side and p
     detectedAt: now
   });
   assert.equal(plan.trades[0].data_quality, 'FULL');
+});
+
+test('labels a derived close with the strongest matching current signal-cache strategy', () => {
+  assert.equal(strategyForDerivedTrade({ symbol: 'btcUSD' }, [
+    { symbol: 'BTCUSD', strategy: 'MOMENTUM', ready: false, stage: 'SETUP', score: 95, cached_at: now },
+    { symbol: 'BTCUSD', strategy: 'SCALPING', ready: true, stage: 'CONFIRMED', score: 82, cached_at: now }
+  ]), 'SCALPING');
+});
+
+test('strategy cache lookup ignores unrelated symbols and unsupported engines', () => {
+  assert.equal(strategyForDerivedTrade({ symbol: 'ETHUSD' }, [
+    { symbol: 'BTCUSD', strategy: 'MOMENTUM', ready: true, stage: 'CONFIRMED', score: 99 },
+    { symbol: 'ETHUSD', strategy: 'OPTIONS_BUY', ready: true, stage: 'CONFIRMED', score: 99 }
+  ]), null);
+});
+
+test('uses signal-cache label as best-effort only and leaves it unknown when no matching signal exists', () => {
+  assert.equal(strategyForDerivedTrade({ symbol: '' }, [
+    { symbol: 'BTCUSD', strategy: 'MOMENTUM', ready: true, stage: 'CONFIRMED', score: 99 }
+  ]), null);
+  assert.equal(strategyForDerivedTrade({ symbol: 'BTCUSD' }, []), null);
 });
