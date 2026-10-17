@@ -6,6 +6,7 @@ import GridStrategy from './GridStrategy.jsx';
 import { routeStatusForSymbol } from './market-route-status.js';
 import { getTradetronDiagnosticDetails } from './tradetron-diagnostics.js';
 import { summarizeCurrentPositionCount, summarizeTradetronSnapshots } from './tradetron-position-sync.js';
+import { buildTradetronPositionReconciliation } from './tradetron-reconciliation.js';
 import { DEFAULT_VISIBLE_MARKET_LIMIT, selectVisibleMarketRows, selectVisibleSignalRows } from './market-view.js';
 import { assessDeltaRange, fmtMultiplier, fmtPrice as fmtRawPrice, fmtRsi, safeNum } from './formatters.js';
 import { blockersDisplay, gateTooltip } from './gate-result.js';
@@ -287,7 +288,7 @@ function App() {
     {tab === 'grid' && <GridStrategy settings={settings} market={market} busy={busy} mutate={mutate} accountDataProtected={accountDataProtected} gridEntrySafety={executionCoverage?.gridEntrySafety || null} />}
     {tab === 'options' && <OptionsView signals={signals} settings={settings} optionCache={state?.optionCache || []} executionCoverage={state?.executionCoverage || null} />}
     {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
-    {tab === 'positions' && <><Positions rows={positions} tradetronDeployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} snapshotsLocked={state?.tradetronDeveloperDataProtected === true} accountDataProtected={accountDataProtected} /><Panel title="Tradetron Position Reconciliation · Temporarily paused"><div className="lockedText">The read-only diagnostic comparison is temporarily paused while its display error is investigated. The Tradetron API snapshot and current-position table above remain available. No existing position, account setting, or execution mode is changed.</div></Panel><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
+    {tab === 'positions' && <><Positions rows={positions} tradetronDeployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} snapshotsLocked={state?.tradetronDeveloperDataProtected === true} accountDataProtected={accountDataProtected} /><TradetronPositionReconciliationPanel deployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} enginePositions={positions} syncState={state?.tradetronDeveloperSync || null} privateDataProtected={accountDataProtected || state?.tradetronDeveloperDataProtected === true} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
     {tab === 'trade-history' && <><TradeHistory trades={trades} title="Trade History · Webhook-Synced Tradetron Records" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} /><TradetronActivity events={state?.tradetronEvents || []} signalStats={state?.signalOrderStats || null} webhookSecretConfigured={executionCoverage?.webhookSecretConfigured === true} accountDataProtected={accountDataProtected} /></>}
     {tab === 'pnl' && <><PNL trades={trades} settings={settings} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.tradeRowCount ?? null} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} /></>}
     {tab === 'paper' && <Panel title="Paper Trading"><div className="lockedText">Scanner is signal-only. No Delta order is placed here; Tradetron Live Offline runs the simulated execution.</div></Panel>}
@@ -812,6 +813,61 @@ function equityPoints(trades) {
     return [{delta:total,label:money(total)}];
   });
 }
+function TradetronPositionReconciliationPanel({ deployments = [], enginePositions = [], syncState = null, privateDataProtected = false }) {
+  if (privateDataProtected) {
+    return <Panel title="Tradetron Position Reconciliation"><div className="lockedText">Private position data is locked. Unlock the dashboard session to compare the read-only Tradetron snapshot with the authenticated engine ledger.</div></Panel>;
+  }
+
+  let report = null;
+  let comparisonError = '';
+  try {
+    report = buildTradetronPositionReconciliation({
+      deployments,
+      enginePositions,
+      syncState
+    });
+  } catch (error) {
+    comparisonError = String(error?.message || error || 'Unknown reconciliation error').slice(0, 500);
+  }
+
+  const syncAgeMs = Date.parse(syncState?.last_success_at || '');
+  const syncAgeLabel = Number.isFinite(syncAgeMs)
+    ? Math.max(0, (Date.now() - syncAgeMs) / 1000).toFixed(0) + 's ago'
+    : 'time unavailable';
+
+  return <Panel title="Tradetron Position Reconciliation">
+    <div className="lockedText">
+      <b>Snapshot sync:</b> {syncState?.status || 'NO DATA'} · last success {syncState?.last_success_at ? new Date(syncState.last_success_at).toLocaleString('en-IN') : 'not available'} ({syncAgeLabel})<br/>
+      <b>Engine ledger:</b> {Array.isArray(enginePositions) ? enginePositions.filter(row => Math.abs(Number(row?.qty ?? row?.quantity) || 0) > 0).length : 'no data'} open row(s)
+      {report?.snapshotReason ? <><br/><b>Snapshot validation:</b> {report.snapshotReason}</> : null}
+      {report && !report.snapshotAvailable ? <p>No data: a visible Tradetron position snapshot is not available.</p> : null}
+      {report?.snapshotAvailable && report.snapshotTrusted !== true ? <p className="apiStateWarn">Snapshot is not trusted. Comparison rows are shown as UNVERIFIED; no match is inferred from stale or incomplete data.</p> : null}
+      {report?.snapshotAvailable && report.snapshotTrusted === true ? <p>Read-only snapshot versus authenticated engine ledger. A row-level match is diagnostic, not proof of fill or trade history.</p> : null}
+    </div>
+    {comparisonError
+      ? <div className="danger">Position reconciliation error: {comparisonError}</div>
+      : report?.rows?.length
+        ? <div className="tablewrap"><table>
+          <thead><tr><th>SYMBOL</th><th>TRADETRON</th><th>ENGINE LEDGER</th><th>STATUS</th></tr></thead>
+          <tbody>{report.rows.map(row => <tr key={row.symbol}>
+            <td className="symbol">{row.symbol}</td>
+            <td>{row.tradetronLabel}</td>
+            <td>{row.engineLedgerLabel}</td>
+            <td className={row.comparisonStatus === 'MATCHED' || row.comparisonStatus === 'CLOSED (dust)' ? 'up' : row.comparisonStatus === 'MISMATCH' ? 'down' : 'muted'}>{row.comparisonStatus}</td>
+          </tr>)}</tbody>
+        </table></div>
+        : <div className="lockedText">{report?.snapshotAvailable && report.snapshotTrusted
+          ? 'No open positions, dust rows, or engine-ledger-only symbols to reconcile.'
+          : 'No comparison rows available yet. The panel will show no data until snapshot and ledger rows are returned.'}</div>}
+    {report ? <div className="micro">
+      <span>Snapshot open legs: {report.openPositionCount ?? 'no data'}</span>
+      <span>Visible normalized open rows: {report.visibleOpenRowCount}</span>
+      <span>Engine ledger open symbols: {report.engineLedgerOpenCount}</span>
+      <span>Matched: {report.matchedCount} · Mismatch: {report.mismatchCount} · Unverified: {report.unverifiedCount} · Closed dust: {report.closedDustCount}</span>
+    </div> : null}
+  </Panel>;
+}
+
 function Testnet({ settings, health, busy, mutate, positions, tradetronDeployments = [], developerSync = null, developerApiConfigured = false, accountDataProtected = false }) {
   const currentPositionSummary = summarizeCurrentPositionCount({ eventPositions: positions, deployments: tradetronDeployments, syncState: developerSync, configured: developerApiConfigured });
   return <><section className="cards"><Card label="ENVIRONMENT" value="SIGNAL ONLY" sub="production market feed"/><Card label="AUTO TRADE" value={settings.auto_trade === true ? 'ON' : 'OFF'} sub={settings.enabled === false ? 'scanner is disabled' : 'scanner master switch is enabled'}/><Card label="CONTINUOUS MODE" value={settings.continuous_mode === true ? 'ON' : 'OFF'} sub={settings.continuous_mode === true ? 'route qualifying opportunities without a global position cap' : 'only scanner-configured opportunity flow'}/><Card label="CURRENT OPEN POSITIONS" value={accountDataProtected ? 'LOCKED' : currentPositionSummary.count === null ? currentPositionSummary.status : currentPositionSummary.count} sub={accountDataProtected ? 'enter ENGINE_SECRET to load position records' : currentPositionSummary.detail}/></section><Panel title="Worker Status · Signal Only"><div className="lockedText">Direct Delta execution is disabled. Tradetron Live Offline is the simulation layer; only verified callbacks create the scanner's event-ledger positions and closed trades.</div><div className="statusLine">Worker {health?.workerLeaseActive?'ONLINE':'OFFLINE'} · Tick {health?.tickFresh?'FRESH':'STALE'} · Exchange {health?.exchangeHealthy?'HEALTHY':'DOWN'} · Emergency stop {settings.emergency_stop === true ? 'ACTIVE' : 'RELEASED'}</div><p className="muted">Entries require a valid signal, configured Tradetron route, trusted position snapshot when the Developer API is configured, fresh market data, acceptable risk/margin and same-symbol duplicate protection. This panel is status-only; direct Delta orders cannot be enabled here.</p></Panel></>;
