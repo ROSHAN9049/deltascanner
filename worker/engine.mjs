@@ -14,7 +14,7 @@ import { isOptionsExecutionAllowed, OPTIONS_EXECUTION_LOCK_REASON } from './opti
 import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from './signal-failure-diagnostics.mjs';
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
 import { buildApiDerivedTrackingPlan } from './tradetron-derived-trades.mjs';
-import { evaluateGlobalPositionCap } from './global-position-cap.mjs';
+import { evaluateGlobalPositionCap, routeUnlessGlobalPositionCapBlocked } from './global-position-cap.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const n = v => Number.isFinite(+v) ? +v : 0;
@@ -3090,6 +3090,7 @@ export class DeltaEngine {
       let routedThisCycle = 0;
       for (const c of candidates) {
         if (CONFIG.signalOnly && reservationLookupFailed) break;
+        let capDecision = { blocked: false, reason: null };
         if (CONFIG.signalOnly && CONFIG.tradetronBridgeEnabled) {
           const snapshotSafety = await this.getTradetronSnapshotRiskState();
           this.lastTradetronEntrySafety = snapshotSafety;
@@ -3100,7 +3101,7 @@ export class DeltaEngine {
             baselineTrustedOpenCount = snapshotSafety.positionCount;
           }
 
-          const capDecision = evaluateGlobalPositionCap({
+          capDecision = evaluateGlobalPositionCap({
             snapshotSafety,
             settings,
             envOverride: process.env.MAX_OPEN_POSITIONS_CAP,
@@ -3120,7 +3121,15 @@ export class DeltaEngine {
           reservationLookupFailed = true;
           break;
         }
-        const opened = await this.openTrade(c.item, c.strategy, c.signal, freshAccount, settings, freshPositions, trades);
+        const routeAttempt = await routeUnlessGlobalPositionCapBlocked(
+          capDecision,
+          () => this.openTrade(c.item, c.strategy, c.signal, freshAccount, settings, freshPositions, trades)
+        );
+        if (routeAttempt.blocked) {
+          await this.recordGlobalPositionCapBlock(c, { ...capDecision, blocked: true, reason: routeAttempt.reason });
+          continue;
+        }
+        const opened = routeAttempt.result;
         if (opened) {
           if (CONFIG.signalOnly && CONFIG.tradetronBridgeEnabled) routedThisCycle++;
           await sleep(1000);
