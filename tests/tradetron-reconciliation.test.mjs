@@ -86,3 +86,98 @@ test('does not report a mismatch when there is no accepted signal or snapshot co
   assert.equal(unavailable.openPositionCount, null);
   assert.deepEqual(unavailable.rows, []);
 });
+
+
+const freshSync = (asOf, deploymentId = 7) => ({
+  status: 'OK',
+  last_success_at: asOf,
+  details: { deploymentIds: [deploymentId] }
+});
+
+test('engine-ledger reconciliation shows dust snapshot rows as closed when no ledger position exists', () => {
+  const asOf = new Date().toISOString();
+  const report = buildTradetronPositionReconciliation({
+    deployments: [{
+      deployment_id: 7,
+      open_positions: 0,
+      positions_hidden: false,
+      as_of: asOf,
+      last_success_at: asOf,
+      positions: [
+        { instrument: 'FUTCRYPTO_DIN-PAXGUSD_31DEC2099_XX_0', quantity: 0.00000009265, open: true }
+      ]
+    }],
+    enginePositions: [],
+    syncState: freshSync(asOf)
+  });
+
+  assert.equal(report.mode, 'ENGINE_LEDGER');
+  assert.equal(report.snapshotTrusted, true);
+  assert.equal(report.rows.length, 1);
+  assert.equal(report.rows[0].symbol, 'PAXGUSD');
+  assert.equal(report.rows[0].tradetronLabel, 'CLOSED (dust) · qty=9.265e-8');
+  assert.equal(report.rows[0].engineLedgerLabel, 'none');
+  assert.equal(report.rows[0].comparisonStatus, 'CLOSED (dust)');
+});
+
+test('engine-ledger reconciliation marks equal symbol side and quantity as MATCHED', () => {
+  const asOf = new Date().toISOString();
+  const report = buildTradetronPositionReconciliation({
+    deployments: [{
+      deployment_id: 7,
+      open_positions: 1,
+      positions_hidden: false,
+      as_of: asOf,
+      last_success_at: asOf,
+      positions: [{ instrument: 'FUTCRYPTO_DIN-BTCUSD_31DEC2099_XX_0', quantity: -2, price: 64000, open: true }]
+    }],
+    enginePositions: [{ symbol: 'BTCUSD', side: 'SELL', qty: 2, entry_price: 64000 }],
+    syncState: freshSync(asOf)
+  });
+
+  assert.equal(report.snapshotTrusted, true);
+  assert.equal(report.rows[0].comparisonStatus, 'MATCHED');
+  assert.match(report.rows[0].engineLedgerLabel, /SELL/);
+  assert.match(report.rows[0].engineLedgerLabel, /qty=2/);
+  assert.match(report.rows[0].engineLedgerLabel, /entry=64000/);
+});
+
+test('engine-ledger reconciliation marks an open Tradetron row without an authenticated ledger entry UNVERIFIED', () => {
+  const asOf = new Date().toISOString();
+  const report = buildTradetronPositionReconciliation({
+    deployments: [{
+      deployment_id: 7,
+      open_positions: 1,
+      positions_hidden: false,
+      as_of: asOf,
+      last_success_at: asOf,
+      positions: [{ instrument: 'FUTCRYPTO_DIN-ETHUSD_31DEC2099_XX_0', quantity: 0.5, price: 2500, open: true }]
+    }],
+    enginePositions: [],
+    syncState: freshSync(asOf)
+  });
+
+  assert.equal(report.rows[0].comparisonStatus, 'UNVERIFIED');
+  assert.match(report.rows[0].tradetronLabel, /OPEN BUY/);
+  assert.equal(report.rows[0].engineLedgerLabel, 'none');
+});
+
+test('engine-ledger reconciliation never reports MATCHED when the snapshot is untrusted', () => {
+  const stale = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const report = buildTradetronPositionReconciliation({
+    deployments: [{
+      deployment_id: 7,
+      open_positions: 1,
+      positions_hidden: false,
+      as_of: stale,
+      last_success_at: stale,
+      positions: [{ instrument: 'FUTCRYPTO_DIN-BTCUSD_31DEC2099_XX_0', quantity: -2, open: true }]
+    }],
+    enginePositions: [{ symbol: 'BTCUSD', side: 'SELL', qty: 2 }],
+    syncState: freshSync(stale)
+  });
+
+  assert.equal(report.snapshotTrusted, false);
+  assert.equal(report.snapshotReason, 'SNAPSHOT_STALE');
+  assert.equal(report.rows[0].comparisonStatus, 'UNVERIFIED');
+});
