@@ -93,13 +93,15 @@ export function normalizeTradetronCsvRow(raw, { deploymentIdOverride = null, det
   const deploymentValue = fieldValue(raw, ['deployment_id','deploymentid','deployed_strategy_id']);
   const deploymentId = clean(deploymentValue ?? deploymentIdOverride);
   const symbolRaw = fieldValue(raw, ['symbol','tradingsymbol','trading_symbol','instrument','instrument_symbol','contract_symbol','scrip','coin']);
-  const symbol = clean(symbolRaw).toUpperCase().replace(/^DIN[-_]?/i, '').split(/[ _]/)[0];
+  const symbolText = clean(symbolRaw).toUpperCase();
+  const embeddedContract = symbolText.match(/(?:^|[_ -])DIN[-_]?([A-Z0-9]+)(?=[_ ]|$)/i);
+  const symbol = embeddedContract ? embeddedContract[1] : symbolText.replace(/^DIN[-_]?/i, '').split(/[ _]/)[0];
   const side = normalizeSide(fieldValue(raw, ['side','position_side','direction','trade_side']));
   const qty = numberOrNull(fieldValue(raw, ['qty_closed','closed_quantity','quantity','qty','net_quantity','position_qty','size']));
   const entryPrice = numberOrNull(fieldValue(raw, ['entry_price','entryprice','average_entry_price','avg_entry_price','average_price','avg_price','entry']));
   const exitPrice = numberOrNull(fieldValue(raw, ['exit_price','exitprice','average_exit_price','avg_exit_price','close_price','exit']));
   const ltp = numberOrNull(fieldValue(raw, ['ltp','last_traded_price','mark_price','current_price','last_price']));
-  const rawPnl = numberOrNull(fieldValue(raw, ['raw_pnl','realized_pnl','net_pnl','pnl','profit_loss','profitloss','profit']));
+  const rawPnl = numberOrNull(fieldValue(raw, ['raw_pnl','realized_pnl','net_pnl','pnl','p_l','p_n_l','profit_loss','profitloss','profit']));
   const openedAt = timestampOrNull(fieldValue(raw, ['opened_at','openedat','entry_time','entry_datetime','open_time','open_datetime','entry_timestamp']));
   const closedAt = timestampOrNull(fieldValue(raw, ['closed_at','closedat','exit_time','exit_datetime','close_time','close_datetime','exit_timestamp','closed_time']));
   if (!deploymentId) return { ok: false, reason: 'missing deployment_id (supply --deployment-id=...)', raw };
