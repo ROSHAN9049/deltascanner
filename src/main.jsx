@@ -326,7 +326,7 @@ function App() {
     {tab === 'paper' && <Panel title="Paper Trading"><div className="lockedText">Scanner is signal-only. No Delta order is placed here; Tradetron Live Offline runs the simulated execution.</div></Panel>}
     {tab === 'testnet' && <Testnet settings={settings} health={health} busy={busy} mutate={mutate} positions={positions} tradetronDeployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} developerSync={state?.tradetronDeveloperSync || null} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} entrySafety={executionCoverage?.tradetronEntrySafety || null} accountDataProtected={accountDataProtected} />}
     {tab === 'live' && <Panel title="Live Trading"><div className="liveLock">🔒 DIRECT DELTA EXECUTION LOCKED<br/><small>The scanner never sends production orders. Future live execution must be enabled manually in Tradetron.</small></div></Panel>}
-    {tab === 'analytics' && <Analytics trades={trades} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.tradeRowCount ?? null} />}
+    {tab === 'analytics' && <Analytics trades={trades} apiDerivedTrades={state?.apiDerivedTrades || []} apiDerivedTradeCount={state?.apiDerivedTradeCount ?? null} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.tradeRowCount ?? null} />}
     {tab === 'settings' && <Settings settings={settings} secret={secret} setSecret={v => { secretRef.current = v; setSecret(v); }} busy={busy} mutate={mutate} onUnlock={unlockSession} onLock={lockSession} authenticated={state?.accountDataProtected === false} />}
     <footer>Delta Exchange India · production market feed · Tradetron signal-only · no direct orders · no guaranteed win rate</footer>
   </div>;
@@ -895,7 +895,10 @@ function Rotation({ ledger = [], accountDataProtected = false, ledgerComplete = 
     </tr>) : <tr><td colSpan={6} className="rotationEmpty">{ledgerComplete ? 'No rotation ledger rows recorded yet.' : 'No rows are currently loaded; the ledger may be partial.'}</td></tr>}</tbody></table></div></Panel>
   </>;
 }
-function Analytics({ trades = [], accountDataProtected = false, tradesComplete = false, tradeRowCount = null }) {
+function Analytics({
+  trades = [], apiDerivedTrades = [], apiDerivedTradeCount = null,
+  accountDataProtected = false, tradesComplete = false, tradeRowCount = null
+}) {
   if (accountDataProtected) return <Panel title="Analytics · Protected"><div className="lockedText">Closed-trade analytics, equity curve and P&amp;L statistics are private. Enter ENGINE_SECRET in Settings to view them.</div></Panel>;
   const engines = ['MOMENTUM','SCALPING'].map(engine => {
     const rows = trades.filter(trade => trade.strategy === engine);
@@ -911,32 +914,33 @@ function Analytics({ trades = [], accountDataProtected = false, tradesComplete =
     const net = tradesComplete && rows.length && pnlRows.length === rows.length
       ? pnlRows.reduce((sum, trade) => sum + safeNum(trade.net_pnl), 0)
       : null;
-    return {
-      engine,
-      rows,
-      wins,
-      losses,
-      pnlCount: pnlRows.length,
-      winRate: pnlRows.length ? wins.length / pnlRows.length * 100 : null,
-      avgWin,
-      avgLoss,
-      avgR,
-      net
-    };
+    return { engine, rows, wins, losses, pnlCount: pnlRows.length,
+      winRate: pnlRows.length ? wins.length / pnlRows.length * 100 : null, avgWin, avgLoss, avgR, net };
   });
   const allPnlKnown = tradesComplete && trades.length > 0 && trades.every(trade => safeNum(trade.net_pnl) !== null);
-  const sortedKnown = allPnlKnown
-    ? [...trades].sort((a,b) => safeNum(b.net_pnl) - safeNum(a.net_pnl))
-    : [];
+  const sortedKnown = allPnlKnown ? [...trades].sort((a,b) => safeNum(b.net_pnl) - safeNum(a.net_pnl)) : [];
   const excludedTopWinnersNet = allPnlKnown
-    ? trades.reduce((sum, trade) => sum + safeNum(trade.net_pnl), 0) -
-      sortedKnown.slice(0,5).reduce((sum, trade) => sum + safeNum(trade.net_pnl), 0)
+    ? trades.reduce((sum, trade) => sum + safeNum(trade.net_pnl), 0) - sortedKnown.slice(0,5).reduce((sum, trade) => sum + safeNum(trade.net_pnl), 0)
     : null;
   const byReason = {};
   for (const trade of trades) {
     const reason = trade.exit_reason || 'UNKNOWN';
     byReason[reason] = (byReason[reason] || 0) + 1;
   }
+
+  const derivedRows = Array.isArray(apiDerivedTrades) ? apiDerivedTrades : [];
+  const exactDerivedCount = apiDerivedTradeCount == null ? null : Number(apiDerivedTradeCount);
+  const derivedCountIsValid = exactDerivedCount !== null && Number.isFinite(exactDerivedCount) && exactDerivedCount >= 0;
+  const derivedByEngine = ['MOMENTUM','SCALPING'].map(engine => {
+    const rows = derivedRows.filter(row => String(row?.strategy || '').toUpperCase() === engine);
+    const rawPnl = rows.map(row => safeNum(row?.raw_pnl)).filter(value => value !== null);
+    return { engine, rows, count: rows.length,
+      avg: rawPnl.length ? rawPnl.reduce((sum,value) => sum + value,0) / rawPnl.length : null,
+      best: rawPnl.length ? Math.max(...rawPnl) : null,
+      worst: rawPnl.length ? Math.min(...rawPnl) : null, knownPnlCount: rawPnl.length };
+  });
+  const noDerivedCloses = derivedByEngine.every(engine => engine.count === 0);
+
   return <>
     <section className="panel">
       <div className="panelTitle"><h2>Per-engine statistics</h2></div>
@@ -946,11 +950,24 @@ function Analytics({ trades = [], accountDataProtected = false, tradesComplete =
         <span>{engine.rows.length} loaded rows · {engine.pnlCount} with P&amp;L · avg win {engine.avgWin === null ? '—' : money(engine.avgWin)} · avg loss {engine.avgLoss === null ? '—' : money(engine.avgLoss)} · avg R {engine.avgR === null ? '—' : engine.avgR.toFixed(2)} · net {engine.net === null ? 'INCOMPLETE DATA' : money(engine.net)}</span>
       </div>)}</div>
     </section>
+    <Panel title="API-Derived Trade Analytics · UNVERIFIED">
+      <div className="lockedText apiStateWarn"><b>⚠️ Derived from read-only API snapshots. Not authenticated fills. Do not treat as verified P&amp;L.</b></div>
+      {noDerivedCloses
+        ? <div className="lockedText">No API-derived closes detected yet. Monitoring active.</div>
+        : <section className="engineStats">{derivedByEngine.map(engine => <div key={engine.engine}>
+          <h3>{engine.engine} (API-Derived)</h3>
+          <b>Trades detected: {engine.count} · raw, unverified</b>
+          <span>Avg raw P&amp;L: {engine.avg === null ? 'NO RAW P&L DATA' : fmtRawPrice(engine.avg,4) + ' RAW'} · Best: {engine.best === null ? 'NO RAW P&L DATA' : fmtRawPrice(engine.best,4) + ' RAW'} · Worst: {engine.worst === null ? 'NO RAW P&L DATA' : fmtRawPrice(engine.worst,4) + ' RAW'}</span>
+          <span>{engine.knownPnlCount} of {engine.count} row(s) have numeric raw P&amp;L; all observations remain unverified.</span>
+        </div>)}</section>}
+      <div className="muted">API-derived records loaded: {derivedRows.length}{derivedCountIsValid ? ' · API-derived total count: ' + exactDerivedCount + (exactDerivedCount !== derivedRows.length ? ' (loaded rows may be partial)' : '') : ' · total count unavailable'}.</div>
+    </Panel>
     <section className="cards">
-      <Card label="NET EXCLUDING TOP 5 WINNERS" value={excludedTopWinnersNet === null ? (trades.length ? 'INCOMPLETE DATA' : '—') : money(excludedTopWinnersNet)} sub="available only when every recorded trade has net P&L"/>
-      <Card label="EXIT REASONS" value={Object.keys(byReason).length} sub="recorded exit reason labels"/>
+      <Card label="NET EXCLUDING TOP 5 WINNERS" value={excludedTopWinnersNet === null ? (trades.length ? 'INCOMPLETE DATA' : '—') : money(excludedTopWinnersNet)} sub={tradesComplete ? "available only when every recorded trade has net P&L" : "⚠️ Partial data — loaded records only (history incomplete)"}/>
+      <Card label="EXIT REASONS" value={Object.keys(byReason).length} sub={tradesComplete ? "recorded exit reason labels" : "⚠️ Partial data — loaded records only (history incomplete)"}/>
       <Card label="TOTAL TRADES" value={tradesComplete ? trades.length : trades.length ? 'PARTIAL' : '—'} sub={tradesComplete ? 'all stored closed-trade rows' : `loaded ${trades.length} of ${tradeRowCount ?? 'an unknown number of'} stored rows`}/>
     </section>
+    {!tradesComplete ? <div className="lockedText apiStateWarn">⚠️ Partial data — loaded records only (history incomplete)</div> : null}
     <Panel title="Exits by reason"><div className="chips">{Object.entries(byReason).map(([reason,count])=><span key={reason}>{reason}: {count}</span>)}</div></Panel>
     <Panel title="Equity Curve"><div className="curve">{allPnlKnown
       ? equityPoints(trades).map((point,index)=><span key={index} style={{height:Math.max(4,Math.min(150,70+point.delta))}} title={point.label}></span>)
