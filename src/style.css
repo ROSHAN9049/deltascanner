@@ -57,6 +57,8 @@ footer{color:#526177;text-align:center;font-size:9px;padding-top:12px}
 .gridEvents b{color:#9eafc5}
 .gridEvents span{color:#91a1b5;overflow-wrap:anywhere}
 .gridTestNotice{padding:12px;border:1px solid #5c491a;background:#211a0b;color:#e5c86e;border-radius:7px;font-size:10px;line-height:1.55;margin:5px 0 12px}
+.rotationNotice{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:10px 12px;margin:7px 0 12px;border:1px solid #8b7028;background:#2a220d;color:#f0d77c;border-radius:6px;font-size:10px;line-height:1.55}.rotationNotice strong{color:#ffe79a}.rotationNoticeDismiss{flex:0 0 auto;border:1px solid #9b8139;background:#352b12;color:#ffe79a;border-radius:4px;padding:5px 8px;font-size:9px;font-weight:800;cursor:pointer}.rotationEmpty{text-align:center;color:#91a0b5;padding:18px 10px!important;font-size:10px}
+@media(max-width:620px){.rotationNotice{flex-direction:column}.rotationNoticeDismiss{align-self:flex-start}}
 @media(max-width:1000px){.gridConfig{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:620px){.gridConfig{grid-template-columns:1fr}.gridButtons{display:grid;grid-template-columns:1fr 1fr}.gridButtons button{margin:0}.gridMeta{gap:9px;flex-direction:column}.gridLockRow{align-items:flex-start;flex-direction:column}.gridLockRow span{text-align:left}.gridEvents>div{grid-template-columns:57px 42px minmax(0,1fr)}}
 
