@@ -1086,9 +1086,9 @@ function Settings({ settings, workerEntrySafety = null, secret, setSecret, busy,
     trusted: workerEntrySafety?.trusted === true
   });
   const serverValues = useMemo(() => ({
-    riskPct: settings.risk_pct ?? 0.3,
-    momentumRr: settings.momentum_rr ?? 2.0,
-    scalpingRr: settings.scalping_rr ?? 2.0,
+    riskPct: settings.risk_pct ?? 1,
+    momentumRr: settings.momentum_rr ?? 2.5,
+    scalpingRr: settings.scalping_rr ?? 2.5,
     tp1Pct: settings.tp1_pct ?? 33,
     maxHoldMinutes: settings.max_hold_minutes ?? 240
   }), [settings.risk_pct, settings.momentum_rr, settings.scalping_rr, settings.tp1_pct, settings.max_hold_minutes]);
