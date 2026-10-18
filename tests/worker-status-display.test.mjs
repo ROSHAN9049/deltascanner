@@ -1,0 +1,59 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { formatHealthAge, formatLeaseRemaining, getWorkerStatusDisplay } from '../src/worker-status-display.js';
+
+test('cap reached blocks new signals in both cards while scanning stays on', () => {
+  const status = getWorkerStatusDisplay({
+    autoTrade: true, continuousMode: true, emergencyStop: false,
+    currentOpenPositions: 20, maxOpenPositions: 20
+  });
+  assert.equal(status.capReached, true);
+  assert.equal(status.continuousValue, 'ON · BLOCKED');
+  assert.match(status.continuousSubtitle, /blocked by global cap \(20\/20\)/);
+  assert.match(status.continuousSubtitle, /Existing signals continue to be managed/);
+  assert.match(status.autoTradeSubtitle, /all new signals are currently blocked/);
+});
+
+test('cap below maximum keeps continuous scanning active and shows live count', () => {
+  const status = getWorkerStatusDisplay({
+    autoTrade: true, continuousMode: true, currentOpenPositions: 12, maxOpenPositions: 20
+  });
+  assert.equal(status.capReached, false);
+  assert.equal(status.continuousValue, 'ON · ACTIVE');
+  assert.equal(status.continuousSubtitle, 'Continuous scanning active. Global cap: 12/20.');
+  assert.match(status.autoTradeSubtitle, /Signals active/);
+});
+
+test('auto off means no automatic routing and no signals', () => {
+  const status = getWorkerStatusDisplay({
+    autoTrade: false, continuousMode: true, currentOpenPositions: 12, maxOpenPositions: 20
+  });
+  assert.equal(status.continuousValue, 'OFF');
+  assert.equal(status.continuousSubtitle, 'Manual mode. No automatic routing.');
+  assert.equal(status.autoTradeSubtitle, 'Scanner master switch is disabled. No signals will be sent.');
+});
+
+test('emergency stop overrides auto trade and cap subtitles', () => {
+  const status = getWorkerStatusDisplay({
+    autoTrade: true, continuousMode: true, emergencyStop: true,
+    currentOpenPositions: 20, maxOpenPositions: 20
+  });
+  assert.equal(status.autoTradeSubtitle, '🚨 EMERGENCY STOP ACTIVE. All signal flow halted.');
+});
+
+test('missing or invalid cap telemetry never claims capacity is available', () => {
+  const status = getWorkerStatusDisplay({
+    autoTrade: true, continuousMode: true, currentOpenPositions: null, maxOpenPositions: 20
+  });
+  assert.equal(status.capReached, false);
+  assert.equal(status.hasCapData, false);
+  assert.match(status.continuousSubtitle, /cap status unavailable/i);
+  assert.match(status.autoTradeSubtitle, /status unavailable/i);
+});
+
+test('health ages and lease remaining are formatted in seconds without snake-case conversion', () => {
+  assert.equal(formatHealthAge(1999), '1 sec');
+  assert.equal(formatHealthAge(null), 'NO DATA');
+  assert.equal(formatLeaseRemaining(1001), '2 sec');
+  assert.equal(formatLeaseRemaining(0), '0 sec');
+});
