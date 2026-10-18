@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { formatHealthAge, formatLeaseRemaining, getWorkerStatusDisplay } from '../src/worker-status-display.js';
+import { formatHealthAge, formatLeaseRemaining, getEmergencyStopTooltip, getWorkerStatusDisplay } from '../src/worker-status-display.js';
 
 test('cap reached blocks new signals in both cards while scanning stays on', () => {
   const status = getWorkerStatusDisplay({
@@ -69,4 +69,9 @@ test('health ages and lease remaining are formatted in seconds without snake-cas
   assert.equal(formatLeaseRemaining(0), '0 sec');
   assert.equal(formatLeaseRemaining(null), 'NO DATA');
   assert.equal(formatLeaseRemaining(undefined), 'NO DATA');
+});
+
+test('emergency-stop tooltip reflects the current state', () => {
+  assert.equal(getEmergencyStopTooltip(false), 'No emergency halt active.');
+  assert.equal(getEmergencyStopTooltip(true), 'Emergency stop active; all signal flow halted.');
 });

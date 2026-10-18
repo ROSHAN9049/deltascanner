@@ -60,3 +60,9 @@ export function formatLeaseRemaining(milliseconds) {
   if (value === 0) return '0 sec';
   return Math.ceil(value / 1000) + ' sec';
 }
+
+export function getEmergencyStopTooltip(active = false) {
+  return active
+    ? 'Emergency stop active; all signal flow halted.'
+    : 'No emergency halt active.';
+}
