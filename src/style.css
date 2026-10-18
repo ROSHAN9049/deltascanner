@@ -78,3 +78,11 @@ footer{color:#526177;text-align:center;font-size:9px;padding-top:12px}
 .saveStatus.saved{color:#2de3a0}
 @media(max-width:620px){.settingsActions{align-items:stretch;flex-direction:column}.settingsButtons{width:100%}.settingsButtons button{flex:1}}
 .gates .unknown{background:#312a13;color:#f0c95e}
+
+/* Settings cap status is driven by trusted worker position telemetry. */
+.capStatus{display:flex;flex-direction:column;gap:4px}
+.capStatus b{font-size:11px}
+.capStatus span,.capStatus small{font-size:10px;line-height:1.45}
+.capStatus.cap-active{border-color:#17664d;background:#071d17;color:#2de3a0}
+.capStatus.cap-reached{border-color:#8b7028;background:#211b0e;color:#f0d77c}
+.capStatus.cap-unknown{border-color:#873446;background:#270f17;color:#ff7187}

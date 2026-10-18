@@ -66,3 +66,35 @@ export function getEmergencyStopTooltip(active = false) {
     ? 'Emergency stop active; all signal flow halted.'
     : 'No emergency halt active.';
 }
+
+export function getGlobalPositionCapDisplay({
+  maxOpenPositions = null,
+  currentOpenPositions = null,
+  trusted = false
+} = {}) {
+  const maximum = maxOpenPositions === null || maxOpenPositions === undefined ||
+    String(maxOpenPositions).trim() === '' ? NaN : Number(maxOpenPositions);
+  const current = currentOpenPositions === null || currentOpenPositions === undefined ||
+    String(currentOpenPositions).trim() === '' ? NaN : Number(currentOpenPositions);
+  const hasValidLimit = Number.isSafeInteger(maximum) && maximum >= 1;
+  const hasTrustedCount = trusted === true && Number.isSafeInteger(current) && current >= 0;
+
+  if (!hasValidLimit || !hasTrustedCount) {
+    return {
+      state: 'UNKNOWN',
+      className: 'cap-unknown',
+      currentOpenPositions: null,
+      maxOpenPositions: hasValidLimit ? maximum : null,
+      capReached: false
+    };
+  }
+
+  const capReached = current >= maximum;
+  return {
+    state: capReached ? 'REACHED' : 'ACTIVE',
+    className: capReached ? 'cap-reached' : 'cap-active',
+    currentOpenPositions: current,
+    maxOpenPositions: maximum,
+    capReached
+  };
+}

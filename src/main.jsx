@@ -15,7 +15,7 @@ import { buildRiskGovernorGates } from './risk-governor.js';
 import { buildPnlHistoryInsights } from './pnl-history-insights.js';
 import { contractValueForSymbol, stockTokenPnlTooltip, stockTokenOpenPnlTooltip } from './stock-token-pnl.js';
 import { summarizeRotationLedger } from './rotation-ledger-state.js';
-import { formatHealthAge, formatLeaseRemaining, getEmergencyStopTooltip, getWorkerStatusDisplay } from './worker-status-display.js';
+import { formatHealthAge, formatLeaseRemaining, getEmergencyStopTooltip, getGlobalPositionCapDisplay, getWorkerStatusDisplay } from './worker-status-display.js';
 
 const loggedPnlAnomalies = new Set();
 
@@ -327,7 +327,7 @@ function App() {
     {tab === 'testnet' && <Testnet settings={settings} health={health} busy={busy} mutate={mutate} positions={positions} tradetronDeployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} developerSync={state?.tradetronDeveloperSync || null} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} entrySafety={executionCoverage?.tradetronEntrySafety || null} accountDataProtected={accountDataProtected} />}
     {tab === 'live' && <Panel title="Live Trading"><div className="liveLock">🔒 DIRECT DELTA EXECUTION LOCKED<br/><small>The scanner never sends production orders. Future live execution must be enabled manually in Tradetron.</small></div></Panel>}
     {tab === 'analytics' && <Analytics trades={trades} apiDerivedTrades={state?.apiDerivedTrades || []} apiDerivedTradeCount={state?.apiDerivedTradeCount ?? null} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.tradeRowCount ?? null} />}
-    {tab === 'settings' && <Settings settings={settings} secret={secret} setSecret={v => { secretRef.current = v; setSecret(v); }} busy={busy} mutate={mutate} onUnlock={unlockSession} onLock={lockSession} authenticated={state?.accountDataProtected === false} />}
+    {tab === 'settings' && <Settings settings={settings} workerEntrySafety={workerEntrySafety} secret={secret} setSecret={v => { secretRef.current = v; setSecret(v); }} busy={busy} mutate={mutate} onUnlock={unlockSession} onLock={lockSession} authenticated={state?.accountDataProtected === false} />}
     <footer>Delta Exchange India · production market feed · Tradetron signal-only · no direct orders · no guaranteed win rate</footer>
   </div>;
 }
@@ -1079,7 +1079,12 @@ function Testnet({ settings, health, busy, mutate, positions, tradetronDeploymen
     </Panel>
   </>;
 }
-function Settings({ settings, secret, setSecret, busy, mutate, onUnlock, onLock, authenticated = false }) {
+function Settings({ settings, workerEntrySafety = null, secret, setSecret, busy, mutate, onUnlock, onLock, authenticated = false }) {
+  const capStatus = getGlobalPositionCapDisplay({
+    maxOpenPositions: settings.max_open_positions,
+    currentOpenPositions: workerEntrySafety?.openPositionCount,
+    trusted: workerEntrySafety?.trusted === true
+  });
   const serverValues = useMemo(() => ({
     riskPct: settings.risk_pct ?? 0.3,
     momentumRr: settings.momentum_rr ?? 2.0,
@@ -1152,7 +1157,20 @@ function Settings({ settings, secret, setSecret, busy, mutate, onUnlock, onLock,
     <div className="settings">
       <label>ENGINE_SECRET<input type="password" value={secret} onChange={e=>setSecret(e.target.value)} placeholder={authenticated ? "Session active — enter again only if needed" : "Enter once to unlock private data"} autoComplete="current-password"/><small className="settingHint">The secret is sent once to establish a signed HttpOnly session cookie. It is not kept in localStorage or sessionStorage. The 7-day session renews while the dashboard is actively used and expires after 7 days of inactivity.</small></label>
       <label>Risk % per trade<input type="number" min="0.1" max="5" step="0.1" value={draft.riskPct} onChange={e=>changeDraft('riskPct',e.target.value)} disabled={busy} required/></label>
-      <div className="lockedText"><b>Global scanner position cap: DISABLED.</b> Entries still require a valid signal, an available Tradetron route, acceptable margin and duplicate-symbol checks.</div>
+      <div className={`lockedText capStatus ${capStatus.className}`} role="status" aria-live="polite">
+        {capStatus.state === 'ACTIVE' ? <>
+          <b>Global position cap: ACTIVE</b>
+          <span>Current: {capStatus.currentOpenPositions}/{capStatus.maxOpenPositions}</span>
+          <small>Worker enforces at limit. Fails closed if snapshot unavailable.</small>
+        </> : capStatus.state === 'REACHED' ? <>
+          <b>⚠️ Global position cap: REACHED</b>
+          <span>Current: {capStatus.currentOpenPositions}/{capStatus.maxOpenPositions}</span>
+          <small>New signals blocked until positions close.</small>
+        </> : <>
+          <b>⚠️ Global position cap: STATUS UNKNOWN</b>
+          <small>Trusted position snapshot unavailable. Worker fails closed — no new entries will be sent.</small>
+        </>}
+      </div>
       <label>Momentum RR<input type="number" min="1" max="5" step="0.1" value={draft.momentumRr} onChange={e=>changeDraft('momentumRr',e.target.value)} disabled={busy} required/></label>
       <label>Scalping RR<input type="number" min="1" max="5" step="0.1" value={draft.scalpingRr} onChange={e=>changeDraft('scalpingRr',e.target.value)} disabled={busy} required/></label>
       <label>TP1 %<input type="number" min="1" max="99" step="1" value={draft.tp1Pct} onChange={e=>changeDraft('tp1Pct',e.target.value)} disabled={busy} required/></label>
