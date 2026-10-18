@@ -847,8 +847,8 @@ function Rotation({ ledger = [], accountDataProtected = false, ledgerComplete = 
   // TODO: When verified fills are available, correlate dd_trades to
   // dd_rotation_ledger with a proper trade_id foreign key.
   const summary = summarizeRotationLedger(todayLedger, ledgerComplete);
-  const { hasEvents, emptyConfirmed, releasedComplete, retainedComplete, released, retained } = summary;
-  const emptyTodayMessage = Number(ledgerRowCount) === 0
+  const { hasEvents, releasedComplete, retainedComplete, released, retained } = summary;
+  const emptyTodayMessage = ledgerRowCount != null && Number(ledgerRowCount) === 0
     ? 'No rotation events recorded yet. Feature activates when a verified trade closes in profit.'
     : 'No rotation events recorded today.';
   const showDeliveryNotice = ledgerRowCount != null && Number(ledgerRowCount) === 0 && !noticeDismissed;
