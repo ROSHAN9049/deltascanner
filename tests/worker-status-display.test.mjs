@@ -39,6 +39,8 @@ test('emergency stop overrides auto trade and cap subtitles', () => {
     currentOpenPositions: 20, maxOpenPositions: 20
   });
   assert.equal(status.autoTradeSubtitle, '🚨 EMERGENCY STOP ACTIVE. All signal flow halted.');
+  assert.equal(status.continuousValue, 'ON · HALTED');
+  assert.equal(status.continuousSubtitle, '🚨 EMERGENCY STOP ACTIVE. All signal flow halted.');
 });
 
 test('missing or invalid cap telemetry never claims capacity is available', () => {
