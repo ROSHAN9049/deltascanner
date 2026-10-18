@@ -9,9 +9,8 @@ test('cap reached blocks new signals in both cards while scanning stays on', () 
   });
   assert.equal(status.capReached, true);
   assert.equal(status.continuousValue, 'ON · BLOCKED');
-  assert.match(status.continuousSubtitle, /blocked by global cap \(20\/20\)/);
-  assert.match(status.continuousSubtitle, /Existing signals continue to be managed/);
-  assert.match(status.autoTradeSubtitle, /all new signals are currently blocked/);
+  assert.equal(status.continuousSubtitle, '⚠️ Global cap reached (20/20). New signals blocked until positions close.');
+  assert.equal(status.autoTradeSubtitle, 'Scanner enabled, but all new signals blocked by global cap (20/20).');
 });
 
 test('cap below maximum keeps continuous scanning active and shows live count', () => {
@@ -21,7 +20,7 @@ test('cap below maximum keeps continuous scanning active and shows live count', 
   assert.equal(status.capReached, false);
   assert.equal(status.continuousValue, 'ON · ACTIVE');
   assert.equal(status.continuousSubtitle, 'Continuous scanning active. Global cap: 12/20.');
-  assert.match(status.autoTradeSubtitle, /Signals active/);
+  assert.equal(status.autoTradeSubtitle, 'Scanner enabled. Signals active.');
 });
 
 test('continuous mode off is clearly distinguished from auto trade being off', () => {
@@ -39,7 +38,7 @@ test('auto off means no automatic routing and no signals', () => {
   });
   assert.equal(status.continuousValue, 'OFF');
   assert.equal(status.continuousSubtitle, 'Manual mode. No automatic routing.');
-  assert.equal(status.autoTradeSubtitle, 'Scanner master switch is disabled. No signals will be sent.');
+  assert.equal(status.autoTradeSubtitle, 'Scanner disabled. No signals will be sent.');
 });
 
 test('emergency stop overrides auto trade and cap subtitles', () => {
@@ -58,6 +57,7 @@ test('missing or invalid cap telemetry never claims capacity is available', () =
   });
   assert.equal(status.capReached, false);
   assert.equal(status.hasCapData, false);
+  assert.equal(status.capLabel, 'NO DATA');
   assert.match(status.continuousSubtitle, /cap status unavailable/i);
   assert.match(status.autoTradeSubtitle, /status unavailable/i);
 });
@@ -67,4 +67,6 @@ test('health ages and lease remaining are formatted in seconds without snake-cas
   assert.equal(formatHealthAge(null), 'NO DATA');
   assert.equal(formatLeaseRemaining(1001), '2 sec');
   assert.equal(formatLeaseRemaining(0), '0 sec');
+  assert.equal(formatLeaseRemaining(null), 'NO DATA');
+  assert.equal(formatLeaseRemaining(undefined), 'NO DATA');
 });
