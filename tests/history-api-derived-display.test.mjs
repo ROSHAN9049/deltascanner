@@ -32,7 +32,7 @@ test('API-derived coverage distinguishes complete, partial, count mismatch, and 
   assert.match(history, /derivedCoverage === 'COMPLETE'/);
   assert.match(history, /derivedCoverage === 'PARTIAL'/);
   assert.match(history, /derivedCoverage === 'MISMATCH'/);
-  assert.match(history, /derivedCoverage === 'UNKNOWN'/);
+  assert.match(history, /derivedCount === null \|\| derivedCount < 0 \? 'UNKNOWN'/);
   assert.match(history, /Partial API-derived history — loaded/);
   assert.match(history, /row-count mismatch/);
   assert.match(history, /Exact API-derived row count unavailable/);
