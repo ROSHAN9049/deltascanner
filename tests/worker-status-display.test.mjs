@@ -24,6 +24,15 @@ test('cap below maximum keeps continuous scanning active and shows live count', 
   assert.match(status.autoTradeSubtitle, /Signals active/);
 });
 
+test('continuous mode off is clearly distinguished from auto trade being off', () => {
+  const status = getWorkerStatusDisplay({
+    autoTrade: true, continuousMode: false, currentOpenPositions: 3, maxOpenPositions: 20
+  });
+  assert.equal(status.continuousValue, 'OFF');
+  assert.equal(status.continuousSubtitle, 'Continuous scanning is off. No continuous automatic routing.');
+  assert.match(status.autoTradeSubtitle, /Signals active/);
+});
+
 test('auto off means no automatic routing and no signals', () => {
   const status = getWorkerStatusDisplay({
     autoTrade: false, continuousMode: true, currentOpenPositions: 12, maxOpenPositions: 20
