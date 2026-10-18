@@ -13,11 +13,11 @@ test('Momentum History, Scalp History, and Trade History receive total API-deriv
   const callSites = [
     /tab === 'momentum-history' && <TradeHistory[^\n]*strategy="MOMENTUM"[^\n]*apiDerivedTradeCount=\{state\?\.apiDerivedTradeCount \?\? null\}/,
     /tab === 'scalp-history' && <TradeHistory[^\n]*strategy="SCALPING"[^\n]*apiDerivedTradeCount=\{state\?\.apiDerivedTradeCount \?\? null\}/,
-    /tab === 'trade-history' && <> <TradeHistory/
+    /tab === 'trade-history' && <><TradeHistory/
   ];
   assert.match(source, callSites[0]);
   assert.match(source, callSites[1]);
-  assert.match(source, /tab === 'trade-history' && <> <TradeHistory[^\n]*apiDerivedTradeCount=\{state\?\.apiDerivedTradeCount \?\? null\}/);
+  assert.match(source, /tab === 'trade-history' && <><TradeHistory[^\n]*apiDerivedTradeCount=\{state\?\.apiDerivedTradeCount \?\? null\}/);
 });
 
 test('all history tabs share the same API-derived, unverified section and strategy filter', () => {
