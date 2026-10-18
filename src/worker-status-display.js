@@ -12,26 +12,26 @@ export function getWorkerStatusDisplay({
     Number.isFinite(current) && current >= 0 &&
     Number.isFinite(maximum) && maximum >= 1;
   const capReached = hasCapData && current >= maximum;
-  const capLabel = hasCapData ? current + '/' + maximum : 'unavailable';
+  const capLabel = hasCapData ? current + '/' + maximum : 'NO DATA';
 
   const autoTradeSubtitle = emergencyStop
     ? '🚨 EMERGENCY STOP ACTIVE. All signal flow halted.'
     : !autoTrade
-      ? 'Scanner master switch is disabled. No signals will be sent.'
+      ? 'Scanner disabled. No signals will be sent.'
       : capReached
-        ? 'Scanner master switch is enabled, but all new signals are currently blocked by global position cap (' + capLabel + ').'
+        ? 'Scanner enabled, but all new signals blocked by global cap (' + capLabel + ').'
         : hasCapData
-          ? 'Scanner master switch is enabled. Signals active; global cap ' + capLabel + '. Other routing and risk gates still apply.'
-          : 'Scanner master switch is enabled. Global position-cap status unavailable; other routing and risk gates still apply.';
+          ? 'Scanner enabled. Signals active.'
+          : 'Scanner enabled. Global cap status unavailable.';
 
-  const continuousSubtitle = emergencyStop
-    ? '🚨 EMERGENCY STOP ACTIVE. All signal flow halted.'
-    : !autoTrade
-      ? 'Manual mode. No automatic routing.'
+  const continuousSubtitle = !autoTrade
+    ? 'Manual mode. No automatic routing.'
+    : emergencyStop
+      ? '🚨 EMERGENCY STOP ACTIVE. All signal flow halted.'
     : !continuousMode
       ? 'Continuous scanning is off. No continuous automatic routing.'
       : capReached
-        ? 'Continuous scanning active, but all new signals blocked by global cap (' + capLabel + '). Existing signals continue to be managed.'
+        ? '⚠️ Global cap reached (' + capLabel + '). New signals blocked until positions close.'
         : hasCapData
           ? 'Continuous scanning active. Global cap: ' + capLabel + '.'
           : 'Continuous scanning active. Global cap status unavailable.';
@@ -56,6 +56,7 @@ export function formatHealthAge(milliseconds) {
 
 export function formatLeaseRemaining(milliseconds) {
   const value = Number(milliseconds);
-  if (milliseconds === null || milliseconds === undefined || !Number.isFinite(value) || value <= 0) return '0 sec';
+  if (milliseconds === null || milliseconds === undefined || !Number.isFinite(value) || value < 0) return 'NO DATA';
+  if (value === 0) return '0 sec';
   return Math.ceil(value / 1000) + ' sec';
 }

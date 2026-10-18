@@ -1027,25 +1027,25 @@ function Testnet({ settings, health, busy, mutate, positions, tradetronDeploymen
     autoTrade: settings.auto_trade === true,
     continuousMode: settings.continuous_mode === true,
     emergencyStop: settings.emergency_stop === true,
-    currentOpenPositions: entrySafety?.openPositionCount ?? null,
+    currentOpenPositions: entrySafety?.trusted === true ? (entrySafety?.openPositionCount ?? null) : null,
     maxOpenPositions: entrySafety?.maxOpenPositions ?? settings.max_open_positions ?? null
   });
   const workerOnline = health?.workerLeaseActive === true && health?.heartbeatFresh === true;
   const autoTradeTone = settings.emergency_stop === true ? 'critical' : status.capReached && settings.auto_trade === true ? 'warning' : '';
-  const healthAges = 'Last tick: ' + formatHealthAge(health?.tickAgeMs) +
+  const healthAges = 'Tick: ' + formatHealthAge(health?.tickAgeMs) +
     ' · Heartbeat: ' + formatHealthAge(health?.heartbeatAgeMs) +
     ' · Lease: ' + formatLeaseRemaining(health?.leaseRemainingMs);
   return <>
     <section className="cards">
       <Card label="ENVIRONMENT" value="SIGNAL ONLY" sub="production market feed"/>
       <Card label="AUTO TRADE" value={settings.auto_trade === true ? 'ON' : 'OFF'} sub={status.autoTradeSubtitle} tone={autoTradeTone}/>
-      <Card label="CONTINUOUS MODE" value={status.continuousValue} sub={status.continuousSubtitle} tone={status.capReached && settings.auto_trade === true && settings.continuous_mode === true ? 'warning' : ''}/>
+      <Card label="CONTINUOUS MODE" value={status.continuousValue} sub={status.continuousSubtitle} tone={settings.emergency_stop === true && settings.auto_trade === true ? 'critical' : status.capReached && settings.auto_trade === true && settings.continuous_mode === true ? 'warning' : ''}/>
       <Card label="CURRENT OPEN POSITIONS" value={accountDataProtected ? 'LOCKED' : currentPositionSummary.count === null ? currentPositionSummary.status : currentPositionSummary.count} sub={accountDataProtected ? 'enter ENGINE_SECRET to load position records' : currentPositionSummary.detail}/>
     </section>
     <Panel title="Worker Status · Signal Only">
       <div className="lockedText">Direct Delta execution is disabled. Tradetron Live Offline is the simulation layer; only verified callbacks create the scanner's event-ledger positions and closed trades.</div>
       <div className="statusLine">
-        <span title="Worker lease is active. (Note: derived from lease state, not directly from heartbeat freshness).">Worker {workerOnline ? 'ONLINE' : 'OFFLINE'}</span>
+        <span title="Worker lease is active AND heartbeat is fresh (heartbeat age under 3 minutes); both are required for ONLINE.">Worker {workerOnline ? 'ONLINE' : 'OFFLINE'}</span>
         {' · '}
         <span title="A current worker lease has not expired.">Lease {health?.workerLeaseActive ? 'ACTIVE' : 'INACTIVE'}</span>
         {' · '}
@@ -1058,7 +1058,7 @@ function Testnet({ settings, health, busy, mutate, positions, tradetronDeploymen
         <span title="No emergency halt active.">Emergency stop {settings.emergency_stop === true ? 'ACTIVE' : 'RELEASED'}</span>
       </div>
       <div className="healthAges">{healthAges}</div>
-      <p className="muted">Entries require a valid signal, configured Tradetron route, trusted position snapshot when the Developer API is configured, fresh market data, acceptable risk/margin, same-symbol duplicate protection, AND global position cap allowance ({status.capLabel} used). This panel is status-only; direct Delta orders cannot be enabled here.</p>
+      <p className="muted">Entries require a valid signal, configured Tradetron route, trusted position snapshot when the Developer API is configured, fresh market data, acceptable risk/margin, same-symbol duplicate protection, AND global position cap allowance ({status.hasCapData ? status.capLabel + ' used' : 'NO DATA'}). This panel is status-only; direct Delta orders cannot be enabled here.</p>
     </Panel>
   </>;
 }
