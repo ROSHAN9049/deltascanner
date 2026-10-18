@@ -24,8 +24,10 @@ export function getWorkerStatusDisplay({
           ? 'Scanner master switch is enabled. Signals active; global cap ' + capLabel + '. Other routing and risk gates still apply.'
           : 'Scanner master switch is enabled. Global position-cap status unavailable; other routing and risk gates still apply.';
 
-  const continuousSubtitle = !autoTrade
-    ? 'Manual mode. No automatic routing.'
+  const continuousSubtitle = emergencyStop
+    ? '🚨 EMERGENCY STOP ACTIVE. All signal flow halted.'
+    : !autoTrade
+      ? 'Manual mode. No automatic routing.'
     : !continuousMode
       ? 'Continuous scanning is off. No continuous automatic routing.'
       : capReached
@@ -42,7 +44,7 @@ export function getWorkerStatusDisplay({
     capLabel,
     autoTradeSubtitle,
     continuousSubtitle,
-    continuousValue: !autoTrade ? 'OFF' : continuousMode ? 'ON · ' + (capReached ? 'BLOCKED' : 'ACTIVE') : 'OFF'
+    continuousValue: !autoTrade ? 'OFF' : emergencyStop ? 'ON · HALTED' : continuousMode ? 'ON · ' + (capReached ? 'BLOCKED' : 'ACTIVE') : 'OFF'
   };
 }
 
