@@ -14,6 +14,7 @@ import { blockersDisplay, gateTooltip } from './gate-result.js';
 import { buildRiskGovernorGates } from './risk-governor.js';
 import { buildPnlHistoryInsights } from './pnl-history-insights.js';
 import { contractValueForSymbol, stockTokenPnlTooltip, stockTokenOpenPnlTooltip } from './stock-token-pnl.js';
+import { summarizeRotationLedger } from './rotation-ledger-state.js';
 
 const loggedPnlAnomalies = new Set();
 
@@ -839,27 +840,52 @@ function PNL({
 }
 
 function Rotation({ ledger = [], accountDataProtected = false, ledgerComplete = false, ledgerRowCount = null }) {
+  const [noticeDismissed, setNoticeDismissed] = useState(false);
   if (accountDataProtected) return <Panel title="Profit Rotation V3 Ledger · Protected"><div className="lockedText">Rotation ledger rows and amounts are private. Enter ENGINE_SECRET in Settings to view them.</div></Panel>;
   const nowDay = indiaDateKey(new Date());
   const todayLedger = ledger.filter(row => indiaDateKey(row.created_at) === nowDay);
-  const releasedValues = todayLedger.map(row => safeNum(row.released));
-  const retainedValues = todayLedger.map(row => safeNum(row.retained));
-  const releasedComplete = ledgerComplete && todayLedger.length > 0 && releasedValues.every(value => value !== null);
-  const retainedComplete = ledgerComplete && todayLedger.length > 0 && retainedValues.every(value => value !== null);
-  const released = releasedComplete ? releasedValues.reduce((sum, value) => sum + value, 0) : null;
-  const retained = retainedComplete ? retainedValues.reduce((sum, value) => sum + value, 0) : null;
+  // TODO: When verified fills are available, correlate dd_trades to
+  // dd_rotation_ledger with a proper trade_id foreign key.
+  const summary = summarizeRotationLedger(todayLedger, ledgerComplete);
+  const { hasEvents, emptyConfirmed, releasedComplete, retainedComplete, released, retained } = summary;
+  const emptyTodayMessage = Number(ledgerRowCount) === 0
+    ? 'No rotation events recorded yet. Feature activates when a verified trade closes in profit.'
+    : 'No rotation events recorded today.';
+  const showDeliveryNotice = ledgerRowCount != null && Number(ledgerRowCount) === 0 && !noticeDismissed;
+  const releasedValue = !ledgerComplete
+    ? 'INCOMPLETE DATA'
+    : !hasEvents
+      ? '0.00'
+      : releasedComplete
+        ? money(released)
+        : 'INCOMPLETE DATA';
+  const retainedValue = !ledgerComplete
+    ? 'INCOMPLETE DATA'
+    : !hasEvents
+      ? '0.00'
+      : retainedComplete
+        ? money(retained)
+        : 'INCOMPLETE DATA';
   return <>
+    {showDeliveryNotice ? <div className="rotationNotice" role="status">
+      <div><strong>⚠️ Profit Rotation requires verified closed trades.</strong> Current setup receives no authenticated fills from Tradetron. This ledger will remain empty until:
+        <br/>(a) Tradetron outbound webhooks are configured, OR
+        <br/>(b) A relay supplies verified close events.
+        <br/>Read-only API snapshots cannot generate rotation events.
+      </div>
+      <button type="button" className="rotationNoticeDismiss" onClick={() => setNoticeDismissed(true)} aria-label="Dismiss Profit Rotation status notice">Dismiss</button>
+    </div> : null}
     <section className="cards">
-      <Card label="EVENTS TODAY" value={ledgerComplete ? todayLedger.length : 'INCOMPLETE DATA'} sub={ledgerComplete ? 'recorded profit-rotation ledger rows' : 'full rotation-ledger row count is not confirmed'}/>
-      <Card label="RELEASED 90%" value={!ledgerComplete ? 'INCOMPLETE DATA' : !todayLedger.length ? '—' : releasedComplete ? money(released) : 'INCOMPLETE DATA'} sub={!ledgerComplete ? 'full rotation ledger not loaded' : releasedComplete ? 'sum of recorded release values' : 'missing release amount in one or more rows'}/>
-      <Card label="ALLOCATED" value={!ledgerComplete ? 'INCOMPLETE DATA' : !todayLedger.length ? '—' : releasedComplete ? money(released) : 'INCOMPLETE DATA'} sub={ledgerComplete ? 'matches the recorded released amount' : 'full rotation ledger not loaded'}/>
-      <Card label="RETAINED 10%" value={!ledgerComplete ? 'INCOMPLETE DATA' : !todayLedger.length ? '—' : retainedComplete ? money(retained) : 'INCOMPLETE DATA'} sub={!ledgerComplete ? 'full rotation ledger not loaded' : retainedComplete ? 'sum of recorded retained values' : 'missing retained amount in one or more rows'}/>
+      <Card label="EVENTS TODAY" value={ledgerComplete ? todayLedger.length : 'INCOMPLETE DATA'} sub={!ledgerComplete ? 'full rotation-ledger row count is not confirmed' : !hasEvents ? emptyTodayMessage : 'recorded profit-rotation ledger rows'}/>
+      <Card label="RELEASED 90%" value={releasedValue} sub={!ledgerComplete ? 'full rotation ledger not loaded' : !hasEvents ? emptyTodayMessage : releasedComplete ? 'sum of recorded release values' : 'missing release amount in one or more rows'}/>
+      <Card label="ALLOCATED" value={releasedValue} sub={!ledgerComplete ? 'full rotation ledger not loaded' : !hasEvents ? 'No data yet' : releasedComplete ? 'matches the recorded released amount' : 'missing release amount in one or more rows'}/>
+      <Card label="RETAINED 10%" value={retainedValue} sub={!ledgerComplete ? 'full rotation ledger not loaded' : !hasEvents ? emptyTodayMessage : retainedComplete ? 'sum of recorded retained values' : 'missing retained amount in one or more rows'}/>
     </section>
-    <Panel title="Profit Rotation V3 Ledger">{!ledgerComplete ? <div className="lockedText">Showing {ledger.length} of {ledgerRowCount ?? 'an unknown number of'} stored ledger rows. This table may be partial.</div> : null}<div className="tablewrap"><table><thead><tr><th>TIME</th><th>EXECUTION ID</th><th>PROFIT</th><th>RELEASED</th><th>RETAINED</th><th>ROTATION ID</th></tr></thead><tbody>{ledger.map(row=><tr key={row.execution_id}>
+    <Panel title="Profit Rotation V3 Ledger">{!ledgerComplete ? <div className="lockedText">Showing {ledger.length} of {ledgerRowCount ?? 'an unknown number of'} stored ledger rows. This table may be partial.</div> : null}<div className="tablewrap"><table><thead><tr><th>TIME</th><th>EXECUTION ID</th><th>PROFIT</th><th>RELEASED</th><th>RETAINED</th><th>ROTATION ID</th></tr></thead><tbody>{ledger.length ? ledger.map(row=><tr key={row.execution_id}>
       <td>{row.created_at ? new Date(row.created_at).toLocaleString('en-IN') : '—'}</td>
       <td className="mono">{row.execution_id || '—'}</td>
       <td className="up">{money(row.profit)}</td><td>{money(row.released)}</td><td>{money(row.retained)}</td><td>{row.rotation_id || '—'}</td>
-    </tr>)}</tbody></table></div></Panel>
+    </tr>) : <tr><td colSpan={6} className="rotationEmpty">{ledgerComplete ? 'No rotation ledger rows recorded yet.' : 'No rows are currently loaded; the ledger may be partial.'}</td></tr>}</tbody></table></div></Panel>
   </>;
 }
 function Analytics({ trades = [], accountDataProtected = false, tradesComplete = false, tradeRowCount = null }) {
