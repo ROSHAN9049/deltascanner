@@ -15,6 +15,7 @@ import { buildRiskGovernorGates } from './risk-governor.js';
 import { buildPnlHistoryInsights } from './pnl-history-insights.js';
 import { contractValueForSymbol, stockTokenPnlTooltip, stockTokenOpenPnlTooltip } from './stock-token-pnl.js';
 import { summarizeRotationLedger } from './rotation-ledger-state.js';
+import { formatHealthAge, formatLeaseRemaining, getWorkerStatusDisplay } from './worker-status-display.js';
 
 const loggedPnlAnomalies = new Set();
 
@@ -323,7 +324,7 @@ function App() {
     {tab === 'trade-history' && <><TradeHistory trades={trades} title="Trade History · Webhook-Synced Tradetron Records" apiDerivedTrades={state?.apiDerivedTrades || []} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} /><TradetronActivity events={state?.tradetronEvents || []} signalStats={state?.signalOrderStats || null} webhookSecretConfigured={executionCoverage?.webhookSecretConfigured === true} accountDataProtected={accountDataProtected} /></>}
     {tab === 'pnl' && <><PNL trades={trades} settings={settings} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.tradeRowCount ?? null} apiDerivedTrades={state?.apiDerivedTrades || []} apiDerivedTradeCount={state?.apiDerivedTradeCount ?? null} developerSnapshots={state?.tradetronDeveloperSnapshots || []} developerDataProtected={state?.tradetronDeveloperDataProtected === true} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} marketCache={state?.marketCache || []} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} marketCache={state?.marketCache || []} /></>}
     {tab === 'paper' && <Panel title="Paper Trading"><div className="lockedText">Scanner is signal-only. No Delta order is placed here; Tradetron Live Offline runs the simulated execution.</div></Panel>}
-    {tab === 'testnet' && <Testnet settings={settings} health={health} busy={busy} mutate={mutate} positions={positions} tradetronDeployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} developerSync={state?.tradetronDeveloperSync || null} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} accountDataProtected={accountDataProtected} />}
+    {tab === 'testnet' && <Testnet settings={settings} health={health} busy={busy} mutate={mutate} positions={positions} tradetronDeployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} developerSync={state?.tradetronDeveloperSync || null} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} entrySafety={executionCoverage?.tradetronEntrySafety || null} accountDataProtected={accountDataProtected} />}
     {tab === 'live' && <Panel title="Live Trading"><div className="liveLock">🔒 DIRECT DELTA EXECUTION LOCKED<br/><small>The scanner never sends production orders. Future live execution must be enabled manually in Tradetron.</small></div></Panel>}
     {tab === 'analytics' && <Analytics trades={trades} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.tradeRowCount ?? null} />}
     {tab === 'settings' && <Settings settings={settings} secret={secret} setSecret={v => { secretRef.current = v; setSecret(v); }} busy={busy} mutate={mutate} onUnlock={unlockSession} onLock={lockSession} authenticated={state?.accountDataProtected === false} />}
@@ -334,8 +335,9 @@ function App() {
 function Panel({ title, children }) {
   return <section className="panel"><div className="panelTitle"><h2>{title}</h2></div><div className="pad">{children}</div></section>;
 }
-function Card({ label, value, sub, title }) {
-  return <div className="card" title={title}><small>{label}</small><strong>{value}</strong><span>{sub}</span></div>;
+function Card({ label, value, sub, title, tone = '' }) {
+  const toneClass = tone === 'critical' ? ' card-critical' : tone === 'warning' ? ' card-warning' : '';
+  return <div className={'card' + toneClass} title={title}><small>{label}</small><strong>{value}</strong><span>{sub}</span></div>;
 }
 function Dashboard({ market, settings, health, trades, positions, accountDataProtected = false, signals, signalOrderStats = null, tradesComplete = false, tradeRowCount = null, tradetronEvents = [], executionCoverage = null, developerSync = null, developerSnapshots = [], developerApiConfigured = false, developerDataProtected = false, developerNotifications = [], developerNotificationSync = null, developerPnlHistory = [], onInspect, inspect, logs }) {
   const today = indiaDateKey(new Date());
@@ -1019,9 +1021,46 @@ function TradetronPositionReconciliationPanel({ deployments = [], enginePosition
   </Panel>;
 }
 
-function Testnet({ settings, health, busy, mutate, positions, tradetronDeployments = [], developerSync = null, developerApiConfigured = false, accountDataProtected = false }) {
+function Testnet({ settings, health, busy, mutate, positions, tradetronDeployments = [], developerSync = null, developerApiConfigured = false, entrySafety = null, accountDataProtected = false }) {
   const currentPositionSummary = summarizeCurrentPositionCount({ eventPositions: positions, deployments: tradetronDeployments, syncState: developerSync, configured: developerApiConfigured });
-  return <><section className="cards"><Card label="ENVIRONMENT" value="SIGNAL ONLY" sub="production market feed"/><Card label="AUTO TRADE" value={settings.auto_trade === true ? 'ON' : 'OFF'} sub={settings.enabled === false ? 'scanner is disabled' : 'scanner master switch is enabled'}/><Card label="CONTINUOUS MODE" value={settings.continuous_mode === true ? 'ON' : 'OFF'} sub={settings.continuous_mode === true ? 'route qualifying opportunities without a global position cap' : 'only scanner-configured opportunity flow'}/><Card label="CURRENT OPEN POSITIONS" value={accountDataProtected ? 'LOCKED' : currentPositionSummary.count === null ? currentPositionSummary.status : currentPositionSummary.count} sub={accountDataProtected ? 'enter ENGINE_SECRET to load position records' : currentPositionSummary.detail}/></section><Panel title="Worker Status · Signal Only"><div className="lockedText">Direct Delta execution is disabled. Tradetron Live Offline is the simulation layer; only verified callbacks create the scanner's event-ledger positions and closed trades.</div><div className="statusLine">Worker {health?.workerLeaseActive?'ONLINE':'OFFLINE'} · Tick {health?.tickFresh?'FRESH':'STALE'} · Exchange {health?.exchangeHealthy?'HEALTHY':'DOWN'} · Emergency stop {settings.emergency_stop === true ? 'ACTIVE' : 'RELEASED'}</div><p className="muted">Entries require a valid signal, configured Tradetron route, trusted position snapshot when the Developer API is configured, fresh market data, acceptable risk/margin and same-symbol duplicate protection. This panel is status-only; direct Delta orders cannot be enabled here.</p></Panel></>;
+  const status = getWorkerStatusDisplay({
+    autoTrade: settings.auto_trade === true,
+    continuousMode: settings.continuous_mode === true,
+    emergencyStop: settings.emergency_stop === true,
+    currentOpenPositions: entrySafety?.openPositionCount ?? null,
+    maxOpenPositions: entrySafety?.maxOpenPositions ?? settings.max_open_positions ?? null
+  });
+  const workerOnline = health?.workerLeaseActive === true && health?.heartbeatFresh === true;
+  const autoTradeTone = settings.emergency_stop === true ? 'critical' : status.capReached && settings.auto_trade === true ? 'warning' : '';
+  const healthAges = 'Last tick: ' + formatHealthAge(health?.tickAgeMs) +
+    ' · Heartbeat: ' + formatHealthAge(health?.heartbeatAgeMs) +
+    ' · Lease: ' + formatLeaseRemaining(health?.leaseRemainingMs);
+  return <>
+    <section className="cards">
+      <Card label="ENVIRONMENT" value="SIGNAL ONLY" sub="production market feed"/>
+      <Card label="AUTO TRADE" value={settings.auto_trade === true ? 'ON' : 'OFF'} sub={status.autoTradeSubtitle} tone={autoTradeTone}/>
+      <Card label="CONTINUOUS MODE" value={status.continuousValue} sub={status.continuousSubtitle} tone={status.capReached && settings.auto_trade === true && settings.continuous_mode === true ? 'warning' : ''}/>
+      <Card label="CURRENT OPEN POSITIONS" value={accountDataProtected ? 'LOCKED' : currentPositionSummary.count === null ? currentPositionSummary.status : currentPositionSummary.count} sub={accountDataProtected ? 'enter ENGINE_SECRET to load position records' : currentPositionSummary.detail}/>
+    </section>
+    <Panel title="Worker Status · Signal Only">
+      <div className="lockedText">Direct Delta execution is disabled. Tradetron Live Offline is the simulation layer; only verified callbacks create the scanner's event-ledger positions and closed trades.</div>
+      <div className="statusLine">
+        <span title="Worker lease is active. (Note: derived from lease state, not directly from heartbeat freshness).">Worker {workerOnline ? 'ONLINE' : 'OFFLINE'}</span>
+        {' · '}
+        <span title="A current worker lease has not expired.">Lease {health?.workerLeaseActive ? 'ACTIVE' : 'INACTIVE'}</span>
+        {' · '}
+        <span title="Worker heartbeat received within last 3 minutes.">Heartbeat {health?.heartbeatFresh ? 'FRESH' : 'STALE'}</span>
+        {' · '}
+        <span title="Last market tick is less than 3 minutes old.">Tick {health?.tickFresh ? 'FRESH' : 'STALE'}</span>
+        {' · '}
+        <span title="Market tick and worker heartbeat are fresh, and the worker lease is active. This endpoint does not independently test Delta or Tradetron API availability.">Exchange {health?.exchangeHealthy ? 'HEALTHY' : 'DOWN'}</span>
+        {' · '}
+        <span title="No emergency halt active.">Emergency stop {settings.emergency_stop === true ? 'ACTIVE' : 'RELEASED'}</span>
+      </div>
+      <div className="healthAges">{healthAges}</div>
+      <p className="muted">Entries require a valid signal, configured Tradetron route, trusted position snapshot when the Developer API is configured, fresh market data, acceptable risk/margin, same-symbol duplicate protection, AND global position cap allowance ({status.capLabel} used). This panel is status-only; direct Delta orders cannot be enabled here.</p>
+    </Panel>
+  </>;
 }
 function Settings({ settings, secret, setSecret, busy, mutate, onUnlock, onLock, authenticated = false }) {
   const serverValues = useMemo(() => ({
