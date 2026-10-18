@@ -87,3 +87,11 @@ footer{color:#526177;text-align:center;font-size:9px;padding-top:12px}
 .capStatus.cap-reached{border-color:#8b7028;background:#211b0e;color:#f0d77c}
 .capStatus.cap-unknown{border-color:#873446;background:#270f17;color:#ff7187}
 .strategyAccuracyNote{margin:-4px 2px 12px;line-height:1.5}
+
+/* Explicit confirmation before persisting Settings form changes. */
+.confirmOverlay{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;padding:16px;background:rgba(0,0,0,.72)}
+.confirmDialog{width:min(100%,460px);padding:18px;border:1px solid #35465d;border-radius:10px;background:#0d1420;box-shadow:0 18px 60px rgba(0,0,0,.55)}
+.confirmDialog h3{margin:0 0 10px;font-size:15px;color:#e7edf5}
+.confirmDialog p{margin:0;color:#9aa9bc;font-size:11px;line-height:1.6}
+.confirmActions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
+.confirmActions button{margin:0;min-width:82px}
