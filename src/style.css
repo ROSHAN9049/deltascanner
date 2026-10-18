@@ -86,3 +86,4 @@ footer{color:#526177;text-align:center;font-size:9px;padding-top:12px}
 .capStatus.cap-active{border-color:#17664d;background:#071d17;color:#2de3a0}
 .capStatus.cap-reached{border-color:#8b7028;background:#211b0e;color:#f0d77c}
 .capStatus.cap-unknown{border-color:#873446;background:#270f17;color:#ff7187}
+.strategyAccuracyNote{margin:-4px 2px 12px;line-height:1.5}
