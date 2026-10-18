@@ -15,7 +15,7 @@ import { buildRiskGovernorGates } from './risk-governor.js';
 import { buildPnlHistoryInsights } from './pnl-history-insights.js';
 import { contractValueForSymbol, stockTokenPnlTooltip, stockTokenOpenPnlTooltip } from './stock-token-pnl.js';
 import { summarizeRotationLedger } from './rotation-ledger-state.js';
-import { formatHealthAge, formatLeaseRemaining, getWorkerStatusDisplay } from './worker-status-display.js';
+import { formatHealthAge, formatLeaseRemaining, getEmergencyStopTooltip, getWorkerStatusDisplay } from './worker-status-display.js';
 
 const loggedPnlAnomalies = new Set();
 
@@ -1055,7 +1055,7 @@ function Testnet({ settings, health, busy, mutate, positions, tradetronDeploymen
         {' · '}
         <span title="Market tick and worker heartbeat are fresh, and the worker lease is active. This endpoint does not independently test Delta or Tradetron API availability.">Exchange {health?.exchangeHealthy ? 'HEALTHY' : 'DOWN'}</span>
         {' · '}
-        <span title="No emergency halt active.">Emergency stop {settings.emergency_stop === true ? 'ACTIVE' : 'RELEASED'}</span>
+        <span title={getEmergencyStopTooltip(settings.emergency_stop === true)}>Emergency stop {settings.emergency_stop === true ? 'ACTIVE' : 'RELEASED'}</span>
       </div>
       <div className="healthAges">{healthAges}</div>
       <p className="muted">Entries require a valid signal, configured Tradetron route, trusted position snapshot when the Developer API is configured, fresh market data, acceptable risk/margin, same-symbol duplicate protection, AND global position cap allowance ({status.hasCapData ? status.capLabel + ' used' : 'NO DATA'}). This panel is status-only; direct Delta orders cannot be enabled here.</p>
