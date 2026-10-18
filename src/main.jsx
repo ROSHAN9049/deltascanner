@@ -41,7 +41,12 @@ function hasRawPnlAnomaly(row) {
 const tabs = [
   ['dashboard','Dashboard'],['rotation','Profit Rotation'],['momentum','Momentum'],['momentum-history','Mom History'],
   ['scalping','Scalping'],['grid','Grid Strategy'],['scalp-history','Scalp History'],['options','Options'],['positions','Positions'],['trade-history','Trade History'],
-  ['pnl','PNL'],['paper','Paper Trading'],['testnet','Worker Status'],['live','Live Trading'],['analytics','Analytics'],['settings','Settings']
+  ['pnl','PNL'],
+  // Paper Trading: placeholder only, not implemented.
+  // Hidden until a real simulation engine exists.
+  // If resurrecting: need dd_paper_trades table, paper engine,
+  // and explicit "simulated" labeling distinct from live trades.
+  ['testnet','Worker Status'],['live','Live Trading'],['analytics','Analytics'],['settings','Settings']
 ];
 const num = v => Number.isFinite(+v) ? +v : 0;
 const pct = v => { const n = safeNum(v); return n === null ? '—' : (n >= 0 ? '+' : '') + n.toFixed(2) + '%'; };
