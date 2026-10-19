@@ -1,0 +1,98 @@
+name: Emergency prune dd_signals
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: Delete rows older than N days
+        required: true
+        default: '2'
+        type: string
+      confirm:
+        description: Type CONFIRM to actually delete rows
+        required: true
+        type: string
+      force:
+        description: Allow deletion of more than 700,000 rows
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+permissions:
+  contents: read
+
+jobs:
+  prune:
+    name: Guarded batched dd_signals emergency prune
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Verify confirmation
+        shell: bash
+        env:
+          PRUNE_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$PRUNE_CONFIRM" != "CONFIRM" ]; then
+            echo "::error::Type CONFIRM in the confirm input to run the emergency prune."
+            exit 1
+          fi
+          echo "Confirmation accepted."
+
+      - name: Guard DATABASE_URL
+        shell: bash
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "::error::DATABASE_URL secret is not configured."
+            exit 1
+          fi
+          echo "DATABASE_URL is configured; value hidden."
+
+      - name: Run emergency prune
+        shell: bash
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PRUNE_DAYS: ${{ inputs.days }}
+          PRUNE_FORCE: ${{ inputs.force }}
+        run: |
+          set -o pipefail
+          args=( "--days=${PRUNE_DAYS}" "--confirm" )
+          if [ "$PRUNE_FORCE" = "true" ]; then
+            args+=( "--force" )
+          elif [ "$PRUNE_FORCE" != "false" ]; then
+            echo "::error::force must be true or false."
+            exit 1
+          fi
+          node scripts/emergency-prune.mjs "${args[@]}" 2>&1 | tee /tmp/emergency-prune.log
+
+      - name: Add prune output to summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Emergency prune dd_signals"
+            echo
+            echo "- Finished (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
+            echo
+            if [ -f /tmp/emergency-prune.log ]; then
+              cat /tmp/emergency-prune.log
+            else
+              echo "The prune script did not produce a log."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
