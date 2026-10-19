@@ -13,7 +13,7 @@ import { assessDeltaRange, fmtMultiplier, fmtPrice as fmtRawPrice, fmtRsi, safeN
 import { blockersDisplay, gateTooltip } from './gate-result.js';
 import { buildRiskGovernorGates } from './risk-governor.js';
 import { buildPnlHistoryInsights } from './pnl-history-insights.js';
-import { contractValueForSymbol, stockTokenPnlTooltip, stockTokenOpenPnlTooltip } from './stock-token-pnl.js';
+import { contractValueForSymbol, stockTokenPnlTooltip, stockTokenOpenPnlTooltip, detectNotionalLikePnl, NOTIONAL_LIKE_PNL_TOOLTIP } from './stock-token-pnl.js';
 import { summarizeRotationLedger } from './rotation-ledger-state.js';
 import { formatHealthAge, formatLeaseRemaining, getEmergencyStopTooltip, getGlobalPositionCapDisplay, getWorkerStatusDisplay } from './worker-status-display.js';
 
@@ -671,9 +671,12 @@ function Positions({ rows = [], tradetronDeployments = [], marketCache = [], sna
       {snapshotsLocked ? <p className="apiStateWarn">Private Tradetron snapshot is locked. Enter the configured ENGINE_SECRET in Settings to load current Tradetron rows.</p> : null}
     </div>
     <div className="tablewrap"><table>
-      <thead><tr><th>TIME / SNAPSHOT</th><th>COIN</th><th>STRATEGY / SOURCE</th><th>SIDE</th><th>QTY</th><th>ENTRY</th><th>MARK</th><th>API VALUE RAW (UNIT UNVERIFIED)</th><th>API P&amp;L FIELD (RAW; source shown)</th><th>SL</th><th>TP1</th><th>TP</th><th>PROTECTION</th><th>ORIGIN</th></tr></thead>
+      <thead><tr><th>TIME / SNAPSHOT</th><th>COIN</th><th>STRATEGY / SOURCE</th><th>SIDE</th><th>QTY</th><th>ENTRY</th><th>MARK</th><th>API VALUE RAW (UNIT UNVERIFIED)</th><th>API VALUE / P&amp;L (source shown)</th><th>SL</th><th>TP1</th><th>TP</th><th>PROTECTION</th><th>ORIGIN</th></tr></thead>
       <tbody>{displayRows.map((p, index) => {
         const snapshotOnly = p.snapshot_only === true;
+        const pnlNotionalCheck = detectNotionalLikePnl({
+          quantity: p.qty, markPrice: p.current_price, snapshot_pnl: p.snapshot_pnl
+        });
         const protection = snapshotOnly ? 'NOT IN API' : (p.protection_verified ? 'VERIFIED' : (p.stop_price != null || p.tp_price != null ? 'LEVELS PRESENT' : 'NOT CONFIRMED'));
         const when = p.opened_at ? new Date(p.opened_at).toLocaleTimeString('en-IN') : (snapshotOnly ? 'Current snapshot' : '—');
         return <tr key={p.execution_id || 'position:' + index}>
@@ -685,7 +688,7 @@ function Positions({ rows = [], tradetronDeployments = [], marketCache = [], sna
           <td>{p.entry_price == null ? '—' : price(p.entry_price)}</td>
           <td>{p.current_price == null ? '—' : price(p.current_price)}</td>
           <td>{p.snapshot_value == null ? '—' : fmtRawPrice(p.snapshot_value, 2)}</td>
-          <td title={stockTokenPnlTooltip(p.symbol, p.snapshot_pnl, contractValueForSymbol(marketCache, p.symbol)) || (p.snapshot_pnl_source ? "Raw Developer API field: " + p.snapshot_pnl_source + ". Generic pnl is not verified M2M." : "No P&L source field was identified.")}><div>{p.snapshot_pnl == null ? '—' : fmtRawPrice(p.snapshot_pnl, 2)}</div><small className="muted">{p.snapshot_pnl_source ? "API field: " + p.snapshot_pnl_source + (["m2m","mtm","unrealized_pnl","unrealizedPnl","open_pnl","openPnl","mark_to_market","markToMarket"].includes(p.snapshot_pnl_source) ? " · M2M-named" : " · semantics unverified") : "source unavailable"}</small></td>
+          <td title={pnlNotionalCheck.matches ? NOTIONAL_LIKE_PNL_TOOLTIP : (stockTokenPnlTooltip(p.symbol, p.snapshot_pnl, contractValueForSymbol(marketCache, p.symbol)) || (p.snapshot_pnl_source ? "Raw Developer API field: " + p.snapshot_pnl_source + ". Generic pnl is not verified M2M." : "No P&L source field was identified."))}>{pnlNotionalCheck.matches ? <><div>Value (notional): ${fmtRawPrice(pnlNotionalCheck.absoluteNotional, 2)}</div><small className="muted">P&amp;L: UNAVAILABLE (API returns notional value)</small></> : <><div>{p.snapshot_pnl == null ? '—' : fmtRawPrice(p.snapshot_pnl, 2)}</div><small className="muted">{p.snapshot_pnl_source ? "API field: " + p.snapshot_pnl_source + (["m2m","mtm","unrealized_pnl","unrealizedPnl","open_pnl","openPnl","mark_to_market","markToMarket"].includes(p.snapshot_pnl_source) ? " · M2M-named" : " · semantics unverified") : "source unavailable"}</small></>}</td>
           <td>{p.stop_price == null ? '—' : price(p.stop_price)}</td>
           <td>{p.tp1_price == null ? '—' : price(p.tp1_price)}</td>
           <td>{p.tp_price == null ? '—' : price(p.tp_price)}</td>
@@ -801,7 +804,11 @@ function PNL({
       (!derivedRowsComplete ? ' · showing latest ' + derivedRows.length : '');
   const rawExposure = summarizeTradetronSnapshots(developerSnapshots);
   const openRows = rawExposure.openRows || [];
-  const openPnlValues = openRows.map(row => safeNum(row?.pnl));
+  const notionalLikeOpenRows = openRows.filter(row => detectNotionalLikePnl(row).matches);
+  const openPnlRows = openRows.filter(row => !detectNotionalLikePnl(row).matches);
+  const openPnlValues = openRows.map(row =>
+    detectNotionalLikePnl(row).matches ? null : safeNum(row?.pnl)
+  );
   const knownOpenPnl = openPnlValues.filter(value => value !== null);
   const openRawPnlSum = knownOpenPnl.length ? knownOpenPnl.reduce((sum,value) => sum + value,0) : null;
   const openPnlComplete = openRows.length > 0 && openPnlValues.every(value => value !== null);
@@ -844,19 +851,20 @@ function PNL({
     <Panel title="Current Open Exposure · Raw Tradetron API Fields">
       {developerDataProtected ? <div className="lockedText">Private Tradetron snapshot data is locked. Enter ENGINE_SECRET in Settings to view raw exposure.</div> : <>
         <section className="cards">
-          <Card label="OPEN RAW P&L SUM" value={!openRows.length ? 'NO IDENTIFIED ROWS' : openRawPnlSum === null ? 'UNKNOWN' : fmtRawPrice(openRawPnlSum,2) + ' RAW'} sub={'Raw sum of API row-level pnl fields (semantics unverified). ' + knownOpenPnl.length + '/' + openRows.length + ' open row(s) have numeric raw P&L.'} title={stockTokenOpenPnlTooltip(openRows, marketCache, openRawPnlSum)} />
+          <Card label="OPEN RAW P&L SUM · EXCL. NOTIONAL-LIKE" value={!openRows.length ? 'NO IDENTIFIED ROWS' : openRawPnlSum === null ? 'UNKNOWN' : fmtRawPrice(openRawPnlSum,2) + ' RAW'} sub={'Raw sum excludes ' + notionalLikeOpenRows.length + ' notional-like row(s); other API P&L semantics remain unverified. ' + knownOpenPnl.length + '/' + openRows.length + ' open row(s) have numeric non-notional-like fields.'} title={stockTokenOpenPnlTooltip(openPnlRows, marketCache, openRawPnlSum)} />
           <Card label="IDENTIFIED OPEN ROWS" value={openRows.length || (developerApiConfigured ? 'NONE IDENTIFIED' : '—')} sub="Only rows from the current readable snapshot; not authenticated exposure or unrealized P&L"/>
         </section>
         {openRows.length ? <div className="tablewrap"><table>
-          <thead><tr><th>SYMBOL</th><th>SIDE</th><th>QTY RAW</th><th>LTP RAW</th><th>ROW P&L RAW</th><th>CHECK</th></tr></thead>
+          <thead><tr><th>SYMBOL</th><th>SIDE</th><th>QTY RAW</th><th>LTP RAW</th><th>ROW VALUE / P&L</th><th>CHECK</th></tr></thead>
           <tbody>{openRows.map(row=>{
             const anomaly = hasRawPnlAnomaly(row);
+            const notionalCheck = detectNotionalLikePnl(row);
             return <tr key={row.key}>
               <td className="symbol">{row.symbol || 'Unknown'}</td>
               <td>{row.side || 'Unknown'}</td>
               <td>{safeNum(row.quantity) === null ? 'Unknown' : fmtQty(row.quantity)}</td>
               <td>{safeNum(row.markPrice) === null ? 'Unknown' : fmtRawPrice(row.markPrice,4)}</td>
-              <td title={stockTokenPnlTooltip(row.symbol, row.pnl, contractValueForSymbol(marketCache, row.symbol)) || 'Raw API field; semantics are unverified.'}>{safeNum(row.pnl) === null ? 'Unknown' : fmtRawPrice(row.pnl,4) + ' RAW'}</td>
+              <td title={notionalCheck.matches ? NOTIONAL_LIKE_PNL_TOOLTIP : (stockTokenPnlTooltip(row.symbol, row.pnl, contractValueForSymbol(marketCache, row.symbol)) || 'Raw API field; semantics are unverified.')}>{notionalCheck.matches ? <><div>Value (notional): ${fmtRawPrice(notionalCheck.absoluteNotional,4)}</div><small className="muted">P&amp;L: UNAVAILABLE (API returns notional value)</small></> : (safeNum(row.pnl) === null ? 'Unknown' : fmtRawPrice(row.pnl,4) + ' RAW')}</td>
               <td>{anomaly ? <b className="apiStateWarn">⚠ PnL anomaly</b> : <span className="muted">No threshold flag</span>}</td>
             </tr>;
           })}</tbody>
@@ -1313,8 +1321,10 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
     </table></div> : <div className="lockedText">No deployment snapshot is available yet. A successful API response with an empty positions array means no visible position rows; it does not create placeholder trades.</div>}
     <div className="panelTitle"><h3>Current Open Positions · Tradetron</h3></div>
     {mirror.openRows.length ? <div className="tablewrap"><table>
-      <thead><tr><th>DEPLOYMENT</th><th>SYMBOL</th><th>SIDE</th><th>QTY</th><th>ENTRY</th><th>LTP / MARK</th><th>VALUE RAW (UNIT UNVERIFIED)</th><th>API P&amp;L RAW (UNIT UNVERIFIED)</th><th>STATUS</th></tr></thead>
-      <tbody>{mirror.openRows.map(row => <tr key={row.key}>
+      <thead><tr><th>DEPLOYMENT</th><th>SYMBOL</th><th>SIDE</th><th>QTY</th><th>ENTRY</th><th>LTP / MARK</th><th>VALUE RAW (UNIT UNVERIFIED)</th><th>API VALUE / P&amp;L (UNIT UNVERIFIED)</th><th>STATUS</th></tr></thead>
+      <tbody>{mirror.openRows.map(row => {
+        const notionalCheck = detectNotionalLikePnl(row);
+        return <tr key={row.key}>
         <td>{row.deploymentName}<br/><small className="muted">ID {row.deploymentId ?? '—'}</small></td>
         <td className="symbol" title={row.rawSymbol}>{row.symbol}</td>
         <td className={row.side === 'BUY' ? 'up' : row.side === 'SELL' ? 'down' : 'muted'}>{row.side || '—'}</td>
@@ -1322,9 +1332,10 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
         <td>{row.entryPrice === null ? '—' : price(row.entryPrice)}</td>
         <td>{row.markPrice === null ? '—' : price(row.markPrice)}</td>
         <td>{fmtRawPrice(row.marketValue, 2)}</td>
-        <td className={safeNum(row.pnl) === null ? 'muted' : 'mono'} title={stockTokenPnlTooltip(row.symbol, row.pnl, contractValueForSymbol(marketCache, row.symbol)) || (row.pnlSource ? "Raw Developer API field: " + row.pnlSource + ". A generic pnl field is not verified M2M and is not included in open P&L." : "No P&L source field was identified in this API row.")}><div>{fmtRawPrice(row.pnl, 2)}</div><small className="muted">{row.pnlSource ? "API field: " + row.pnlSource + (["m2m","mtm","unrealized_pnl","unrealizedPnl","open_pnl","openPnl","mark_to_market","markToMarket"].includes(row.pnlSource) ? " · M2M-named" : " · semantics unverified") : "source unavailable"}</small>{hasRawPnlAnomaly(row) ? <div><b className="apiStateWarn">⚠ PnL anomaly</b></div> : null}</td>
+        <td className={safeNum(row.pnl) === null ? 'muted' : 'mono'} title={notionalCheck.matches ? NOTIONAL_LIKE_PNL_TOOLTIP : (stockTokenPnlTooltip(row.symbol, row.pnl, contractValueForSymbol(marketCache, row.symbol)) || (row.pnlSource ? "Raw Developer API field: " + row.pnlSource + ". A generic pnl field is not verified M2M and is not included in open P&L." : "No P&L source field was identified in this API row."))}>{notionalCheck.matches ? <><div>Value (notional): ${fmtRawPrice(notionalCheck.absoluteNotional, 2)}</div><small className="muted">P&amp;L: UNAVAILABLE (API returns notional value)</small></> : <><div>{fmtRawPrice(row.pnl, 2)}</div><small className="muted">{row.pnlSource ? "API field: " + row.pnlSource + (["m2m","mtm","unrealized_pnl","unrealizedPnl","open_pnl","openPnl","mark_to_market","markToMarket"].includes(row.pnlSource) ? " · M2M-named" : " · semantics unverified") : "source unavailable"}</small></>}{hasRawPnlAnomaly(row) ? <div><b className="apiStateWarn">⚠ PnL anomaly</b></div> : null}</td>
         <td>{row.status}</td>
-      </tr>)}</tbody>
+      </tr>;
+      })}</tbody>
     </table></div> : <div className="lockedText">
       {mirror.positionsHidden ? 'Tradetron is hiding position rows for at least one deployment. The reported open-leg count above is retained; the hidden rows are not treated as flat.' :
         mirror.openCount > 0 ? 'Tradetron reports open legs, but no individual row could be safely identified as open from the returned position fields. Expand raw data below to inspect the API field names.' :

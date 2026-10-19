@@ -4,7 +4,9 @@ import {
   STOCK_TOKEN_SYMBOLS,
   contractValueForSymbol,
   stockTokenPnlTooltip,
-  stockTokenOpenPnlTooltip
+  stockTokenOpenPnlTooltip,
+  detectNotionalLikePnl,
+  NOTIONAL_LIKE_PNL_TOOLTIP
 } from '../src/stock-token-pnl.js';
 
 test('the approved stock-token symbol allowlist contains SNDKBUSD and other listed equity tokens', () => {
@@ -57,4 +59,46 @@ test('aggregate tooltip keeps raw open P&L unchanged and computes a separate sto
   assert.match(tooltip, /remains 70 and is not changed/);
   assert.match(tooltip, /Possible stock-token adjusted subtotal: \$0\.50/);
   assert.match(tooltip, /HYPOTHESIS only/);
+});
+
+test('detects exact SNDKBUSD mark times signed quantity as notional-like', () => {
+  const result = detectNotionalLikePnl({
+    symbol: 'SNDKBUSD', quantity: 4, markPrice: 1336.87, pnl: 5347.48
+  });
+  assert.equal(result.matches, true);
+  assert.equal(result.absoluteNotional, 5347.48);
+  assert.match(NOTIONAL_LIKE_PNL_TOOLTIP, /matches mark × quantity/);
+});
+
+test('does not classify PAXGUSD or ETHUSD when raw P&L differs from mark times quantity', () => {
+  assert.equal(detectNotionalLikePnl({
+    symbol: 'PAXGUSD', quantity: 16, markPrice: 4169, pnl: 265.6
+  }).matches, false);
+  assert.equal(detectNotionalLikePnl({
+    symbol: 'ETHUSD', quantity: -2, markPrice: 2426.05, pnl: -48.8
+  }).matches, false);
+});
+
+test('per-position notional detection applies a strict 0.01 absolute tolerance', () => {
+  assert.equal(detectNotionalLikePnl({
+    quantity: 4, markPrice: 100, pnl: 400.009
+  }).matches, true);
+  assert.equal(detectNotionalLikePnl({
+    quantity: 4, markPrice: 100, pnl: 400.02
+  }).matches, false);
+  assert.equal(detectNotionalLikePnl({
+    quantity: 0, markPrice: 100, pnl: 0
+  }).matches, false);
+});
+
+test('aggregate stock-token hypothesis excludes a notional-like row', () => {
+  const tooltip = stockTokenOpenPnlTooltip([
+    { symbol: 'SNDKBUSD', quantity: 4, markPrice: 100, pnl: 400 },
+    { symbol: 'AMDBUSD', pnl: -50 }
+  ], [
+    { symbol: 'SNDKBUSD', contract_value: 0.01 },
+    { symbol: 'AMDBUSD', contract_value: 0.01 }
+  ], -50);
+  assert.match(tooltip, /Possible stock-token adjusted subtotal: \$-0\.50/);
+  assert.doesNotMatch(tooltip, /SNDKBUSD \(400 × 0\.01/);
 });

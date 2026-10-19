@@ -34,12 +34,39 @@ export function stockTokenPnlTooltip(symbol, rawPnl, contractValue) {
     '. Possible adjusted value: $' + (value * cv).toFixed(2) + '. ' + note;
 }
 
+
+export const NOTIONAL_LIKE_PNL_TOOLTIP =
+  "This position's raw pnl field matches mark × quantity, indicating it may be notional value, not P&L.";
+
+/**
+ * Detect a per-row generic pnl value that matches signed mark × quantity.
+ * This is a display safeguard, not proof of contract-adjusted notional or P&L.
+ */
+export function detectNotionalLikePnl(row, tolerance = 0.01) {
+  const quantity = safeNum(row?.quantity ?? row?.qty);
+  const markPrice = safeNum(row?.markPrice ?? row?.mark_price ?? row?.current_price ?? row?.ltp ?? row?.mark);
+  const rawPnl = safeNum(row?.snapshot_pnl ?? row?.pnl ?? row?.raw_pnl);
+  if (quantity === null || markPrice === null || rawPnl === null || markPrice <= 0 || quantity === 0) {
+    return { matches: false, quantity, markPrice, rawPnl, notional: null, absoluteNotional: null };
+  }
+  const notional = markPrice * quantity;
+  const allowedDifference = Number.isFinite(Number(tolerance)) && Number(tolerance) >= 0
+    ? Number(tolerance) : 0.01;
+  return {
+    matches: Math.abs(rawPnl - notional) < allowedDifference,
+    quantity, markPrice, rawPnl, notional,
+    absoluteNotional: Math.abs(notional),
+    difference: Math.abs(rawPnl - notional)
+  };
+}
+
 export function stockTokenOpenPnlTooltip(rows, marketCache, displayedRawPnl) {
   const adjustedRows = (Array.isArray(rows) ? rows : []).flatMap(row => {
     const symbol = String(row?.symbol || '').trim().toUpperCase();
-    const value = safeNum(row?.pnl ?? row?.raw_pnl);
+    const value = safeNum(row?.snapshot_pnl ?? row?.pnl ?? row?.raw_pnl);
     const cv = contractValueForSymbol(marketCache, symbol);
-    return STOCK_TOKEN_SYMBOLS.has(symbol) && value !== null && cv !== null
+    const notionalCheck = detectNotionalLikePnl(row);
+    return STOCK_TOKEN_SYMBOLS.has(symbol) && value !== null && cv !== null && !notionalCheck.matches
       ? [{ symbol, value, cv, adjusted: value * cv }]
       : [];
   });
