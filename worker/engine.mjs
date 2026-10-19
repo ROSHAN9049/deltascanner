@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import WebSocket from 'ws';
 import { CONFIG } from '../server/config.js';
 import { DeltaAdapter } from './delta-adapter.mjs';
-import { analyse, analyseOption, trimDetails } from './strategy.mjs';
+import { analyse, analyseOption, trimDetails, atr as calculateAtr } from './strategy.mjs';
 import * as db from '../server/db.js';
 import { SIGNAL_RESERVATION_TTL_MS, TradetronBridge, withSignalReservations } from '../server/tradetron.js';
 import { buildTradetronPnlHistoryRows, TradetronDeveloperApi } from '../server/tradetron-developer-api.mjs';
@@ -10,6 +10,7 @@ import { buildTradetronSnapshotRiskState, TRADETRON_SNAPSHOT_MAX_AGE_MS } from '
 import { indiaDateKey } from '../src/date-utils.js';
 import { createGridState, evaluateGridTick } from './grid-strategy.mjs';
 import { CANDLE_WARMUP_BATCH_SIZE, CANDLE_WARMUP_RETRY_MS, planCandleWarmup } from './candle-warmup.mjs';
+import { MIN_RAW_CANDLES_FOR_ATR, mergeCandleUpdate, normalizeCandleBatch } from './candle-normalization.mjs';
 import { isOptionsExecutionAllowed, OPTIONS_EXECUTION_LOCK_REASON } from './options-execution-lock.mjs';
 import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from './signal-failure-diagnostics.mjs';
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
@@ -156,6 +157,11 @@ export class DeltaEngine {
     this.lastMarketCacheWrite = 0;
     this.candleWarmCursor = 0;
     this.candleFetchAt = new Map();
+    this.candleUpdateCounts = new Map();
+    this.lastObservedAtr = new Map();
+    this.candleHealingInFlight = new Set();
+    this.wsConnected = false;
+    this.candleRestHealingNeeded = false;
     this.lastLeaseContentionLogAt = 0;
 
     // Maintenance uses the direct PostgreSQL pool only; scanner writes remain
@@ -865,8 +871,99 @@ export class DeltaEngine {
     // deficient response is retried after the cooldown instead of every cycle.
     this.candleFetchAt.set(key, Date.now());
     const value = await this.adapter.candles(symbol, resolution, 100);
-    this.candles.set(key, Array.isArray(value) ? value : []);
-    return this.candles.get(key);
+    const normalized = normalizeCandleBatch(value, resolution, {
+      minCandles: MIN_RAW_CANDLES_FOR_ATR
+    });
+    if (!normalized.ok) {
+      const detail = {
+        symbol, resolution, reason: normalized.reason,
+        count: normalized.count ?? (Array.isArray(value) ? value.length : null),
+        index: normalized.index ?? null,
+        latestTimestamp: normalized.latest ?? null,
+        ageSeconds: normalized.ageSeconds ?? null
+      };
+      await this.log('WARN', 'Candle REST batch rejected; preserving prior valid series', detail);
+      throw new Error('candle_batch_rejected:' + normalized.reason);
+    }
+    const rows = normalized.candles.slice(-120);
+    this.candles.set(key, rows);
+    await this.log('INFO', 'Candle REST batch normalized', {
+      symbol, resolution, candleCount: rows.length,
+      firstTimestamp: rows[0]?.time ?? null,
+      lastTimestamp: rows.at(-1)?.time ?? null
+    });
+    return rows;
+  }
+
+  invalidateCandleCacheForHealing(reason) {
+    const symbols = new Set([
+      ...this.productMap.keys(),
+      ...this.tickerMap.keys()
+    ]);
+    for (const key of this.candles.keys()) {
+      if (/^(1m|5m|15m):/.test(key)) symbols.add(key.slice(key.indexOf(':') + 1));
+    }
+    for (const symbol of symbols) {
+      for (const resolution of ['1m', '5m', '15m']) {
+        const key = resolution + ':' + symbol;
+        this.candles.delete(key);
+        this.candleFetchAt.delete(key);
+        this.candleUpdateCounts.delete(key);
+      }
+    }
+    this.candleWarmCursor = 0;
+    this.candleRestHealingNeeded = true;
+    void this.log('WARN', 'Candle cache invalidated after WebSocket disconnect; REST rewarm required', {
+      reason, symbolCount: symbols.size, seriesCount: symbols.size * 3
+    }).catch(() => {});
+  }
+
+  recordAtrDiagnostics(signal) {
+    const symbol = String(signal?.symbol || '').toUpperCase();
+    if (!symbol) return;
+    for (const item of [
+      { resolution: '5m', value: Number(signal.atr5) },
+      { resolution: '15m', value: Number(signal.atr15) }
+    ]) {
+      if (!Number.isFinite(item.value) || item.value <= 0) continue;
+      const key = item.resolution + ':' + symbol;
+      const previous = this.lastObservedAtr.get(key);
+      if (Number.isFinite(previous) && previous > 0) {
+        const ratio = Math.max(previous, item.value) / Math.min(previous, item.value);
+        if (ratio >= 3) {
+          const candles = this.getCandles(symbol, item.resolution);
+          void this.log('WARN', 'ATR changed by at least 3x between analyses', {
+            symbol, resolution: item.resolution, previousAtr: previous,
+            currentAtr: item.value, ratio: Number(ratio.toFixed(3)),
+            candleCount: candles.length,
+            firstTimestamp: candles[0]?.time ?? null,
+            lastTimestamp: candles.at(-1)?.time ?? null,
+            candlesFresh: signal.candlesFresh === true
+          }).catch(() => {});
+        }
+      }
+      this.lastObservedAtr.set(key, item.value);
+    }
+  }
+
+  scheduleCandleHealing(symbol, resolution, reason) {
+    const key = resolution + ':' + symbol;
+    if (this.candleHealingInFlight.has(key)) return;
+    this.candleHealingInFlight.add(key);
+    void (async () => {
+      try {
+        await this.log('WARN', 'Starting REST candle healing after rejected WebSocket update', {
+          symbol, resolution, reason
+        });
+        await this.refreshCandle(symbol, resolution);
+      } catch (error) {
+        await this.log('WARN', 'REST candle healing failed; previous validated cache preserved', {
+          symbol, resolution, reason, error: String(error?.message || error).slice(0, 200)
+        });
+      } finally {
+        this.candleHealingInFlight.delete(key);
+      }
+    })();
   }
 
   async refreshCandleWarmup() {
@@ -1664,6 +1761,8 @@ export class DeltaEngine {
         btcOverrideScoreMin: n(settings.btc_override_score_min || 90),
         btcOverrideVolumeMin: n(settings.btc_override_volume_min || 1.5)
       });
+      this.recordAtrDiagnostics(mom);
+      this.recordAtrDiagnostics(scalp);
       for (const s of [mom, scalp]) {
         const size = this.positionSizing(s, account, settings);
         const gate = await this.riskGate(s, s === mom ? 'MOMENTUM' : 'SCALPING', account, settings, openPositions, trades);
@@ -2652,6 +2751,16 @@ export class DeltaEngine {
       this.ws = ws;
       ws.on('open', () => {
         this.wsRetry = 0;
+        this.wsConnected = true;
+        void this.log('INFO', 'WebSocket connected; candle updates use canonical timeframe buckets', {}).catch(() => {});
+        if (this.candleRestHealingNeeded) {
+          this.candleRestHealingNeeded = false;
+          void this.refreshCandleWarmup().catch(error =>
+            this.log('WARN', 'Reconnect REST candle rewarm batch failed', {
+              error: String(error?.message || error).slice(0, 200)
+            })
+          );
+        }
         ws.send(JSON.stringify({
           type: 'subscribe',
           payload: {
@@ -2682,22 +2791,40 @@ export class DeltaEngine {
               const resolution = match?.[1] || String(x.res || '');
               if (!resolution || !['1m','5m','15m'].includes(resolution)) continue;
               const key = resolution + ':' + symbol;
-              const current = Array.isArray(this.candles.get(key)) ? [...this.candles.get(key)] : [];
-              const tsRaw = Number(x.ts ?? x.timestamp ?? x.t ?? 0);
-              const candle = {
-                time: tsRaw > 1e12 ? Math.floor(tsRaw / 1000) : tsRaw,
-                open: n(x.o),
-                high: n(x.h),
-                low: n(x.l),
-                close: n(x.c),
-                volume: n(x.v),
-                res: resolution
+              const current = Array.isArray(this.candles.get(key)) ? this.candles.get(key) : [];
+              // cst is the stable candle-start timestamp (microseconds). ts is
+              // the changing server publish timestamp, also in microseconds.
+              const rawCandle = {
+                time: x.cst ?? x.candle_start_time ?? x.ts ?? x.timestamp ?? x.t,
+                open: x.o, high: x.h, low: x.l, close: x.c, volume: x.v, res: resolution
               };
-              if (!(candle.close > 0) || !(candle.high > 0) || !(candle.low > 0)) continue;
-              const last = current.at(-1);
-              if (last && Number(last.time) === Number(candle.time)) current[current.length - 1] = candle;
-              else current.push(candle);
-              this.candles.set(key, current.slice(-120));
+              const merged = mergeCandleUpdate(current, rawCandle, resolution);
+              if (!merged.ok) {
+                void this.log('WARN', 'WebSocket candle update rejected', {
+                  symbol, resolution, reason: merged.reason,
+                  incomingTimestamp: rawCandle.time ?? null,
+                  latestTimestamp: current.at(-1)?.time ?? null,
+                  count: current.length
+                }).catch(() => {});
+                if (['invalid_existing_series','stale_candle','future_timestamp'].includes(merged.reason)) {
+                  this.scheduleCandleHealing(symbol, resolution, merged.reason);
+                }
+                continue;
+              }
+              const series = merged.candles.slice(-120);
+              this.candles.set(key, series);
+              if (merged.action === 'appended') {
+                const count = (this.candleUpdateCounts.get(key) || 0) + 1;
+                this.candleUpdateCounts.set(key, count);
+                if (count % 100 === 0) {
+                  void this.log('INFO', 'Candle stream diagnostic (100 new buckets)', {
+                    symbol, resolution, bucketCount: count, candleCount: series.length,
+                    firstTimestamp: series[0]?.time ?? null,
+                    lastTimestamp: series.at(-1)?.time ?? null,
+                    atr14: Number(calculateAtr(series).toFixed(8))
+                  }).catch(() => {});
+                }
+              }
             } else if (msg.type === 'ticker' || msg.type === 'v2/ticker') {
               const t = this.tickerMap.get(symbol) || { symbol };
               this.tickerMap.set(symbol, {
@@ -2714,15 +2841,33 @@ export class DeltaEngine {
           }
         } catch {}
       });
-      ws.on('close', () => {
+      ws.on('close', (code, reasonBuffer) => {
+        const wasConnected = this.wsConnected;
+        this.wsConnected = false;
         this.ws = null;
-        const wait = Math.min(30000, 5000 * Math.max(1, ++this.wsRetry));
+        const reason = reasonBuffer ? reasonBuffer.toString().slice(0, 160) : '';
+        if (wasConnected) this.invalidateCandleCacheForHealing('websocket_disconnect');
+        const wait = Math.min(60000, 1000 * Math.pow(2, Math.min(this.wsRetry, 6)));
+        this.wsRetry = Math.min(this.wsRetry + 1, 6);
+        void this.log('WARN', 'WebSocket disconnected; exponential reconnect scheduled', {
+          code, reason, wasConnected, retryInMs: wait, retryAttempt: this.wsRetry
+        }).catch(() => {});
         setTimeout(() => this.connectWs(), wait);
       });
-      ws.on('error', () => {});
-    } catch {
+      ws.on('error', error => {
+        void this.log('WARN', 'WebSocket error; requesting close so reconnect can heal candle history', {
+          error: String(error?.message || error).slice(0, 200)
+        }).catch(() => {});
+        try { ws.close(); } catch {}
+      });
+    } catch (error) {
       this.ws = null;
-      setTimeout(() => this.connectWs(), 10000);
+      const wait = Math.min(60000, 1000 * Math.pow(2, Math.min(this.wsRetry, 6)));
+      this.wsRetry = Math.min(this.wsRetry + 1, 6);
+      void this.log('WARN', 'WebSocket construction failed; exponential reconnect scheduled', {
+        error: String(error?.message || error).slice(0, 200), retryInMs: wait
+      }).catch(() => {});
+      setTimeout(() => this.connectWs(), wait);
     }
   }
 
