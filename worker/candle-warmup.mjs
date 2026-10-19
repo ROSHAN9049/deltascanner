@@ -1,3 +1,5 @@
+import { normalizeCandleBatch, MIN_RAW_CANDLES_FOR_ATR } from './candle-normalization.mjs';
+
 // Closed-candle analysis drops the last (possibly still-open) candle.
 // Fetch at least one extra row beyond the strategy's minimum closed-candle count.
 export const CANDLE_RESOLUTIONS = Object.freeze(['1m', '5m', '15m']);
@@ -107,12 +109,20 @@ export async function warmupBTCHourly(adapter, cache) {
 
   try {
     const rows = await adapter.candles('BTCUSD', '1h', BTC_HOURLY_CANDLE_LIMIT);
-    if (!Array.isArray(rows)) throw new Error('Delta candle endpoint returned a non-array response');
-    cache.set(BTC_HOURLY_CACHE_KEY, rows);
+    const normalized = normalizeCandleBatch(rows, '1h', {
+      minCandles: MIN_RAW_CANDLES_FOR_ATR
+    });
+    if (!normalized.ok) {
+      throw new Error('1h candle batch rejected: ' + normalized.reason);
+    }
+    cache.set(BTC_HOURLY_CACHE_KEY, normalized.candles.slice(-BTC_HOURLY_CANDLE_LIMIT));
     const fetchedAt = Date.now();
     btcHourlyFetchedAt.set(cache, fetchedAt);
-    console.log('[DeltaScanner] BTC 1h warmup refreshed:', rows.length, 'candles');
-    return { ok: true, skipped: false, candleCount: rows.length, fetchedAt: new Date(fetchedAt).toISOString() };
+    console.log('[DeltaScanner] BTC 1h warmup refreshed:', normalized.candles.length, 'validated candles');
+    return {
+      ok: true, skipped: false, candleCount: normalized.candles.length,
+      fetchedAt: new Date(fetchedAt).toISOString()
+    };
   } catch (error) {
     // Preserve the last known cache on request failure; the next hourly timer
     // can retry without disturbing the scanner's existing resolutions.
