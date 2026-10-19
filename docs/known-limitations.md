@@ -42,6 +42,16 @@ This document describes limitations verified in the Delta scanner source as of 2
 
 **Manual action:** If trailing is desired for the active Tradetron strategy, configure and verify that rule on the Tradetron strategy side. Do not rely on the stored `trail_r` value or assume the scanner bridge monitor is trailing stops.
 
+## 6. Tradetron position age requires authenticated entry timestamps
+
+**What is limited:** Read-only Tradetron current-position snapshots do not supply an entry timestamp for each open leg. Scanner snapshot-only positions therefore cannot be assigned a trustworthy age from this data alone.
+
+**Enforcement impact:** Position-age tracking requires authenticated fill/activity records that provide a verified entry time, or another independently trusted position.opened_at. Without that timestamp, the scanner cannot safely establish that a snapshot-only position has exceeded max_hold_minutes; the configured 240-minute value does not guarantee an exit for every position shown by the API.
+
+**Why deferred:** Enforcing timeout exits for snapshot-only positions requires a separately reviewed change to position identity, verified entry-time provenance, market-data freshness and duplicate-exit protection. No such logic is added by this documentation update.
+
+**Manual action:** Continue to monitor current Tradetron positions and configure/verify any required time-based exit within the relevant Tradetron strategy. Do not treat a current-position snapshot as authenticated fill history.
+
 ---
 
 ## Safety note

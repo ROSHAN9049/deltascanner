@@ -168,3 +168,30 @@ These are persistence/operations changes only: signal scoring, risk gates, posit
 - **Trade correlation is UNKNOWN or no recent closed trades are recorded:** investigate trade-history persistence and linkage separately; remember dd_trades only stores closed-trade aggregates.
 
 These are review guidelines, not automated trading controls. The report makes no live setting changes, and live score/gate recalibration remains on hold until the measured ready-signal data has been reviewed.
+
+## 11. Score distribution audit — 2026-10-19 (measurement only)
+
+**Scope:** A read-only aggregation of public.dd_signals using the rolling seven-day window captured_at greater than NOW() minus INTERVAL '7 days'. These are signal observations, not independent trade opportunities. Repeated observations must not be interpreted as distinct Tradetron deliveries, fills, or profitable trades.
+
+### All-observation score bands
+
+| Measure | Seven-day count | Share | Desired profile | Assessment |
+|---|---:|---:|---:|---|
+| Score exactly 100 | 51,996 | 5.79% | 0 | Above target |
+| Score ≥85 | 261,371 | 29.10% | About 2% | Materially above target |
+| Score 80–<85 | 61,935 | 6.90% | <8% | Within this band target |
+| Score 0–<40 | 99,835 | 11.12% | 60% | Materially below target |
+
+Exactly 40 accounted for a further 2,975 observations (0.33%); the 0–<40 band above follows the scoring report's exclusive upper boundary.
+
+### Stage and readiness context
+
+| Cohort | Rows | Score 100 | Score 100 share | Score ≥85 share |
+|---|---:|---:|---:|---:|
+| All observations | 898,058 | 51,996 | 5.79% | 29.10% |
+| CONFIRMED | 103,948 | 42,636 | 41.02% | 100.00% |
+| CONFIRMED and ready=true | 2,772 | 1,047 | 37.77% | 100.00% |
+
+The stage-filtered cohorts are expected to have different distributions from all observations; they should not be compared as if they were the same population. The very high concentration of scores at or above 85, including scores of 100, supports continued score-inflation investigation, but does not by itself prove a high false-positive rate or a problem with execution outcomes.
+
+**Decision:** Measurement only. Score normalization and live score replacement remain deferred until the candle-data fix has been observed in production, shadow score calculations have been validated, and a historical evaluation is reviewed and approved. This audit made no score, risk-gate, signal-readiness or routing changes.
