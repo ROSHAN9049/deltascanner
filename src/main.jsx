@@ -15,7 +15,7 @@ import { buildRiskGovernorGates } from './risk-governor.js';
 import { buildPnlHistoryInsights } from './pnl-history-insights.js';
 import { contractValueForSymbol, stockTokenPnlTooltip, stockTokenOpenPnlTooltip, detectNotionalLikePnl, NOTIONAL_LIKE_PNL_TOOLTIP } from './stock-token-pnl.js';
 import { summarizeRotationLedger } from './rotation-ledger-state.js';
-import { formatHealthAge, formatLeaseRemaining, getEmergencyStopTooltip, getGlobalPositionCapDisplay, getWorkerStatusDisplay } from './worker-status-display.js';
+import { formatHealthAge, formatLeaseRemaining, formatRetentionLastRun, getEmergencyStopTooltip, getGlobalPositionCapDisplay, getWorkerStatusDisplay } from './worker-status-display.js';
 
 const loggedPnlAnomalies = new Set();
 
@@ -1080,6 +1080,22 @@ function Testnet({ settings, health, busy, mutate, positions, tradetronDeploymen
   const healthAges = 'Tick: ' + formatHealthAge(health?.tickAgeMs) +
     ' · Heartbeat: ' + formatHealthAge(health?.heartbeatAgeMs) +
     ' · Lease: ' + formatLeaseRemaining(health?.leaseRemainingMs);
+  const retention = health?.retention || {};
+  const retentionRowsDeleted = Number.isSafeInteger(Number(retention.rowsDeleted)) && Number(retention.rowsDeleted) >= 0
+    ? Number(retention.rowsDeleted)
+    : 0;
+  const retentionConfigDays = Number.isSafeInteger(Number(retention.configDays)) && Number(retention.configDays) >= 1
+    ? Number(retention.configDays)
+    : 1;
+  const retentionFailures = Number.isSafeInteger(Number(retention.consecutiveFailures)) && Number(retention.consecutiveFailures) >= 0
+    ? Number(retention.consecutiveFailures)
+    : 0;
+  const retentionLastSuccessMs = retention.lastSuccess ? Date.parse(retention.lastSuccess) : NaN;
+  const retentionLastSuccess = Number.isFinite(retentionLastSuccessMs)
+    ? new Date(retentionLastSuccessMs).toLocaleString('en-IN')
+    : 'NO DATA';
+  const retentionTitle = 'Last successful run: ' + retentionLastSuccess +
+    ' · consecutive failures: ' + retentionFailures;
   return <>
     <section className="cards">
       <Card label="ENVIRONMENT" value="SIGNAL ONLY" sub="production market feed"/>
@@ -1103,6 +1119,9 @@ function Testnet({ settings, health, busy, mutate, positions, tradetronDeploymen
         <span title={getEmergencyStopTooltip(settings.emergency_stop === true)}>Emergency stop {settings.emergency_stop === true ? 'ACTIVE' : 'RELEASED'}</span>
       </div>
       <div className="healthAges">{healthAges}</div>
+      <div className="healthAges" title={retentionTitle}>
+        Retention: last run {formatRetentionLastRun(retention.lastRun)} · deleted {retentionRowsDeleted.toLocaleString('en-IN')} rows · config: {retentionConfigDays} day{retentionConfigDays === 1 ? '' : 's'}
+      </div>
       <p className="muted">Entries require a valid signal, configured Tradetron route, trusted position snapshot when the Developer API is configured, fresh market data, acceptable risk/margin, same-symbol duplicate protection, AND global position cap allowance ({status.hasCapData ? status.capLabel + ' used' : 'NO DATA'}). This panel is status-only; direct Delta orders cannot be enabled here.</p>
     </Panel>
   </>;

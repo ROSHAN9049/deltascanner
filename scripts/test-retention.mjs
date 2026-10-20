@@ -78,7 +78,7 @@ try {
     }
   });
 
-  await run('retention forces 3-day mode above 500,000 rows and batches dd_signals only', async () => {
+  await run('retention forces 1-day mode above 500,000 rows and batches dd_signals only', async () => {
     const engine = new DeltaEngine();
     const calls = [];
     const logs = [];
@@ -101,12 +101,13 @@ try {
     });
 
     const result = await engine.performSignalRetention(7, 'unit-test');
-    assert.equal(result.effectiveDays, 3);
+    assert.equal(result.success, true);
+    assert.equal(result.effectiveDays, 1);
     assert.equal(result.totalDeleted, 5001);
     const deleteCalls = calls.filter(call => /DELETE FROM/i.test(call.sql));
     assert.equal(deleteCalls.length, 2, '5001 rows must be deleted in two bounded batches');
     for (const call of deleteCalls) {
-      assert.deepEqual(call.params, [3, 5000]);
+      assert.deepEqual(call.params, [1, 5000]);
       assert.match(call.sql, /DELETE FROM public\.dd_signals/i);
       assert.doesNotMatch(call.sql, /dd_trades|dd_positions|dd_orders|dd_tradetron_events|position_ledger|webhook_events|system_meta/i);
     }
@@ -114,26 +115,67 @@ try {
     assert.ok(logs.some(log => /\[Retention\] Deleted 5000 rows/.test(log.message)));
   });
 
-  await run('disk monitor records growth rate and requests 3-day retention at critical size', async () => {
+  await run('disk monitor uses row-count thresholds and requests 1-day retention at critical count', async () => {
     const engine = new DeltaEngine();
     const logs = [];
     let retentionRequest = null;
-    const now = Date.now();
-    engine.diskSamples = [{ at: now - 24 * 60 * 60 * 1000, bytes: 100 * MB, rows: 1000 }];
     engine.maintenanceLog = async (level, message, data = {}) => logs.push({ level, message, data });
     engine.getMaintenancePool = async () => ({
       query: async sql => {
         assert.match(sql, /pg_database_size\(current_database\(\)\)/i);
+        assert.match(sql, /COUNT\(\*\) FILTER/i);
+        assert.match(sql, /INTERVAL '1 day'/i);
         assert.match(sql, /FROM public\.dd_signals/i);
-        return { rows: [{ db_bytes: String(460 * MB), signal_rows: '510000' }] };
+        return { rows: [{ db_bytes: String(836 * MB), signal_rows: '510000', older_1d: '60000' }] };
       }
     });
     engine.runSignalRetention = async options => { retentionRequest = options; };
 
     await engine.checkDiskHealth();
-    assert.ok(logs.some(log => /\[Disk\] dd_signals: 510000 rows, db: 460\.0 MB/.test(log.message)));
-    assert.ok(logs.some(log => /Disk growth rate high/.test(log.message)));
-    assert.deepEqual(retentionRequest, { daysOverride: 3, reason: 'disk-critical' });
+    assert.ok(logs.some(log => /\[Disk\] DB: 836\.0 MB, signals: 510000 rows, older_1d: 60000/.test(log.message)));
+    assert.ok(logs.some(log => /WARNING: signal row count 510000 exceeds 250000/.test(log.message)));
+    assert.ok(logs.some(log => /CRITICAL: signal row count 510000 exceeds 500000; requesting 1-day retention/.test(log.message)));
+    assert.deepEqual(retentionRequest, { daysOverride: 1, reason: 'row-count-critical' });
+  });
+
+  await run('older-than-1-day backlog triggers retention below the critical row count', async () => {
+    const engine = new DeltaEngine();
+    const logs = [];
+    let retentionRequest = null;
+    engine.maintenanceLog = async (level, message, data = {}) => logs.push({ level, message, data });
+    engine.getMaintenancePool = async () => ({
+      query: async () => ({
+        rows: [{ db_bytes: String(836 * MB), signal_rows: '300000', older_1d: '50001' }]
+      })
+    });
+    engine.runSignalRetention = async options => { retentionRequest = options; };
+
+    await engine.checkDiskHealth();
+    assert.ok(logs.some(log => /older than 1 day exceeds 50000; requesting 1-day retention/.test(log.message)));
+    assert.deepEqual(retentionRequest, { daysOverride: 1, reason: 'older-than-one-day-threshold' });
+  });
+
+  await run('retention defaults to 1 day and logs durable health summaries', async () => {
+    assert.match(engineSource, /envInteger\('RETENTION_DAYS', 1, 1, 3650\)/);
+    const engine = new DeltaEngine();
+    const logs = [];
+    engine.maintenanceLog = async (level, message, data = {}) => logs.push({ level, message, data });
+    engine.getMaintenancePool = async () => ({
+      query: async sql => {
+        if (/SELECT COUNT\(\*\)::text AS signal_rows/i.test(sql)) return { rows: [{ signal_rows: '100' }] };
+        if (/WITH batch AS/i.test(sql) && /DELETE FROM public\.dd_signals/i.test(sql)) return { rows: [] };
+        throw new Error('Unexpected SQL in retention health summary test');
+      }
+    });
+
+    await engine.runSignalRetention({ daysOverride: 1, reason: 'health-summary-test' });
+    const summary = logs.find(log => log.message === '[Retention] Run summary');
+    assert.ok(summary, 'retention run summary must be durably logged');
+    assert.equal(summary.data.status, 'SUCCESS');
+    assert.equal(summary.data.effectiveDays, 1);
+    assert.equal(summary.data.rowsDeleted, 0);
+    assert.equal(summary.data.reason, 'health-summary-test');
+    assert.ok(Number.isSafeInteger(summary.data.configDays) && summary.data.configDays >= 1);
   });
 
   await run('dedup summary cadence is every 1,000 analysis cycles', async () => {

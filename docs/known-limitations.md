@@ -1,6 +1,6 @@
 # Known Limitations and Deferred Settings Work
 
-This document describes limitations verified in the Delta scanner source as of 2026-10-19. The active scanner configuration is production-market, signal-only with Tradetron bridge routing. These items are intentionally deferred; this documentation does not change worker or strategy behavior.
+This document describes limitations verified in the Delta scanner source as of 2026-10-20. The active scanner configuration is production-market, signal-only with Tradetron bridge routing. These items are intentionally deferred; this documentation does not change worker or strategy behavior.
 
 ## 1. TP1 partial-exit percentage is not enforced by the scanner bridge
 
@@ -51,6 +51,16 @@ This document describes limitations verified in the Delta scanner source as of 2
 **Why deferred:** Enforcing timeout exits for snapshot-only positions requires a separately reviewed change to position identity, verified entry-time provenance, market-data freshness and duplicate-exit protection. No such logic is added by this documentation update.
 
 **Manual action:** Continue to monitor current Tradetron positions and configure/verify any required time-based exit within the relevant Tradetron strategy. Do not treat a current-position snapshot as authenticated fill history.
+
+---
+
+## 7. Signal-history retention and Free-tier storage
+
+**Retention default:** The worker retention default changed to 1 day to match the current data lifecycle. The Free tier's 500 MB database-size limit requires aggressive pruning. The worker honors `RETENTION_DAYS` (whole-number values from 1 to 3650) and defaults to 1 when it is unset or invalid. Batches remain capped at 5,000 rows and maintenance failures must not stop the scan loop.
+
+**Monitoring:** Disk monitoring reports physical database size for context, but warning/critical decisions use live `public.dd_signals` row counts: warning above 250,000 rows and critical above 500,000 rows. If more than 50,000 rows are older than one day, the monitor requests 1-day retention. Emergency row-count and critical monitoring paths also request 1-day retention. Only `public.dd_signals` rows are deleted by this retention job; the existing `dd_engine_logs` table receives small run-summary events so `/api/health` and Worker Status can report last run, last success, rows deleted, consecutive failures, and configured retention days.
+
+**Physical-size limitation:** Normal `DELETE` plus `VACUUM ANALYZE` makes dead-row space reusable but does not promise a smaller database file. A lower live-row count therefore does not mean the reported `pg_database_size` will immediately fall. `VACUUM FULL` remains deferred because it can require substantial temporary disk space.
 
 ---
 
