@@ -98,3 +98,11 @@ export function getGlobalPositionCapDisplay({
     capReached
   };
 }
+
+export function formatRetentionLastRun(timestamp, now = Date.now()) {
+  const lastRunMs = timestamp ? Date.parse(timestamp) : NaN;
+  const nowMs = Number(now);
+  if (!Number.isFinite(lastRunMs) || !Number.isFinite(nowMs)) return 'NO DATA';
+  const minutesAgo = Math.max(0, Math.floor((nowMs - lastRunMs) / 60000));
+  return minutesAgo + ' min ago';
+}

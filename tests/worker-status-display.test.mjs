@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { formatHealthAge, formatLeaseRemaining, getEmergencyStopTooltip, getWorkerStatusDisplay } from '../src/worker-status-display.js';
+import { formatHealthAge, formatLeaseRemaining, formatRetentionLastRun, getEmergencyStopTooltip, getWorkerStatusDisplay } from '../src/worker-status-display.js';
 
 test('cap reached blocks new signals in both cards while scanning stays on', () => {
   const status = getWorkerStatusDisplay({
@@ -74,4 +74,17 @@ test('health ages and lease remaining are formatted in seconds without snake-cas
 test('emergency-stop tooltip reflects the current state', () => {
   assert.equal(getEmergencyStopTooltip(false), 'No emergency halt active.');
   assert.equal(getEmergencyStopTooltip(true), 'Emergency stop active; all signal flow halted.');
+});
+
+test('retention last-run age is human-readable and missing timestamps show NO DATA', () => {
+  assert.equal(
+    formatRetentionLastRun('2026-10-20T09:00:00.000Z', Date.parse('2026-10-20T09:42:00.000Z')),
+    '42 min ago'
+  );
+  assert.equal(formatRetentionLastRun(null, Date.parse('2026-10-20T09:42:00.000Z')), 'NO DATA');
+  assert.equal(formatRetentionLastRun('not-a-date', Date.parse('2026-10-20T09:42:00.000Z')), 'NO DATA');
+  assert.equal(
+    formatRetentionLastRun('2026-10-20T10:00:00.000Z', Date.parse('2026-10-20T09:42:00.000Z')),
+    '0 min ago'
+  );
 });

@@ -63,17 +63,17 @@ function safeMaintenanceError(error) {
 }
 
 const RETENTION_ENABLED = envBoolean('RETENTION_ENABLED', true);
-const RETENTION_DAYS = envInteger('RETENTION_DAYS', 7, 1, 3650);
+const RETENTION_DAYS = envInteger('RETENTION_DAYS', 1, 1, 3650);
 const RETENTION_BATCH_SIZE = envInteger('RETENTION_BATCH_SIZE', 5000, 1, 5000);
 const DEDUP_ENABLED = envBoolean('DEDUP_ENABLED', true);
 const DEDUP_WINDOW_MINUTES = envInteger('DEDUP_WINDOW_MINUTES', 5, 1, 1440);
 const DEDUP_CACHE_MAX = envInteger('DEDUP_CACHE_MAX', 5000, 1, 100000);
-const DISK_WARN_MB = envInteger('DISK_WARN_MB', 400, 1, 1000000);
-const DISK_CRITICAL_MB = envInteger('DISK_CRITICAL_MB', 450, 1, 1000000);
+const DISK_WARN_ROWS = envInteger('DISK_WARN_ROWS', 250000, 1, 1000000000);
+const DISK_CRITICAL_ROWS = envInteger('DISK_CRITICAL_ROWS', 500000, 1, 1000000000);
+const RETENTION_OLD_ROWS_TRIGGER = envInteger('RETENTION_OLD_ROWS_TRIGGER', 50000, 1, 1000000000);
 const MAINTENANCE_START_DELAY_MS = 5 * 60 * 1000;
 const RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const DISK_MONITOR_INTERVAL_MS = 30 * 60 * 1000;
-const DISK_SAMPLE_WINDOW_MS = 25 * 60 * 60 * 1000;
 const MB_BYTES = 1024 * 1024;
 const SIGNAL_RETENTION_DELETE_SQL = `
   WITH batch AS (
@@ -176,7 +176,6 @@ export class DeltaEngine {
     this.retentionInFlight = null;
     this.retentionInFlightDays = null;
     this.pendingRetentionRequest = null;
-    this.diskSamples = [];
 
     this.signalDedupCache = new Map();
     this.dedupAnalysisCycles = 0;
@@ -1284,20 +1283,34 @@ export class DeltaEngine {
       return;
     }
 
+    const runStartedAt = iso();
     this.retentionInFlightDays = requestedDays;
     this.retentionInFlight = this.performSignalRetention(requestedDays, reason);
+    let result = { success: false, effectiveDays: requestedDays, totalDeleted: 0 };
     let effectiveDays = requestedDays;
     try {
-      const result = await this.retentionInFlight;
+      result = await this.retentionInFlight;
       effectiveDays = result?.effectiveDays ?? requestedDays;
     } catch (error) {
-      // performSignalRetention normally contains its own errors; retain this
-      // outer guard so maintenance can never bring down the scan loop.
+      result = { success: false, effectiveDays, totalDeleted: 0 };
       await this.maintenanceLog('WARN', '[Retention] Task failed; worker continues: ' + safeMaintenanceError(error), { reason });
     } finally {
       this.retentionInFlight = null;
       this.retentionInFlightDays = null;
     }
+
+    const rowsDeleted = Number.isSafeInteger(result?.totalDeleted) && result.totalDeleted >= 0
+      ? result.totalDeleted
+      : 0;
+    await this.maintenanceLog(result?.success === true ? 'INFO' : 'WARN', '[Retention] Run summary', {
+      status: result?.success === true ? 'SUCCESS' : 'FAILURE',
+      runStartedAt,
+      runCompletedAt: iso(),
+      rowsDeleted,
+      configDays: RETENTION_DAYS,
+      effectiveDays,
+      reason
+    });
 
     const pending = this.pendingRetentionRequest;
     this.pendingRetentionRequest = null;
@@ -1315,15 +1328,18 @@ export class DeltaEngine {
       const pool = await this.getMaintenancePool();
       if (!pool) {
         await this.maintenanceLog('WARN', '[Retention] Retention disabled (no DATABASE_URL)', { reason });
-        return { effectiveDays, totalDeleted };
+        return { success: false, effectiveDays, totalDeleted };
       }
 
       const countResult = await pool.query('SELECT COUNT(*)::text AS signal_rows FROM public.dd_signals');
       const rowCount = Number(countResult.rows?.[0]?.signal_rows || 0);
-      if (rowCount > 500000) {
-        effectiveDays = Math.min(effectiveDays, 3);
+      if (!Number.isSafeInteger(rowCount) || rowCount < 0) {
+        throw new Error('Retention query returned an invalid dd_signals row count');
+      }
+      if (rowCount > DISK_CRITICAL_ROWS) {
+        effectiveDays = Math.min(effectiveDays, 1);
         await this.maintenanceLog('WARN',
-          `[Retention] Emergency row-count threshold exceeded (${rowCount}); pruning to ${effectiveDays} days`,
+          `[Retention] Emergency row-count threshold exceeded (${rowCount}); pruning to ${effectiveDays} day(s)`,
           { reason, signalRows: rowCount, requestedDays, effectiveDays });
       } else {
         await this.maintenanceLog('INFO',
@@ -1344,12 +1360,12 @@ export class DeltaEngine {
         await sleep(100);
       }
 
-      return { effectiveDays, totalDeleted };
+      return { success: true, effectiveDays, totalDeleted };
     } catch (error) {
       await this.maintenanceLog('WARN',
         '[Retention] Task failed; worker continues: ' + safeMaintenanceError(error),
         { reason, totalDeleted, retentionDays: effectiveDays });
-      return { effectiveDays, totalDeleted };
+      return { success: false, effectiveDays, totalDeleted };
     }
   }
 
@@ -1365,54 +1381,50 @@ export class DeltaEngine {
       const result = await pool.query(`
         SELECT
           pg_database_size(current_database()) AS db_bytes,
-          (SELECT COUNT(*)::text FROM public.dd_signals) AS signal_rows
+          COUNT(*)::text AS signal_rows,
+          COUNT(*) FILTER (
+            WHERE captured_at < NOW() - INTERVAL '1 day'
+          )::text AS older_1d
+        FROM public.dd_signals
       `);
       const row = result.rows?.[0] || {};
       const dbBytes = Number(row.db_bytes);
       const signalRows = Number(row.signal_rows);
-      if (!Number.isFinite(dbBytes) || !Number.isFinite(signalRows)) {
-        throw new Error('Disk health query returned an invalid database size or signal row count');
+      const olderOneDay = Number(row.older_1d);
+      if (!Number.isFinite(dbBytes) || !Number.isSafeInteger(signalRows) || signalRows < 0 ||
+          !Number.isSafeInteger(olderOneDay) || olderOneDay < 0) {
+        throw new Error('Disk health query returned invalid size or dd_signals counts');
       }
-
-      const now = Date.now();
-      const current = { at: now, bytes: dbBytes, rows: signalRows };
-      this.diskSamples.push(current);
-      this.diskSamples = this.diskSamples.filter(sample => now - sample.at <= DISK_SAMPLE_WINDOW_MS);
 
       const dbMb = dbBytes / MB_BYTES;
       await this.maintenanceLog('INFO',
-        `[Disk] dd_signals: ${signalRows} rows, db: ${dbMb.toFixed(1)} MB`,
-        { signalRows, dbBytes, dbMb: Number(dbMb.toFixed(2)) });
+        `[Disk] DB: ${dbMb.toFixed(1)} MB, signals: ${signalRows} rows, older_1d: ${olderOneDay}`,
+        {
+          signalRows,
+          olderOneDay,
+          dbBytes,
+          dbMb: Number(dbMb.toFixed(2)),
+          warnRows: DISK_WARN_ROWS,
+          criticalRows: DISK_CRITICAL_ROWS,
+          olderRowsTrigger: RETENTION_OLD_ROWS_TRIGGER
+        });
 
-      if (dbMb > DISK_WARN_MB) {
+      if (signalRows > DISK_WARN_ROWS) {
         await this.maintenanceLog('WARN',
-          `[Disk] WARNING: database size ${dbMb.toFixed(1)} MB exceeds ${DISK_WARN_MB} MB`,
-          { signalRows, dbMb: Number(dbMb.toFixed(2)), thresholdMb: DISK_WARN_MB });
+          `[Disk] WARNING: signal row count ${signalRows} exceeds ${DISK_WARN_ROWS}`,
+          { signalRows, thresholdRows: DISK_WARN_ROWS, olderOneDay });
       }
 
-      const dayMs = 24 * 60 * 60 * 1000;
-      const baselineCandidates = this.diskSamples.filter(sample => {
-        const ageMs = now - sample.at;
-        return ageMs >= 23 * 60 * 60 * 1000 && ageMs <= 25 * 60 * 60 * 1000;
-      });
-      if (baselineCandidates.length > 0) {
-        const baseline = baselineCandidates.sort((a, b) =>
-          Math.abs((now - a.at) - dayMs) - Math.abs((now - b.at) - dayMs)
-        )[0];
-        const elapsedMs = now - baseline.at;
-        const growthMbPerDay = ((dbBytes - baseline.bytes) / elapsedMs) * dayMs / MB_BYTES;
-        if (growthMbPerDay > 50) {
-          await this.maintenanceLog('WARN',
-            `[Disk] ⚠️ Disk growth rate high: ${growthMbPerDay.toFixed(1)} MB/day`,
-            { growthMbPerDay: Number(growthMbPerDay.toFixed(2)), baselineAt: new Date(baseline.at).toISOString(), signalRows });
-        }
-      }
-
-      if (dbMb > DISK_CRITICAL_MB) {
+      if (signalRows > DISK_CRITICAL_ROWS) {
         await this.maintenanceLog('WARN',
-          `[Disk] CRITICAL: database size ${dbMb.toFixed(1)} MB exceeds ${DISK_CRITICAL_MB} MB; requesting 3-day retention`,
-          { signalRows, dbMb: Number(dbMb.toFixed(2)), thresholdMb: DISK_CRITICAL_MB });
-        await this.runSignalRetention({ daysOverride: 3, reason: 'disk-critical' });
+          `[Disk] CRITICAL: signal row count ${signalRows} exceeds ${DISK_CRITICAL_ROWS}; requesting 1-day retention`,
+          { signalRows, thresholdRows: DISK_CRITICAL_ROWS, olderOneDay });
+        await this.runSignalRetention({ daysOverride: 1, reason: 'row-count-critical' });
+      } else if (olderOneDay > RETENTION_OLD_ROWS_TRIGGER) {
+        await this.maintenanceLog('WARN',
+          `[Disk] Retention backlog: ${olderOneDay} rows older than 1 day exceeds ${RETENTION_OLD_ROWS_TRIGGER}; requesting 1-day retention`,
+          { signalRows, olderOneDay, thresholdRows: RETENTION_OLD_ROWS_TRIGGER });
+        await this.runSignalRetention({ daysOverride: 1, reason: 'older-than-one-day-threshold' });
       }
     } catch (error) {
       await this.maintenanceLog('WARN',

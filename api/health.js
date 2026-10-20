@@ -1,5 +1,6 @@
 import { CONFIG } from '../server/config.js';
 import { select } from '../server/db.js';
+import { summarizeRetentionHealth } from '../src/retention-health.js';
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate');
@@ -8,14 +9,20 @@ export default async function handler(req, res) {
     // Do not call Delta /v2/tickers here: the dashboard already polls market data
     // separately, and an extra exchange request can be rate-limited and create a
     // false "worker offline" state even while the worker is healthy.
-    const settings = (await select(
-      'dd_settings',
-      'id=eq.1&select=last_tick_at,worker_started_at,updated_at'
-    ))?.[0] || {};
-    const lease = (await select(
-      'dd_engine_lease',
-      'id=eq.1&select=worker_id,expires_at,heartbeat_at'
-    ))?.[0] || {};
+    const [settingsRows, leaseRows, retentionLogs] = await Promise.all([
+      select('dd_settings', 'id=eq.1&select=last_tick_at,worker_started_at,updated_at'),
+      select('dd_engine_lease', 'id=eq.1&select=worker_id,expires_at,heartbeat_at'),
+      select(
+        'dd_engine_logs',
+        'message=eq.%5BRetention%5D%20Run%20summary&select=created_at,message,data&order=created_at.desc&limit=100'
+      ).catch(error => {
+        console.error('[health] Retention telemetry unavailable:', error.message);
+        return [];
+      })
+    ]);
+    const settings = settingsRows?.[0] || {};
+    const lease = leaseRows?.[0] || {};
+    const retention = summarizeRetentionHealth(retentionLogs, { defaultConfigDays: 1 });
 
     const nowMs = Date.now();
     const workerTickMs = settings.last_tick_at ? Date.parse(settings.last_tick_at) : null;
@@ -49,6 +56,7 @@ export default async function handler(req, res) {
       tickAgeMs,
       heartbeatAgeMs,
       leaseRemainingMs: workerLeaseActive ? leaseExpiresMs - nowMs : 0,
+      retention,
       now: new Date().toISOString(),
       source: 'supabase-worker-heartbeat'
     });
@@ -59,6 +67,7 @@ export default async function handler(req, res) {
       exchangeHealthy: false,
       tickFresh: false,
       workerLeaseActive: false,
+      retention: summarizeRetentionHealth([], { defaultConfigDays: 1 }),
       error: e.message
     });
   }
