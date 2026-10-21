@@ -23,8 +23,8 @@ const TARGETS = [
 ];
 
 function usage() {
-  console.error('Usage: node scripts/score-distribution.mjs <scores.json> OR --database');
-  console.error('Database mode requires DATABASE_URL and queries dd_signals read-only for the last seven days.');
+  console.error('Usage: node scripts/score-distribution.mjs [--days=7] [--compare] [--database | <scores.json>]');
+  console.error('When no JSON path is supplied, database mode requires DATABASE_URL and performs read-only analysis.');
 }
 
 function rowsFrom(input) {
@@ -80,12 +80,34 @@ function normalizedFeatureRow(row) {
   };
 }
 
-function normalizedScoresForRows(rows) {
-  const result = Array(rows.length).fill(null);
+function featureFailureReasons(row) {
+  const details = detailsOf(row);
+  const reasons = [];
+  const side = String(row?.side || '').trim().toUpperCase();
+  if (details.candlesFresh === false || String(details.candlesFresh).toLowerCase() === 'false') {
+    reasons.push('insufficient_candle_history');
+  }
+  if (side !== 'BUY' && side !== 'SELL') reasons.push('missing_directional_side');
+  const rsi = row?.rsi ?? details.rsi;
+  if (validScore(rsi) === null) reasons.push('missing_or_invalid_rsi');
+  const volume = row?.volumeSpike ?? row?.volume_spike;
+  if (volume === null || volume === undefined || volume === '' || !Number.isFinite(Number(volume)) || Number(volume) < 0) {
+    reasons.push('missing_or_invalid_volume_spike');
+  }
+  const ema = row?.emaDistanceAtr ?? row?.ema_distance_atr ?? details.emaDistanceAtr;
+  if (ema === null || ema === undefined || ema === '' || !Number.isFinite(Number(ema)) || Number(ema) < 0) {
+    reasons.push('missing_or_invalid_ema_distance');
+  }
+  return reasons;
+}
+
+function normalizationForRows(rows) {
+  const storedValues = rows.map(storedNormalizedFrom);
+  const values = [...storedValues];
+  const reasonsByIndex = new Map();
   const groups = new Map();
 
   for (let index = 0; index < rows.length; index++) {
-    result[index] = storedNormalizedFrom(rows[index]);
     const row = rows[index];
     if (!row || typeof row !== 'object' || !row.symbol) continue;
     const strategy = String(row.strategy || '').trim().toUpperCase();
@@ -100,12 +122,73 @@ function normalizedScoresForRows(rows) {
     const universe = indexes.map(index => normalizedFeatureRow(rows[index]));
     const calculated = calculateNormalizedScores(universe);
     for (const index of indexes) {
-      if (result[index] !== null) continue;
+      if (values[index] !== null) continue;
       const symbol = String(rows[index]?.symbol || '').trim().toUpperCase();
-      result[index] = calculated.has(symbol) ? calculated.get(symbol) : null;
+      if (calculated.has(symbol)) {
+        values[index] = calculated.get(symbol);
+        continue;
+      }
+      const reasons = featureFailureReasons(rows[index]);
+      if (!reasons.includes('missing_directional_side') &&
+          !reasons.includes('missing_or_invalid_rsi') &&
+          !reasons.includes('missing_or_invalid_volume_spike') &&
+          !reasons.includes('missing_or_invalid_ema_distance')) {
+        reasons.push('insufficient_same_strategy_cycle_universe');
+      }
+      reasonsByIndex.set(index, reasons.length ? reasons : ['unscorable_normalization_inputs']);
     }
   }
-  return result;
+
+  // Rows missing a symbol/strategy cannot enter a batch. Keep them visible in diagnostics.
+  for (let index = 0; index < rows.length; index++) {
+    if (values[index] !== null || reasonsByIndex.has(index)) continue;
+    if (!rows[index] || typeof rows[index] !== 'object' || !rows[index].symbol || !rows[index].strategy) {
+      reasonsByIndex.set(index, ['missing_symbol_or_strategy']);
+    } else {
+      reasonsByIndex.set(index, ['insufficient_same_strategy_cycle_universe']);
+    }
+  }
+  return { values, storedValues, reasonsByIndex };
+}
+
+function missingNormalizationSummary(rows, result) {
+  const reasonCounts = {};
+  const stageCounts = {};
+  const strategyCounts = {};
+  const symbols = new Map();
+  let missingCount = 0;
+
+  for (let index = 0; index < rows.length; index++) {
+    if (result.values[index] !== null) continue;
+    missingCount += 1;
+    const row = rows[index] || {};
+    const stage = String(row.stage || '[NO STAGE]').trim().toUpperCase();
+    const strategy = String(row.strategy || '[NO STRATEGY]').trim().toUpperCase();
+    stageCounts[stage] = (stageCounts[stage] || 0) + 1;
+    strategyCounts[strategy] = (strategyCounts[strategy] || 0) + 1;
+    const reasons = result.reasonsByIndex.get(index) || ['unscorable_normalization_inputs'];
+    for (const reason of reasons) reasonCounts[reason] = (reasonCounts[reason] || 0) + 1;
+    const symbol = String(row.symbol || '[NO SYMBOL]').trim().toUpperCase();
+    if (!symbols.has(symbol)) symbols.set(symbol, { symbol, missingRows: 0, reasons: {}, stages: {} });
+    const item = symbols.get(symbol);
+    item.missingRows += 1;
+    item.stages[stage] = (item.stages[stage] || 0) + 1;
+    for (const reason of reasons) item.reasons[reason] = (item.reasons[reason] || 0) + 1;
+  }
+
+  const sortObject = object => Object.fromEntries(Object.entries(object).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])));
+  const sortedSymbols = [...symbols.values()].sort((a, b) => b.missingRows - a.missingRows || a.symbol.localeCompare(b.symbol));
+  return {
+    count: missingCount,
+    byReason: sortObject(reasonCounts),
+    byStage: sortObject(stageCounts),
+    byStrategy: sortObject(strategyCounts),
+    symbols: sortedSymbols.slice(0, 50).map(item => ({
+      ...item,
+      reasons: sortObject(item.reasons),
+      stages: sortObject(item.stages)
+    }))
+  };
 }
 
 function median(values) {
@@ -215,34 +298,76 @@ function perStrategy(rows, originalValues, normalizedValues) {
   }));
 }
 
-function buildReport(rows, { source = 'JSON input', generatedAt = new Date().toISOString(), requestedDays = null } = {}) {
+function compareIndexes(rows, indexes, originalValues, normalizedValues) {
+  const usable = indexes.filter(index => originalValues[index] !== null);
+  const matched = usable.filter(index => normalizedValues[index] !== null);
+  const original = scoreDistribution(usable.map(index => originalValues[index]));
+  const normalized = scoreDistribution(usable.map(index => normalizedValues[index]).filter(value => value !== null));
+  const samePopulationOriginal = scoreDistribution(matched.map(index => originalValues[index]));
+  const samePopulationNormalized = scoreDistribution(matched.map(index => normalizedValues[index]));
+  return {
+    rowCount: indexes.length,
+    original,
+    normalized,
+    samePopulation: {
+      count: matched.length,
+      original: samePopulationOriginal,
+      normalized: samePopulationNormalized
+    }
+  };
+}
+
+function buildReport(rows, {
+  source = 'JSON input',
+  generatedAt = new Date().toISOString(),
+  requestedDays = 7,
+  compareRequested = false
+} = {}) {
   const originalValues = rows.map(scoreFrom);
-  const normalizedValues = normalizedScoresForRows(rows);
+  const normalization = normalizationForRows(rows);
+  const normalizedValues = normalization.values;
   const originalScores = originalValues.filter(value => value !== null);
-  const normalizedScores = normalizedValues.filter(value => value !== null);
+  const normalizedScoreValues = normalizedValues.filter(value => value !== null);
   const matchedIndexes = rows.map((row, index) => index)
     .filter(index => originalValues[index] !== null && normalizedValues[index] !== null);
   const original = scoreDistribution(originalScores);
-  const normalized = scoreDistribution(normalizedScores);
+  const normalized = scoreDistribution(normalizedScoreValues);
   const originalMatched = scoreDistribution(matchedIndexes.map(index => originalValues[index]));
   const normalizedMatched = scoreDistribution(matchedIndexes.map(index => normalizedValues[index]));
+  const confirmedIndexes = rows.map((row, index) =>
+    String(row?.stage || '').trim().toUpperCase() === 'CONFIRMED' && originalValues[index] !== null ? index : -1
+  ).filter(index => index >= 0);
+  const allIndexes = rows.map((row, index) => originalValues[index] !== null ? index : -1)
+    .filter(index => index >= 0);
+  const allComparison = compareIndexes(rows, allIndexes, originalValues, normalizedValues);
+  const confirmedComparison = compareIndexes(rows, confirmedIndexes, originalValues, normalizedValues);
   const times = rows.map(row => Date.parse(row?.captured_at ?? row?.capturedAt ?? ''))
     .filter(Number.isFinite);
   const earliest = times.length ? times.reduce((minimum, value) => Math.min(minimum, value), Infinity) : null;
   const latest = times.length ? times.reduce((maximum, value) => Math.max(maximum, value), -Infinity) : null;
+  const storedCount = normalization.storedValues.filter(value => value !== null).length;
+  const replayedCount = normalizedScoreValues.length - storedCount;
+  const coveragePct = rows.length ? Number((normalizedScoreValues.length / rows.length * 100).toFixed(2)) : null;
+  const storedCoveragePct = rows.length ? Number((storedCount / rows.length * 100).toFixed(2)) : null;
+  const missingNormalization = missingNormalizationSummary(rows, normalization);
 
   return {
     source,
     generatedAt,
     requestedDays,
+    compareRequested,
     observedRange: {
       earliest: earliest === null ? null : new Date(earliest).toISOString(),
       latest: latest === null ? null : new Date(latest).toISOString(),
       observedHours: earliest !== null && latest !== null
         ? Number(((latest - earliest) / 3600000).toFixed(2))
+        : 0,
+      observedDays: earliest !== null && latest !== null
+        ? Number(((latest - earliest) / 86400000).toFixed(3))
         : 0
     },
     count: original.count,
+    totalRows: rows.length,
     skippedRows: rows.length - original.count,
     scoreScale: '0-100',
     statistics: original.statistics,
@@ -256,19 +381,36 @@ function buildReport(rows, { source = 'JSON input', generatedAt = new Date().toI
       coveragePct: original.count ? Number((normalized.count / original.count * 100).toFixed(2)) : null,
       targetAtLeast85Pct: 2
     },
+    coverage: {
+      totalRows: rows.length,
+      rowsWithOriginalScore: original.count,
+      rowsWithStoredNormalizedScore: storedCount,
+      storedCoveragePct,
+      rowsWithNormalizedScore: normalizedScoreValues.length,
+      coveragePct,
+      replayedNormalizedRows: Math.max(0, replayedCount),
+      missingNormalizedRows: missingNormalization.count,
+      definition: 'rowsWithNormalizedScore includes an existing stored normalizedScore or a successful historical same-strategy-cycle replay; storedCoveragePct counts persisted values only'
+    },
     samePopulation: {
       count: matchedIndexes.length,
       original: originalMatched,
       normalized: normalizedMatched
     },
+    comparison: {
+      allSignals: allComparison,
+      confirmedOnly: confirmedComparison
+    },
+    confirmedOnly: confirmedComparison,
     byStrategyDistribution: perStrategy(rows, originalValues, normalizedValues),
+    missingNormalization,
     note: source === 'PostgreSQL public.dd_signals'
-      ? 'Read-only last-seven-day report. Historical normalized values are replayed per captured_at+strategy from deduplicated dd_signals whenever details.normalizedScore was not stored. This table is not a complete per-scan universe snapshot; the replay is diagnostic, not an exact live reconstruction.'
-      : 'Offline descriptive analysis only. Normalized scores are read from normalizedScore/details.normalizedScore when present or replayed from available same-strategy feature rows. Missing features are not inferred.'
+      ? 'Read-only database report for the requested lookback. Existing stored normalizedScore is preferred; otherwise historical scores are replayed per captured_at+strategy using deduplicated dd_signals. Replay coverage is diagnostic, not exact live per-scan reconstruction. The actual observedRange must be checked to verify whether the database contains the full requested period.'
+      : 'Offline descriptive analysis only. Stored normalized values are preferred; missing values are replayed from available same-strategy-cycle feature rows. Missing features/direction are not inferred.'
   };
 }
 
-async function loadDatabaseRows() {
+async function loadDatabaseRows(days) {
   if (!process.env.DATABASE_URL) {
     throw new Error('DATABASE_URL is not configured; cannot run the read-only database diagnostic.');
   }
@@ -277,52 +419,97 @@ async function loadDatabaseRows() {
   try {
     ({ pool, closePool } = await import('../src/ledger/pg-adapter.mjs'));
     const query = [
-      'SELECT captured_at, symbol, strategy, stage, side, score, rsi, trend, volume_spike,',
+      'SELECT captured_at, symbol, strategy, stage, side, score, rsi, trend, volume_spike, details,',
       "       details->>'emaDistanceAtr' AS ema_distance_atr,",
       "       details->>'normalizedScore' AS stored_normalized_score",
       'FROM public.dd_signals',
-      "WHERE captured_at >= NOW() - INTERVAL '7 days'",
+      'WHERE captured_at >= NOW() - ($1::int * INTERVAL \'1 day\')',
       "  AND strategy IN ('MOMENTUM', 'SCALPING')",
       'ORDER BY captured_at ASC, strategy ASC, symbol ASC'
     ].join('\n');
-    const result = await pool.query(query);
+    const result = await pool.query(query, [days]);
     return result.rows;
   } finally {
     if (typeof closePool === 'function') await closePool();
   }
 }
 
+function parseArguments(argv) {
+  let days = 7;
+  let compareRequested = false;
+  let databaseRequested = false;
+  let inputPath = null;
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index];
+    if (arg === '--help' || arg === '-h') return { help: true };
+    if (arg === '--compare') {
+      compareRequested = true;
+      continue;
+    }
+    if (arg === '--database') {
+      databaseRequested = true;
+      continue;
+    }
+    if (arg.startsWith('--days=')) {
+      days = Number(arg.slice('--days='.length));
+      if (!Number.isInteger(days) || days < 1 || days > 3650) {
+        throw new Error('--days must be an integer between 1 and 3650');
+      }
+      continue;
+    }
+    if (arg === '--days') {
+      days = Number(argv[++index]);
+      if (!Number.isInteger(days) || days < 1 || days > 3650) {
+        throw new Error('--days must be followed by an integer between 1 and 3650');
+      }
+      continue;
+    }
+    if (arg.startsWith('--')) throw new Error('Unknown option: ' + arg);
+    if (inputPath) throw new Error('Only one JSON input path may be supplied');
+    inputPath = arg;
+  }
+  if (databaseRequested && inputPath) throw new Error('Choose either --database mode or a JSON input path, not both');
+  return { days, compareRequested, databaseRequested: databaseRequested || !inputPath, inputPath, help: false };
+}
+
 async function main() {
-  const arg = process.argv[2];
-  if (!arg || arg === '--help' || arg === '-h') {
+  const options = parseArguments(process.argv.slice(2));
+  if (options.help) {
     usage();
-    process.exitCode = arg ? 0 : 2;
     return;
   }
-
+  const { days, compareRequested, databaseRequested, inputPath } = options;
   let rows;
   let source = 'JSON input';
-  let requestedDays = null;
-  if (arg === '--database') {
-    rows = await loadDatabaseRows();
+  if (databaseRequested) {
+    rows = await loadDatabaseRows(days);
     source = 'PostgreSQL public.dd_signals';
-    requestedDays = 7;
   } else {
     let parsed;
     try {
-      parsed = JSON.parse(await fs.readFile(arg, 'utf8'));
+      parsed = JSON.parse(await fs.readFile(inputPath, 'utf8'));
     } catch (error) {
-      throw new Error('Cannot read/parse JSON input "' + arg + '": ' + error.message);
+      throw new Error('Cannot read/parse JSON input "' + inputPath + '": ' + error.message);
     }
     rows = rowsFrom(parsed);
   }
   if (!rows.length) throw new Error('No dd_signals rows or valid JSON input rows were found.');
 
-  const output = buildReport(rows, { source, requestedDays });
+  const output = buildReport(rows, {
+    source,
+    requestedDays: days,
+    compareRequested
+  });
   if (!output.count) throw new Error('No finite scores within 0-100');
   console.log(JSON.stringify(output, null, 2));
-  if (source === 'PostgreSQL public.dd_signals') {
-    console.error('Read ' + rows.length + ' Momentum/Scalping dd_signals rows; no database writes performed.');
+  console.error('[score-distribution] Read ' + rows.length + ' MOMENTUM/SCALPING rows; no database writes performed.');
+  console.error('[score-distribution] Requested ' + days + ' days; observed ' + output.observedRange.observedHours + ' hours (' + output.observedRange.observedDays + ' days) from ' + output.observedRange.earliest + ' to ' + output.observedRange.latest + '.');
+  console.error('[score-distribution] Persisted normalizedScore coverage: ' + output.coverage.rowsWithStoredNormalizedScore + '/' + output.coverage.totalRows + ' (' + output.coverage.storedCoveragePct + '%). Replay/effective coverage: ' + output.coverage.rowsWithNormalizedScore + '/' + output.coverage.totalRows + ' (' + output.coverage.coveragePct + '%).');
+  console.error('[score-distribution] Missing normalization reasons: ' + JSON.stringify(output.missingNormalization.byReason));
+  console.error('[score-distribution] Symbols with most missing normalized scores: ' + JSON.stringify(output.missingNormalization.symbols.slice(0, 20)));
+  console.error('[score-distribution] 85+ comparison (same population): original ' + output.samePopulation.original.atLeast85.actualPct + '% vs normalized ' + output.samePopulation.normalized.atLeast85.actualPct + '%; CONFIRMED-only original ' + output.confirmedOnly.samePopulation.original.atLeast85.actualPct + '% vs normalized ' + output.confirmedOnly.samePopulation.normalized.atLeast85.actualPct + '%.');
+  if (output.observedRange.observedHours < days * 24 * 0.95) {
+    console.error('[score-distribution] WARNING: observed data does not span the requested lookback; do not treat this as a full ' + days + '-day sample.');
   }
 }
 
