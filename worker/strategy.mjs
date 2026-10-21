@@ -165,29 +165,42 @@ function populationMeanStd(values) {
  * the signal's side (SELL RSI is inverted, trend is side-aligned, and nearer
  * EMA is better). This function never changes row.score or an execution gate.
  */
+export function calculateNormalizedScores(universe) {
+  if (!Array.isArray(universe) || universe.length < 2) return new Map();
+  const rows = universe.map(normalizedFeatures).filter(Boolean);
+  if (rows.length < 2) return new Map();
+
+  const components = ['rsi', 'trend', 'volume', 'ema'];
+  const means = {};
+  const standardDeviations = {};
+  for (const component of components) {
+    const values = rows.map(row => row[component]);
+    const stats = populationMeanStd(values);
+    means[component] = stats.mean;
+    standardDeviations[component] = stats.stddev;
+  }
+
+  const scores = new Map();
+  for (const row of rows) {
+    const z = {};
+    for (const component of components) {
+      const stddev = standardDeviations[component];
+      z[component] = stddev > 0 ? (row[component] - means[component]) / stddev : 0;
+    }
+    const raw = (z.rsi * 0.2) + (z.trend * 0.3) + (z.volume * 0.25) + (z.ema * 0.25);
+    const score = 100 / (1 + Math.exp(-raw * 1.5));
+    if (Number.isFinite(score)) scores.set(row.symbol, Number(Math.max(0, Math.min(100, score)).toFixed(4)));
+  }
+  return scores;
+}
+
 export function calculateNormalizedScore(symbol, universe) {
-  if (!Array.isArray(universe) || universe.length < 2) return null;
   const targetSymbol = String(
     typeof symbol === 'object' && symbol !== null ? symbol.symbol : symbol || ''
   ).trim().toUpperCase();
   if (!targetSymbol) return null;
-
-  const rows = universe.map(normalizedFeatures).filter(Boolean);
-  const target = rows.find(row => row.symbol === targetSymbol);
-  if (!target || rows.length < 2) return null;
-
-  const components = ['rsi', 'trend', 'volume', 'ema'];
-  const z = {};
-  for (const component of components) {
-    const values = rows.map(row => row[component]);
-    const stats = populationMeanStd(values);
-    z[component] = stats.stddev > 0 ? (target[component] - stats.mean) / stats.stddev : 0;
-  }
-
-  const raw = (z.rsi * 0.2) + (z.trend * 0.3) + (z.volume * 0.25) + (z.ema * 0.25);
-  const score = 100 / (1 + Math.exp(-raw * 1.5));
-  if (!Number.isFinite(score)) return null;
-  return Number(Math.max(0, Math.min(100, score)).toFixed(4));
+  const scores = calculateNormalizedScores(universe);
+  return scores.has(targetSymbol) ? scores.get(targetSymbol) : null;
 }
 
 export function closed(candles) {

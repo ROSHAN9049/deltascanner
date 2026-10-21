@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { calculateNormalizedScore } from '../worker/strategy.mjs';
+import { calculateNormalizedScore, calculateNormalizedScores } from '../worker/strategy.mjs';
 
 function row(symbol, rsi, trend, volumeSpike, emaDistanceAtr, side = 'BUY') {
   return { symbol, side, rsi, trend, volumeSpike, emaDistanceAtr };
@@ -15,6 +15,10 @@ test('normalized score ranks the cross-sectional feature combination on a 0-100 
   const high = calculateNormalizedScore('AAAUSD', universe);
   const middle = calculateNormalizedScore('BBBUSD', universe);
   const low = calculateNormalizedScore('CCCUSD', universe);
+  const batch = calculateNormalizedScores(universe);
+  assert.equal(batch.get('AAAUSD'), high);
+  assert.equal(batch.get('BBBUSD'), middle);
+  assert.equal(batch.get('CCCUSD'), low);
 
   assert.ok(high > 80, 'supportive feature combination should rank above 80');
   assert.equal(middle, 50);

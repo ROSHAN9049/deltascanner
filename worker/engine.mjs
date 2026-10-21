@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import WebSocket from 'ws';
 import { CONFIG } from '../server/config.js';
 import { DeltaAdapter } from './delta-adapter.mjs';
-import { analyse, analyseOption, trimDetails, atr as calculateAtr, calculateNormalizedScore } from './strategy.mjs';
+import { analyse, analyseOption, trimDetails, atr as calculateAtr, calculateNormalizedScores } from './strategy.mjs';
 import * as db from '../server/db.js';
 import { SIGNAL_RESERVATION_TTL_MS, TradetronBridge, withSignalReservations } from '../server/tradetron.js';
 import { buildTradetronPnlHistoryRows, TradetronDeveloperApi } from '../server/tradetron-developer-api.mjs';
@@ -1784,11 +1784,9 @@ export class DeltaEngine {
     const normalizedScores = new Map();
     for (const strategyName of ['MOMENTUM', 'SCALPING']) {
       const universe = normalizationUniverses[strategyName];
+      const scores = calculateNormalizedScores(universe);
       for (const signal of universe) {
-        normalizedScores.set(
-          strategyName + ':' + signal.symbol,
-          calculateNormalizedScore(signal.symbol, universe)
-        );
+        normalizedScores.set(strategyName + ':' + signal.symbol, scores.get(String(signal.symbol || '').toUpperCase()) ?? null);
       }
     }
 

@@ -14,7 +14,7 @@
  */
 import fs from 'node:fs/promises';
 import { computeStats } from '../src/indicators/ta.mjs';
-import { calculateNormalizedScore } from '../worker/strategy.mjs';
+import { calculateNormalizedScores } from '../worker/strategy.mjs';
 
 const TARGETS = [
   { key: '0-<40', min: 0, max: 40, targetPct: 60 },
@@ -99,9 +99,11 @@ function normalizedScoresForRows(rows) {
 
   for (const indexes of groups.values()) {
     const universe = indexes.map(index => normalizedFeatureRow(rows[index]));
+    const calculated = calculateNormalizedScores(universe);
     for (const index of indexes) {
       if (result[index] !== null) continue;
-      result[index] = calculateNormalizedScore(rows[index]?.symbol, universe);
+      const symbol = String(rows[index]?.symbol || '').trim().toUpperCase();
+      result[index] = calculated.has(symbol) ? calculated.get(symbol) : null;
     }
   }
   return result;
