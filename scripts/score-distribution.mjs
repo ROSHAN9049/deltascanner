@@ -13,7 +13,6 @@
  * per-cycle universe snapshot, so this historical replay is an estimate.
  */
 import fs from 'node:fs/promises';
-import { computeStats } from '../src/indicators/ta.mjs';
 import { calculateNormalizedScores } from '../worker/strategy.mjs';
 
 const TARGETS = [
@@ -128,7 +127,19 @@ function scoreDistribution(values) {
     };
   }
 
-  const stats = computeStats(valid);
+  let sum = 0;
+  let min = Infinity;
+  let max = -Infinity;
+  for (const value of valid) {
+    sum += value;
+    if (value < min) min = value;
+    if (value > max) max = value;
+  }
+  const mean = sum / valid.length;
+  let squaredDeviation = 0;
+  for (const value of valid) squaredDeviation += (value - mean) ** 2;
+  const populationStdDev = Math.sqrt(squaredDeviation / valid.length);
+
   const bands = Object.fromEntries(TARGETS.map(target => {
     const count = valid.filter(value => value >= target.min && (
       target.max === 100 ? value <= target.max : value < target.max
@@ -152,11 +163,11 @@ function scoreDistribution(values) {
   return {
     count: valid.length,
     statistics: {
-      mean: Number(stats.mean.toFixed(4)),
+      mean: Number(mean.toFixed(4)),
       median: Number(median(valid).toFixed(4)),
-      populationStdDev: Number(stats.stddev.toFixed(4)),
-      min: stats.min,
-      max: stats.max
+      populationStdDev: Number(populationStdDev.toFixed(4)),
+      min,
+      max
     },
     bands,
     atLeast85: pct(value => value >= 85),
