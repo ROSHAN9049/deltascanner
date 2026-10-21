@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import WebSocket from 'ws';
 import { CONFIG } from '../server/config.js';
 import { DeltaAdapter } from './delta-adapter.mjs';
-import { analyse, analyseOption, trimDetails, atr as calculateAtr } from './strategy.mjs';
+import { analyse, analyseOption, trimDetails, atr as calculateAtr, calculateNormalizedScore } from './strategy.mjs';
 import * as db from '../server/db.js';
 import { SIGNAL_RESERVATION_TTL_MS, TradetronBridge, withSignalReservations } from '../server/tradetron.js';
 import { buildTradetronPnlHistoryRows, TradetronDeveloperApi } from '../server/tradetron-developer-api.mjs';
@@ -1741,6 +1741,58 @@ export class DeltaEngine {
     const signalCacheRows = [];
     const signalHistoryRows = [];
     const tickers = [...this.tickerMap.values()];
+
+    // Shadow pre-pass: compute normalized scores across this strategy universe.
+    // Analyse remains pure here; the existing sequential riskGate/cache loop
+    // below is preserved so normalized values cannot influence entry decisions.
+    const normalizationUniverses = { MOMENTUM: [], SCALPING: [] };
+    for (const ticker of tickers) {
+      const product = this.productMap.get(ticker.symbol);
+      if (!product) continue;
+      const c1 = this.getCandles(ticker.symbol, '1m');
+      const c5 = this.getCandles(ticker.symbol, '5m');
+      const c15 = this.getCandles(ticker.symbol, '15m');
+      const momShadow = analyse(ticker, product, c1, c5, c15, btc5, btc15, 'MOMENTUM', {
+        minStopPct: n(settings.momentum_sl_min_pct || 0.95),
+        rr: n(settings.momentum_rr || 2.0),
+        scoreMin: Math.max(80, n(settings.score_min || 80)),
+        volumeMin: n(settings.volume_min || 0.75),
+        antiChasePct: n(settings.anti_chase_pct || 15),
+        rangeAtrMax: n(settings.range_atr_max || 4.0),
+        emaDistanceMax: n(settings.ema_distance_max || 3.5),
+        spreadMaxPct: n(settings.spread_max_pct || 0.35),
+        costGateRatio: 0.20,
+        btcOverrideScoreMin: n(settings.btc_override_score_min || 90),
+        btcOverrideVolumeMin: n(settings.btc_override_volume_min || 1.5)
+      });
+      const scalpShadow = analyse(ticker, product, c1, c5, c15, btc5, btc15, 'SCALPING', {
+        minStopPct: n(settings.scalping_sl_min_pct || 0.75),
+        rr: n(settings.scalping_rr || 2.0),
+        scoreMin: Math.max(80, n(settings.score_min || 80)),
+        volumeMin: n(settings.volume_min || 1.25),
+        antiChasePct: n(settings.anti_chase_pct || 15),
+        rangeAtrMax: n(settings.range_atr_max || 3.0),
+        emaDistanceMax: n(settings.ema_distance_max || 2.5),
+        spreadMaxPct: n(settings.spread_max_pct || 0.35),
+        costGateRatio: 0.25,
+        btcOverrideScoreMin: n(settings.btc_override_score_min || 90),
+        btcOverrideVolumeMin: n(settings.btc_override_volume_min || 1.5)
+      });
+      normalizationUniverses.MOMENTUM.push(momShadow);
+      normalizationUniverses.SCALPING.push(scalpShadow);
+    }
+    const normalizedScores = new Map();
+    for (const strategyName of ['MOMENTUM', 'SCALPING']) {
+      const universe = normalizationUniverses[strategyName];
+      for (const signal of universe) {
+        normalizedScores.set(
+          strategyName + ':' + signal.symbol,
+          calculateNormalizedScore(signal.symbol, universe)
+        );
+      }
+    }
+
+    // Keep the original sequential signal -> riskGate -> cache order below.
     for (let i = 0; i < tickers.length; i++) {
       const ticker = tickers[i], p = this.productMap.get(ticker.symbol);
       if (!p) continue;
@@ -1773,6 +1825,8 @@ export class DeltaEngine {
         btcOverrideScoreMin: n(settings.btc_override_score_min || 90),
         btcOverrideVolumeMin: n(settings.btc_override_volume_min || 1.5)
       });
+      mom.normalizedScore = normalizedScores.get('MOMENTUM:' + mom.symbol) ?? null;
+      scalp.normalizedScore = normalizedScores.get('SCALPING:' + scalp.symbol) ?? null;
       this.recordAtrDiagnostics(mom);
       this.recordAtrDiagnostics(scalp);
       for (const s of [mom, scalp]) {
@@ -1808,6 +1862,7 @@ export class DeltaEngine {
           ready: s.ready && gate.reasons.length === 0, blocked_reasons: gate.reasons,
           cached_at: iso(),
           details: trimDetails({
+            normalizedScore: s.normalizedScore,
             rsi: s.rsi, vwap: s.vwap, fee: s.takerFee, candlesFresh: s.candlesFresh,
             localScore: s.localScore, btcRegimeOverride: s.btcRegimeOverride,
             btcOverrideScoreMin: s.btcOverrideScoreMin, btcOverrideVolumeMin: s.btcOverrideVolumeMin,

@@ -21,7 +21,8 @@ const MAIN_DETAIL_FIELDS = Object.freeze([
   'btcRegimeStatus',
   'btcRegimeSource',
   'btcAtrPct',
-  'btcRegimeComputedAt'
+  'btcRegimeComputedAt',
+  'normalizedScore'
 ]);
 
 // Options use independent, strategy-aware allowlists. OPTIONS_BUY keeps 15
@@ -106,6 +107,87 @@ export function trimDetails(details, strategy) {
     return trimOptionsDetails(details, normalizedStrategy);
   }
   return trimMainDetails(details);
+}
+
+function normalizedFeatures(row) {
+  if (!row || typeof row !== 'object') return null;
+  const side = String(row.side || '').trim().toUpperCase();
+  if (side !== 'BUY' && side !== 'SELL') return null;
+
+  let details = row.details;
+  if (typeof details === 'string') {
+    try { details = JSON.parse(details); } catch { details = {}; }
+  }
+  if (!details || typeof details !== 'object' || Array.isArray(details)) details = {};
+
+  const finite = value => {
+    if (value === null || value === undefined || (typeof value === 'string' && !value.trim())) return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const rsiValue = finite(row.rsi ?? details.rsi);
+  const volumeValue = finite(row.volumeSpike ?? row.volume_spike);
+  const emaDistance = finite(row.emaDistanceAtr ?? row.ema_distance_atr ?? details.emaDistanceAtr);
+  const trend = String(row.trend ?? row.confirmTrend ?? row.confirm_trend ?? '').trim().toUpperCase();
+
+  if (rsiValue === null || rsiValue < 0 || rsiValue > 100 ||
+      volumeValue === null || volumeValue < 0 || emaDistance === null || emaDistance < 0) {
+    return null;
+  }
+
+  let trendQuality = 0;
+  if (trend === 'BULL') trendQuality = side === 'BUY' ? 1 : -1;
+  else if (trend === 'BEAR') trendQuality = side === 'SELL' ? 1 : -1;
+  else if (trend !== 'FLAT' && trend !== '') {
+    const trendNumber = finite(row.trendQuality ?? row.trend_score);
+    if (trendNumber === null) return null;
+    trendQuality = side === 'BUY' ? trendNumber : -trendNumber;
+  }
+
+  return {
+    symbol: String(row.symbol || '').trim().toUpperCase(),
+    rsi: side === 'SELL' ? 100 - rsiValue : rsiValue,
+    trend: trendQuality,
+    volume: volumeValue,
+    ema: -Math.abs(emaDistance)
+  };
+}
+
+function populationMeanStd(values) {
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
+  return { mean, stddev: Math.sqrt(variance) };
+}
+
+/**
+ * Calculate a display/diagnostic-only cross-sectional score against one
+ * same-strategy scan universe. Higher feature values are oriented to support
+ * the signal's side (SELL RSI is inverted, trend is side-aligned, and nearer
+ * EMA is better). This function never changes row.score or an execution gate.
+ */
+export function calculateNormalizedScore(symbol, universe) {
+  if (!Array.isArray(universe) || universe.length < 2) return null;
+  const targetSymbol = String(
+    typeof symbol === 'object' && symbol !== null ? symbol.symbol : symbol || ''
+  ).trim().toUpperCase();
+  if (!targetSymbol) return null;
+
+  const rows = universe.map(normalizedFeatures).filter(Boolean);
+  const target = rows.find(row => row.symbol === targetSymbol);
+  if (!target || rows.length < 2) return null;
+
+  const components = ['rsi', 'trend', 'volume', 'ema'];
+  const z = {};
+  for (const component of components) {
+    const values = rows.map(row => row[component]);
+    const stats = populationMeanStd(values);
+    z[component] = stats.stddev > 0 ? (target[component] - stats.mean) / stats.stddev : 0;
+  }
+
+  const raw = (z.rsi * 0.2) + (z.trend * 0.3) + (z.volume * 0.25) + (z.ema * 0.25);
+  const score = 100 / (1 + Math.exp(-raw * 1.5));
+  if (!Number.isFinite(score)) return null;
+  return Number(Math.max(0, Math.min(100, score)).toFixed(4));
 }
 
 export function closed(candles) {

@@ -19,6 +19,7 @@ test('main signal details retain only the approved compact fields', () => {
     btcRegimeSource: 'live-1h',
     btcAtrPct: 1.2,
     btcRegimeComputedAt: '2026-10-16T00:00:00.000Z',
+    normalizedScore: 73.25,
     btcRegimeReason: 'long-form reason that should not be persisted',
     btcTrend5m: 'UP',
     btcTrend15m: 'UP',
@@ -41,10 +42,12 @@ test('main signal details retain only the approved compact fields', () => {
     'btcRegimeStatus',
     'btcRegimeSource',
     'btcAtrPct',
-    'btcRegimeComputedAt'
+    'btcRegimeComputedAt',
+    'normalizedScore'
   ]);
   assert.equal(trimmed.rsi, 54);
   assert.equal(trimmed.vwap, 100);
+  assert.equal(trimmed.normalizedScore, 73.25);
   assert.equal('btcRegimeReason' in trimmed, false);
   assert.equal('btcTrend5m' in trimmed, false);
   assert.equal('btcTrend15m' in trimmed, false);

@@ -508,18 +508,36 @@ function RiskGovernor({ signals, health, positions, onInspect, inspect, scoreMin
   </Panel>;
 }
 
+function signalDetails(signal) {
+  let details = signal?.details;
+  if (typeof details === 'string') {
+    try { details = JSON.parse(details); } catch { details = {}; }
+  }
+  return details && typeof details === 'object' && !Array.isArray(details) ? details : {};
+}
+
+function normalizedScoreFrom(signal) {
+  const details = signalDetails(signal);
+  return safeNum(signal?.normalizedScore ?? details.normalizedScore);
+}
+
 function EngineView({ engine, signals, entrySafetyBlocked = false, entrySafetyReason = null, openPositionSymbols = new Set() }) {
-  const rows = signals.filter(x => x.strategy === engine).sort((a,b) => num(b.score)-num(a.score));
-  return <Panel title={engine + ' · Closed-Candle Signal Engine'}>{entrySafetyBlocked ? <div className="danger">NEW ENTRIES BLOCKED — {entrySafetyReason || 'Tradetron position snapshot is not verified'}.</div> : null}<div className="tablewrap"><table><thead><tr><th>COIN</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>RSI</th><th>VOL</th><th>EMA21</th><th>ATR</th><th>SL</th><th>TP1</th><th>TP</th><th>QTY</th><th>RISK</th><th>BLOCKED / GATES</th></tr></thead><tbody>{rows.map(x => {
+  const rows = signals
+    .filter(x => x.strategy === engine && normalizedScoreFrom(x) !== null && normalizedScoreFrom(x) > 80)
+    .sort((a, b) => normalizedScoreFrom(b) - normalizedScoreFrom(a));
+  return <Panel title={engine + ' · Closed-Candle Signal Engine'}>{entrySafetyBlocked ? <div className="danger">NEW ENTRIES BLOCKED — {entrySafetyReason || 'Tradetron position snapshot is not verified'}.</div> : null}<div className="marketCount">Showing only signals with normalizedScore greater than 80. The original score remains unchanged and is available on the score tooltip.</div><div className="tablewrap"><table><thead><tr><th>COIN</th><th>STAGE</th><th>SIDE</th><th>NORM SCORE</th><th>RSI</th><th>VOL</th><th>EMA21</th><th>ATR</th><th>SL</th><th>TP1</th><th>TP</th><th>QTY</th><th>RISK</th><th>BLOCKED / GATES</th></tr></thead><tbody>{rows.map(x => {
     const hasGateResults = Array.isArray(x.gate_results);
     const positionOpen = openPositionSymbols.has(String(x.symbol || '').toUpperCase());
     const safetyReason = entrySafetyBlocked ? 'Tradetron entry safety blocked: ' + (entrySafetyReason || 'snapshot not verified') : positionOpen ? 'Open position detected; duplicate entry blocked' : '';
     const rowReasons = [hasGateResults ? blockersDisplay(x.gate_results) : fmtReasons(x.blocked_reasons), safetyReason].filter(value => value && value !== '—').join(' · ') || '—';
+    const normalizedScore = normalizedScoreFrom(x);
+    const originalScore = safeNum(x.score);
+    const scoreTooltip = 'Normalized score: ' + normalizedScore.toFixed(2) + '/100\nOriginal score: ' + (originalScore === null ? 'NO DATA' : originalScore.toFixed(0) + '/100');
     return <tr key={x.symbol}>
       <td className="symbol">{x.symbol}</td>
       <td>{x.stage || '—'}</td>
       <td className={x.side==='BUY'?'up':x.side==='SELL'?'down':''}>{x.side || '—'}</td>
-      <td><b>{safeNum(x.score) === null ? '—' : safeNum(x.score).toFixed(0)}</b></td>
+      <td title={scoreTooltip}><b>{normalizedScore.toFixed(2)}</b>/100</td>
       <td>{fmtRsi(x.rsi)}</td>
       <td>{fmtMultiplier(x.volume_spike)}</td>
       <td>{fmtRawPrice(x.ema21)}</td>
@@ -531,7 +549,7 @@ function EngineView({ engine, signals, entrySafetyBlocked = false, entrySafetyRe
       <td>{safeNum(x.risk_usd) === null ? '—' : money(x.risk_usd)}</td>
       <td className={safetyReason ? 'blocker' : 'muted'} title={(hasGateResults ? x.gate_results.map(gateTooltip).join('\n') : 'Structured gate results are not supplied by the current worker; showing existing block reasons.') + (safetyReason ? '\n' + safetyReason : '')}>{rowReasons}</td>
     </tr>;
-  })}</tbody></table></div></Panel>;
+  })}{!rows.length ? <tr><td colSpan={14}>No current signals have normalizedScore greater than 80. Signals without a valid normalized score are hidden from this view.</td></tr> : null}</tbody></table></div></Panel>;
 }
 
 function OptionsView({ signals, settings, optionCache = [], executionCoverage = null }) {

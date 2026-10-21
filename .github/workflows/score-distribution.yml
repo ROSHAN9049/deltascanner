@@ -2,15 +2,17 @@ name: Score distribution analysis
 
 on:
   workflow_dispatch:
+  push:
+    branches: ['feat/score-normalization-shadow']
 
 permissions:
   contents: read
 
 jobs:
   score-distribution:
-    name: Score distribution analysis
+    name: Read-only seven-day score distribution
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,34 +31,25 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         shell: bash
         run: |
-          if [ -z "${DATABASE_URL:-}" ]; then
-            echo "::error::DATABASE_URL secret is not configured. Add it at https://github.com/ROSHAN9049/deltascanner/settings/secrets/actions"
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::DATABASE_URL secret is not configured."
             exit 1
           fi
           echo "DATABASE_URL secret is present (value hidden)."
 
-      - name: Export signal cache (read-only)
+      - name: Run read-only seven-day dd_signals distribution
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: node scripts/export-signal-cache.mjs > scores.json
+        run: node scripts/score-distribution.mjs --database > score-distribution-report.json
 
-      - name: Analyze score distribution
+      - name: Add summary to workflow run
         run: |
-          node scripts/score-distribution.mjs scores.json | tee /tmp/score-distribution.json
+          node --input-type=module -e 'import fs from "node:fs"; const r=JSON.parse(fs.readFileSync("score-distribution-report.json","utf8")); const p=r.byStrategyDistribution; const lines=["### Score Normalization · Last 7 Days","", "Source: "+r.source, "Rows scanned: "+r.count, "Observed data range: "+r.observedRange.earliest+" to "+r.observedRange.latest+" ("+r.observedRange.observedHours+" hours observed)", "", "| Strategy | Original ≥85% | Normalized ≥85% | Normalized >80% | Normalized sample |","|---|---:|---:|---:|---:|"]; for(const [s,v] of Object.entries(p)) lines.push("| "+s+" | "+v.originalAtLeast85PctSamePopulation+"% | "+v.normalizedAtLeast85PctSamePopulation+"% | "+v.normalizedGreaterThan80Pct+"% | "+v.normalizedCount+" |"); lines.push("", "Overall normalized ≥85%: "+r.normalized.atLeast85.actualPct+"% (target <2%).","Same-population normalized coverage: "+r.normalized.coveragePct+"%.","", "Caveat: "+r.note); fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,lines.join("\n")+"\n");'
 
-      - name: Add analysis result to workflow summary
-        run: |
-          {
-            echo "### Score Distribution Analysis"
-            echo ""
-            echo "First 40 lines of the JSON report:"
-            sed -n '1,40p' /tmp/score-distribution.json
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload signal-cache export
+      - name: Upload distribution report
         uses: actions/upload-artifact@v4
         with:
-          name: signal-cache-scores
-          path: scores.json
+          name: score-normalization-distribution
+          path: score-distribution-report.json
           if-no-files-found: error
           retention-days: 7
