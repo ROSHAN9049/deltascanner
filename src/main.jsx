@@ -11,7 +11,7 @@ import { formatLastNonZeroPnlContext } from './tradetron-pnl-context.js';
 import { DEFAULT_VISIBLE_MARKET_LIMIT, selectVisibleMarketRows, selectVisibleSignalRows } from './market-view.js';
 import { assessDeltaRange, fmtMultiplier, fmtPrice as fmtRawPrice, fmtRsi, safeNum } from './formatters.js';
 import { blockersDisplay, gateTooltip } from './gate-result.js';
-import { buildRiskGovernorGates } from './risk-governor.js';
+import { buildRiskGovernorGates, buildNormalizedScoreDiagnostic } from './risk-governor.js';
 import { normalizedScoreFromView as normalizedScoreFrom, visibleScoreFrom, passesScoreFilter, normalizedScoreTooltip, showAllPreferenceKey, readShowAllPreference, writeShowAllPreference } from './normalized-score-view.js';
 import { buildPnlHistoryInsights } from './pnl-history-insights.js';
 import { contractValueForSymbol, stockTokenPnlTooltip, stockTokenOpenPnlTooltip, detectNotionalLikePnl, NOTIONAL_LIKE_PNL_TOOLTIP } from './stock-token-pnl.js';
@@ -498,6 +498,8 @@ function RiskGovernor({ signals, health, positions, onInspect, inspect, scoreMin
     entrySafetyTrusted,
     scoreMin
   });
+  const normalizedDiagnostic = buildNormalizedScoreDiagnostic(selected);
+  const formatScore = value => value === null ? '—' : value.toFixed(2);
   return <Panel title="Risk Governor · Evidence-Based Status">
     <div className="inspectRow"><label>Inspect coin<select value={selected.symbol} onChange={e => onInspect(e.target.value)}>{[...new Set(signals.map(x=>x.symbol))].slice(0,50).map(x => <option key={x}>{x}</option>)}</select></label><span>{selected.strategy} · {selected.side || 'NO SIDE'} · {safeNum(selected.score) === null ? 'NO SCORE DATA' : safeNum(selected.score).toFixed(0) + '/100'}</span></div>
     <div className="lockedText">PASS means the required observation is available and meets the displayed test. UNKNOWN means this view lacks enough evidence; UNKNOWN must not be treated as a pass.</div>
@@ -505,7 +507,14 @@ function RiskGovernor({ signals, health, positions, onInspect, inspect, scoreMin
       <b className={gate.result === 'PASS' ? 'pass' : gate.result === 'BLOCK' ? 'block' : 'unknown'}>{gate.result}</b>
       <span>{gate.gate}</span>
       <em title={gateTooltip(gate)}>{gateTooltip(gate).replace(gate.gate + ': ', '')}</em>
-    </div>)}</div>
+    </div>)}
+      <div>
+        <b className={normalizedDiagnostic.status === 'PASS' ? 'pass' : normalizedDiagnostic.status === 'BLOCK' ? 'block' : normalizedDiagnostic.status === 'WARN' ? 'warn' : 'unknown'}>{normalizedDiagnostic.status}</b>
+        <span>Normalized Score</span>
+        <em title={normalizedDiagnostic.reason}>Original: {formatScore(normalizedDiagnostic.originalScore)} · Normalized: {formatScore(normalizedDiagnostic.normalizedScore)} · {normalizedDiagnostic.reason}</em>
+      </div>
+    </div>
+    <div className="lockedText">Diagnostic only — does not gate live orders.</div>
   </Panel>;
 }
 

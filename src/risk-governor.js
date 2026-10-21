@@ -32,6 +32,62 @@ function hasReason(reasonText, pattern) {
   return normalizedReason.includes(normalizedPattern);
 }
 
+/**
+ * Display-only comparison of the original signal score and normalized shadow score.
+ * This diagnostic is not consumed by worker gates, signal stages or order routing.
+ */
+export function buildNormalizedScoreDiagnostic(selected) {
+  if (!selected || typeof selected !== 'object') {
+    return {
+      status: GATE_UNKNOWN,
+      originalScore: null,
+      normalizedScore: null,
+      reason: 'No signal selected; score comparison unavailable'
+    };
+  }
+  const details = detailsOf(selected);
+  const originalScore = safeNum(selected.score);
+  const normalizedScore = safeNum(selected.normalizedScore ?? details.normalizedScore);
+  if (originalScore === null || normalizedScore === null) {
+    return {
+      status: GATE_UNKNOWN,
+      originalScore,
+      normalizedScore,
+      reason: 'Original or normalized score is unavailable; comparison is incomplete'
+    };
+  }
+  if (originalScore >= 80 && normalizedScore < 80) {
+    return {
+      status: 'WARN',
+      originalScore,
+      normalizedScore,
+      reason: 'Original score inflated — normalized shows lower'
+    };
+  }
+  if (originalScore >= 80 && normalizedScore >= 80) {
+    return {
+      status: GATE_PASS,
+      originalScore,
+      normalizedScore,
+      reason: 'Both original and normalized scores meet the 80 threshold'
+    };
+  }
+  if (originalScore < 80 && normalizedScore < 80) {
+    return {
+      status: GATE_BLOCK,
+      originalScore,
+      normalizedScore,
+      reason: 'Both original and normalized scores are below 80'
+    };
+  }
+  return {
+    status: 'WARN',
+    originalScore,
+    normalizedScore,
+    reason: 'Normalized score is high while original score is below 80; review score disagreement'
+  };
+}
+
 function normalizeTrend(value) {
   const trend = String(value || '').trim().toUpperCase();
   return ['BULL', 'BEAR', 'FLAT'].includes(trend) ? trend : null;

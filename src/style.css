@@ -95,3 +95,4 @@ footer{color:#526177;text-align:center;font-size:9px;padding-top:12px}
 .confirmDialog p{margin:0;color:#9aa9bc;font-size:11px;line-height:1.6}
 .confirmActions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
 .confirmActions button{margin:0;min-width:82px}
+.gates .warn{background:#3a2411;color:#ffbf69}
