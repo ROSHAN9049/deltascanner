@@ -2,7 +2,8 @@
 /**
  * Isolated walk-forward backtest for the pre-breakout detector.
  *
- * Default: 90 days of 1m Delta India candles for BTCUSD, ETHUSD and SOLUSD.
+ * Default: 90 days of 15m Delta India candles for BTCUSD, ETHUSD and SOLUSD.
+ * Override PRE_BREAKOUT_BACKTEST_RESOLUTION=1h to run the same engine on 1h.
  * No database writes, worker integration, or order submission are performed.
  */
 import { pathToFileURL } from 'node:url';
@@ -12,9 +13,10 @@ import { detectPreBreakout } from '../worker/leading-indicators/pre-breakout.mjs
 
 const DEFAULT_SYMBOLS = ['BTCUSD', 'ETHUSD', 'SOLUSD'];
 const DAY_SECONDS = 86400;
-const MINUTE_SECONDS = 60;
-const PAGE_MINUTES = 1900; // Stay below Delta's documented 2,000-candle response cap.
-const FEE_PER_SIDE = 0.0005;
+const CANDLE_SECONDS = Object.freeze({ '1m': 60, '5m': 300, '15m': 900, '1h': 3600 });
+const PAGE_CANDLES = 1900; // Stay below Delta's documented 2,000-candle response cap.
+const FEE_PER_SIDE = 0.001; // Requested fee model: 0.1% of entry and exit price per side.
+const MAX_FEE_RISK_RATIO = 0.15;
 const ENTRY_SLIPPAGE = 0.001;
 const RISK_PER_TRADE = 0.01;
 const API_BASE = String(process.env.DELTA_REST_BASE || 'https://api.india.delta.exchange').replace(/\/+$/, '');
@@ -25,14 +27,22 @@ function positiveInteger(value, fallback) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function safeCandle(row) {
-  const result = normalizeCandle(row, '1m');
+function selectedResolution(value = process.env.PRE_BREAKOUT_BACKTEST_RESOLUTION || '15m') {
+  const resolution = String(value).trim().toLowerCase();
+  if (!Object.hasOwn(CANDLE_SECONDS, resolution)) {
+    throw new RangeError('Unsupported resolution: ' + resolution + '. Use 1m, 5m, 15m or 1h.');
+  }
+  return resolution;
+}
+
+function safeCandle(row, resolution) {
+  const result = normalizeCandle(row, resolution);
   return result.ok ? result.candle : null;
 }
 
-async function fetchPage(symbol, start, end) {
+async function fetchPage(symbol, resolution, start, end) {
   const url = new URL(API_BASE + '/v2/history/candles');
-  url.searchParams.set('resolution', '1m');
+  url.searchParams.set('resolution', resolution);
   url.searchParams.set('symbol', symbol);
   url.searchParams.set('start', String(start));
   url.searchParams.set('end', String(end));
@@ -52,8 +62,7 @@ async function fetchPage(symbol, start, end) {
       }
 
       if ((response.status === 429 || response.status >= 500) && attempt < 4) {
-        const waitMs = Math.min(8000, 500 * (2 ** attempt));
-        await sleep(waitMs);
+        await sleep(Math.min(8000, 500 * (2 ** attempt)));
         continue;
       }
       if (!response.ok || !payload || payload.success === false) {
@@ -76,17 +85,18 @@ async function fetchPage(symbol, start, end) {
   throw lastError || new Error('Delta candle request retry exhausted for ' + symbol);
 }
 
-export async function fetchHistoricalCandles(symbol, startSeconds, endSeconds) {
+export async function fetchHistoricalCandles(symbol, startSeconds, endSeconds, resolution = '15m') {
+  const intervalSeconds = CANDLE_SECONDS[selectedResolution(resolution)];
   const byTime = new Map();
   let requestCount = 0;
 
   for (let pageStart = startSeconds; pageStart < endSeconds;) {
-    const pageEnd = Math.min(endSeconds, pageStart + PAGE_MINUTES * MINUTE_SECONDS);
-    const rows = await fetchPage(symbol, pageStart, pageEnd);
+    const pageEnd = Math.min(endSeconds, pageStart + PAGE_CANDLES * intervalSeconds);
+    const rows = await fetchPage(symbol, resolution, pageStart, pageEnd);
     requestCount++;
 
     for (const raw of rows) {
-      const candle = safeCandle(raw);
+      const candle = safeCandle(raw, resolution);
       if (!candle) continue;
       if (candle.time >= startSeconds && candle.time < endSeconds) {
         byTime.set(candle.time, candle);
@@ -94,7 +104,6 @@ export async function fetchHistoricalCandles(symbol, startSeconds, endSeconds) {
     }
 
     pageStart = pageEnd;
-    // Keep sequential public REST requests spaced to avoid creating a request burst.
     await sleep(120);
   }
 
@@ -109,15 +118,32 @@ function adverseEntryPrice(open, direction) {
 }
 
 /**
- * Simulate sequential, non-overlapping trades for one symbol. A signal is
- * calculated only from candles before entryIndex; entry uses the next candle's
- * open with adverse 0.1% slippage. SL/TP distances are anchored to the actual
- * fill using ATR measured at signal time. If SL and TP1 occur in one candle,
- * SL is assumed first (conservative). Open trades at the end are not scored.
+ * Before taking a candidate, estimate round-trip fees using entry and the
+ * stop-loss as the conservative exit-price estimate. Actual realized fees below
+ * use the actual simulated exit. A rejected candidate increments skippedByFees.
+ */
+export function passesFeeToRiskFilter(entryPrice, stopLoss, exitPriceEstimate = stopLoss) {
+  const stopDistance = Math.abs(entryPrice - stopLoss);
+  const totalFees = (entryPrice * FEE_PER_SIDE) + (exitPriceEstimate * FEE_PER_SIDE);
+  return {
+    passes: Number.isFinite(stopDistance) && stopDistance > 0 &&
+      Number.isFinite(totalFees) && totalFees <= (stopDistance * MAX_FEE_RISK_RATIO),
+    stopDistance,
+    totalFees,
+    feeRiskRatio: stopDistance > 0 ? totalFees / stopDistance : Infinity
+  };
+}
+
+/**
+ * Simulate sequential, non-overlapping trades. Each signal sees only candles
+ * before entryIndex; entry is the following candle's open plus adverse slippage.
+ * ATR risk levels are re-anchored to actual fill. If SL and TP1 occur in one
+ * candle, SL is assumed first. End-of-data open trades are not scored.
  */
 export function simulateSymbol(symbol, candles) {
   const trades = [];
   let openAtEnd = 0;
+  let skippedByFees = 0;
   let index = 100;
 
   while (index < candles.length - 1) {
@@ -148,6 +174,16 @@ export function simulateSymbol(symbol, candles) {
     const tp1 = entryPrice + directionSign * 3 * atrValue;
     const tp2 = entryPrice + directionSign * 5 * atrValue;
     const riskPerUnit = Math.abs(entryPrice - stopLoss);
+
+    // exit is unknowable before entry, so use the stop as a conservative
+    // estimate. This applies the requested exact fee formula before admission.
+    const feeGate = passesFeeToRiskFilter(entryPrice, stopLoss, stopLoss);
+    if (!feeGate.passes) {
+      skippedByFees++;
+      index++;
+      continue;
+    }
+
     let exitIndex = -1;
     let exitPrice = null;
     let exitReason = null;
@@ -162,7 +198,7 @@ export function simulateSymbol(symbol, candles) {
       if (stopHit && targetHit) {
         exitIndex = forward;
         exitPrice = stopLoss;
-        exitReason = 'SL'; // Conservative tie-break when OHLC does not reveal intrabar order.
+        exitReason = 'SL';
         break;
       }
       if (stopHit) {
@@ -185,7 +221,7 @@ export function simulateSymbol(symbol, candles) {
     }
 
     const grossPnl = directionSign * (exitPrice - entryPrice);
-    const fees = (entryPrice + exitPrice) * FEE_PER_SIDE;
+    const fees = (entryPrice * FEE_PER_SIDE) + (exitPrice * FEE_PER_SIDE);
     const netPnl = grossPnl - fees;
     const rMultiple = netPnl / riskPerUnit;
 
@@ -205,6 +241,7 @@ export function simulateSymbol(symbol, candles) {
       result: exitReason,
       grossPnl,
       fees,
+      feeRiskRatio: fees / riskPerUnit,
       netPnl,
       rMultiple
     });
@@ -212,7 +249,7 @@ export function simulateSymbol(symbol, candles) {
     index = exitIndex + 1;
   }
 
-  return { trades, openAtEnd };
+  return { trades, openAtEnd, skippedByFees };
 }
 
 export function calculateBacktestMetrics(inputTrades) {
@@ -242,7 +279,7 @@ export function calculateBacktestMetrics(inputTrades) {
   let maxConsecutiveLosses = 0;
   for (const trade of trades) {
     const rMultiple = Number(trade.rMultiple) || 0;
-    equity *= 1 + (RISK_PER_TRADE * rMultiple);
+    equity *= Math.max(0, 1 + (RISK_PER_TRADE * rMultiple));
     peak = Math.max(peak, equity);
     const drawdownPct = peak > 0 ? ((peak - equity) / peak) * 100 : 100;
     maxDrawdownPct = Math.max(maxDrawdownPct, drawdownPct);
@@ -257,8 +294,8 @@ export function calculateBacktestMetrics(inputTrades) {
 
   const gates = {
     minimumTrades: totalTrades >= 100,
-    winRate: (winRate * 100) >= 40,
-    expectancy: expectancyR >= 0.3,
+    winRate: (winRate * 100) > 40,
+    expectancy: expectancyR > 0.3,
     profitFactor: profitFactor >= 1.3,
     maxDrawdown: maxDrawdownPct <= 25,
     maxConsecutiveLosses: maxConsecutiveLosses <= 6
@@ -279,27 +316,25 @@ export function calculateBacktestMetrics(inputTrades) {
   };
 }
 
-function printSummary(symbolRows, metrics, dayCount, openAtEnd) {
+function printSummary(symbolRows, metrics, dayCount, resolution, openAtEnd, skippedByFees) {
   const line = (cells, widths) => '| ' + cells.map((cell, i) => String(cell).padEnd(widths[i])).join(' | ') + ' |';
-  const headers = ['Symbol', 'Candles', 'Requests', 'Trades', 'Open at end'];
-  const widths = [10, 9, 8, 8, 12];
+  const headers = ['Symbol', 'Candles', 'Requests', 'Trades', 'Fee skips', 'Open at end'];
+  const widths = [10, 9, 8, 8, 9, 12];
   const divider = '|-' + widths.map(width => '-'.repeat(width)).join('-|-') + '-|';
-  console.error('Pre-breakout walk-forward backtest — ' + dayCount + ' requested days');
+  console.error('Pre-breakout walk-forward backtest — ' + dayCount + ' requested days · ' + resolution);
   console.error(line(headers, widths));
   console.error(divider);
   for (const row of symbolRows) {
     console.error(line([
-      row.symbol,
-      row.candleCount,
-      row.requestCount,
-      row.tradeCount,
-      row.openAtEnd
+      row.symbol, row.candleCount, row.requestCount, row.tradeCount,
+      row.skippedByFees, row.openAtEnd
     ], widths));
   }
   console.error(divider);
   console.error('Completed trades: ' + metrics.totalTrades +
     ' | TP1 hits: ' + metrics.targetWins +
     ' | SL: ' + metrics.stopLosses +
+    ' | skipped by fee filter: ' + skippedByFees +
     ' | unresolved at data end: ' + openAtEnd);
   console.error('Win rate: ' + metrics.winRatePct.toFixed(2) + '%' +
     ' | Avg win: ' + metrics.avgWinR.toFixed(3) + 'R' +
@@ -319,29 +354,36 @@ function printSummary(symbolRows, metrics, dayCount, openAtEnd) {
 export async function runBacktest({
   symbols = DEFAULT_SYMBOLS,
   days = positiveInteger(process.env.PRE_BREAKOUT_BACKTEST_DAYS, 90),
+  resolution = selectedResolution(),
   nowMs = Date.now()
 } = {}) {
-  const endSeconds = Math.floor(nowMs / 60000) * 60;
+  resolution = selectedResolution(resolution);
+  const intervalSeconds = CANDLE_SECONDS[resolution];
+  const endSeconds = Math.floor(nowMs / (intervalSeconds * 1000)) * intervalSeconds;
   const startSeconds = endSeconds - days * DAY_SECONDS;
   const symbolRows = [];
   const trades = [];
   let openAtEnd = 0;
+  let skippedByFees = 0;
 
   for (const symbol of symbols) {
-    const fetched = await fetchHistoricalCandles(symbol, startSeconds, endSeconds);
+    const fetched = await fetchHistoricalCandles(symbol, startSeconds, endSeconds, resolution);
     const simulation = simulateSymbol(symbol, fetched.candles);
-    symbolRows.push({
+    const row = {
       symbol,
       candleCount: fetched.candles.length,
       requestCount: fetched.requestCount,
       tradeCount: simulation.trades.length,
+      skippedByFees: simulation.skippedByFees,
       openAtEnd: simulation.openAtEnd
-    });
+    };
+    symbolRows.push(row);
     trades.push(...simulation.trades);
+    openAtEnd += simulation.openAtEnd;
+    skippedByFees += simulation.skippedByFees;
   }
 
   trades.sort((a, b) => Number(a.exitTime) - Number(b.exitTime));
-  openAtEnd = symbolRows.reduce((sum, row) => sum + row.openAtEnd, 0);
   const metrics = calculateBacktestMetrics(trades);
   const result = {
     generatedAt: new Date(nowMs).toISOString(),
@@ -349,7 +391,8 @@ export async function runBacktest({
       requestedDays: days,
       start: new Date(startSeconds * 1000).toISOString(),
       end: new Date(endSeconds * 1000).toISOString(),
-      resolution: '1m',
+      resolution,
+      candleSeconds: intervalSeconds,
       symbols: [...symbols]
     },
     executionModel: {
@@ -357,6 +400,12 @@ export async function runBacktest({
       entry: 'next candle open',
       entrySlippagePct: ENTRY_SLIPPAGE * 100,
       feePerSidePct: FEE_PER_SIDE * 100,
+      feeRiskFilter: {
+        maxFeeToRiskRatio: MAX_FEE_RISK_RATIO,
+        formula: 'entryPrice*0.001 + estimatedExitPrice*0.001 <= abs(entryPrice-stopLoss)*0.15',
+        preEntryExitEstimate: 'stop-loss price (conservative)',
+        skippedCandidatesAreNotTrades: true
+      },
       riskPerTradePct: RISK_PER_TRADE * 100,
       sameCandleStopAndTarget: 'stop-loss first',
       targetForWinRate: 'TP1; TP2 is reported but no partial-exit model is assumed',
@@ -365,6 +414,7 @@ export async function runBacktest({
       noLookAhead: true
     },
     symbolResults: symbolRows,
+    skippedByFees,
     unresolvedOpenTradesAtEnd: openAtEnd,
     metrics: {
       ...metrics,
@@ -372,7 +422,7 @@ export async function runBacktest({
     },
     trades
   };
-  printSummary(symbolRows, metrics, days, openAtEnd);
+  printSummary(symbolRows, metrics, days, resolution, openAtEnd, skippedByFees);
   return result;
 }
 
