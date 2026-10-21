@@ -37,7 +37,11 @@ function combinedCandles({ constantVolume = false } = {}) {
 
     const high = Math.max(previousClose, close) + upper;
     const low = Math.min(previousClose, close) - lower;
-    const volume = constantVolume ? 100 : i < 60 ? 100 : 100 + Math.floor((i - 60) / 4) * 30;
+    const phase = (i - 60) % 4;
+    const cycle = Math.floor((i - 60) / 4);
+    const volume = constantVolume
+      ? 100
+      : i < 60 ? 100 : 100 + cycle * 30 + (phase === 1 ? 20 : 0);
     candles.push({
       time: 1_800_000_000 + i * 60,
       open: previousClose,

@@ -37,8 +37,8 @@ function distributionCandles(count = 40) {
     candles.push({
       time: 1_800_000_000 + i * 60,
       open: previousClose,
-      high: Math.max(previousClose, close) + (downBar ? 0.2 : 0.8),
-      low: Math.min(previousClose, close) - (downBar ? 0.8 : 0.2),
+      high: Math.max(previousClose, close) + (downBar ? 1.0 : 0.2),
+      low: Math.min(previousClose, close) - (downBar ? 0.2 : 1.0),
       close,
       volume: downBar ? 1000 : 100
     });
@@ -76,7 +76,7 @@ test('OBV is the running signed-volume sum', () => {
 
 test('Chaikin Money Flow uses the money-flow multiplier and volume weighting', () => {
   const candles = Array.from({ length: 2 }, () => ({
-    high: 10, low: 0, close: 7.5, volume: 10
+    high: 11, low: 1, close: 8.5, volume: 10
   }));
   assert.equal(calculateCMF(candles, 2).cmf, 0.5);
 });
