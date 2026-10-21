@@ -104,12 +104,31 @@ test('a pending-reservation duplicate blocker stays BLOCK even with no open posi
   assert.equal(gate(rows, 'Duplicate symbol'), GATE_BLOCK);
 });
 
-test('an open position blocks the duplicate-symbol check', () => {
+test('an open position blocks duplicate entry and exposes its quantity', () => {
   const rows = buildRiskGovernorGates({
     selected: { symbol: 'BTCUSD', stage: 'CONFIRMED', score: 90 },
-    positions: [{ symbol: 'btcusd', qty: 1 }]
+    positions: [{ symbol: 'btcusd', qty: -2 }]
   });
   assert.equal(gate(rows, 'Duplicate symbol'), GATE_BLOCK);
+  const duplicate = rows.find(row => row.gate === 'Duplicate symbol');
+  assert.equal(duplicate.observedValue, 'BTCUSD qty=-2');
+  assert.match(duplicate.blockReason, /qty -2/);
+});
+
+test('duplicate status passes without a matching position unless the Tradetron API failed', () => {
+  const trustedEmpty = buildRiskGovernorGates({
+    selected: { symbol: 'ETHUSD', stage: 'CONFIRMED', score: 90 },
+    positions: null,
+    entrySafetyTrusted: true
+  });
+  assert.equal(gate(trustedEmpty, 'Duplicate symbol'), GATE_PASS);
+
+  const apiFailure = buildRiskGovernorGates({
+    selected: { symbol: 'ETHUSD', stage: 'CONFIRMED', score: 90 },
+    positions: null,
+    entrySafetyTrusted: false
+  });
+  assert.equal(gate(apiFailure, 'Duplicate symbol'), GATE_UNKNOWN);
 });
 
 test('Momentum and Scalp use their own worker-aligned range and EMA thresholds', () => {

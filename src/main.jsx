@@ -58,6 +58,8 @@ const isPass = v => v === true;
 const latestSignals = list => {
   const m = new Map();
   for (const x of list || []) {
+    // Keep unaffordable candidates in signal history, but out of current signal tables.
+    if (String(x?.stage || '').trim().toUpperCase() === 'SKIPPED_INSUFFICIENT_CAPITAL') continue;
     const key = x.symbol + ':' + x.strategy;
     if (!m.has(key) || new Date(x.captured_at) > new Date(m.get(key).captured_at)) m.set(key, x);
   }
