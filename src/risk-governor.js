@@ -307,18 +307,40 @@ export function buildRiskGovernorGates({
         ].filter(([, value]) => typeof value !== 'boolean').map(([name]) => name).join(', ')
       : '';
 
-  const positionsKnown = Array.isArray(positions) && Boolean(symbol);
-  const duplicatePosition = positionsKnown && positions.some(position =>
-    String(position?.symbol || '').trim().toUpperCase() === symbol &&
-    (safeNum(position?.qty ?? position?.quantity) ?? 0) !== 0
-  );
+  const duplicatePosition = Array.isArray(positions)
+    ? positions.find(position =>
+        String(position?.symbol || '').trim().toUpperCase() === symbol &&
+        (safeNum(position?.qty ?? position?.quantity) ?? 0) !== 0
+      ) || null
+    : null;
+  const duplicatePositionQty = duplicatePosition
+    ? safeNum(duplicatePosition.qty ?? duplicatePosition.quantity)
+    : null;
+  // Only an explicit untrusted/failed Tradetron snapshot leaves an absent
+  // symbol UNKNOWN. A healthy/unspecified API with no matching open position
+  // does not manufacture an UNKNOWN result from the selected signal row.
+  const positionApiFailed = entrySafetyTrusted === false;
   // The backend can reserve a symbol while a signal is pending even when no
   // position row exists yet; preserve that explicit blocker in the inspector.
   const duplicateStatus = hasReason(reasonText, 'duplicate symbol')
     ? GATE_BLOCK
-    : positionsKnown
-      ? status(true, !duplicatePosition)
-      : GATE_UNKNOWN;
+    : duplicatePosition
+      ? GATE_BLOCK
+      : positionApiFailed
+        ? GATE_UNKNOWN
+        : GATE_PASS;
+  const duplicateObservedValue = duplicatePosition
+    ? `${symbol} qty=${duplicatePositionQty === null ? 'unknown' : duplicatePositionQty}`
+    : symbol || null;
+  const duplicateBlockReason = duplicateStatus === GATE_BLOCK
+    ? duplicatePosition
+      ? duplicatePositionQty === null
+        ? 'Open Tradetron position already uses this symbol; quantity unavailable'
+        : `Open Tradetron position already uses this symbol (qty ${duplicatePositionQty})`
+      : 'Worker reported an existing position or pending reservation for this symbol'
+    : duplicateStatus === GATE_UNKNOWN
+      ? 'Tradetron position API failed; duplicate status unavailable'
+      : '';
 
   const qty = safeNum(selected.qty_contracts);
   const notional = safeNum(selected.notional);
@@ -337,7 +359,7 @@ export function buildRiskGovernorGates({
     gateResult({ gate: 'Spread', result: spreadStatus, observedValue: spreadPct, unit: '%', threshold: 0.35, thresholdUnit: '%', blockReason: spreadStatus === GATE_BLOCK ? 'Spread above limit or explicitly blocked' : spreadStatus === GATE_UNKNOWN ? 'Spread observation missing' : '' }),
     gateResult({ gate: 'Fresh closed candles', result: freshnessStatus, observedValue: candlesFresh ?? null, blockReason: freshnessStatus === GATE_BLOCK ? 'Candle freshness blocked' : freshnessStatus === GATE_UNKNOWN ? 'Candle freshness was not supplied' : '' }),
     gateResult({ gate: 'API / worker healthy', result: healthStatus, observedValue: healthObservedFields || null, blockReason: healthBlockReason }),
-    gateResult({ gate: 'Duplicate symbol', result: duplicateStatus, observedValue: symbol || null, blockReason: duplicateStatus === GATE_BLOCK ? 'An open position already uses this symbol' : duplicateStatus === GATE_UNKNOWN ? 'Position data or symbol unavailable' : '' }),
+    gateResult({ gate: 'Duplicate symbol', result: duplicateStatus, observedValue: duplicateObservedValue, blockReason: duplicateBlockReason }),
     gateResult({ gate: 'Margin / min size', result: marginStatus, observedValue: qty, unit: 'contracts', threshold: 1, thresholdUnit: 'contract', blockReason: marginStatus === GATE_BLOCK ? 'Quantity or notional fails the minimum-size check' : marginStatus === GATE_UNKNOWN ? 'Quantity or notional missing' : '' })
   ];
 }
