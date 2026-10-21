@@ -2,15 +2,17 @@ name: Score distribution analysis
 
 on:
   workflow_dispatch:
+  push:
+    branches: ['feat/score-normalization-shadow']
 
 permissions:
   contents: read
 
 jobs:
   score-distribution:
-    name: Score distribution analysis
+    name: Read-only seven-day score distribution
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,34 +31,66 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         shell: bash
         run: |
-          if [ -z "${DATABASE_URL:-}" ]; then
-            echo "::error::DATABASE_URL secret is not configured. Add it at https://github.com/ROSHAN9049/deltascanner/settings/secrets/actions"
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::DATABASE_URL secret is not configured."
             exit 1
           fi
           echo "DATABASE_URL secret is present (value hidden)."
 
-      - name: Export signal cache (read-only)
+      - name: Run read-only seven-day dd_signals distribution
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: node scripts/export-signal-cache.mjs > scores.json
+        run: node scripts/score-distribution.mjs --days=7 --compare --database > score-distribution-report.json
 
-      - name: Analyze score distribution
+      - name: Add summary to workflow run
         run: |
-          node scripts/score-distribution.mjs scores.json | tee /tmp/score-distribution.json
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const r = JSON.parse(fs.readFileSync('score-distribution-report.json', 'utf8'));
+          const fmt = value => value === null || value === undefined ? '—' : Number(value).toFixed(2) + '%';
+          const lines = [
+            '### Score Normalization · Requested Lookback',
+            '',
+            'Source: ' + r.source,
+            'Rows scanned: ' + r.totalRows + ' (original score valid: ' + r.count + ')',
+            'Requested lookback: ' + r.requestedDays + ' days',
+            'Observed data range: ' + r.observedRange.earliest + ' to ' + r.observedRange.latest + ' (' + r.observedRange.observedHours + ' hours / ' + r.observedRange.observedDays + ' days)',
+            'Persisted normalizedScore coverage: ' + r.coverage.rowsWithStoredNormalizedScore + '/' + r.coverage.totalRows + ' (' + r.coverage.storedCoveragePct + '%).',
+            'Replay/effective normalized coverage: ' + r.coverage.rowsWithNormalizedScore + '/' + r.coverage.totalRows + ' (' + r.coverage.coveragePct + '%).',
+            ''
+          ];
+          function addDistributionTable(title, sample) {
+            lines.push('#### ' + title, '', '| Band | Original % (n) | Normalized % (n) | Target |', '|---|---:|---:|---:|');
+            for (const key of ['0-<40', '40-<70', '70-<85', '85-100']) {
+              const original = sample.original.bands[key];
+              const normalized = sample.normalized.bands[key];
+              const target = original?.targetPct ?? normalized?.targetPct ?? '—';
+              lines.push('| ' + key + ' | ' + fmt(original?.actualPct) + ' (' + (original?.count ?? 0) + ') | ' + fmt(normalized?.actualPct) + ' (' + (normalized?.count ?? 0) + ') | ' + target + '% |');
+            }
+          }
+          addDistributionTable('ALL SIGNALS · all available rows', r.comparison.allSignals);
+          addDistributionTable('ALL SIGNALS · matched population', r.comparison.allSignals.samePopulation);
+          addDistributionTable('CONFIRMED ONLY · all available rows', r.comparison.confirmedOnly);
+          addDistributionTable('CONFIRMED ONLY · matched population', r.confirmedOnly.samePopulation);
+          lines.push(
+            '',
+            '**85+ highlighted — matched population:** ALL signals: original ' + fmt(r.samePopulation.original.atLeast85.actualPct) + ' vs normalized ' + fmt(r.samePopulation.normalized.atLeast85.actualPct) + '; CONFIRMED only: original ' + fmt(r.confirmedOnly.samePopulation.original.atLeast85.actualPct) + ' vs normalized ' + fmt(r.confirmedOnly.samePopulation.normalized.atLeast85.actualPct) + '.',
+            '',
+            'Missing normalization reasons (may overlap): ' + JSON.stringify(r.missingNormalization.byReason),
+            'Top symbols with missing normalized scores: ' + JSON.stringify(r.missingNormalization.symbols.slice(0, 10)),
+            '',
+            'Caveat: ' + r.note
+          );
+          if (r.observedRange.observedHours < r.requestedDays * 24 * 0.95) {
+            lines.push('', '**DATA WINDOW FAIL:** available rows do not span the requested ' + r.requestedDays + ' days. Do not treat this report as a full lookback sample.');
+          }
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n') + '\n');
+          NODE
 
-      - name: Add analysis result to workflow summary
-        run: |
-          {
-            echo "### Score Distribution Analysis"
-            echo ""
-            echo "First 40 lines of the JSON report:"
-            sed -n '1,40p' /tmp/score-distribution.json
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload signal-cache export
+      - name: Upload distribution report
         uses: actions/upload-artifact@v4
         with:
-          name: signal-cache-scores
-          path: scores.json
+          name: score-normalization-distribution
+          path: score-distribution-report.json
           if-no-files-found: error
           retention-days: 7

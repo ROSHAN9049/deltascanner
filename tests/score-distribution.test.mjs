@@ -57,3 +57,71 @@ test('score distribution exits with a clear error when no valid scores exist', a
   assert.notEqual(run.status, 0);
   assert.match(run.stderr, /No finite scores within 0-100/);
 });
+
+
+test('score distribution compares original and normalized scores with same-population coverage', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'delta-score-distribution-normalized-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const inputPath = path.join(dir, 'scores.json');
+  const records = {
+    signals: [
+      { captured_at: '2026-10-21T00:00:00.000Z', symbol: 'AAAUSD', strategy: 'MOMENTUM', stage: 'CONFIRMED', side: 'BUY', score: 95, rsi: 70, trend: 'BULL', volume_spike: 2, ema_distance_atr: 0.3 },
+      { captured_at: '2026-10-21T00:00:00.000Z', symbol: 'BBBUSD', strategy: 'MOMENTUM', stage: 'SETUP', side: 'BUY', score: 75, rsi: 50, trend: 'FLAT', volume_spike: 1, ema_distance_atr: 1.5 },
+      { captured_at: '2026-10-21T00:00:00.000Z', symbol: 'CCCUSD', strategy: 'MOMENTUM', stage: 'WATCH', side: 'SELL', score: 40, rsi: 60, trend: 'BEAR', volume_spike: 0.5, ema_distance_atr: 2.5 },
+      { captured_at: '2026-10-21T00:00:00.000Z', symbol: 'DDDUSD', strategy: 'SCALPING', stage: 'CONFIRMED', side: 'BUY', score: 92, rsi: 68, trend: 'BULL', volume_spike: 1.8, ema_distance_atr: 0.4, details: { normalizedScore: 83.5 } }
+    ]
+  };
+  await fs.writeFile(inputPath, JSON.stringify(records), 'utf8');
+
+  const run = spawnSync(process.execPath, [scriptPath, inputPath], { encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr);
+  const report = JSON.parse(run.stdout);
+  assert.equal(report.count, 4);
+  assert.equal(report.normalized.count, 4);
+  assert.equal(report.samePopulation.count, 4);
+  assert.equal(report.byStrategyDistribution.MOMENTUM.normalizedCount, 3);
+  assert.equal(report.byStrategyDistribution.SCALPING.normalizedCount, 1);
+  assert.equal(report.normalized.targetAtLeast85Pct, 2);
+  assert.ok(report.normalized.statistics.min >= 0);
+  assert.ok(report.normalized.statistics.max <= 100);
+});
+
+test('score distribution flags report all-signal and CONFIRMED-only comparison with coverage and missing reasons', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'delta-score-distribution-compare-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const inputPath = path.join(dir, 'scores.json');
+  const rows = [
+    { captured_at: '2026-10-21T00:00:00.000Z', symbol: 'AAAUSD', strategy: 'MOMENTUM', stage: 'CONFIRMED', side: 'BUY', score: 95, rsi: 70, trend: 'BULL', volume_spike: 2, ema_distance_atr: 0.3 },
+    { captured_at: '2026-10-21T00:00:00.000Z', symbol: 'BBBUSD', strategy: 'MOMENTUM', stage: 'CONFIRMED', side: 'BUY', score: 90, rsi: 62, trend: 'BULL', volume_spike: 1.5, ema_distance_atr: 0.5 },
+    { captured_at: '2026-10-21T00:00:00.000Z', symbol: 'CCCUSD', strategy: 'MOMENTUM', stage: 'SETUP', side: null, score: 76, rsi: 50, trend: 'FLAT', volume_spike: 1, ema_distance_atr: 1, details: { candlesFresh: false } },
+    { captured_at: '2026-10-21T00:00:00.000Z', symbol: 'DDDUSD', strategy: 'SCALPING', stage: 'WATCH', side: null, score: 40, rsi: 45, trend: 'FLAT', volume_spike: 0.8, ema_distance_atr: 2 }
+  ];
+  await fs.writeFile(inputPath, JSON.stringify({ signals: rows }), 'utf8');
+  const run = spawnSync(process.execPath, [scriptPath, '--days=7', '--compare', inputPath], { encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr);
+  const report = JSON.parse(run.stdout);
+  assert.equal(report.requestedDays, 7);
+  assert.equal(report.compareRequested, true);
+  assert.equal(report.comparison.allSignals.original.count, 4);
+  assert.equal(report.comparison.confirmedOnly.rowCount, 2);
+  assert.equal(report.comparison.confirmedOnly.original.count, 2);
+  assert.equal(report.normalized.bands['85-100'].targetPct, 2);
+  assert.equal(report.coverage.totalRows, 4);
+  assert.equal(report.coverage.rowsWithNormalizedScore, 2);
+  assert.equal(report.missingNormalization.byReason.missing_directional_side, 2);
+  assert.match(report.coverageNote, /non-directional \(WATCH\/SETUP\) signals do not receive a normalized score/);
+  assert.equal(report.missingNormalization.byReason.insufficient_candle_history, 1);
+  assert.ok(Array.isArray(report.missingNormalization.symbols));
+});
+
+test('score distribution accepts --days=7 --compare before an offline JSON path', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'delta-score-distribution-flags-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const inputPath = path.join(dir, 'scores.json');
+  await fs.writeFile(inputPath, JSON.stringify({ scores: [{ score: 90 }] }), 'utf8');
+  const run = spawnSync(process.execPath, [scriptPath, '--days=7', '--compare', inputPath], { encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr);
+  const report = JSON.parse(run.stdout);
+  assert.equal(report.requestedDays, 7);
+  assert.equal(report.compareRequested, true);
+});

@@ -21,7 +21,8 @@
     "db:retention:test": "node scripts/test-retention.mjs",
     "diagnose:failed-signals": "node scripts/diagnose-failed-signals.mjs",
     "test:derived-trades": "node --test tests/tradetron-derived-trades.test.mjs",
-    "import:tradetron-csv": "node scripts/import-tradetron-csv.mjs"
+    "import:tradetron-csv": "node scripts/import-tradetron-csv.mjs",
+    "score:distribution": "node scripts/score-distribution.mjs --database"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",
