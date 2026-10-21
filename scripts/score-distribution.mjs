@@ -404,6 +404,7 @@ function buildReport(rows, {
     confirmedOnly: confirmedComparison,
     byStrategyDistribution: perStrategy(rows, originalValues, normalizedValues),
     missingNormalization,
+    coverageNote: 'Coverage is naturally lower because non-directional (WATCH/SETUP) signals do not receive a normalized score.',
     note: source === 'PostgreSQL public.dd_signals'
       ? 'Read-only database report for the requested lookback. Existing stored normalizedScore is preferred; otherwise historical scores are replayed per captured_at+strategy using deduplicated dd_signals. Replay coverage is diagnostic, not exact live per-scan reconstruction. The actual observedRange must be checked to verify whether the database contains the full requested period.'
       : 'Offline descriptive analysis only. Stored normalized values are preferred; missing values are replayed from available same-strategy-cycle feature rows. Missing features/direction are not inferred.'
@@ -506,6 +507,7 @@ async function main() {
   console.error('[score-distribution] Requested ' + days + ' days; observed ' + output.observedRange.observedHours + ' hours (' + output.observedRange.observedDays + ' days) from ' + output.observedRange.earliest + ' to ' + output.observedRange.latest + '.');
   console.error('[score-distribution] Persisted normalizedScore coverage: ' + output.coverage.rowsWithStoredNormalizedScore + '/' + output.coverage.totalRows + ' (' + output.coverage.storedCoveragePct + '%). Replay/effective coverage: ' + output.coverage.rowsWithNormalizedScore + '/' + output.coverage.totalRows + ' (' + output.coverage.coveragePct + '%).');
   console.error('[score-distribution] Missing normalization reasons: ' + JSON.stringify(output.missingNormalization.byReason));
+  console.error('[score-distribution] Coverage note: ' + output.coverageNote);
   console.error('[score-distribution] Symbols with most missing normalized scores: ' + JSON.stringify(output.missingNormalization.symbols.slice(0, 20)));
   console.error('[score-distribution] 85+ comparison (same population): original ' + output.samePopulation.original.atLeast85.actualPct + '% vs normalized ' + output.samePopulation.normalized.atLeast85.actualPct + '%; CONFIRMED-only original ' + output.confirmedOnly.samePopulation.original.atLeast85.actualPct + '% vs normalized ' + output.confirmedOnly.samePopulation.normalized.atLeast85.actualPct + '%.');
   if (output.observedRange.observedHours < days * 24 * 0.95) {

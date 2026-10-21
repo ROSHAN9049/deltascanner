@@ -109,6 +109,7 @@ test('score distribution flags report all-signal and CONFIRMED-only comparison w
   assert.equal(report.coverage.totalRows, 4);
   assert.equal(report.coverage.rowsWithNormalizedScore, 2);
   assert.equal(report.missingNormalization.byReason.missing_directional_side, 2);
+  assert.match(report.coverageNote, /non-directional \(WATCH\/SETUP\) signals do not receive a normalized score/);
   assert.equal(report.missingNormalization.byReason.insufficient_candle_history, 1);
   assert.ok(Array.isArray(report.missingNormalization.symbols));
 });
