@@ -43,33 +43,51 @@ jobs:
       - name: Run isolated OFI calculation self-tests
         run: node scripts/ofi-backtest.mjs --self-test
 
+      - name: Restore previous OFI observations from archive branch
+        shell: bash
+        run: |
+          git fetch origin refs/heads/ofi-research-data:refs/remotes/origin/ofi-research-data || true
+          if git show-ref --verify --quiet refs/remotes/origin/ofi-research-data; then
+            git checkout origin/ofi-research-data -- data/
+          fi
+          mkdir -p data
+
       - name: Collect Delta Exchange India orderbook and trades
         run: node scripts/ofi-collector.mjs --duration="${{ inputs.duration_seconds }}"
 
       - name: Run 5-minute look-ahead backtest and publish step summary
         run: node scripts/ofi-backtest.mjs
 
-      - name: Commit collected JSONL data
+      - name: Commit collected JSONL data to research archive branch
         if: always()
         shell: bash
         run: |
           shopt -s nullglob
           files=(data/ofi-*.jsonl)
           if [ "${#files[@]}" -eq 0 ]; then
-            echo "No OFI JSONL file was created; nothing to commit."
+            echo "No OFI JSONL file was created; nothing to archive."
             exit 0
           fi
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- "${files[@]}"
-          if git diff --cached --quiet; then
-            echo "No new OFI data changes to commit."
+          archive_dir="$RUNNER_TEMP/ofi-data-archive"
+          if git show-ref --verify --quiet refs/remotes/origin/ofi-research-data; then
+            git worktree add -B ofi-research-data "$archive_dir" origin/ofi-research-data
+          else
+            git worktree add -b ofi-research-data "$archive_dir" HEAD
+          fi
+
+          mkdir -p "$archive_dir/data"
+          cp -a data/. "$archive_dir/data/"
+          git -C "$archive_dir" config user.name "github-actions[bot]"
+          git -C "$archive_dir" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$archive_dir" add -- data/ofi-*.jsonl
+          if git -C "$archive_dir" diff --cached --quiet; then
+            echo "No new OFI data changes to archive."
             exit 0
           fi
 
-          git commit -m "data: record OFI research observations"
-          git push origin "HEAD:$GITHUB_REF_NAME"
+          git -C "$archive_dir" commit -m "data: record OFI research observations"
+          git -C "$archive_dir" push origin HEAD:ofi-research-data
 
       - name: Upload OFI data as a downloadable artifact
         if: always()
