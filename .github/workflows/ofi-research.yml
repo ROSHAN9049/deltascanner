@@ -1,0 +1,78 @@
+name: OFI Research
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration_seconds:
+        description: Collection duration in seconds (default 1800 = 30 minutes)
+        required: true
+        default: 1800
+        type: number
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ofi-research-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  collect-and-backtest:
+    name: Collect OFI data and run preliminary backtest
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout selected branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Validate research scripts
+        run: |
+          node --check scripts/ofi-collector.mjs
+          node --check scripts/ofi-backtest.mjs
+
+      - name: Collect Delta Exchange India orderbook and trades
+        run: node scripts/ofi-collector.mjs --duration="${{ inputs.duration_seconds }}"
+
+      - name: Run 5-minute look-ahead backtest and publish step summary
+        run: node scripts/ofi-backtest.mjs
+
+      - name: Commit collected JSONL data
+        if: always()
+        shell: bash
+        run: |
+          shopt -s nullglob
+          files=(data/ofi-*.jsonl)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No OFI JSONL file was created; nothing to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- "${files[@]}"
+          if git diff --cached --quiet; then
+            echo "No new OFI data changes to commit."
+            exit 0
+          fi
+
+          git commit -m "data: record OFI research observations"
+          git push origin "HEAD:$GITHUB_REF_NAME"
+
+      - name: Upload OFI data as a downloadable artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ofi-research-data-${{ github.run_id }}
+          path: data/ofi-*.jsonl
+          if-no-files-found: warn
+          retention-days: 90
