@@ -13,7 +13,6 @@
  * per-cycle universe snapshot, so this historical replay is an estimate.
  */
 import fs from 'node:fs/promises';
-import path from 'node:path';
 import { computeStats } from '../src/indicators/ta.mjs';
 import { calculateNormalizedScore } from '../worker/strategy.mjs';
 
@@ -307,6 +306,7 @@ async function main() {
   if (!rows.length) throw new Error('No dd_signals rows or valid JSON input rows were found.');
 
   const output = buildReport(rows, { source, requestedDays });
+  if (!output.count) throw new Error('No finite scores within 0-100');
   console.log(JSON.stringify(output, null, 2));
   if (source === 'PostgreSQL public.dd_signals') {
     console.error('Read ' + rows.length + ' Momentum/Scalping dd_signals rows; no database writes performed.');
