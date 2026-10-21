@@ -1779,6 +1779,22 @@ export class DeltaEngine {
         const size = this.positionSizing(s, account, settings);
         const gate = await this.riskGate(s, s === mom ? 'MOMENTUM' : 'SCALPING', account, settings, openPositions, trades);
         const strategyName = s === mom ? 'MOMENTUM' : 'SCALPING';
+        const insufficientCapital = s.stage === 'CONFIRMED' && (!size || n(size.qty) < 1);
+        if (insufficientCapital) {
+          const capitalReason = 'Risk budget insufficient for 1 contract';
+          s.stage = 'SKIPPED_INSUFFICIENT_CAPITAL';
+          s.ready = false;
+          s.blocked = [...new Set([
+            ...(Array.isArray(s.blocked) ? s.blocked : [])
+              .filter(reason => String(reason) !== 'Margin / minimum contract size'),
+            capitalReason
+          ])];
+          gate.reasons = [...new Set([
+            ...(Array.isArray(gate.reasons) ? gate.reasons : [])
+              .filter(reason => String(reason) !== 'Margin / minimum contract size'),
+            capitalReason
+          ])];
+        }
         const cacheRow = {
           cache_key: s.symbol + ':' + strategyName,
           symbol: s.symbol, product_id: s.productId, strategy: strategyName,
