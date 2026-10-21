@@ -1,3 +1,5 @@
+import assert from 'node:assert/strict';
+import { calculateStaticImbalance, parseDurationArg } from './ofi-collector.mjs';
 import { readdir, readFile, appendFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,6 +8,7 @@ export const LOOKAHEAD_MS = 300000;
 export const LOOKAHEAD_TOLERANCE_MS = 5000;
 
 function finite(value) {
+  if (value === null || value === undefined || value === '') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
@@ -228,7 +231,50 @@ export async function runBacktest() {
   return { filePath, rows: rows.length, malformedLines, result, summary };
 }
 
+async function runSelfTests() {
+  const imbalance = calculateStaticImbalance(
+    [[99, 5], [100, 10]],
+    [[102, 3], [101, 2]]
+  );
+  assert.equal(imbalance.bestBid, 100);
+  assert.equal(imbalance.bestAsk, 101);
+  assert.equal(imbalance.bidVolume, 15);
+  assert.equal(imbalance.askVolume, 5);
+  assert.equal(imbalance.staticImbalance, 0.5);
+  assert.equal(parseDurationArg(['--duration=1800']), 1800);
+  assert.equal(classifyImbalance(0.3), 'Neutral');
+  assert.equal(classifyImbalance(-0.3), 'Neutral');
+  assert.equal(classifyImbalance(0.31), 'High Buy Pressure');
+  assert.equal(classifyImbalance(-0.31), 'High Sell Pressure');
+  assert.throws(() => parseDurationArg(['--duration=86401']), /Duration/);
+
+  const base = 1800000000000;
+  const row = (offset, price, staticImbalance) => ({
+    sessionId: 'ofi-self-test',
+    timestampMs: base + offset,
+    symbol: 'BTCUSD',
+    bookFresh: true,
+    midPrice: price,
+    staticImbalance
+  });
+  const result = calculateBacktest([
+    row(0, 100, 0.31),
+    row(300000, 101, -0.31),
+    row(600000, 100, 0),
+    row(900000, 99, 0)
+  ]);
+  assert.equal(result.outcomes.length, 3);
+  assert.equal(result.overall.find(metric => metric.group === 'High Buy Pressure').wins, 1);
+  assert.equal(result.overall.find(metric => metric.group === 'High Sell Pressure').wins, 1);
+  assert.equal(result.overall.find(metric => metric.group === 'Neutral').observations, 1);
+  console.log('[OFI] Research self-tests passed (imbalance, duration, threshold boundaries, and 5-minute outcomes).');
+}
+
 async function main() {
+  if (process.argv.includes('--self-test')) {
+    await runSelfTests();
+    return;
+  }
   await runBacktest();
 }
 

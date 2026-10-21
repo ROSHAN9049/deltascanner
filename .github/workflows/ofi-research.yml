@@ -40,6 +40,9 @@ jobs:
           node --check scripts/ofi-collector.mjs
           node --check scripts/ofi-backtest.mjs
 
+      - name: Run isolated OFI calculation self-tests
+        run: node scripts/ofi-backtest.mjs --self-test
+
       - name: Collect Delta Exchange India orderbook and trades
         run: node scripts/ofi-collector.mjs --duration="${{ inputs.duration_seconds }}"
 
