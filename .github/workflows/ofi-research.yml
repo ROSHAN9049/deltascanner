@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       duration_seconds:
-        description: Collection duration in seconds (default 1800 = 30 minutes)
+        description: Collection duration in seconds (default 14400 = 4 hours)
         required: true
-        default: 1800
+        default: 14400
         type: number
 
 permissions:
@@ -20,7 +20,7 @@ jobs:
   collect-and-backtest:
     name: Collect OFI data and run preliminary backtest
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 300
     steps:
       - name: Checkout selected branch
         uses: actions/checkout@v4

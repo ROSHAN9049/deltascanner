@@ -98,6 +98,10 @@ class OfiCollector {
     this.tradeEventsSeen = 0;
     this.connectionCount = 0;
     this.parseErrors = 0;
+    this.maxPositiveImbalanceBySymbol = new Map(SYMBOLS.map(symbol => [symbol, null]));
+    this.sampledRowsWithBook = new Map(SYMBOLS.map(symbol => [symbol, 0]));
+    this.sampledHighBuyOver030 = new Map(SYMBOLS.map(symbol => [symbol, 0]));
+    this.sampledHighBuyOver025 = new Map(SYMBOLS.map(symbol => [symbol, 0]));
     this.signalHandlers = [];
   }
 
@@ -204,6 +208,14 @@ class OfiCollector {
       const bids = normalizeLevels(message.b, 'bid');
       const asks = normalizeLevels(message.a, 'ask');
       if (!bids.length || !asks.length) return;
+      const staticImbalance = calculateStaticImbalance(bids, asks, 10).staticImbalance;
+      if (staticImbalance !== null && staticImbalance > 0) {
+        const previousMax = this.maxPositiveImbalanceBySymbol.get(symbol);
+        this.maxPositiveImbalanceBySymbol.set(
+          symbol,
+          previousMax === null ? staticImbalance : Math.max(previousMax, staticImbalance)
+        );
+      }
       this.books.set(symbol, {
         bids,
         asks,
@@ -314,10 +326,20 @@ class OfiCollector {
       while (!this.stopRequested && Date.now() < deadline) {
         const now = Date.now();
         this.checkConnection(now);
-        const lines = SYMBOLS.map(symbol => this.createObservation(symbol, now))
-          .map(row => JSON.stringify(row)).join('\n') + '\n';
+        const observations = SYMBOLS.map(symbol => this.createObservation(symbol, now));
+        const lines = observations.map(row => JSON.stringify(row)).join('\n') + '\n';
         await appendFile(this.filePath, lines, 'utf8');
         this.sampleRowsWritten += SYMBOLS.length;
+        for (const row of observations) {
+          if (!row.bookFresh || typeof row.staticImbalance !== 'number') continue;
+          this.sampledRowsWithBook.set(row.symbol, this.sampledRowsWithBook.get(row.symbol) + 1);
+          if (row.staticImbalance > 0.3) {
+            this.sampledHighBuyOver030.set(row.symbol, this.sampledHighBuyOver030.get(row.symbol) + 1);
+          }
+          if (row.staticImbalance > 0.25) {
+            this.sampledHighBuyOver025.set(row.symbol, this.sampledHighBuyOver025.get(row.symbol) + 1);
+          }
+        }
         if (SYMBOLS.every(symbol => {
           const book = this.books.get(symbol);
           return book && now - book.receivedAtMs <= ORDERBOOK_STALE_AFTER_MS;
@@ -353,12 +375,38 @@ class OfiCollector {
     console.log('[OFI] Trade events with recognized aggressor role: ' + this.tradeEventsSeen);
     console.log('[OFI] WebSocket connections: ' + this.connectionCount);
     console.log('[OFI] Invalid JSON frames: ' + this.parseErrors);
+    console.log('[OFI] Maximum positive static imbalance observed on received L2 updates:');
+    const diagnosticLines = [
+      '## OFI buy-pressure diagnostics',
+      '',
+      'Maximum positive imbalance is tracked on each valid L2 update. Sample counts use fresh 1-second observations.',
+      '',
+      '| Symbol | Max positive L2 imbalance | Fresh sampled books | Samples > +0.30 | Samples > +0.25 |',
+      '|---|---:|---:|---:|---:|'
+    ];
+    for (const symbol of SYMBOLS) {
+      const maxValue = this.maxPositiveImbalanceBySymbol.get(symbol);
+      const maxText = maxValue === null ? 'N/A (no valid positive L2 imbalance)' : maxValue.toFixed(6);
+      const freshCount = this.sampledRowsWithBook.get(symbol);
+      const over030 = this.sampledHighBuyOver030.get(symbol);
+      const over025 = this.sampledHighBuyOver025.get(symbol);
+      console.log(
+        '[OFI] ' + symbol + ' maxPositiveImbalance=' + maxText
+        + '; freshSamples=' + freshCount + '; samples>0.30=' + over030
+        + '; samples>0.25=' + over025
+      );
+      diagnosticLines.push('| ' + symbol + ' | ' + maxText + ' | ' + freshCount + ' | ' + over030 + ' | ' + over025 + ' |');
+    }
+    if (process.env.GITHUB_STEP_SUMMARY) {
+      await appendFile(process.env.GITHUB_STEP_SUMMARY, diagnosticLines.join('\n') + '\n', 'utf8');
+    }
     console.log('[OFI] Data file: ' + this.filePath);
     return {
       filePath: this.filePath,
       sampleRowsWritten: this.sampleRowsWritten,
       tradeEventsSeen: this.tradeEventsSeen,
-      connectionCount: this.connectionCount
+      connectionCount: this.connectionCount,
+      maxPositiveImbalanceBySymbol: Object.fromEntries(this.maxPositiveImbalanceBySymbol)
     };
   }
 }
