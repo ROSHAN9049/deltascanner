@@ -3538,6 +3538,8 @@ export class DeltaEngine {
     this.connectWs();
     await this.log('INFO', 'Delta production SIGNAL_ONLY worker started', { workerId: CONFIG.workerId });
     await this.hydrateSignalDedupCache();
+    // Verify database headroom before the first scan can append a history batch.
+    if (hasMaintenanceDatabaseUrl()) await this.checkDiskHealth();
     while (this.running) {
       try { await this.scanOnce(); }
       catch (e) {
