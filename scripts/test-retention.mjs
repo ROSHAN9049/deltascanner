@@ -157,6 +157,27 @@ try {
     assert.deepEqual(retentionRequest, { reason: 'retention-window-backlog' });
   });
 
+  await run('disk monitor resumes history writes only after the database recovers below the hysteresis threshold', async () => {
+    const engine = new DeltaEngine();
+    const logs = [];
+    let dbBytes = 440 * MB;
+    engine.maintenanceLog = async (level, message, data = {}) => logs.push({ level, message, data });
+    engine.getMaintenancePool = async () => ({
+      query: async () => ({
+        rows: [{ db_bytes: String(dbBytes), signal_rows: '300000', expired_rows: '0' }]
+      })
+    });
+    engine.runSignalRetention = async () => {};
+
+    await engine.checkDiskHealth();
+    assert.equal(engine.signalHistoryWritesPaused, true, 'high database size must pause history writes');
+
+    dbBytes = 405 * MB;
+    await engine.checkDiskHealth();
+    assert.equal(engine.signalHistoryWritesPaused, false, 'history writes resume after the database falls below the recovery threshold');
+    assert.ok(logs.some(log => /resuming dd_signals history writes/.test(log.message)));
+  });
+
   await run('retention defaults to 1 day and logs durable health summaries', async () => {
     assert.match(engineSource, /envInteger\('RETENTION_DAYS', 1, 1, 3650\)/);
     const engine = new DeltaEngine();
