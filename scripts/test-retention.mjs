@@ -34,15 +34,15 @@ try {
     assert.equal(engine.isDuplicateSignalObservation(row, now), false, 'first observation must not be deduplicated');
     engine.rememberSignalObservation(row, now);
     assert.equal(engine.isDuplicateSignalObservation({ ...row, score: 91 }, now + 60_000), true,
-      'same score within ±1 and within the configured window should be skipped');
+      'score changes within the hourly sample window should be skipped when stage and side are unchanged');
     assert.equal(engine.isDuplicateSignalObservation({ ...row, stage: 'SETUP' }, now + 60_000), false,
       'stage transition must be recorded');
     assert.equal(engine.isDuplicateSignalObservation({ ...row, side: 'BUY' }, now + 60_000), false,
       'side transition must be recorded');
-    assert.equal(engine.isDuplicateSignalObservation({ ...row, score: 92 }, now + 60_000), false,
-      'score change greater than one must be recorded');
-    assert.equal(engine.isDuplicateSignalObservation(row, now + 6 * 60_000), false,
-      'observation after the window must be recorded');
+    assert.equal(engine.isDuplicateSignalObservation({ ...row, score: 92 }, now + 60_000), true,
+      'larger score changes alone must not bypass the hourly sample cadence');
+    assert.equal(engine.isDuplicateSignalObservation(row, now + 61 * 60_000), false,
+      'unchanged observations are sampled again after the hourly window');
   });
 
   await run('retention accepts SUPABASE_DB_URL when DATABASE_URL is absent', async () => {
@@ -67,8 +67,8 @@ try {
           throw new Error('Unexpected SQL in env-fallback test');
         }
       });
-      await engine.runSignalRetention({ daysOverride: 1, reason: 'env-fallback' });
-      assert.ok(logs.some(log => /Starting 1-day dd_signals retention/.test(log.message)),
+      await engine.runSignalRetention({ daysOverride: 7, reason: 'env-fallback' });
+      assert.ok(logs.some(log => /Starting 7-day dd_signals retention/.test(log.message)),
         'SUPABASE_DB_URL should enable the retention path without DATABASE_URL');
     } finally {
       if (hadSavedDatabaseUrl) process.env.DATABASE_URL = savedDatabaseUrl;
@@ -78,7 +78,7 @@ try {
     }
   });
 
-  await run('retention forces 1-day mode above 500,000 rows and batches dd_signals only', async () => {
+  await run('retention preserves the configured 7-day window above 500,000 rows and batches dd_signals only', async () => {
     const engine = new DeltaEngine();
     const calls = [];
     const logs = [];
@@ -102,20 +102,20 @@ try {
 
     const result = await engine.performSignalRetention(7, 'unit-test');
     assert.equal(result.success, true);
-    assert.equal(result.effectiveDays, 1);
+    assert.equal(result.effectiveDays, 7);
     assert.equal(result.totalDeleted, 5001);
     const deleteCalls = calls.filter(call => /DELETE FROM/i.test(call.sql));
     assert.equal(deleteCalls.length, 2, '5001 rows must be deleted in two bounded batches');
     for (const call of deleteCalls) {
-      assert.deepEqual(call.params, [1, 5000]);
+      assert.deepEqual(call.params, [7, 5000]);
       assert.match(call.sql, /DELETE FROM public\.dd_signals/i);
       assert.doesNotMatch(call.sql, /dd_trades|dd_positions|dd_orders|dd_tradetron_events|position_ledger|webhook_events|system_meta/i);
     }
-    assert.ok(logs.some(log => /Emergency row-count threshold exceeded/.test(log.message)));
+    assert.ok(logs.some(log => /Critical row-count threshold exceeded/.test(log.message)));
     assert.ok(logs.some(log => /\[Retention\] Deleted 5000 rows/.test(log.message)));
   });
 
-  await run('disk monitor uses row-count thresholds and requests 1-day retention at critical count', async () => {
+  await run('disk monitor pauses signal history at high size and preserves configured retention at critical count', async () => {
     const engine = new DeltaEngine();
     const logs = [];
     let retentionRequest = null;
@@ -126,33 +126,56 @@ try {
         assert.match(sql, /COUNT\(\*\) FILTER/i);
         assert.match(sql, /INTERVAL '1 day'/i);
         assert.match(sql, /FROM public\.dd_signals/i);
-        return { rows: [{ db_bytes: String(836 * MB), signal_rows: '510000', older_1d: '60000' }] };
+        return { rows: [{ db_bytes: String(436 * MB), signal_rows: '510000', expired_rows: '60000' }] };
       }
     });
     engine.runSignalRetention = async options => { retentionRequest = options; };
 
     await engine.checkDiskHealth();
-    assert.ok(logs.some(log => /\[Disk\] DB: 836\.0 MB, signals: 510000 rows, older_1d: 60000/.test(log.message)));
+    assert.ok(logs.some(log => /\[Disk\] DB: 436\.0 MB, signals: 510000 rows, expired_1d: 60000/.test(log.message)));
+    assert.ok(logs.some(log => /pausing new dd_signals history writes/.test(log.message)));
+    assert.equal(engine.signalHistoryWritesPaused, true);
     assert.ok(logs.some(log => /WARNING: signal row count 510000 exceeds 250000/.test(log.message)));
-    assert.ok(logs.some(log => /CRITICAL: signal row count 510000 exceeds 500000; requesting 1-day retention/.test(log.message)));
-    assert.deepEqual(retentionRequest, { daysOverride: 1, reason: 'row-count-critical' });
+    assert.ok(logs.some(log => /CRITICAL: signal row count 510000 exceeds 500000; requesting configured 1-day retention/.test(log.message)));
+    assert.deepEqual(retentionRequest, { reason: 'row-count-critical' });
   });
 
-  await run('older-than-1-day backlog triggers retention below the critical row count', async () => {
+  await run('expired retention-window backlog triggers configured retention below the critical row count', async () => {
     const engine = new DeltaEngine();
     const logs = [];
     let retentionRequest = null;
     engine.maintenanceLog = async (level, message, data = {}) => logs.push({ level, message, data });
     engine.getMaintenancePool = async () => ({
       query: async () => ({
-        rows: [{ db_bytes: String(836 * MB), signal_rows: '300000', older_1d: '50001' }]
+        rows: [{ db_bytes: String(390 * MB), signal_rows: '300000', expired_rows: '50001' }]
       })
     });
     engine.runSignalRetention = async options => { retentionRequest = options; };
 
     await engine.checkDiskHealth();
-    assert.ok(logs.some(log => /older than 1 day exceeds 50000; requesting 1-day retention/.test(log.message)));
-    assert.deepEqual(retentionRequest, { daysOverride: 1, reason: 'older-than-one-day-threshold' });
+    assert.ok(logs.some(log => /older than configured 1-day window exceeds 50000; requesting configured retention/.test(log.message)));
+    assert.deepEqual(retentionRequest, { reason: 'retention-window-backlog' });
+  });
+
+  await run('disk monitor resumes history writes only after the database recovers below the hysteresis threshold', async () => {
+    const engine = new DeltaEngine();
+    const logs = [];
+    let dbBytes = 440 * MB;
+    engine.maintenanceLog = async (level, message, data = {}) => logs.push({ level, message, data });
+    engine.getMaintenancePool = async () => ({
+      query: async () => ({
+        rows: [{ db_bytes: String(dbBytes), signal_rows: '300000', expired_rows: '0' }]
+      })
+    });
+    engine.runSignalRetention = async () => {};
+
+    await engine.checkDiskHealth();
+    assert.equal(engine.signalHistoryWritesPaused, true, 'high database size must pause history writes');
+
+    dbBytes = 405 * MB;
+    await engine.checkDiskHealth();
+    assert.equal(engine.signalHistoryWritesPaused, false, 'history writes resume after the database falls below the recovery threshold');
+    assert.ok(logs.some(log => /resuming dd_signals history writes/.test(log.message)));
   });
 
   await run('retention defaults to 1 day and logs durable health summaries', async () => {

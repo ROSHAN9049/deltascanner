@@ -36,12 +36,14 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           ENGINE_SECRET: ${{ secrets.ENGINE_SECRET }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         shell: bash
         run: |
           missing=()
           [ -n "${SUPABASE_URL:-}" ] || missing+=(SUPABASE_URL)
           [ -n "${SUPABASE_SERVICE_ROLE_KEY:-}" ] || missing+=(SUPABASE_SERVICE_ROLE_KEY)
           [ -n "${ENGINE_SECRET:-}" ] || missing+=(ENGINE_SECRET)
+          [ -n "${DATABASE_URL:-}" ] || missing+=(DATABASE_URL)
           if [ "${#missing[@]}" -gt 0 ]; then
             echo "ready=false" >> "$GITHUB_OUTPUT"
             echo "::warning::Worker was not started. Add these repository Actions secrets in Settings > Secrets and variables > Actions: ${missing[*]}."
@@ -77,6 +79,9 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           ENGINE_SECRET: ${{ secrets.ENGINE_SECRET }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          RETENTION_DAYS: "7"
+          SIGNAL_HISTORY_SAMPLE_MINUTES: "60"
           TRADETRON_DEVELOPER_API_KEY: ${{ secrets.TRADETRON_DEVELOPER_API_KEY }}
         shell: bash
         run: |
