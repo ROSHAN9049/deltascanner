@@ -1348,9 +1348,12 @@ export class DeltaEngine {
         throw new Error('Retention query returned an invalid dd_signals row count');
       }
       if (rowCount > DISK_CRITICAL_ROWS) {
-        effectiveDays = Math.min(effectiveDays, 1);
+        // A row-count alarm must not silently shrink a configured 7-day sample
+        // window to 1 day. Disk monitoring pauses new history writes before the
+        // database approaches its provider limit; retention only removes rows
+        // older than the configured window.
         await this.maintenanceLog('WARN',
-          `[Retention] Emergency row-count threshold exceeded (${rowCount}); pruning to ${effectiveDays} day(s)`,
+          `[Retention] Critical row-count threshold exceeded (${rowCount}); preserving the configured ${effectiveDays}-day history window`,
           { reason, signalRows: rowCount, requestedDays, effectiveDays });
       } else {
         await this.maintenanceLog('INFO',
@@ -1394,48 +1397,62 @@ export class DeltaEngine {
           pg_database_size(current_database()) AS db_bytes,
           COUNT(*)::text AS signal_rows,
           COUNT(*) FILTER (
-            WHERE captured_at < NOW() - INTERVAL '1 day'
-          )::text AS older_1d
+            WHERE captured_at < NOW() - (INTERVAL '1 day' * $1::int)
+          )::text AS expired_rows
         FROM public.dd_signals
-      `);
+      `, [RETENTION_DAYS]);
       const row = result.rows?.[0] || {};
       const dbBytes = Number(row.db_bytes);
       const signalRows = Number(row.signal_rows);
-      const olderOneDay = Number(row.older_1d);
+      const expiredRows = Number(row.expired_rows);
       if (!Number.isFinite(dbBytes) || !Number.isSafeInteger(signalRows) || signalRows < 0 ||
-          !Number.isSafeInteger(olderOneDay) || olderOneDay < 0) {
+          !Number.isSafeInteger(expiredRows) || expiredRows < 0) {
         throw new Error('Disk health query returned invalid size or dd_signals counts');
       }
 
       const dbMb = dbBytes / MB_BYTES;
       await this.maintenanceLog('INFO',
-        `[Disk] DB: ${dbMb.toFixed(1)} MB, signals: ${signalRows} rows, older_1d: ${olderOneDay}`,
+        `[Disk] DB: ${dbMb.toFixed(1)} MB, signals: ${signalRows} rows, expired_${RETENTION_DAYS}d: ${expiredRows}`,
         {
           signalRows,
-          olderOneDay,
+          expiredRows,
+          retentionDays: RETENTION_DAYS,
           dbBytes,
           dbMb: Number(dbMb.toFixed(2)),
           warnRows: DISK_WARN_ROWS,
           criticalRows: DISK_CRITICAL_ROWS,
-          olderRowsTrigger: RETENTION_OLD_ROWS_TRIGGER
+          olderRowsTrigger: RETENTION_OLD_ROWS_TRIGGER,
+          historyWritesPaused: this.signalHistoryWritesPaused
         });
+
+      if (dbMb >= SIGNAL_HISTORY_PAUSE_DB_MB && !this.signalHistoryWritesPaused) {
+        this.signalHistoryWritesPaused = true;
+        await this.maintenanceLog('WARN',
+          `[Disk] Database reached ${dbMb.toFixed(1)} MB; pausing new dd_signals history writes to protect provider capacity`,
+          { dbMb: Number(dbMb.toFixed(2)), pauseAtMb: SIGNAL_HISTORY_PAUSE_DB_MB, signalRows });
+      } else if (this.signalHistoryWritesPaused && dbMb <= SIGNAL_HISTORY_RESUME_DB_MB) {
+        this.signalHistoryWritesPaused = false;
+        await this.maintenanceLog('INFO',
+          `[Disk] Database fell to ${dbMb.toFixed(1)} MB; resuming dd_signals history writes`,
+          { dbMb: Number(dbMb.toFixed(2)), resumeAtMb: SIGNAL_HISTORY_RESUME_DB_MB, signalRows });
+      }
 
       if (signalRows > DISK_WARN_ROWS) {
         await this.maintenanceLog('WARN',
           `[Disk] WARNING: signal row count ${signalRows} exceeds ${DISK_WARN_ROWS}`,
-          { signalRows, thresholdRows: DISK_WARN_ROWS, olderOneDay });
+          { signalRows, thresholdRows: DISK_WARN_ROWS, expiredRows });
       }
 
       if (signalRows > DISK_CRITICAL_ROWS) {
         await this.maintenanceLog('WARN',
-          `[Disk] CRITICAL: signal row count ${signalRows} exceeds ${DISK_CRITICAL_ROWS}; requesting 1-day retention`,
-          { signalRows, thresholdRows: DISK_CRITICAL_ROWS, olderOneDay });
-        await this.runSignalRetention({ daysOverride: 1, reason: 'row-count-critical' });
-      } else if (olderOneDay > RETENTION_OLD_ROWS_TRIGGER) {
+          `[Disk] CRITICAL: signal row count ${signalRows} exceeds ${DISK_CRITICAL_ROWS}; requesting configured ${RETENTION_DAYS}-day retention`,
+          { signalRows, thresholdRows: DISK_CRITICAL_ROWS, expiredRows, retentionDays: RETENTION_DAYS });
+        await this.runSignalRetention({ reason: 'row-count-critical' });
+      } else if (expiredRows > RETENTION_OLD_ROWS_TRIGGER) {
         await this.maintenanceLog('WARN',
-          `[Disk] Retention backlog: ${olderOneDay} rows older than 1 day exceeds ${RETENTION_OLD_ROWS_TRIGGER}; requesting 1-day retention`,
-          { signalRows, olderOneDay, thresholdRows: RETENTION_OLD_ROWS_TRIGGER });
-        await this.runSignalRetention({ daysOverride: 1, reason: 'older-than-one-day-threshold' });
+          `[Disk] Retention backlog: ${expiredRows} rows older than configured ${RETENTION_DAYS}-day window exceeds ${RETENTION_OLD_ROWS_TRIGGER}; requesting configured retention`,
+          { signalRows, expiredRows, thresholdRows: RETENTION_OLD_ROWS_TRIGGER, retentionDays: RETENTION_DAYS });
+        await this.runSignalRetention({ reason: 'retention-window-backlog' });
       }
     } catch (error) {
       await this.maintenanceLog('WARN',
