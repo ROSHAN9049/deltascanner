@@ -10,6 +10,7 @@ import { buildTradetronSnapshotRiskState, TRADETRON_SNAPSHOT_MAX_AGE_MS } from '
 import { indiaDateKey } from '../src/date-utils.js';
 import { createGridState, evaluateGridTick } from './grid-strategy.mjs';
 import { CANDLE_WARMUP_BATCH_SIZE, CANDLE_WARMUP_RETRY_MS, planCandleWarmup } from './candle-warmup.mjs';
+import { shouldWriteMarketCache } from './market-cache-policy.mjs';
 import { MIN_RAW_CANDLES_FOR_ATR, mergeCandleUpdate, normalizeCandleBatch } from './candle-normalization.mjs';
 import { isOptionsExecutionAllowed, OPTIONS_EXECUTION_LOCK_REASON } from './options-execution-lock.mjs';
 import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from './signal-failure-diagnostics.mjs';
@@ -801,8 +802,11 @@ export class DeltaEngine {
     this.lastTickerFetch = Date.now();
   }
 
-  async cacheMarketState(force = false) {
-    if (!force && Date.now() - this.lastMarketCacheWrite < 30000) return;
+  async cacheMarketState() {
+    // This persists dashboard-facing market metadata only. Trading calculations
+    // continue to use the independently refreshed in-memory ticker/candle data.
+    // Avoid sending the full contract universe to Supabase on every ticker refresh.
+    if (!shouldWriteMarketCache(this.lastMarketCacheWrite, Date.now())) return;
     const rows = [...this.tickerMap.values()]
       .sort((a, b) => n(b.turnover_usd || b.turnover) - n(a.turnover_usd || a.turnover))
       .map((ticker, index) => {
@@ -3258,9 +3262,9 @@ export class DeltaEngine {
     if (Date.now() - this.lastUniverseRefresh > 15 * 60 * 1000 || !this.products.length) await this.refreshProducts();
     if (Date.now() - this.lastTickerFetch > 30000 || !this.tickerMap.size) {
       await this.refreshTickers();
-      await this.cacheMarketState(true);
+      await this.cacheMarketState();
     } else {
-      await this.cacheMarketState(false);
+      await this.cacheMarketState();
     }
     await this.refreshCandleWarmup();
     if (settings.options_enabled !== false && (Date.now() - this.lastOptionTickerFetch > 60000 || !this.optionTickerMap.size)) await this.refreshOptionTickers();
