@@ -3264,7 +3264,7 @@ export class DeltaEngine {
       await this.refreshTickers();
       await this.cacheMarketState();
     } else {
-      await this.cacheMarketState(false);
+      await this.cacheMarketState();
     }
     await this.refreshCandleWarmup();
     if (settings.options_enabled !== false && (Date.now() - this.lastOptionTickerFetch > 60000 || !this.optionTickerMap.size)) await this.refreshOptionTickers();
