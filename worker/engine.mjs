@@ -67,11 +67,16 @@ const RETENTION_ENABLED = envBoolean('RETENTION_ENABLED', true);
 const RETENTION_DAYS = envInteger('RETENTION_DAYS', 1, 1, 3650);
 const RETENTION_BATCH_SIZE = envInteger('RETENTION_BATCH_SIZE', 5000, 1, 5000);
 const DEDUP_ENABLED = envBoolean('DEDUP_ENABLED', true);
-const DEDUP_WINDOW_MINUTES = envInteger('DEDUP_WINDOW_MINUTES', 5, 1, 1440);
+// Persist at most one unchanged observation per symbol/strategy per hour.
+// Stage and side transitions still bypass this cadence and are recorded immediately.
+const SIGNAL_HISTORY_SAMPLE_MINUTES = envInteger('SIGNAL_HISTORY_SAMPLE_MINUTES', 60, 1, 1440);
 const DEDUP_CACHE_MAX = envInteger('DEDUP_CACHE_MAX', 5000, 1, 100000);
 const DISK_WARN_ROWS = envInteger('DISK_WARN_ROWS', 250000, 1, 1000000000);
 const DISK_CRITICAL_ROWS = envInteger('DISK_CRITICAL_ROWS', 500000, 1, 1000000000);
 const RETENTION_OLD_ROWS_TRIGGER = envInteger('RETENTION_OLD_ROWS_TRIGGER', 50000, 1, 1000000000);
+// Stop adding bulky history rows before a Free-tier database reaches its hard limit.
+const SIGNAL_HISTORY_PAUSE_DB_MB = envInteger('SIGNAL_HISTORY_PAUSE_DB_MB', 430, 300, 490);
+const SIGNAL_HISTORY_RESUME_DB_MB = Math.max(280, SIGNAL_HISTORY_PAUSE_DB_MB - 20);
 const MAINTENANCE_START_DELAY_MS = 5 * 60 * 1000;
 const RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const DISK_MONITOR_INTERVAL_MS = 30 * 60 * 1000;
@@ -179,6 +184,8 @@ export class DeltaEngine {
     this.pendingRetentionRequest = null;
 
     this.signalDedupCache = new Map();
+    this.signalHistoryStateHydrated = false;
+    this.signalHistoryWritesPaused = false;
     this.dedupAnalysisCycles = 0;
     this.dedupTotalCandidates = 0;
     this.dedupSkippedCount = 0;
@@ -1462,10 +1469,14 @@ export class DeltaEngine {
     const key = `${String(row?.symbol || '').toUpperCase()}:${String(row?.strategy || '').toUpperCase()}`;
     const cached = this.signalDedupCache.get(key);
     if (!cached) return false;
-    const sameScore = Math.abs(n(row?.score) - cached.score) <= 1;
     const sameStage = String(row?.stage || '') === cached.stage;
     const sameSide = String(row?.side || '') === cached.side;
-    return sameScore && sameStage && sameSide && (now - cached.insertedAt) < DEDUP_WINDOW_MINUTES * 60 * 1000;
+    const elapsed = now - cached.insertedAt;
+    const withinSampleWindow = Number.isFinite(elapsed) && elapsed >= 0 &&
+      elapsed < SIGNAL_HISTORY_SAMPLE_MINUTES * 60 * 1000;
+    // Score fluctuations alone do not create another history row inside the sample window.
+    // A stage or side transition is always persisted immediately.
+    return sameStage && sameSide && withinSampleWindow;
   }
 
   rememberSignalObservation(row, insertedAt = Date.now()) {
@@ -1486,8 +1497,42 @@ export class DeltaEngine {
     }
   }
 
+  async hydrateSignalDedupCache() {
+    if (this.signalHistoryStateHydrated) return this.signalDedupCache.size;
+    this.signalHistoryStateHydrated = true;
+    try {
+      // The worker may restart between scheduled GitHub Actions sessions. Warm the
+      // sampler from persisted history so each session does not repeat a full-universe burst.
+      const rows = await db.select('dd_signals',
+        'select=symbol,strategy,score,stage,side,captured_at&order=captured_at.desc&limit=1000');
+      const seen = new Set();
+      for (const row of Array.isArray(rows) ? rows : []) {
+        const symbol = String(row?.symbol || '').toUpperCase();
+        const strategy = String(row?.strategy || '').toUpperCase();
+        const key = symbol + ':' + strategy;
+        const capturedAt = Date.parse(row?.captured_at || '');
+        if (!symbol || !strategy || seen.has(key) || !Number.isFinite(capturedAt)) continue;
+        this.rememberSignalObservation(row, capturedAt);
+        seen.add(key);
+      }
+      console.log(`[Dedup] Hydrated persisted signal history state for ${seen.size} symbol/strategy pairs`);
+      return seen.size;
+    } catch (error) {
+      const message = safeMaintenanceError(error);
+      console.warn('[Dedup] Persisted history hydration failed; first scan may write extra samples:', message);
+      await this.log('WARN', 'Persisted signal-history dedup hydration failed; first scan may write extra samples', {
+        error: message
+      });
+      return 0;
+    }
+  }
+
   async insertSignalHistoryRow(row) {
     this.dedupTotalCandidates += 1;
+    if (this.signalHistoryWritesPaused) {
+      this.dedupSkippedCount += 1;
+      return false;
+    }
     let duplicate = false;
     try {
       duplicate = this.isDuplicateSignalObservation(row);
@@ -1512,6 +1557,10 @@ export class DeltaEngine {
   async insertSignalHistoryBatch(rows) {
     const candidates = Array.isArray(rows) ? rows : [];
     this.dedupTotalCandidates += candidates.length;
+    if (this.signalHistoryWritesPaused) {
+      this.dedupSkippedCount += candidates.length;
+      return 0;
+    }
     const accepted = [];
 
     for (const row of candidates) {
@@ -3471,6 +3520,7 @@ export class DeltaEngine {
     this.startMaintenanceTasks();
     this.connectWs();
     await this.log('INFO', 'Delta production SIGNAL_ONLY worker started', { workerId: CONFIG.workerId });
+    await this.hydrateSignalDedupCache();
     while (this.running) {
       try { await this.scanOnce(); }
       catch (e) {
