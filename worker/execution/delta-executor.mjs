@@ -345,15 +345,15 @@ export function createDeltaExecutor({
       const normalizedSymbol = stringOrEmpty(symbol).toUpperCase();
       const direction = stringOrEmpty(side).toUpperCase();
       const quantity = numberOrNull(qty);
-      const limitPrice = price === null || price === undefined ? null : numberOrNull(price);
+      const hasPrice = price !== null && price !== undefined;
+      const limitPrice = hasPrice ? numberOrNull(price) : null;
       if (!['BUY', 'SELL'].includes(direction)) throw new Error('side must be BUY or SELL');
       if (!Number.isSafeInteger(quantity) || quantity <= 0) throw new Error('qty must be a positive whole number of contracts');
-      if (limitPrice !== null && !(limitPrice > 0)) throw new Error('limit price must be positive');
+      if (hasPrice && !(limitPrice > 0)) throw new Error('limit price must be positive');
       await assertSafety(normalizedSymbol, 'ENTRY');
       const product = await resolveProduct(normalizedSymbol);
       const body = {
         product_id: product.id,
-        product_symbol: normalizedSymbol,
         size: quantity,
         side: direction.toLowerCase(),
         order_type: limitPrice === null ? 'market_order' : 'limit_order',
@@ -387,7 +387,6 @@ export function createDeltaExecutor({
       const prefix = strategy === 'MOMENTUM' ? 'DDM' : strategy === 'SCALPING' ? 'DDS' : 'DDG';
       const body = {
         product_id: product.id,
-        product_symbol: normalizedSymbol,
         size: quantity,
         side: direction.toLowerCase(),
         order_type: 'limit_order',
@@ -426,7 +425,6 @@ export function createDeltaExecutor({
       }
       return submitOrder(product, {
         product_id: product.id,
-        product_symbol: normalizedSymbol,
         size: quantity,
         side: position.side === 'BUY' ? 'sell' : 'buy',
         order_type: 'market_order',
