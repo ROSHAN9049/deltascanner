@@ -1,0 +1,80 @@
+name: Delta Testnet position cleanup
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Audit positions (read-only) or close all open Testnet positions"
+        type: choice
+        required: true
+        default: audit
+        options:
+          - audit
+          - close
+      confirm:
+        description: "For action=close, type exactly CONFIRM"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: delta-testnet-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    name: Delta Testnet ${{ inputs.action }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DELTA_EXECUTION_MODE: testnet
+      DELTA_TESTNET_REST_BASE: https://cdn-ind.testnet.deltaex.org
+      DELTA_TESTNET_API_KEY: ${{ secrets.DELTA_TESTNET_API_KEY }}
+      DELTA_TESTNET_API_SECRET: ${{ secrets.DELTA_TESTNET_API_SECRET }}
+      CLEANUP_ACTION: ${{ inputs.action }}
+      CLEANUP_CONFIRM: ${{ inputs.confirm }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Require explicit confirmation for close
+        shell: bash
+        run: |
+          if [[ "$CLEANUP_ACTION" == "close" && "$CLEANUP_CONFIRM" != "CONFIRM" ]]; then
+            echo "::error::Close action blocked: type CONFIRM in the workflow input."
+            {
+              echo "## Delta Testnet cleanup"
+              echo ""
+              echo "BLOCKED: action=close requires the exact confirmation word CONFIRM."
+              echo "No cleanup script was run and no orders were sent."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if [[ "$CLEANUP_ACTION" != "audit" && "$CLEANUP_ACTION" != "close" ]]; then
+            echo "::error::Invalid action input."
+            exit 1
+          fi
+          echo "Confirmed cleanup action: $CLEANUP_ACTION"
+          if [[ "$CLEANUP_ACTION" == "audit" ]]; then
+            echo "Audit mode is read-only; it cannot cancel or submit orders."
+          fi
+
+      - name: Audit Delta Testnet positions
+        if: ${{ inputs.action == 'audit' }}
+        run: node scripts/cleanup-testnet-positions.mjs --audit
+
+      - name: Close Delta Testnet positions
+        if: ${{ inputs.action == 'close' }}
+        run: node scripts/cleanup-testnet-positions.mjs --close --confirm
