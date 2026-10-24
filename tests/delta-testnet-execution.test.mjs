@@ -128,6 +128,13 @@ test('Emergency Stop blocks an entry before any exchange order is submitted', as
   assert.equal(runtime.httpCalls.some(call => call.init.method === 'POST'), false);
 });
 
+test('unknown Emergency Stop state fails closed', async () => {
+  const runtime = fakeRuntime({ emergencyStop: null });
+  const executor = createDeltaExecutor({ env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database });
+  await assert.rejects(executor.placeBracketOrder('BTCUSD', 'BUY', 1, 60000, 59000, 62000), /Emergency Stop state is unknown/);
+  assert.equal(runtime.httpCalls.some(call => call.init.method === 'POST'), false);
+});
+
 test('daily loss at or beyond 5 percent halts entries', async () => {
   const runtime = fakeRuntime({ closedRows: [{ realized_pnl: -50 }], equity: 1000 });
   const executor = createDeltaExecutor({ env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database });
