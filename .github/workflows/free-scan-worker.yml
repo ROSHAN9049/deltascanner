@@ -1,6 +1,11 @@
 name: DEALDOST free scanner worker
 
 on:
+  # Narrow, one-time storage-validation trigger. No code pushes start scans.
+  push:
+    branches: [main]
+    paths:
+      - "ops/storage-safeguard-test-20261024.trigger"
   workflow_dispatch:
     inputs:
       session_minutes:
@@ -87,8 +92,13 @@ jobs:
         run: |
           if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
             minutes=330
-          else
+          elif [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             minutes="${{ inputs.session_minutes }}"
+          elif [ "$GITHUB_EVENT_NAME" = "push" ] && [ -f "ops/storage-safeguard-test-20261024.trigger" ]; then
+            minutes=180
+          else
+            echo "No active storage-test trigger; scanner will not be started."
+            exit 0
           fi
           case "$minutes" in
             30|60|180|330) ;;
