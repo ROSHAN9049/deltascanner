@@ -2195,7 +2195,7 @@ export class DeltaEngine {
         const orderId = String(order?.id ?? order?.order_id ?? entryCid);
         try {
           await db.upsert('dd_orders', {
-            id: orderId,
+            id: entryCid,
             product_id: signal.productId,
             symbol: signal.symbol,
             side: signal.side === 'BUY' ? 'buy' : 'sell',
@@ -3588,7 +3588,10 @@ export class DeltaEngine {
       // Tradetron snapshot source as the dashboard and fails closed on unknown counts.
       let baselineTrustedOpenCount = null;
       let routedThisCycle = 0;
+      const testnetSymbolsRoutedThisCycle = new Set();
       for (const c of candidates) {
+        const candidateSymbol = String(c.signal?.symbol || c.item?.symbol || '').toUpperCase();
+        if (CONFIG.deltaExecutionMode === 'testnet' && testnetSymbolsRoutedThisCycle.has(candidateSymbol)) continue;
         if (CONFIG.signalOnly && reservationLookupFailed) break;
         let capDecision = { blocked: false, reason: null };
         if (CONFIG.signalOnly && CONFIG.tradetronBridgeEnabled && CONFIG.deltaExecutionMode !== 'testnet') {
@@ -3615,8 +3618,20 @@ export class DeltaEngine {
           this.globalPositionCapLogged.clear();
         }
         const freshAccount = await this.accountSnapshot(settings);
-        const storedPositions = CONFIG.signalOnly ? await db.select('dd_positions', 'origin=eq.TRADETRON&qty=gt.0&order=updated_at.desc') : await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
-        const freshPositions = CONFIG.signalOnly ? await this.getSignalOnlyPositions(storedPositions || []) : (storedPositions || []);
+        const storedPositions = CONFIG.deltaExecutionMode === 'testnet'
+          ? []
+          : CONFIG.signalOnly
+            ? await db.select('dd_positions', 'origin=eq.TRADETRON&qty=gt.0&order=updated_at.desc')
+            : await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
+        const freshPositions = CONFIG.deltaExecutionMode === 'testnet'
+          ? (freshAccount.positions || []).map(position => ({
+              ...position,
+              qty: Math.abs(n(position.qty ?? position.size)),
+              side: position.side || (n(position.size) < 0 ? 'SELL' : 'BUY')
+            }))
+          : CONFIG.signalOnly
+            ? await this.getSignalOnlyPositions(storedPositions || [])
+            : (storedPositions || []);
         if (!Array.isArray(freshPositions)) {
           reservationLookupFailed = true;
           break;
@@ -3631,6 +3646,7 @@ export class DeltaEngine {
         }
         const opened = routeAttempt.result;
         if (opened) {
+          if (CONFIG.deltaExecutionMode === 'testnet') testnetSymbolsRoutedThisCycle.add(candidateSymbol);
           if (CONFIG.signalOnly && CONFIG.tradetronBridgeEnabled && CONFIG.deltaExecutionMode !== 'testnet') routedThisCycle++;
           await sleep(1000);
         }
