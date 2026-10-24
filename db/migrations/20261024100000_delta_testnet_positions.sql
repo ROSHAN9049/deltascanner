@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS public.dd_delta_positions (
   entry_price NUMERIC NULL,
   current_price NUMERIC NULL,
   unrealized_pnl NUMERIC NULL,
-  realized_pnl NUMERIC NOT NULL DEFAULT 0,
+  realized_pnl NUMERIC NULL,
   sl_price NUMERIC NULL,
   tp_price NUMERIC NULL,
   status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'CLOSED')),
