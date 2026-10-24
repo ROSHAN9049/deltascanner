@@ -1,0 +1,63 @@
+name: Delta Testnet Position Cleanup
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Choose audit (read-only) or close (market-close all open positions)"
+        type: choice
+        required: true
+        default: audit
+        options:
+          - audit
+          - close
+      confirm:
+        description: 'For close mode only, type exactly CONFIRM'
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: delta-testnet-position-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    name: Delta India Testnet position cleanup
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Validate close confirmation
+        if: ${{ inputs.action == 'close' }}
+        env:
+          CONFIRM_INPUT: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM_INPUT" != "CONFIRM" ]; then
+            echo "::error::Close mode requires the workflow input 'confirm' to be exactly CONFIRM. No orders were sent."
+            exit 1
+          fi
+
+      - name: Audit Delta Testnet positions (read-only)
+        if: ${{ inputs.action == 'audit' }}
+        env:
+          DELTA_TESTNET_API_KEY: ${{ secrets.DELTA_TESTNET_API_KEY }}
+          DELTA_TESTNET_API_SECRET: ${{ secrets.DELTA_TESTNET_API_SECRET }}
+        run: node scripts/cleanup-testnet-positions.mjs --audit
+
+      - name: Close all Delta Testnet positions
+        if: ${{ inputs.action == 'close' }}
+        env:
+          DELTA_TESTNET_API_KEY: ${{ secrets.DELTA_TESTNET_API_KEY }}
+          DELTA_TESTNET_API_SECRET: ${{ secrets.DELTA_TESTNET_API_SECRET }}
+        run: node scripts/cleanup-testnet-positions.mjs --close --confirm
