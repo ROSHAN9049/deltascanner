@@ -7,7 +7,6 @@ import { routeStatusForSymbol } from './market-route-status.js';
 import { getTradetronDiagnosticDetails } from './tradetron-diagnostics.js';
 import { summarizeCurrentPositionCount, summarizeTradetronSnapshots } from './tradetron-position-sync.js';
 import { buildTradetronPositionReconciliation } from './tradetron-reconciliation.js';
-import { formatLastNonZeroPnlContext } from './tradetron-pnl-context.js';
 import { DEFAULT_VISIBLE_MARKET_LIMIT, selectVisibleMarketRows, selectVisibleSignalRows } from './market-view.js';
 import { assessDeltaRange, fmtMultiplier, fmtPrice as fmtRawPrice, fmtRsi, safeNum } from './formatters.js';
 import { blockersDisplay, gateTooltip } from './gate-result.js';
@@ -315,7 +314,7 @@ function App() {
     <nav>{tabs.map(([id,label]) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}{id === 'live' ? ' 🔒' : ''}</button>)}</nav>
     {accountDataProtected ? <div className="danger">🔒 ACCOUNT DATA LOCKED — Enter ENGINE_SECRET in Settings to view private positions, closed trades, P&amp;L, rotation ledger, Grid state, and account-specific logs. Hidden data is not zero.</div> : null}
 
-    {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} trades={trades} positions={positions} accountDataProtected={accountDataProtected} signals={signals} signalOrderStats={state?.signalOrderStats || null} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.tradeRowCount ?? null} tradetronEvents={state?.tradetronEvents || []} executionCoverage={executionCoverage} developerSync={state?.tradetronDeveloperSync || null} developerSnapshots={state?.tradetronDeveloperSnapshots || []} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} developerDataProtected={state?.tradetronDeveloperDataProtected === true} developerNotifications={state?.tradetronDeveloperNotifications || []} developerNotificationSync={state?.tradetronDeveloperNotificationSync || null} developerPnlHistory={state?.tradetronDeveloperPnlHistory || []} onInspect={setInspect} inspect={selected} logs={state?.logs || []} />}
+    {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} positions={positions} accountDataProtected={accountDataProtected} signals={signals} deltaTestnetOpenPositionCount={state?.deltaTestnetOpenPositionCount ?? null} deltaTestnetOrders={state?.deltaTestnetOrders || []} deltaTestnetOrderCount={state?.deltaTestnetOrderCount ?? null} deltaTestnetClosedTodayCount={state?.deltaTestnetClosedTodayCount ?? null} deltaTestnetClosedTodayPnl={state?.deltaTestnetClosedTodayPnl ?? null} deltaTestnetClosedTodayPnlComplete={state?.deltaTestnetClosedTodayPnlComplete === true} signalOrderStats={state?.signalOrderStats || null} tradetronEvents={state?.tradetronEvents || []} executionCoverage={executionCoverage} developerSync={state?.tradetronDeveloperSync || null} developerSnapshots={state?.tradetronDeveloperSnapshots || []} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} developerDataProtected={state?.tradetronDeveloperDataProtected === true} developerNotifications={state?.tradetronDeveloperNotifications || []} developerNotificationSync={state?.tradetronDeveloperNotificationSync || null} developerPnlHistory={state?.tradetronDeveloperPnlHistory || []} onInspect={setInspect} inspect={selected} logs={state?.logs || []} />}
     {tab === 'rotation' && <Rotation ledger={rotationLedger} accountDataProtected={accountDataProtected} ledgerComplete={rotationLedgerComplete} ledgerRowCount={state?.ledgerRowCount ?? null} />}
     {tab === 'momentum' && <EngineView engine="MOMENTUM" signals={signals} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols} />}
     {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" strategy="MOMENTUM" apiDerivedTrades={state?.apiDerivedTrades || []} apiDerivedTradeCount={state?.apiDerivedTradeCount ?? null} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
@@ -390,19 +389,13 @@ function Card({ label, value, sub, title, tone = '' }) {
   const toneClass = tone === 'critical' ? ' card-critical' : tone === 'warning' ? ' card-warning' : '';
   return <div className={'card' + toneClass} title={title}><small>{label}</small><strong>{value}</strong><span>{sub}</span></div>;
 }
-function Dashboard({ market, settings, health, trades, positions, accountDataProtected = false, signals, signalOrderStats = null, tradesComplete = false, tradeRowCount = null, tradetronEvents = [], executionCoverage = null, developerSync = null, developerSnapshots = [], developerApiConfigured = false, developerDataProtected = false, developerNotifications = [], developerNotificationSync = null, developerPnlHistory = [], onInspect, inspect, logs }) {
-  const today = indiaDateKey(new Date());
-  const currentPositionSummary = summarizeCurrentPositionCount({ eventPositions: positions, deployments: developerSnapshots, syncState: developerSync, configured: developerApiConfigured });
+function Dashboard({ market, settings, health, positions, accountDataProtected = false, signals, deltaTestnetOpenPositionCount = null, deltaTestnetOrders = [], deltaTestnetOrderCount = null, deltaTestnetClosedTodayCount = null, deltaTestnetClosedTodayPnl = null, deltaTestnetClosedTodayPnlComplete = false, signalOrderStats = null, tradetronEvents = [], executionCoverage = null, developerSync = null, developerSnapshots = [], developerApiConfigured = false, developerDataProtected = false, developerNotifications = [], developerNotificationSync = null, developerPnlHistory = [], onInspect, inspect, logs }) {
   const configuredRouteSymbols = new Set(executionCoverage?.routedSymbols || []);
   const activeRoutedCount = configuredRouteSymbols.size
     ? (market || []).filter(row => configuredRouteSymbols.has(String(row.symbol || '').toUpperCase())).length
     : Math.min(executionCoverage?.routedFuturesSymbols || 0, market?.length || 0);
   const unroutedCount = Math.max(0, (market?.length || 0) - activeRoutedCount);
-  const developerSnapshotRowCount = (developerSnapshots || []).reduce(
-    (count, deployment) => count + (Array.isArray(deployment?.positions) ? deployment.positions.length : 0), 0
-  );
   const tradetronMirror = summarizeTradetronSnapshots(developerSnapshots);
-  const lastNonZeroPnlContext = formatLastNonZeroPnlContext(developerPnlHistory);
   const routeSafetyRequired = Number(executionCoverage?.configuredFuturesRoutes || 0) > 0;
   const routeSafetyBlocked = routeSafetyRequired && (executionCoverage?.tradetronEntrySafety?.trusted !== true || executionCoverage?.tradetronEntrySafety?.blocked === true || executionCoverage?.tradetronEntrySafety?.capReached === true);
   const routeSafetyReason = executionCoverage?.tradetronEntrySafety?.reason ||
@@ -418,29 +411,57 @@ function Dashboard({ market, settings, health, trades, positions, accountDataPro
   const polReplacementAvailable = unavailableMarketSymbols.includes('MATICUSD') &&
     (market || []).some(row => String(row.symbol || '').toUpperCase() === 'POLUSD') &&
     !(executionCoverage?.configuredRouteSymbols || []).includes('POLUSD');
-  const todayTrades = trades.filter(t => indiaDateKey(t.closed_at) === today);
-  const closedPnlValues = trades.map(trade => safeNum(trade.net_pnl));
-  const closedPnlComplete = trades.length > 0 && tradesComplete && closedPnlValues.every(value => value !== null);
-  const realizedPnl = closedPnlComplete ? closedPnlValues.reduce((sum, value) => sum + value, 0) : null;
-  const measuredTodayTrades = todayTrades.filter(trade => safeNum(trade.net_pnl) !== null);
-  const wins = measuredTodayTrades.filter(t => safeNum(t.net_pnl) > 0).length;
-  const loss = measuredTodayTrades.filter(t => safeNum(t.net_pnl) < 0).length;
-  const unrealizedPnl = safeNum(settings.unrealized_pnl);
-  const openPnlComplete = positions.length === 0 || unrealizedPnl !== null;
-  // A configured Tradetron account must also have a fresh, complete zero-open
-  // snapshot before scanner-ledger P&L can be presented as a complete account
-  // total. Raw deployment P&L is intentionally not merged without verified
-  // semantics, currency, and mark-to-market meaning.
-  const apiPositionCoverageComplete = !developerApiConfigured ||
-    (currentPositionSummary.status === 'FRESH' && currentPositionSummary.count === 0 && positions.length === 0);
-  const totalPnlComplete = closedPnlComplete && openPnlComplete && apiPositionCoverageComplete;
-  const totalPnl = totalPnlComplete
-    ? (closedPnlComplete ? realizedPnl : 0) + (positions.length > 0 ? unrealizedPnl : 0)
-    : null;
-  const todayFeesComplete = tradesComplete && todayTrades.length > 0 && todayTrades.every(trade => safeNum(trade.fees) !== null);
-  const todayFees = todayFeesComplete
-    ? todayTrades.reduce((sum, trade) => sum + safeNum(trade.fees), 0)
-    : null;
+  const deltaModeEnabled = String(executionCoverage?.deltaExecutionMode || '').toLowerCase() === 'testnet';
+  const deltaUsd = value => {
+    const amount = safeNum(value);
+    if (amount === null) return 'NO DATA';
+    return (amount < 0 ? '-' : '') + '$' + Math.abs(amount).toLocaleString('en-US', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    });
+  };
+  const deltaTerminalOrderStates = new Set(['FILLED', 'CLOSED', 'CANCELLED', 'CANCELED', 'REJECTED', 'EXPIRED', 'FAILED', 'EXITED']);
+  const deltaOrderRows = Array.isArray(deltaTestnetOrders) ? deltaTestnetOrders : [];
+  const deltaOrderCountKnown = deltaTestnetOrderCount !== null &&
+    deltaTestnetOrderCount !== undefined && Number(deltaTestnetOrderCount) === deltaOrderRows.length;
+  const deltaOpenOrderCount = deltaOrderRows.filter(order =>
+    !deltaTerminalOrderStates.has(String(order?.state || '').toUpperCase())
+  ).length;
+  const deltaPositionCount = deltaTestnetOpenPositionCount === null || deltaTestnetOpenPositionCount === undefined
+    ? null : safeNum(deltaTestnetOpenPositionCount);
+  const deltaEquityText = accountDataProtected ? 'LOCKED' : !deltaModeEnabled ? 'NOT TESTNET' : deltaUsd(settings.equity);
+  const deltaPositionsText = accountDataProtected ? 'LOCKED' : !deltaModeEnabled ? 'NOT TESTNET' :
+    deltaPositionCount === null ? 'NO DATA' : String(deltaPositionCount);
+  const deltaOpenOrdersText = accountDataProtected ? 'LOCKED' : !deltaModeEnabled ? 'NOT TESTNET' :
+    deltaTestnetOrderCount === null || deltaTestnetOrderCount === undefined ? 'NO DATA' :
+      !deltaOrderCountKnown ? 'INCOMPLETE DATA' : String(deltaOpenOrderCount);
+  const deltaPnlText = accountDataProtected ? 'LOCKED' : !deltaModeEnabled ? 'NOT TESTNET' :
+    deltaTestnetClosedTodayPnlComplete ? deltaUsd(deltaTestnetClosedTodayPnl) :
+      deltaTestnetClosedTodayCount === null || deltaTestnetClosedTodayCount === undefined ? 'NO DATA' : 'INCOMPLETE DATA';
+  const deltaEquitySubtitle = accountDataProtected
+    ? 'Unlock private dashboard data in Settings to view account balance'
+    : !deltaModeEnabled
+      ? 'Delta Testnet mode is not enabled'
+      : 'Available margin: ' + deltaUsd(settings.available_balance) +
+        ' · authenticated worker account snapshot' +
+        (settings.last_tick_at ? ' · updated ' + new Date(settings.last_tick_at).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' }) : ' · waiting for first worker account snapshot');
+  const deltaPositionSubtitle = accountDataProtected
+    ? 'Unlock private dashboard data in Settings to view positions'
+    : !deltaModeEnabled ? 'Delta Testnet mode is not enabled'
+      : 'Tracked Delta Testnet OPEN rows; exchange count is verified by the private REST cleanup audit';
+  const deltaOrdersSubtitle = accountDataProtected
+    ? 'Unlock private dashboard data in Settings to view orders'
+    : !deltaModeEnabled ? 'Delta Testnet mode is not enabled'
+      : !deltaOrderCountKnown ? 'Delta order ledger rows are incomplete; open-order count is withheld'
+        : 'Non-terminal rows in Delta Testnet order ledger; not a separate live REST open-orders poll';
+  const deltaPnlSubtitle = accountDataProtected
+    ? 'Unlock private dashboard data in Settings to view P&L'
+    : !deltaModeEnabled ? 'Delta Testnet mode is not enabled'
+      : deltaTestnetClosedTodayCount === 0
+        ? 'No Delta Testnet position rows recorded as closed today (IST)'
+        : deltaTestnetClosedTodayPnlComplete
+          ? 'Recorded realized_pnl across ' + deltaTestnetClosedTodayCount + ' Delta Testnet position(s) closed today (IST)'
+          : 'Some realized-P&L rows are missing or the result is partial';
   const reasons = {};
   for (const s of signals) for (const r of (String(s.blocked_reasons || '').split(' · ').filter(Boolean))) reasons[r] = (reasons[r] || 0) + 1;
   const top = Object.entries(reasons).sort((a,b) => b[1]-a[1]).slice(0,3).map(x => x[0] + ' (' + x[1] + ')').join(', ');
@@ -448,21 +469,10 @@ function Dashboard({ market, settings, health, trades, positions, accountDataPro
   const visibleStageCoinCount = new Set(visibleSignalStages.map(s => s.symbol)).size;
   return <>
     <section className="cards">
-      <Card label="EQUITY" value={accountDataProtected ? 'LOCKED' : money(settings.equity)} sub={accountDataProtected ? 'enter ENGINE_SECRET to view balance' : 'USD ledger converted at approx ₹' + USD_INR_RATE.toFixed(2) + '/USD'}/>
-      <Card label="AVAILABLE" value={accountDataProtected ? 'LOCKED' : money(settings.available_balance)} sub={accountDataProtected ? 'account-specific sizing is hidden' : 'signal sizing reference'}/>
-      <Card label="REALIZED PNL" value={accountDataProtected ? 'LOCKED' : !tradesComplete ? 'INCOMPLETE DATA' : !trades.length ? '—' : closedPnlComplete ? money(realizedPnl) : 'INCOMPLETE DATA'} sub={accountDataProtected ? 'enter ENGINE_SECRET to view verified closed-trade P&L' : !tradesComplete ? 'loaded ' + trades.length + ' of ' + (tradeRowCount ?? 'an unknown number of') + ' stored rows; total P&L not complete' : !trades.length ? 'no authenticated closed trades recorded' : closedPnlComplete ? 'all stored closed-trade P&L values present' : 'one or more closed-trade P&L values are missing'}/>
-      <Card label="UNREALIZED PNL" value={accountDataProtected ? 'LOCKED' : positions.length ? (unrealizedPnl === null ? 'NO DATA' : money(unrealizedPnl)) : developerApiConfigured && (currentPositionSummary.status !== 'FRESH' || currentPositionSummary.count > 0) ? 'NO DATA' : '—'} sub={accountDataProtected ? 'enter ENGINE_SECRET to view position-ledger M2M' : positions.length ? (unrealizedPnl === null ? 'open positions exist; verified mark-to-market is unavailable' : 'engine/webhook position ledger') : developerApiConfigured && currentPositionSummary.status !== 'FRESH' ? 'Tradetron position state is ' + currentPositionSummary.status + '; no webhook rows does not prove flat' : developerApiConfigured && currentPositionSummary.count > 0 ? 'Tradetron reports open positions; verified mark-to-market and units are unavailable' : developerApiConfigured ? 'fresh Tradetron snapshot reports no open positions; scanner M2M remains separate' : 'no webhook-confirmed open positions'}/>
-      <Card label="TOTAL PNL" value={accountDataProtected ? 'LOCKED' : !tradesComplete ? 'INCOMPLETE DATA' : totalPnlComplete ? money(totalPnl) : (trades.length || positions.length || developerApiConfigured ? 'INCOMPLETE DATA' : '—')} sub={accountDataProtected ? 'account ledger is private' : developerApiConfigured && !apiPositionCoverageComplete ? 'Tradetron position coverage is not reconciled into confirmed scanner P&L; raw deployment P&L remains separate' : !tradesComplete ? 'full closed-trade history is not loaded' : 'only shown when each included ledger component is available'}/>
-      <Card label="FEES TODAY" value={accountDataProtected ? 'LOCKED' : !tradesComplete ? 'INCOMPLETE DATA' : !todayTrades.length ? '—' : todayFeesComplete ? money(todayFees) : 'NO DATA'} sub={accountDataProtected ? 'enter ENGINE_SECRET to view verified trade fees' : !tradesComplete ? 'full trade-history coverage is not confirmed' : !todayTrades.length ? 'no authenticated closed-trade rows today' : todayFeesComplete ? 'sum of recorded today-trade fees' : 'one or more today-trade fee values are missing'}/>
-      <Card label="OPEN POSITIONS" value={accountDataProtected ? 'LOCKED' : currentPositionSummary.count === null ? currentPositionSummary.status : currentPositionSummary.count} sub={accountDataProtected ? 'hidden data is not zero' : currentPositionSummary.detail}/>
-      <Card label="WEBHOOK POSITION LEDGER" value={accountDataProtected ? 'LOCKED' : positions.length} sub={accountDataProtected ? 'private event ledger' : 'positions confirmed by authenticated callback processing; distinct from current API snapshots'}/>
-      <Card label="TT OPEN LEGS" value={developerDataProtected ? 'LOCKED' : developerApiConfigured ? (tradetronMirror.openCount === null ? 'UNKNOWN' : tradetronMirror.openCount) : '—'} sub={developerDataProtected ? 'private account snapshot' : tradetronMirror.openCount === null ? 'no verified count; do not interpret as zero' : 'current Tradetron Developer API snapshot'}/>
-      <Card label="TRADETRON SNAPSHOT P&L" value={developerDataProtected ? 'LOCKED' : (developerApiConfigured && tradetronMirror.reportedPnl !== null ? fmtRawPrice(tradetronMirror.reportedPnl, 2) : 'NO DATA')} title="Raw deployment-level value from API. Actual realized P&L requires authenticated trade-detail data." sub={"Raw deployment P&L; " + (tradetronMirror.reportedPnlCurrencyCode ? "API reports " + tradetronMirror.reportedPnlCurrencyCode + " currency; " : "currency not identified by API; ") + "P&L meaning is not independently verified; separate from scanner ledger" + (lastNonZeroPnlContext ? " · " + lastNonZeroPnlContext : "")}/>
-      <Card label="TT SNAPSHOT ROWS" value={developerDataProtected ? 'LOCKED' : developerApiConfigured ? developerSnapshotRowCount : '—'} sub="raw API rows, including closed rows"/>
-      <Card label="TT SIGNAL RECORDS" value={accountDataProtected ? 'LOCKED' : signalOrderStats?.total ?? '—'} sub={accountDataProtected ? 'private signal history' : 'all states including expired; not fills'}/>
-      <Card label="TT SENT" value={accountDataProtected ? 'LOCKED' : signalOrderStats?.sent ?? '—'} sub={accountDataProtected ? 'private signal submission history' : 'API accepted historically; may now be expired; not fills'}/>
-      <Card label="TT EVENTS" value={accountDataProtected ? 'LOCKED' : signalOrderStats?.events ?? '—'} sub={accountDataProtected ? 'private activity history' : 'authenticated activity events received'}/>
-      <Card label="TODAY CLOSED TRADES" value={accountDataProtected ? 'LOCKED' : tradesComplete ? todayTrades.length : 'INCOMPLETE DATA'} sub={accountDataProtected ? 'enter ENGINE_SECRET to view closed-trade counts' : !tradesComplete ? 'trade row count incomplete; today count may be incomplete' : measuredTodayTrades.length ? (wins + ' wins / ' + loss + ' losses · ' + (wins/measuredTodayTrades.length*100).toFixed(1) + '% WR on ' + measuredTodayTrades.length + ' rows with recorded P&L') : (todayTrades.length ? 'WIN RATE NO DATA — trade P&L missing' : 'no authenticated closed trades today')}/>
+      <Card label="DELTA TESTNET EQUITY" value={deltaEquityText} sub={deltaEquitySubtitle}/>
+      <Card label="DELTA OPEN POSITIONS" value={deltaPositionsText} sub={deltaPositionSubtitle}/>
+      <Card label="DELTA OPEN ORDERS" value={deltaOpenOrdersText} sub={deltaOrdersSubtitle}/>
+      <Card label="TODAY'S P&L (DELTA)" value={deltaPnlText} sub={deltaPnlSubtitle}/>
     </section>
     <Panel title="Tradetron Execution Coverage">
       <section className="cards">
@@ -488,9 +498,14 @@ function Dashboard({ market, settings, health, trades, positions, accountDataPro
         <div className="tablewrap"><table><thead><tr><th>COIN</th><th>ENG</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>QTY</th><th>NOTIONAL</th><th>RISK</th><th>READY</th><th>WHY BLOCKED</th></tr></thead><tbody>{visibleSignalStages.map(s => <tr key={s.symbol + ':' + s.strategy}><td className="symbol">{s.symbol}</td><td>{s.strategy === 'MOMENTUM' ? 'MOM' : 'SCALP'}</td><td>{s.snapshot_missing ? 'WATCH · NO DATA' : s.stage}</td><td className={s.side === 'BUY' ? 'up' : s.side === 'SELL' ? 'down' : 'muted'}>{s.side || '—'}</td><td><b>{s.snapshot_missing ? '—' : (safeNum(s.score) === null ? 'NO DATA' : safeNum(s.score).toFixed(0) + '/100')}</b></td><td>{s.snapshot_missing ? '—' : fmtQty(s.qty_contracts)}</td><td>{s.snapshot_missing ? '—' : money(s.notional)}</td><td>{s.snapshot_missing ? '—' : money(s.risk_usd)}</td><td className={s.snapshot_missing ? 'muted' : s.ready && !routeSafetyBlocked && !openPositionSymbols.has(String(s.symbol || '').toUpperCase()) ? 'up' : 'down'}>{s.snapshot_missing ? '—' : s.ready && !routeSafetyBlocked && !openPositionSymbols.has(String(s.symbol || '').toUpperCase()) ? 'YES' : 'NO'}</td><td className="blocker" title={Array.isArray(s.gate_results) ? s.gate_results.map(gateTooltip).join('\n') : 'Structured gate results are not supplied by the current worker; existing block reasons shown.'}>{s.snapshot_missing ? 'No signal snapshot available' : routeSafetyBlocked ? 'Tradetron entry safety blocked: ' + routeSafetyReason : openPositionSymbols.has(String(s.symbol || '').toUpperCase()) ? 'Open Tradetron position detected; duplicate entry blocked' : (Array.isArray(s.gate_results) ? blockersDisplay(s.gate_results) : fmtReasons(s.blocked_reasons))}</td></tr>)}</tbody></table></div>
       </Panel>
     </section>
-    <Panel title="Signal Mode"><div className="idle">SCANNER → TRADETRON → LIVE OFFLINE <span>No orders are sent by the scanner. Tradetron owns Live Offline execution and position management.</span></div></Panel>
-    <TradetronActivity events={tradetronEvents} signalStats={signalOrderStats} webhookSecretConfigured={executionCoverage?.webhookSecretConfigured === true} accountDataProtected={accountDataProtected} />
-    <TradetronDeveloperApiPanel configured={developerApiConfigured} sync={developerSync} deployments={developerSnapshots} privateDataProtected={developerDataProtected} notifications={developerNotifications} notificationSync={developerNotificationSync} pnlHistory={developerPnlHistory} />
+    <Panel title="Signal Mode"><div className="idle">SCANNER → DELTA EXCHANGE (TESTNET) <span>Direct orders are restricted to Delta India Testnet when TESTNET mode is enabled; production/live Delta orders remain hard-locked.</span></div></Panel>
+    <details style={{ marginTop: 12 }}>
+      <summary style={{ cursor: 'pointer', padding: '12px 14px', fontWeight: 700 }}>Legacy Data · Tradetron Live Mirror</summary>
+      <div style={{ marginTop: 10 }}>
+        <TradetronActivity events={tradetronEvents} signalStats={signalOrderStats} webhookSecretConfigured={executionCoverage?.webhookSecretConfigured === true} accountDataProtected={accountDataProtected} />
+        <TradetronDeveloperApiPanel configured={developerApiConfigured} sync={developerSync} deployments={developerSnapshots} privateDataProtected={developerDataProtected} notifications={developerNotifications} notificationSync={developerNotificationSync} pnlHistory={developerPnlHistory} />
+      </div>
+    </details>
     <Panel title="Idle Reason"><div className="idle">{idleFromSignals(signals)} <span>Top blocks: {top || 'none recorded'}</span></div></Panel>
     <Panel title="Engine Log · last 200 lines">{accountDataProtected ? <div className="lockedText">Private engine logs are hidden. Enter ENGINE_SECRET in Settings to view them.</div> : <Log rows={logs || []}/>}</Panel>
     <div className="micro"><span className={health?.workerLeaseActive ? 'up' : 'down'}>Worker {health?.workerLeaseActive ? 'ONLINE' : 'OFFLINE'}</span><span>Last tick {settings.last_tick_at ? new Date(settings.last_tick_at).toLocaleTimeString('en-IN') : '—'}</span><span>Time drift {health?.timeDriftMs == null ? '—' : Math.round(health.timeDriftMs) + ' ms'}</span><span>Auto {settings.auto_trade ? 'ON' : 'OFF'}</span><span>Continuous {settings.continuous_mode ? 'ON' : 'OFF'}</span></div>

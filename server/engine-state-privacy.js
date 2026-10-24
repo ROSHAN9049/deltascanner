@@ -124,6 +124,12 @@ export function protectEngineState(payload, authorized) {
     tradetronDeveloperNotificationSync: null,
     tradetronDeveloperNotifications: [],
     tradetronDeveloperPnlHistory: [],
-    deltaTestnetPositions: []
+    deltaTestnetPositions: [],
+    deltaTestnetOpenPositionCount: null,
+    deltaTestnetOrders: [],
+    deltaTestnetOrderCount: null,
+    deltaTestnetClosedTodayCount: null,
+    deltaTestnetClosedTodayPnl: null,
+    deltaTestnetClosedTodayPnlComplete: false
   };
 }
