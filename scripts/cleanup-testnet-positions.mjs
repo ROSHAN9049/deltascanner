@@ -9,7 +9,13 @@ const PAGE_SIZE = 100;
 function parseArgs(argv) {
   const allowed = new Set(['--audit', '--close', '--confirm', '--action']);
   for (let i = 0; i < argv.length; i++) {
-    if (!allowed.has(argv[i]) && !argv[i].startsWith('--action=')) throw new Error('Unknown argument: ' + argv[i]);
+    const arg = argv[i];
+    if (arg === '--action') {
+      if (!argv[i + 1] || argv[i + 1].startsWith('--')) throw new Error('--action must be followed by audit or close.');
+      i += 1;
+      continue;
+    }
+    if (!allowed.has(arg) && !arg.startsWith('--action=')) throw new Error('Unknown argument: ' + arg);
   }
   const hasAudit = argv.includes('--audit');
   const hasClose = argv.includes('--close');
@@ -143,7 +149,8 @@ function createApi() {
     };
     if (payload !== null && payload !== undefined) headers['Content-Type'] = 'application/json';
     const response = await fetch(REST_BASE + path + query, {
-      method, headers, body: payload === null || payload === undefined ? undefined : body
+      method, headers, body: payload === null || payload === undefined ? undefined : body,
+      redirect: 'error'
     });
     const data = parseJson(await response.text());
     if (!response.ok || data?.success === false) {
@@ -252,8 +259,8 @@ function createApi() {
 
 async function main() {
   const { action, confirmed } = parseArgs(process.argv.slice(2));
-  const api = createApi();
   if (action === 'close' && !confirmed) throw new Error('DESTRUCTIVE ACTION BLOCKED: --close requires --confirm. No orders were sent.');
+  const api = createApi();
 
   console.log('Delta India Testnet positions cleanup');
   console.log('REST endpoint: ' + REST_BASE);
