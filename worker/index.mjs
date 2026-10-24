@@ -4,18 +4,21 @@ import * as db from '../server/db.js';
 import { log } from '../server/db.js';
 import { isGithubActionsPublicScanOnly } from './runtime-mode.mjs';
 import { warmupBTCHourly } from './candle-warmup.mjs';
+import { deltaExecutor } from './execution/delta-executor.mjs';
+import { DeltaTestnetTracker } from './execution/delta-tracker.mjs';
 
 const githubActionsPublicScanOnly = isGithubActionsPublicScanOnly();
 
 if (!CONFIG.signalOnly || CONFIG.directDeltaExecutionEnabled) throw new Error('Scanner must run in SIGNAL_ONLY mode with direct Delta execution disabled.');
 if (!CONFIG.engineSecret) throw new Error('ENGINE_SECRET is required.');
-if (!CONFIG.tradetronBridgeEnabled && !githubActionsPublicScanOnly) {
-  throw new Error('Tradetron signal bridge is required in SIGNAL_ONLY mode unless the explicit GitHub Actions public scan-only mode is enabled.');
+if (!CONFIG.tradetronBridgeEnabled && CONFIG.deltaExecutionMode !== 'testnet' && !githubActionsPublicScanOnly) {
+  throw new Error('Tradetron signal bridge is required in SIGNAL_ONLY mode unless Delta Testnet execution or explicit GitHub Actions public scan-only mode is enabled.');
 }
 if (!CONFIG.supabaseUrl || !CONFIG.supabaseAdminKey) throw new Error('SUPABASE_URL / Supabase server key is required.');
 
 const engine = new DeltaEngine();
 let btcHourlyWarmupTimer = null;
+let deltaTestnetTracker = null;
 
 async function getOutboundIp() {
   try {
@@ -31,13 +34,20 @@ async function getOutboundIp() {
 }
 
 async function startupPreflight() {
-  console.log('[DeltaScanner] Starting PRODUCTION-MARKET SIGNAL-ONLY worker preflight');
+  console.log('[DeltaScanner] Starting public-market signal scanner; DELTA_EXECUTION_MODE=' + CONFIG.deltaExecutionMode);
   try {
     const settings = await db.select('dd_settings', 'id=eq.1&select=id&limit=1');
     console.log('[DeltaScanner] Supabase connectivity OK; settings rows=' + (settings?.length || 0));
     await engine.adapter.health();
     console.log('[DeltaScanner] Delta India production public market API OK');
-    if (CONFIG.tradetronBridgeEnabled) {
+    if (CONFIG.deltaExecutionMode === 'testnet') {
+      const [account, positions] = await Promise.all([
+        deltaExecutor.getAccountSnapshot(),
+        deltaExecutor.getOpenPositions()
+      ]);
+      engine.privateExecutionAvailable = true;
+      console.log('[DeltaScanner] Authenticated Delta TESTNET API OK; equity=' + account.equity + '; open positions=' + positions.length);
+    } else if (CONFIG.tradetronBridgeEnabled) {
       if (!engine.tradetron.isConfigured()) {
         console.warn('[DeltaScanner] Tradetron bridge enabled but auth token is missing; signals are blocked');
       } else {
@@ -74,8 +84,8 @@ async function startupPreflight() {
   }
 }
 
-process.on('SIGTERM', async () => { console.log('[DeltaScanner] SIGTERM received; stopping safely'); if (btcHourlyWarmupTimer) clearInterval(btcHourlyWarmupTimer); await engine.stop(); process.exit(0); });
-process.on('SIGINT', async () => { console.log('[DeltaScanner] SIGINT received; stopping safely'); if (btcHourlyWarmupTimer) clearInterval(btcHourlyWarmupTimer); await engine.stop(); process.exit(0); });
+process.on('SIGTERM', async () => { console.log('[DeltaScanner] SIGTERM received; stopping safely'); if (btcHourlyWarmupTimer) clearInterval(btcHourlyWarmupTimer); await deltaTestnetTracker?.stop(); await engine.stop(); process.exit(0); });
+process.on('SIGINT', async () => { console.log('[DeltaScanner] SIGINT received; stopping safely'); if (btcHourlyWarmupTimer) clearInterval(btcHourlyWarmupTimer); await deltaTestnetTracker?.stop(); await engine.stop(); process.exit(0); });
 
 process.on('unhandledRejection', async error => {
   console.error('[DeltaScanner] Unhandled rejection:', String(error?.message || error));
@@ -92,6 +102,7 @@ const preflightOk = await startupPreflight();
 if (!preflightOk) process.exit(1);
 
 async function runTradetronSelfTest() {
+  if (CONFIG.deltaExecutionMode === 'testnet') return;
   if (String(process.env.TRADETRON_SELF_TEST || '').toLowerCase() !== 'true') return;
   if (!CONFIG.tradetronBridgeEnabled || !engine.tradetron.isConfigured()) {
     throw new Error('Tradetron self-test requires bridge enabled and a configured auth token');
@@ -123,6 +134,11 @@ async function runTradetronSelfTest() {
 
 await runTradetronSelfTest();
 
+if (CONFIG.deltaExecutionMode === 'testnet') {
+  deltaTestnetTracker = new DeltaTestnetTracker();
+  await deltaTestnetTracker.start();
+}
+
 // Fetch the global BTC hourly regime data immediately, then refresh it hourly.
 // This schedule is independent of the rotating 1m/5m/15m warmup and WebSocket.
 await warmupBTCHourly(engine.adapter, engine.candles);
@@ -131,7 +147,7 @@ btcHourlyWarmupTimer = setInterval(() => {
 }, 60 * 60 * 1000);
 btcHourlyWarmupTimer.unref?.();
 
-console.log('[DeltaScanner] Production SIGNAL_ONLY worker entering engine loop');
+console.log('[DeltaScanner] Scanner worker entering engine loop; execution=' + CONFIG.deltaExecutionMode);
 engine.run().catch(async error => {
   console.error('[DeltaScanner] Fatal worker startup error:', error.message);
   await log('ERROR', 'Fatal worker startup error', { error: error.message });
