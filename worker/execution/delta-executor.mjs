@@ -266,6 +266,9 @@ export function createDeltaExecutor({
     if (settingsRows[0].emergency_stop === true) {
       throw new Error('Emergency Stop is active; Delta Testnet executor refuses all orders');
     }
+    if (settingsRows[0].emergency_stop !== false) {
+      throw new Error('Emergency Stop state is unknown; Delta Testnet execution is blocked');
+    }
     if (operation === 'EXIT') return;
 
     const normalizedSymbol = stringOrEmpty(symbol).toUpperCase();
