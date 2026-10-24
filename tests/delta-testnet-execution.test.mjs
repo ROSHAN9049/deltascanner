@@ -135,6 +135,13 @@ test('daily loss at or beyond 5 percent halts entries', async () => {
   assert.equal(runtime.httpCalls.some(call => call.init.method === 'POST'), false);
 });
 
+test('unknown realized P&L fails closed instead of treating it as zero', async () => {
+  const runtime = fakeRuntime({ closedRows: [{ realized_pnl: null }], equity: 1000 });
+  const executor = createDeltaExecutor({ env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database });
+  await assert.rejects(executor.placeBracketOrder('BTCUSD', 'BUY', 1, 60000, 59000, 62000), /Daily realized P&L is incomplete/);
+  assert.equal(runtime.httpCalls.some(call => call.init.method === 'POST'), false);
+});
+
 test('20 already-open symbols hit the global position cap', async () => {
   const positions = Array.from({ length: 20 }, (_, index) => ({
     product_id: index + 1, product_symbol: 'SYM' + index + 'USD', size: 1,
