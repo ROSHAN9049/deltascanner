@@ -70,6 +70,7 @@ const latestSignals = list => {
 function App() {
   const [tab, setTab] = useState('dashboard');
   const [state, setState] = useState(null);
+  const [deltaState, setDeltaState] = useState(null);
   const [market, setMarket] = useState([]);
   const [health, setHealth] = useState(null);
   const [secret, setSecret] = useState('');
@@ -105,7 +106,14 @@ function App() {
       }
     })().catch(e => setError(e.message || 'Dashboard data unavailable'));
 
-    await Promise.allSettled([marketRequest, stateRequest]);
+    const deltaStateRequest = fetch('/api/delta/state' + cacheBust, { cache: 'no-store', credentials: 'same-origin' })
+      .then(async response => {
+        const result = await response.json();
+        setDeltaState(response.status === 401 ? { success: false, protected: true } : result);
+      })
+      .catch(() => setDeltaState({ success: false, error: 'Delta state endpoint unavailable' }));
+
+    await Promise.allSettled([marketRequest, stateRequest, deltaStateRequest]);
   }, []);
   const unlockSession = async () => {
     const candidate = secretRef.current;
@@ -275,23 +283,18 @@ function App() {
     gridEntrySafety: effectiveGridEntrySafety
   } : (state?.executionCoverage || null);
 
-  // These values are consumed by the Momentum and Scalping routes, so keep
-  // them in App scope rather than inside Dashboard.
-  const routeSafetyRequired = Number(executionCoverage?.configuredFuturesRoutes || 0) > 0;
-  const routeSafetyBlocked = routeSafetyRequired && (executionCoverage?.tradetronEntrySafety?.trusted !== true || executionCoverage?.tradetronEntrySafety?.blocked === true || executionCoverage?.tradetronEntrySafety?.capReached === true);
-  const routeSafetyReason = executionCoverage?.tradetronEntrySafety?.reason ||
-    (executionCoverage?.tradetronEntrySafety?.configured === true ? 'SNAPSHOT_NOT_VERIFIED' : 'DEVELOPER_API_NOT_CONFIGURED');
-  const appTradetronSnapshots = state?.tradetronDeveloperDataProtected === true
-    ? []
-    : (state?.tradetronDeveloperSnapshots || []);
-  const appTradetronMirror = summarizeTradetronSnapshots(appTradetronSnapshots);
-  const eventPositionSymbols = (Array.isArray(positions) ? positions : [])
-    .filter(position => Math.abs(Number(position?.qty) || 0) > 0)
-    .map(position => String(position?.symbol || '').toUpperCase());
-  const openPositionSymbols = new Set([
-    ...eventPositionSymbols,
-    ...appTradetronMirror.openRows.map(position => String(position.symbol || '').toUpperCase())
-  ].filter(Boolean));
+  // Direct routing is Delta Testnet-first; legacy Tradetron rows do not affect entry visibility.
+  const deltaModeActive = String(deltaState?.mode || executionCoverage?.deltaExecutionMode || 'disabled').toLowerCase() === 'testnet';
+  const routeSafetyRequired = deltaModeActive;
+  const routeSafetyBlocked = !deltaModeActive;
+  const routeSafetyReason = routeSafetyBlocked ? 'DELTA_TESTNET_EXECUTION_NOT_ACTIVE' : null;
+  const deltaRowsForSymbols = Array.isArray(deltaState?.openPositions?.rows)
+    ? deltaState.openPositions.rows
+    : (state?.deltaTestnetPositions || []);
+  const openPositionSymbols = new Set(deltaRowsForSymbols
+    .filter(position => String(position?.status || '').toUpperCase() === 'OPEN' && Math.abs(Number(position?.qty) || 0) > 0)
+    .map(position => String(position?.symbol || '').toUpperCase())
+    .filter(Boolean));
 
   return <div className="terminal">
     <header className="topbar">
@@ -303,7 +306,7 @@ function App() {
         <span>BUILD v2.0.20261015.01</span>
         <span>UTC {new Date(clock).toISOString().slice(11,19)}</span>
         <span>LOCAL {new Date(clock).toLocaleTimeString('en-IN')}</span>
-        <b className="badge test">LIVE MARKET · SIGNAL ONLY</b>
+        <b className="badge test">LIVE MARKET · DELTA TESTNET</b>
         <b className="badge lock">LIVE LOCKED</b>
         <button className="estop" disabled={busy || !state || accountDataProtected} onClick={() => mutate({ emergencyStop: !settings.emergency_stop })}>
           {settings.emergency_stop ? 'RELEASE E-STOP' : 'EMERGENCY STOP'}
@@ -315,7 +318,7 @@ function App() {
     <nav>{tabs.map(([id,label]) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}{id === 'live' ? ' 🔒' : ''}</button>)}</nav>
     {accountDataProtected ? <div className="danger">🔒 ACCOUNT DATA LOCKED — Enter ENGINE_SECRET in Settings to view private positions, closed trades, P&amp;L, rotation ledger, Grid state, and account-specific logs. Hidden data is not zero.</div> : null}
 
-    {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} trades={trades} positions={positions} accountDataProtected={accountDataProtected} signals={signals} signalOrderStats={state?.signalOrderStats || null} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.tradeRowCount ?? null} tradetronEvents={state?.tradetronEvents || []} executionCoverage={executionCoverage} developerSync={state?.tradetronDeveloperSync || null} developerSnapshots={state?.tradetronDeveloperSnapshots || []} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} developerDataProtected={state?.tradetronDeveloperDataProtected === true} developerNotifications={state?.tradetronDeveloperNotifications || []} developerNotificationSync={state?.tradetronDeveloperNotificationSync || null} developerPnlHistory={state?.tradetronDeveloperPnlHistory || []} onInspect={setInspect} inspect={selected} logs={state?.logs || []} />}
+    {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} accountDataProtected={accountDataProtected} signals={signals} executionCoverage={executionCoverage} developerSync={state?.tradetronDeveloperSync || null} developerSnapshots={state?.tradetronDeveloperSnapshots || []} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} developerDataProtected={state?.tradetronDeveloperDataProtected === true} developerNotifications={state?.tradetronDeveloperNotifications || []} developerNotificationSync={state?.tradetronDeveloperNotificationSync || null} developerPnlHistory={state?.tradetronDeveloperPnlHistory || []} onInspect={setInspect} inspect={selected} logs={state?.logs || []} deltaState={deltaState} />}
     {tab === 'rotation' && <Rotation ledger={rotationLedger} accountDataProtected={accountDataProtected} ledgerComplete={rotationLedgerComplete} ledgerRowCount={state?.ledgerRowCount ?? null} />}
     {tab === 'momentum' && <EngineView engine="MOMENTUM" signals={signals} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols} />}
     {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" strategy="MOMENTUM" apiDerivedTrades={state?.apiDerivedTrades || []} apiDerivedTradeCount={state?.apiDerivedTradeCount ?? null} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
@@ -324,20 +327,22 @@ function App() {
     {tab === 'options' && <OptionsView signals={signals} settings={settings} optionCache={state?.optionCache || []} executionCoverage={state?.executionCoverage || null} />}
     {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" strategy="SCALPING" apiDerivedTrades={state?.apiDerivedTrades || []} apiDerivedTradeCount={state?.apiDerivedTradeCount ?? null} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'positions' && <><Positions rows={positions} tradetronDeployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} marketCache={state?.marketCache || []} snapshotsLocked={state?.tradetronDeveloperDataProtected === true} accountDataProtected={accountDataProtected} /><TradetronPositionReconciliationPanel deployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} enginePositions={positions} syncState={state?.tradetronDeveloperSync || null} privateDataProtected={accountDataProtected || state?.tradetronDeveloperDataProtected === true} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} marketCache={state?.marketCache || []} /></>}
-    {tab === 'delta-testnet-positions' && <DeltaTestnetPositions rows={state?.deltaTestnetPositions || []} accountDataProtected={accountDataProtected} mode={executionCoverage?.deltaExecutionMode || 'disabled'} />}
+    {tab === 'delta-testnet-positions' && <DeltaTestnetPositions rows={deltaState?.success === true ? (deltaState?.openPositions?.rows || []) : (state?.deltaTestnetPositions || [])} accountDataProtected={accountDataProtected} mode={deltaState?.mode || executionCoverage?.deltaExecutionMode || 'disabled'} updatedAt={deltaState?.capturedAt || null} />}
     {tab === 'trade-history' && <><TradeHistory trades={trades} title="Trade History · Webhook-Synced Tradetron Records" apiDerivedTrades={state?.apiDerivedTrades || []} apiDerivedTradeCount={state?.apiDerivedTradeCount ?? null} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} /><TradetronActivity events={state?.tradetronEvents || []} signalStats={state?.signalOrderStats || null} webhookSecretConfigured={executionCoverage?.webhookSecretConfigured === true} accountDataProtected={accountDataProtected} /></>}
     {tab === 'pnl' && <><PNL trades={trades} settings={settings} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.tradeRowCount ?? null} apiDerivedTrades={state?.apiDerivedTrades || []} apiDerivedTradeCount={state?.apiDerivedTradeCount ?? null} developerSnapshots={state?.tradetronDeveloperSnapshots || []} developerDataProtected={state?.tradetronDeveloperDataProtected === true} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} marketCache={state?.marketCache || []} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} marketCache={state?.marketCache || []} /></>}
     {tab === 'paper' && <Panel title="Paper Trading"><div className="lockedText">Scanner is signal-only. No Delta order is placed here; Tradetron Live Offline runs the simulated execution.</div></Panel>}
     {tab === 'testnet' && <Testnet settings={settings} health={health} busy={busy} mutate={mutate} positions={positions} tradetronDeployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} developerSync={state?.tradetronDeveloperSync || null} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} entrySafety={executionCoverage?.tradetronEntrySafety || null} accountDataProtected={accountDataProtected} />}
-    {tab === 'live' && <Panel title="Live Trading"><div className="liveLock">🔒 DIRECT DELTA EXECUTION LOCKED<br/><small>The scanner never sends production orders. Future live execution must be enabled manually in Tradetron.</small></div></Panel>}
+    {tab === 'live' && <Panel title="Live Trading"><div className="liveLock">🔒 DELTA PRODUCTION EXECUTION LOCKED<br/><small>Only the Delta India Demo/Testnet route is enabled. Production/live orders require a reviewed code change and explicit approval.</small></div></Panel>}
     {tab === 'analytics' && <Analytics trades={trades} apiDerivedTrades={state?.apiDerivedTrades || []} apiDerivedTradeCount={state?.apiDerivedTradeCount ?? null} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.tradeRowCount ?? null} />}
     {tab === 'settings' && <Settings settings={settings} workerEntrySafety={workerEntrySafety} secret={secret} setSecret={v => { secretRef.current = v; setSecret(v); }} busy={busy} mutate={mutate} onUnlock={unlockSession} onLock={lockSession} authenticated={state?.accountDataProtected === false} />}
     <footer>Delta Exchange India · public market feed · direct execution is Testnet-only when enabled · live orders hard-locked</footer>
   </div>;
 }
 
-function DeltaTestnetPositions({ rows = [], accountDataProtected = false, mode = 'disabled' }) {
-  const positions = Array.isArray(rows) ? rows : [];
+function DeltaTestnetPositions({ rows = [], accountDataProtected = false, mode = 'disabled', updatedAt = null }) {
+  const positions = (Array.isArray(rows) ? rows : []).filter(row =>
+    String(row?.status || '').toUpperCase() === 'OPEN' && Number(row?.qty) > 0
+  );
   const fmtUsd = value => {
     const amount = safeNum(value);
     if (amount === null) return '—';
@@ -351,33 +356,30 @@ function DeltaTestnetPositions({ rows = [], accountDataProtected = false, mode =
   };
   return <Panel title="Delta Testnet Positions">
     <div className="muted" style={{ marginBottom: 10 }}>
-      Separate private Demo/Testnet ledger · mode: {String(mode).toUpperCase()} · never merged into Tradetron positions/P&amp;L.
+      Delta direct execution · mode: {String(mode).toUpperCase()} · rows from dd_delta_positions · dashboard polling every 10 seconds{updatedAt ? ' · last refresh ' + timestamp(updatedAt) : ''}.
     </div>
     {accountDataProtected
       ? <div className="danger">🔒 Testnet account data is locked. Enter ENGINE_SECRET in Settings to view these positions.</div>
       : positions.length === 0
-        ? <div className="muted">No Delta Testnet position rows recorded yet. The position ledger remains separate from Tradetron.</div>
+        ? <div className="muted">No open positions. Monitoring active.</div>
         : <div className="tablewrap"><table>
           <thead><tr>
-            <th>Status</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Mark</th>
-            <th>Unrealized P&amp;L</th><th>Realized P&amp;L</th><th>Stop Loss</th><th>Take Profit</th>
-            <th>Strategy</th><th>Opened (IST)</th><th>Closed (IST)</th><th>Order ID</th>
+            <th>Symbol</th><th>Side</th><th>Qty</th><th>Entry Price</th><th>Mark Price</th>
+            <th>Unrealized P&amp;L</th><th>Strategy</th><th>Stop Loss</th><th>Take Profit</th>
+            <th>Opened (IST)</th><th>Order ID</th>
           </tr></thead>
           <tbody>{positions.map((row, index) => <tr key={String(row.id || row.order_id || row.symbol) + ':' + index}>
-            <td><span className={'badge ' + (row.status === 'OPEN' ? 'test' : 'muted')}>{row.status || 'UNKNOWN'}</span></td>
             <td className="symbol">{row.symbol || '—'}</td>
             <td>{row.side || '—'}</td>
             <td>{safeNum(row.qty) === null ? '—' : safeNum(row.qty)}</td>
             <td>{price(row.entry_price)}</td>
             <td>{price(row.current_price)}</td>
             <td className={num(row.unrealized_pnl) > 0 ? 'up' : num(row.unrealized_pnl) < 0 ? 'down' : ''}>{fmtUsd(row.unrealized_pnl)}</td>
-            <td className={num(row.realized_pnl) > 0 ? 'up' : num(row.realized_pnl) < 0 ? 'down' : ''}>{fmtUsd(row.realized_pnl)}</td>
+            <td>{['MOMENTUM', 'SCALPING', 'GRID'].includes(String(row.strategy || '').toUpperCase()) ? String(row.strategy).toUpperCase() : '—'}</td>
             <td>{price(row.sl_price)}</td>
             <td>{price(row.tp_price)}</td>
-            <td>{row.strategy || '—'}</td>
             <td>{timestamp(row.opened_at)}</td>
-            <td>{timestamp(row.closed_at)}</td>
-            <td className="mono">{row.order_id || '—'}</td>
+            <td className="mono">{row.order_id || row.client_order_id || '—'}</td>
           </tr>)}</tbody>
         </table></div>}
   </Panel>;
@@ -390,106 +392,64 @@ function Card({ label, value, sub, title, tone = '' }) {
   const toneClass = tone === 'critical' ? ' card-critical' : tone === 'warning' ? ' card-warning' : '';
   return <div className={'card' + toneClass} title={title}><small>{label}</small><strong>{value}</strong><span>{sub}</span></div>;
 }
-function Dashboard({ market, settings, health, trades, positions, accountDataProtected = false, signals, signalOrderStats = null, tradesComplete = false, tradeRowCount = null, tradetronEvents = [], executionCoverage = null, developerSync = null, developerSnapshots = [], developerApiConfigured = false, developerDataProtected = false, developerNotifications = [], developerNotificationSync = null, developerPnlHistory = [], onInspect, inspect, logs }) {
-  const today = indiaDateKey(new Date());
-  const currentPositionSummary = summarizeCurrentPositionCount({ eventPositions: positions, deployments: developerSnapshots, syncState: developerSync, configured: developerApiConfigured });
-  const configuredRouteSymbols = new Set(executionCoverage?.routedSymbols || []);
-  const activeRoutedCount = configuredRouteSymbols.size
-    ? (market || []).filter(row => configuredRouteSymbols.has(String(row.symbol || '').toUpperCase())).length
-    : Math.min(executionCoverage?.routedFuturesSymbols || 0, market?.length || 0);
-  const unroutedCount = Math.max(0, (market?.length || 0) - activeRoutedCount);
-  const developerSnapshotRowCount = (developerSnapshots || []).reduce(
-    (count, deployment) => count + (Array.isArray(deployment?.positions) ? deployment.positions.length : 0), 0
-  );
-  const tradetronMirror = summarizeTradetronSnapshots(developerSnapshots);
-  const lastNonZeroPnlContext = formatLastNonZeroPnlContext(developerPnlHistory);
-  const routeSafetyRequired = Number(executionCoverage?.configuredFuturesRoutes || 0) > 0;
-  const routeSafetyBlocked = routeSafetyRequired && (executionCoverage?.tradetronEntrySafety?.trusted !== true || executionCoverage?.tradetronEntrySafety?.blocked === true || executionCoverage?.tradetronEntrySafety?.capReached === true);
-  const routeSafetyReason = executionCoverage?.tradetronEntrySafety?.reason ||
-    (executionCoverage?.tradetronEntrySafety?.configured === true ? 'SNAPSHOT_NOT_VERIFIED' : 'DEVELOPER_API_NOT_CONFIGURED');
-  const eventPositionSymbols = (positions || []).filter(position => Math.abs(Number(position?.qty) || 0) > 0).map(position => String(position?.symbol || '').toUpperCase());
-  const openPositionSymbols = new Set([...eventPositionSymbols, ...tradetronMirror.openRows.map(position => String(position.symbol || '').toUpperCase())].filter(Boolean));
-  const snapshotPositionRows = tradetronMirror.openRows.map(position => ({
-    symbol: position.symbol, side: position.side, qty: Math.abs(Number(position.quantity) || 0),
-    strategy: 'TT_API_SNAPSHOT', origin: 'TRADETRON_API_SNAPSHOT', snapshot_only: true
-  }));
-  const riskGovernorPositions = [...(positions || []), ...snapshotPositionRows.filter(snapshot => !eventPositionSymbols.includes(snapshot.symbol))];
-  const unavailableMarketSymbols = executionCoverage?.unavailableMarketSymbols || [];
-  const polReplacementAvailable = unavailableMarketSymbols.includes('MATICUSD') &&
-    (market || []).some(row => String(row.symbol || '').toUpperCase() === 'POLUSD') &&
-    !(executionCoverage?.configuredRouteSymbols || []).includes('POLUSD');
-  const todayTrades = trades.filter(t => indiaDateKey(t.closed_at) === today);
-  const closedPnlValues = trades.map(trade => safeNum(trade.net_pnl));
-  const closedPnlComplete = trades.length > 0 && tradesComplete && closedPnlValues.every(value => value !== null);
-  const realizedPnl = closedPnlComplete ? closedPnlValues.reduce((sum, value) => sum + value, 0) : null;
-  const measuredTodayTrades = todayTrades.filter(trade => safeNum(trade.net_pnl) !== null);
-  const wins = measuredTodayTrades.filter(t => safeNum(t.net_pnl) > 0).length;
-  const loss = measuredTodayTrades.filter(t => safeNum(t.net_pnl) < 0).length;
-  const unrealizedPnl = safeNum(settings.unrealized_pnl);
-  const openPnlComplete = positions.length === 0 || unrealizedPnl !== null;
-  // A configured Tradetron account must also have a fresh, complete zero-open
-  // snapshot before scanner-ledger P&L can be presented as a complete account
-  // total. Raw deployment P&L is intentionally not merged without verified
-  // semantics, currency, and mark-to-market meaning.
-  const apiPositionCoverageComplete = !developerApiConfigured ||
-    (currentPositionSummary.status === 'FRESH' && currentPositionSummary.count === 0 && positions.length === 0);
-  const totalPnlComplete = closedPnlComplete && openPnlComplete && apiPositionCoverageComplete;
-  const totalPnl = totalPnlComplete
-    ? (closedPnlComplete ? realizedPnl : 0) + (positions.length > 0 ? unrealizedPnl : 0)
-    : null;
-  const todayFeesComplete = tradesComplete && todayTrades.length > 0 && todayTrades.every(trade => safeNum(trade.fees) !== null);
-  const todayFees = todayFeesComplete
-    ? todayTrades.reduce((sum, trade) => sum + safeNum(trade.fees), 0)
-    : null;
+function Dashboard({ market, settings, health, accountDataProtected = false, signals, executionCoverage = null, developerSync = null, developerSnapshots = [], developerApiConfigured = false, developerDataProtected = false, developerNotifications = [], developerNotificationSync = null, developerPnlHistory = [], onInspect, inspect, logs, deltaState = null }) {
+  const deltaModeActive = String(deltaState?.mode || executionCoverage?.deltaExecutionMode || 'disabled').toLowerCase() === 'testnet';
+  const deltaApiStatus = String(deltaState?.liveApiStatus || 'UNKNOWN');
+  const deltaOpenPositions = (Array.isArray(deltaState?.openPositions?.rows) ? deltaState.openPositions.rows : [])
+    .filter(row => String(row?.status || '').toUpperCase() === 'OPEN' && Number(row?.qty) > 0);
+  const deltaOpenCount = deltaState?.success === true ? (deltaState?.openPositions?.count ?? deltaOpenPositions.length) : null;
+  const deltaOpenOrdersCount = deltaState?.openOrders?.count;
+  const deltaSignals24h = deltaState?.signals24h?.count;
+  const fmtDeltaUsd = value => {
+    const amount = safeNum(value);
+    if (amount === null) return 'UNAVAILABLE';
+    return (amount < 0 ? '-$' : '$') + Math.abs(amount).toLocaleString('en-US', { maximumFractionDigits: 2 });
+  };
+  const deltaApiDetail = deltaState?.liveApiError ||
+    (deltaApiStatus === 'OK' ? 'Authenticated Delta India Testnet wallet/order snapshot' : 'Live wallet/order data requires Delta Testnet credentials in the dashboard server environment');
+  const routeSafetyBlocked = !deltaModeActive;
+  const routeSafetyReason = routeSafetyBlocked ? 'DELTA_TESTNET_EXECUTION_NOT_ACTIVE' : null;
+  const openPositionSymbols = new Set(deltaOpenPositions.map(row => String(row.symbol || '').toUpperCase()).filter(Boolean));
+  const riskGovernorPositions = deltaOpenPositions.map(row => ({ ...row, quantity: row.qty, origin: 'DELTA_TESTNET', strategy: row.strategy || 'MOMENTUM' }));
   const reasons = {};
-  for (const s of signals) for (const r of (String(s.blocked_reasons || '').split(' · ').filter(Boolean))) reasons[r] = (reasons[r] || 0) + 1;
-  const top = Object.entries(reasons).sort((a,b) => b[1]-a[1]).slice(0,3).map(x => x[0] + ' (' + x[1] + ')').join(', ');
+  for (const signal of signals || []) {
+    for (const reason of String(signal.blocked_reasons || '').split(' · ').filter(Boolean)) {
+      reasons[reason] = (reasons[reason] || 0) + 1;
+    }
+  }
+  const top = Object.entries(reasons).sort((a, b) => b[1] - a[1]).slice(0, 3).map(item => item[0] + ' (' + item[1] + ')').join(', ');
   const visibleSignalStages = selectVisibleSignalRows(market, signals, DEFAULT_VISIBLE_MARKET_LIMIT);
-  const visibleStageCoinCount = new Set(visibleSignalStages.map(s => s.symbol)).size;
+  const visibleStageCoinCount = new Set(visibleSignalStages.map(signal => signal.symbol)).size;
   return <>
     <section className="cards">
-      <Card label="EQUITY" value={accountDataProtected ? 'LOCKED' : money(settings.equity)} sub={accountDataProtected ? 'enter ENGINE_SECRET to view balance' : 'USD ledger converted at approx ₹' + USD_INR_RATE.toFixed(2) + '/USD'}/>
-      <Card label="AVAILABLE" value={accountDataProtected ? 'LOCKED' : money(settings.available_balance)} sub={accountDataProtected ? 'account-specific sizing is hidden' : 'signal sizing reference'}/>
-      <Card label="REALIZED PNL" value={accountDataProtected ? 'LOCKED' : !tradesComplete ? 'INCOMPLETE DATA' : !trades.length ? '—' : closedPnlComplete ? money(realizedPnl) : 'INCOMPLETE DATA'} sub={accountDataProtected ? 'enter ENGINE_SECRET to view verified closed-trade P&L' : !tradesComplete ? 'loaded ' + trades.length + ' of ' + (tradeRowCount ?? 'an unknown number of') + ' stored rows; total P&L not complete' : !trades.length ? 'no authenticated closed trades recorded' : closedPnlComplete ? 'all stored closed-trade P&L values present' : 'one or more closed-trade P&L values are missing'}/>
-      <Card label="UNREALIZED PNL" value={accountDataProtected ? 'LOCKED' : positions.length ? (unrealizedPnl === null ? 'NO DATA' : money(unrealizedPnl)) : developerApiConfigured && (currentPositionSummary.status !== 'FRESH' || currentPositionSummary.count > 0) ? 'NO DATA' : '—'} sub={accountDataProtected ? 'enter ENGINE_SECRET to view position-ledger M2M' : positions.length ? (unrealizedPnl === null ? 'open positions exist; verified mark-to-market is unavailable' : 'engine/webhook position ledger') : developerApiConfigured && currentPositionSummary.status !== 'FRESH' ? 'Tradetron position state is ' + currentPositionSummary.status + '; no webhook rows does not prove flat' : developerApiConfigured && currentPositionSummary.count > 0 ? 'Tradetron reports open positions; verified mark-to-market and units are unavailable' : developerApiConfigured ? 'fresh Tradetron snapshot reports no open positions; scanner M2M remains separate' : 'no webhook-confirmed open positions'}/>
-      <Card label="TOTAL PNL" value={accountDataProtected ? 'LOCKED' : !tradesComplete ? 'INCOMPLETE DATA' : totalPnlComplete ? money(totalPnl) : (trades.length || positions.length || developerApiConfigured ? 'INCOMPLETE DATA' : '—')} sub={accountDataProtected ? 'account ledger is private' : developerApiConfigured && !apiPositionCoverageComplete ? 'Tradetron position coverage is not reconciled into confirmed scanner P&L; raw deployment P&L remains separate' : !tradesComplete ? 'full closed-trade history is not loaded' : 'only shown when each included ledger component is available'}/>
-      <Card label="FEES TODAY" value={accountDataProtected ? 'LOCKED' : !tradesComplete ? 'INCOMPLETE DATA' : !todayTrades.length ? '—' : todayFeesComplete ? money(todayFees) : 'NO DATA'} sub={accountDataProtected ? 'enter ENGINE_SECRET to view verified trade fees' : !tradesComplete ? 'full trade-history coverage is not confirmed' : !todayTrades.length ? 'no authenticated closed-trade rows today' : todayFeesComplete ? 'sum of recorded today-trade fees' : 'one or more today-trade fee values are missing'}/>
-      <Card label="OPEN POSITIONS" value={accountDataProtected ? 'LOCKED' : currentPositionSummary.count === null ? currentPositionSummary.status : currentPositionSummary.count} sub={accountDataProtected ? 'hidden data is not zero' : currentPositionSummary.detail}/>
-      <Card label="WEBHOOK POSITION LEDGER" value={accountDataProtected ? 'LOCKED' : positions.length} sub={accountDataProtected ? 'private event ledger' : 'positions confirmed by authenticated callback processing; distinct from current API snapshots'}/>
-      <Card label="TT OPEN LEGS" value={developerDataProtected ? 'LOCKED' : developerApiConfigured ? (tradetronMirror.openCount === null ? 'UNKNOWN' : tradetronMirror.openCount) : '—'} sub={developerDataProtected ? 'private account snapshot' : tradetronMirror.openCount === null ? 'no verified count; do not interpret as zero' : 'current Tradetron Developer API snapshot'}/>
-      <Card label="TRADETRON SNAPSHOT P&L" value={developerDataProtected ? 'LOCKED' : (developerApiConfigured && tradetronMirror.reportedPnl !== null ? fmtRawPrice(tradetronMirror.reportedPnl, 2) : 'NO DATA')} title="Raw deployment-level value from API. Actual realized P&L requires authenticated trade-detail data." sub={"Raw deployment P&L; " + (tradetronMirror.reportedPnlCurrencyCode ? "API reports " + tradetronMirror.reportedPnlCurrencyCode + " currency; " : "currency not identified by API; ") + "P&L meaning is not independently verified; separate from scanner ledger" + (lastNonZeroPnlContext ? " · " + lastNonZeroPnlContext : "")}/>
-      <Card label="TT SNAPSHOT ROWS" value={developerDataProtected ? 'LOCKED' : developerApiConfigured ? developerSnapshotRowCount : '—'} sub="raw API rows, including closed rows"/>
-      <Card label="TT SIGNAL RECORDS" value={accountDataProtected ? 'LOCKED' : signalOrderStats?.total ?? '—'} sub={accountDataProtected ? 'private signal history' : 'all states including expired; not fills'}/>
-      <Card label="TT SENT" value={accountDataProtected ? 'LOCKED' : signalOrderStats?.sent ?? '—'} sub={accountDataProtected ? 'private signal submission history' : 'API accepted historically; may now be expired; not fills'}/>
-      <Card label="TT EVENTS" value={accountDataProtected ? 'LOCKED' : signalOrderStats?.events ?? '—'} sub={accountDataProtected ? 'private activity history' : 'authenticated activity events received'}/>
-      <Card label="TODAY CLOSED TRADES" value={accountDataProtected ? 'LOCKED' : tradesComplete ? todayTrades.length : 'INCOMPLETE DATA'} sub={accountDataProtected ? 'enter ENGINE_SECRET to view closed-trade counts' : !tradesComplete ? 'trade row count incomplete; today count may be incomplete' : measuredTodayTrades.length ? (wins + ' wins / ' + loss + ' losses · ' + (wins/measuredTodayTrades.length*100).toFixed(1) + '% WR on ' + measuredTodayTrades.length + ' rows with recorded P&L') : (todayTrades.length ? 'WIN RATE NO DATA — trade P&L missing' : 'no authenticated closed trades today')}/>
+      <Card label="DELTA TESTNET EQUITY" value={accountDataProtected ? 'LOCKED' : deltaApiStatus === 'OK' ? fmtDeltaUsd(deltaState?.account?.equity) : 'UNAVAILABLE'} sub={accountDataProtected ? 'Private account data' : deltaApiDetail}/>
+      <Card label="AVAILABLE MARGIN" value={accountDataProtected ? 'LOCKED' : deltaApiStatus === 'OK' ? fmtDeltaUsd(deltaState?.account?.availableMargin) : 'UNAVAILABLE'} sub={accountDataProtected ? 'Private account data' : 'Live Delta Testnet wallet response · USD'}/>
+      <Card label="DELTA OPEN POSITIONS" value={accountDataProtected ? 'LOCKED' : deltaOpenCount === null ? 'UNAVAILABLE' : deltaOpenCount} sub={accountDataProtected ? 'Private account data' : 'Open rows from dd_delta_positions · direct Delta ledger only'}/>
+      <Card label="DELTA OPEN ORDERS" value={accountDataProtected ? 'LOCKED' : deltaOpenOrdersCount === null || deltaOpenOrdersCount === undefined ? 'UNAVAILABLE' : deltaOpenOrdersCount} sub={accountDataProtected ? 'Private account data' : 'Authenticated Delta Testnet API · open + pending orders'}/>
+      <Card label="TODAY'S P&L" value={accountDataProtected ? 'LOCKED' : fmtDeltaUsd(deltaState?.pnl?.totalToday)} sub={accountDataProtected ? 'Private account data' : 'Realized today + unrealized on open Delta positions · USD ledger aggregate'}/>
+      <Card label="TOTAL SIGNALS (24h)" value={accountDataProtected ? 'LOCKED' : deltaSignals24h === null || deltaSignals24h === undefined ? 'UNAVAILABLE' : deltaSignals24h} sub={accountDataProtected ? 'Private account data' : 'Count from dd_signals over the last 24 hours'}/>
     </section>
-    <Panel title="Tradetron Execution Coverage">
+    <Panel title="Delta Execution Coverage">
       <section className="cards">
-        <Card label="LIVE FUTURES SCANNED" value={market?.length || 0} sub="Delta India perpetual tickers" />
-        <Card label="ENTRY SAFETY" value={routeSafetyBlocked ? "BLOCKED" : routeSafetyRequired && executionCoverage?.tradetronEntrySafety?.trusted === true ? "VERIFIED" : "NO FUTURES ROUTE"} sub={routeSafetyBlocked ? "New scanner entries stopped: " + routeSafetyReason : routeSafetyRequired ? "Fresh complete TT snapshot is trusted for duplicate checks only" : "No active futures bridge route reported"}/>
-        <Card label="FUTURES SYMBOLS ROUTED" value={activeRoutedCount + ' / ' + (market?.length || 0)} sub={(executionCoverage?.configuredFuturesRoutes ?? 0) + ' worker-confirmed bridge(s); ' + (executionCoverage?.routingStatusSource === 'worker-heartbeat' ? 'live worker telemetry' : 'API config fallback')} />
-        <Card label="PENDING SIGNAL RESERVATIONS" value={accountDataProtected ? 'LOCKED' : executionCoverage?.reservedSignals ?? '—'} sub={accountDataProtected ? 'private signal state' : 'unconfirmed signals within ' + (executionCoverage?.signalReservationTtlMinutes || 15) + 'm; not open positions'} />
-        <Card label="SCAN-ONLY SYMBOLS" value={unroutedCount} sub="No Tradetron entry can be routed for these symbols" />
-        <Card label="OPTIONS UNDERLYINGS" value="BTC · ETH · GOLD" sub="Gold contract symbol: XAUT" />
-        <Card label="OPTIONS EXECUTION" value="LOCKED" sub={executionCoverage?.optionsRouteConfigured ? 'Route is configured, but Options entry signals remain hard-locked pending verification' : 'Dedicated route not configured; Options remain analysis-only'}/>
+        <Card label="DELTA TESTNET MODE" value={deltaModeActive ? 'ACTIVE' : 'DISABLED'} sub="Direct Delta India Testnet execution mode"/>
+        <Card label="DIRECT ORDER EXECUTION" value={deltaModeActive ? 'ENABLED · TESTNET ONLY' : 'LOCKED'} sub={deltaModeActive ? 'Confirmed Momentum/Scalping signals use Delta Testnet when worker safety gates pass' : 'Enable only after Testnet configuration is verified'}/>
+        <Card label="ROUTED SYMBOLS" value={'ALL (' + (market?.length || 241) + ')'} sub="Current live Delta perpetual catalog; signal and risk gates still apply"/>
+        <Card label="LIVE MODE" value="LOCKED" sub="Requires reviewed code change and explicit approval"/>
+        <Card label="TRADETRON ROUTE" value="DISABLED" sub="No Tradetron involvement in Delta direct order execution"/>
       </section>
-      {routeSafetyBlocked ? <div className="danger">NEW ENTRIES BLOCKED — Tradetron's read-only position snapshot is stale or incomplete ({routeSafetyReason}). The scanner will not submit new futures/Options signals until position coverage is verified. Existing Tradetron positions are not treated as fills or auto-closed by this snapshot.</div> : null}
-      <div className="lockedText"><b>Worker-confirmed futures basket:</b> {(executionCoverage?.routedSymbols || []).join(', ') || 'No worker-confirmed symbols yet'}<br/><small>Routing source: {executionCoverage?.routingStatusSource || 'API config fallback'}{executionCoverage?.routingObservedAt ? ' · heartbeat ' + new Date(executionCoverage.routingObservedAt).toLocaleTimeString('en-IN') : ''}. Unsupported symbols remain scan-only; direct Delta orders stay locked.</small></div>
-      {unavailableMarketSymbols.length ? <div className="lockedText"><b>Configured but absent from the current live Delta market:</b> {unavailableMarketSymbols.join(', ')}.<br/><small>These are not worker-confirmed routes and must stay scan-only until the exchange exposes a matching live contract. {polReplacementAvailable ? 'POLUSD is present in the live market feed but is not configured for this Tradetron basket; add matching POLUSD_el / POLUSD_es variables and entry conditions in the linked Tradetron strategy before adding POLUSD to the worker allowlist.' : 'Any replacement symbol must first be configured in the linked Tradetron strategy variables and entry conditions; do not force-route a stale symbol.'}</small></div> : null}
+      <div className="lockedText"><b>Execution path:</b> SCANNER → DELTA EXCHANGE (TESTNET). Real money is locked. Dashboard wallet/order telemetry: <b>{deltaApiStatus}</b>{deltaState?.liveApiFetchedAt ? ' · refreshed ' + new Date(deltaState.liveApiFetchedAt).toLocaleTimeString('en-IN') : ''}. {deltaState?.liveApiError || 'Testnet execution remains subject to worker-side safety gates.'}</div>
     </Panel>
-    <Panel title={'Full Delta Market Scanner · ' + (market?.length || 0) + ' live perpetuals · Signal Only'}>
-      <MarketTable market={market} signals={signals} routedSymbols={executionCoverage?.routedSymbols || []} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols}/>
+    <Panel title={'Full Delta Market Scanner · ' + (market?.length || 0) + ' live perpetuals · Delta Testnet Direct Routing'}>
+      <MarketTable market={market} signals={signals} routedSymbols={(market || []).map(row => String(row.symbol || '').toUpperCase())} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols}/>
     </Panel>
     <section className="grid2">
-      <RiskGovernor signals={signals} health={health} positions={accountDataProtected || routeSafetyBlocked ? null : riskGovernorPositions} onInspect={onInspect} inspect={inspect} routedSymbols={executionCoverage?.routedSymbols || []} routeDataVerified={executionCoverage?.routingStatusSource === 'worker-heartbeat'} entrySafetyTrusted={executionCoverage?.tradetronEntrySafety?.configured === true ? executionCoverage.tradetronEntrySafety.trusted === true : null}/>
+      <RiskGovernor signals={signals} health={health} positions={accountDataProtected || !deltaState?.success ? null : riskGovernorPositions} onInspect={onInspect} inspect={inspect} routedSymbols={(market || []).map(row => String(row.symbol || '').toUpperCase())} routeDataVerified={deltaModeActive} entrySafetyTrusted={deltaModeActive}/>
       <Panel title={'Signal Stages · ' + visibleStageCoinCount + ' coins · WATCH → SETUP → CONFIRMED'}>
         <div className="marketCount">Momentum and Scalping status for the same top {visibleStageCoinCount} coins shown in the market table. Missing snapshots are marked NO DATA; the full background scanner remains active.</div>
-        <div className="tablewrap"><table><thead><tr><th>COIN</th><th>ENG</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>QTY</th><th>NOTIONAL</th><th>RISK</th><th>READY</th><th>WHY BLOCKED</th></tr></thead><tbody>{visibleSignalStages.map(s => <tr key={s.symbol + ':' + s.strategy}><td className="symbol">{s.symbol}</td><td>{s.strategy === 'MOMENTUM' ? 'MOM' : 'SCALP'}</td><td>{s.snapshot_missing ? 'WATCH · NO DATA' : s.stage}</td><td className={s.side === 'BUY' ? 'up' : s.side === 'SELL' ? 'down' : 'muted'}>{s.side || '—'}</td><td><b>{s.snapshot_missing ? '—' : (safeNum(s.score) === null ? 'NO DATA' : safeNum(s.score).toFixed(0) + '/100')}</b></td><td>{s.snapshot_missing ? '—' : fmtQty(s.qty_contracts)}</td><td>{s.snapshot_missing ? '—' : money(s.notional)}</td><td>{s.snapshot_missing ? '—' : money(s.risk_usd)}</td><td className={s.snapshot_missing ? 'muted' : s.ready && !routeSafetyBlocked && !openPositionSymbols.has(String(s.symbol || '').toUpperCase()) ? 'up' : 'down'}>{s.snapshot_missing ? '—' : s.ready && !routeSafetyBlocked && !openPositionSymbols.has(String(s.symbol || '').toUpperCase()) ? 'YES' : 'NO'}</td><td className="blocker" title={Array.isArray(s.gate_results) ? s.gate_results.map(gateTooltip).join('\n') : 'Structured gate results are not supplied by the current worker; existing block reasons shown.'}>{s.snapshot_missing ? 'No signal snapshot available' : routeSafetyBlocked ? 'Tradetron entry safety blocked: ' + routeSafetyReason : openPositionSymbols.has(String(s.symbol || '').toUpperCase()) ? 'Open Tradetron position detected; duplicate entry blocked' : (Array.isArray(s.gate_results) ? blockersDisplay(s.gate_results) : fmtReasons(s.blocked_reasons))}</td></tr>)}</tbody></table></div>
+        <div className="tablewrap"><table><thead><tr><th>COIN</th><th>ENG</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>QTY</th><th>NOTIONAL</th><th>RISK</th><th>READY</th><th>WHY BLOCKED</th></tr></thead><tbody>{visibleSignalStages.map(s => <tr key={s.symbol + ':' + s.strategy}><td className="symbol">{s.symbol}</td><td>{s.strategy === 'MOMENTUM' ? 'MOM' : 'SCALP'}</td><td>{s.snapshot_missing ? 'WATCH · NO DATA' : s.stage}</td><td className={s.side === 'BUY' ? 'up' : s.side === 'SELL' ? 'down' : 'muted'}>{s.side || '—'}</td><td><b>{s.snapshot_missing ? '—' : (safeNum(s.score) === null ? 'NO DATA' : safeNum(s.score).toFixed(0) + '/100')}</b></td><td>{s.snapshot_missing ? '—' : fmtQty(s.qty_contracts)}</td><td>{s.snapshot_missing ? '—' : money(s.notional)}</td><td>{s.snapshot_missing ? '—' : money(s.risk_usd)}</td><td className={s.snapshot_missing ? 'muted' : s.ready && !routeSafetyBlocked && !openPositionSymbols.has(String(s.symbol || '').toUpperCase()) ? 'up' : 'down'}>{s.snapshot_missing ? '—' : s.ready && !routeSafetyBlocked && !openPositionSymbols.has(String(s.symbol || '').toUpperCase()) ? 'YES' : 'NO'}</td><td className="blocker" title={Array.isArray(s.gate_results) ? s.gate_results.map(gateTooltip).join('\n') : 'Structured gate results are not supplied by the current worker; existing block reasons shown.'}>{s.snapshot_missing ? 'No signal snapshot available' : routeSafetyBlocked ? 'Delta Testnet execution mode is not active: ' + routeSafetyReason : openPositionSymbols.has(String(s.symbol || '').toUpperCase()) ? 'Open Delta Testnet position detected; duplicate entry blocked' : (Array.isArray(s.gate_results) ? blockersDisplay(s.gate_results) : fmtReasons(s.blocked_reasons))}</td></tr>)}</tbody></table></div>
       </Panel>
     </section>
-    <Panel title="Signal Mode"><div className="idle">SCANNER → TRADETRON → LIVE OFFLINE <span>No orders are sent by the scanner. Tradetron owns Live Offline execution and position management.</span></div></Panel>
-    <TradetronActivity events={tradetronEvents} signalStats={signalOrderStats} webhookSecretConfigured={executionCoverage?.webhookSecretConfigured === true} accountDataProtected={accountDataProtected} />
+    <Panel title="Signal Mode"><div className="idle">SCANNER → DELTA EXCHANGE (TESTNET) <span>Scanner places orders directly on Delta Exchange Testnet. No Tradetron involvement. Real money is locked.</span></div></Panel>
     <TradetronDeveloperApiPanel configured={developerApiConfigured} sync={developerSync} deployments={developerSnapshots} privateDataProtected={developerDataProtected} notifications={developerNotifications} notificationSync={developerNotificationSync} pnlHistory={developerPnlHistory} />
     <Panel title="Idle Reason"><div className="idle">{idleFromSignals(signals)} <span>Top blocks: {top || 'none recorded'}</span></div></Panel>
     <Panel title="Engine Log · last 200 lines">{accountDataProtected ? <div className="lockedText">Private engine logs are hidden. Enter ENGINE_SECRET in Settings to view them.</div> : <Log rows={logs || []}/>}</Panel>
@@ -522,14 +482,14 @@ function MarketTable({ market, signals, routedSymbols = [], entrySafetyBlocked =
     if (!map.has(s.symbol)) map.set(s.symbol, {});
     map.get(s.symbol)[s.strategy] = s;
   }
-  return <><div className="marketCount">Showing {visibleMarket.length} of {(market || []).length} instruments · sorted by 24h turnover · full background scanner remains active.</div><div className="tablewrap"><table><thead><tr><th>#</th><th>COIN</th><th>PRICE</th><th>24H %</th><th>TURNOVER</th><th>VOL SPIKE</th><th>MOM</th><th>SCALP</th><th>TREND</th><th>SUPPORT</th><th>RESIST.</th><th>SIGNAL</th><th>TT ROUTE</th></tr></thead><tbody>{visibleMarket.map((m,i) => {
+  return <><div className="marketCount">Showing {visibleMarket.length} of {(market || []).length} instruments · sorted by 24h turnover · full background scanner remains active.</div><div className="tablewrap"><table><thead><tr><th>#</th><th>COIN</th><th>PRICE</th><th>24H %</th><th>TURNOVER</th><th>VOL SPIKE</th><th>MOM</th><th>SCALP</th><th>TREND</th><th>SUPPORT</th><th>RESIST.</th><th>SIGNAL</th><th>DELTA ROUTE</th></tr></thead><tbody>{visibleMarket.map((m,i) => {
     const x = map.get(m.symbol) || {};
     const best = [x.MOMENTUM,x.SCALPING].filter(Boolean).sort((a,b) => num(b.score)-num(a.score))[0];
     const routeInfo = routeStatusForSymbol(m.symbol, [x.MOMENTUM, x.SCALPING], routedSymbols);
     const hasOpenPosition = openPositionSymbols.has(String(m.symbol || '').toUpperCase());
     const routeLabel = entrySafetyBlocked ? 'SAFETY LOCK' : hasOpenPosition ? 'POSITION OPEN' : routeInfo.label;
     const routeTone = entrySafetyBlocked || hasOpenPosition ? 'warn' : routeInfo.tone;
-    const routeTitle = entrySafetyBlocked ? 'New signal entries are blocked because the current Tradetron position snapshot is not trusted: ' + (entrySafetyReason || 'unknown reason') : hasOpenPosition ? 'A current engine/event or Tradetron API snapshot already has this symbol open; duplicate entry is blocked.' : routeInfo.title;
+    const routeTitle = entrySafetyBlocked ? 'New signal entries are blocked because Delta Testnet execution mode is not active: ' + (entrySafetyReason || 'unknown reason') : hasOpenPosition ? 'A current open Delta Testnet position already has this symbol; duplicate entry is blocked.' : routeInfo.title;
     return <tr key={m.symbol}><td>{i+1}</td><td className="symbol">{m.symbol}</td><td>{price(m.mark_price || m.close)}</td><td className={safeNum(m.ltp_change_24h) === null ? 'muted' : safeNum(m.ltp_change_24h) >= 0 ? 'up' : 'down'}>{pct(m.ltp_change_24h)}</td><td>{money(m.turnover_usd)}</td><td>{fmtMultiplier(best?.volume_spike)}</td><td><span className={x.MOMENTUM?.side==='BUY'?'up':x.MOMENTUM?.side==='SELL'?'down':''}>{x.MOMENTUM ? (safeNum(x.MOMENTUM.score) === null ? 'NO DATA' : safeNum(x.MOMENTUM.score).toFixed(0)) + ' ' + (x.MOMENTUM.side || '') : '—'}</span></td><td><span className={x.SCALPING?.side==='BUY'?'up':x.SCALPING?.side==='SELL'?'down':''}>{x.SCALPING ? (safeNum(x.SCALPING.score) === null ? 'NO DATA' : safeNum(x.SCALPING.score).toFixed(0)) + ' ' + (x.SCALPING.side || '') : '—'}</span></td><td>{best?.trend || '—'} / {best?.confirm_trend || '—'}</td><td>{price(best?.support)}</td><td>{price(best?.resistance)}</td><td><b className={best?.stage==='CONFIRMED'?'up':best?.stage==='SETUP'?'warn':'muted'}>{best?.stage || 'WATCH'}</b></td><td><button className={`tiny ${routeTone}`} disabled title={routeTitle}>{routeLabel}</button></td></tr>;
   })}</tbody></table></div></>;
 }
@@ -1372,7 +1332,7 @@ function safeDeveloperApiValue(value) {
 
 function TradetronDeveloperApiPanel({ configured = false, sync = null, deployments = [], privateDataProtected = false, notifications = [], notificationSync = null, pnlHistory = [], marketCache = [] }) {
   if (privateDataProtected) {
-    return <Panel title="Tradetron Live Mirror · read-only API + event callbacks"><div className="lockedText"><b className="apiStateWarn">PRIVATE ACCOUNT DATA LOCKED</b><p>For privacy, Tradetron deployment and position details are only returned when the correct ENGINE_SECRET is supplied. Enter it in Settings to view these read-only account snapshots.</p></div></Panel>;
+    return <Panel title="Tradetron Legacy Data (historical reference only)"><div className="lockedText">Tradetron is no longer the execution layer. Data shown below is from the final Tradetron session and will become stale.</div><details className="legacyDetails"><summary>Expand historical Tradetron Live Mirror</summary><div className="lockedText"><b className="apiStateWarn">PRIVATE ACCOUNT DATA LOCKED</b><p>For privacy, Tradetron deployment and position details are only returned when the correct ENGINE_SECRET is supplied. Enter it in Settings to view these read-only account snapshots.</p></div></details></Panel>;
   }
   const stale = !!sync?.last_success_at && Date.now() - Date.parse(sync.last_success_at) > 180000;
   const status = sync?.status || (configured ? 'WAITING FOR FIRST SYNC' : 'NOT CONFIGURED');
@@ -1391,7 +1351,9 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
     Object.keys(row.position).filter(key => !/(secret|token|password|authorization|api.?key)/i.test(key))
   ))].slice(0, 12);
 
-  return <Panel title="Tradetron Live Mirror · current positions + P&L">
+  return <Panel title="Tradetron Legacy Data (historical reference only)">
+    <div className="lockedText">Tradetron is no longer the execution layer. Data shown below is from the final Tradetron session and will become stale.</div>
+    <details className="legacyDetails"><summary>Expand historical Tradetron Live Mirror</summary>
     <div className="lockedText">
       <b className={statusClass}>API sync: {status}{stale ? ' · STALE' : ''}</b><br/>
       <span>API key: {configured ? 'configured on the Railway worker' : 'not configured on the Railway worker'}</span><br/>
@@ -1480,6 +1442,7 @@ function TradetronDeveloperApiPanel({ configured = false, sync = null, deploymen
     <div className="panelTitle"><h3>Tradetron Developer API Notifications · read-only timeline</h3></div>
     <div className="lockedText"><b className={notificationSync?.status === 'OK' ? 'apiStateOk' : notificationSync?.status === 'ERROR' ? 'apiStateError' : 'apiStateWarn'}>Notification sync: {notificationSync?.status || (configured ? 'WAITING FOR FIRST SYNC' : 'NOT CONFIGURED')}</b><br/><span>Last successful sync: {notificationSync?.last_success_at ? new Date(notificationSync.last_success_at).toLocaleString('en-IN') : '—'} · Returned notifications: {notificationSync?.notification_count ?? '—'}</span>{notificationSync?.last_error ? <p className="apiStateError">Notification sync warning/error: {notificationSync.last_error}</p> : null}<p>These are Tradetron account/deployment notices polled through the read-only Developer API. They are shown for audit context and are not proof of a fill; the scanner never converts notification text into a position or closed trade.</p></div>
     {notifications.length ? <div className="tablewrap"><table><thead><tr><th>TIME</th><th>DEPLOYMENT</th><th>TYPE</th><th>NOTICE</th></tr></thead><tbody>{notifications.slice(0, 30).map(row => <tr key={row.notification_id}><td>{row.event_at ? new Date(row.event_at).toLocaleString('en-IN') : (row.updated_at ? new Date(row.updated_at).toLocaleString('en-IN') : '—')}</td><td>{row.deployment_id || '—'}</td><td>{row.notification_type || 'NOTICE'}</td><td><b>{row.title || '—'}</b>{row.description ? <div className="muted">{row.description}</div> : null}</td></tr>)}</tbody></table></div> : <div className="lockedText">No notifications returned yet. If Tradetron returns a notification format the API client cannot recognize, the sync status will show an error rather than guessing the payload shape.</div>}
+    </details>
   </Panel>;
 }
 
