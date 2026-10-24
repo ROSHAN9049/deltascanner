@@ -81,7 +81,7 @@ jobs:
           ENGINE_SECRET: ${{ secrets.ENGINE_SECRET }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           RETENTION_DAYS: "7"
-          SIGNAL_HISTORY_SAMPLE_MINUTES: "60"
+          SIGNAL_HISTORY_SAMPLE_MINUTES: "120"
           TRADETRON_DEVELOPER_API_KEY: ${{ secrets.TRADETRON_DEVELOPER_API_KEY }}
         shell: bash
         run: |
