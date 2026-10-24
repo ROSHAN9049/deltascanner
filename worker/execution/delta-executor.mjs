@@ -331,13 +331,85 @@ export function createDeltaExecutor({
     return normalized;
   }
 
-  async function submitOrder(product, body) {
-    const response = await request('POST', '/v2/orders', {}, body);
-    const order = response.result ?? response;
-    if (!order || typeof order !== 'object' || !(order.id || order.client_order_id || order.state)) {
-      throw new Error('Delta Testnet did not return a valid order acknowledgement');
+  async function submitOrder(product, body, { strategy = 'MOMENTUM', role = 'ENTRY', reserve = true } = {}) {
+    const clientOrderId = stringOrEmpty(body?.client_order_id);
+    const normalizedSymbol = stringOrEmpty(product?.symbol || body?.product_symbol).toUpperCase();
+    const reservation = {
+      id: clientOrderId,
+      product_id: product.id,
+      symbol: normalizedSymbol,
+      side: body.side,
+      order_type: 'delta_testnet_order',
+      size: body.size,
+      state: 'PENDING',
+      client_order_id: clientOrderId,
+      role,
+      strategy: strategyValue(strategy),
+      execution_id: clientOrderId,
+      raw: {
+        source: 'delta_testnet',
+        reservation: true,
+        entry_price: body.limit_price ?? null,
+        stop_price: body.bracket_stop_loss_price ?? null,
+        tp_price: body.bracket_take_profit_price ?? null,
+        reduce_only: body.reduce_only === true
+      }
+    };
+    if (reserve) {
+      // Persist a PENDING reservation before the network call; ambiguous timeouts stay blocked.
+      await database.upsert('dd_orders', reservation, 'client_order_id');
     }
-    return order;
+    try {
+      const response = await request('POST', '/v2/orders', {}, body);
+      const order = response.result ?? response;
+      if (!order || typeof order !== 'object' || !(order.id || order.client_order_id || order.state)) {
+        throw new Error('Delta Testnet did not return a valid order acknowledgement');
+      }
+      if (reserve) {
+        await database.update(
+          'dd_orders',
+          'client_order_id=eq.' + encodeURIComponent(clientOrderId),
+          {
+            state: stringOrEmpty(order.state || 'open').toUpperCase(),
+            updated_at: new Date(now()).toISOString(),
+            raw: {
+              ...reservation.raw,
+              reservation: false,
+              accepted: true,
+              testnet_order_id: order.id ?? null,
+              exchange_state: order.state || null
+            }
+          }
+        ).catch(error => database.log('ERROR', 'Delta Testnet order accepted but reservation update failed; reservation is retained', {
+          symbol: normalizedSymbol,
+          clientOrderId,
+          error: String(error?.message || error)
+        }));
+      }
+      return order;
+    } catch (error) {
+      if (reserve) {
+        const status = Number(error?.status);
+        const knownRejected = Number.isInteger(status) && status >= 400 && status < 500 && status !== 408 && status !== 429;
+        await database.update(
+          'dd_orders',
+          'client_order_id=eq.' + encodeURIComponent(clientOrderId),
+          {
+            state: knownRejected ? 'FAILED' : 'UNKNOWN',
+            updated_at: new Date(now()).toISOString(),
+            raw: {
+              ...reservation.raw,
+              reservation: !knownRejected,
+              accepted: false,
+              outcome: knownRejected ? 'rejected' : 'unknown',
+              error_code: String(error?.code || 'delta_testnet_request_failed'),
+              http_status: Number.isInteger(status) ? status : null
+            }
+          }
+        ).catch(() => {});
+      }
+      throw error;
+    }
   }
 
   async function placeOrder(symbol, side, qty, price = null) {
@@ -360,7 +432,7 @@ export function createDeltaExecutor({
         client_order_id: buildClientOrderId(null, 'DDX', normalizedSymbol)
       };
       if (limitPrice !== null) body.limit_price = String(limitPrice);
-      return submitOrder(product, body);
+      return submitOrder(product, body, { strategy: 'MOMENTUM', role: 'ENTRY' });
     });
   }
 
@@ -399,7 +471,7 @@ export function createDeltaExecutor({
         bracket_stop_trigger_method: 'mark_price',
         bracket_take_profit_trigger_method: 'mark_price'
       };
-      return submitOrder(product, body);
+      return submitOrder(product, body, { strategy, role: 'ENTRY' });
     });
   }
 
@@ -430,7 +502,7 @@ export function createDeltaExecutor({
         order_type: 'market_order',
         reduce_only: true,
         client_order_id: buildClientOrderId(null, 'DDX-X', normalizedSymbol)
-      });
+      }, { strategy: 'MOMENTUM', role: 'EXIT', reserve: false });
     });
   }
 
