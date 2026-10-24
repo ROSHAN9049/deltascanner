@@ -16,6 +16,7 @@ import { isOptionsExecutionAllowed, OPTIONS_EXECUTION_LOCK_REASON } from './opti
 import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from './signal-failure-diagnostics.mjs';
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
 import { buildApiDerivedTrackingPlan, strategyForDerivedTrade } from './tradetron-derived-trades.mjs';
+import { deltaExecutor } from './execution/delta-executor.mjs';
 import { evaluateGlobalPositionCap, routeUnlessGlobalPositionCapBlocked } from './global-position-cap.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -555,7 +556,18 @@ export class DeltaEngine {
         });
       }
     }
-    const effectiveEnabled = settings.grid_enabled === true && bridgeReady && !snapshotEntryBlocked;
+    const testnetGridEntryHold = CONFIG.deltaExecutionMode === 'testnet';
+    if (settings.grid_enabled === true && testnetGridEntryHold) {
+      const warningKey = 'GRID:DELTA_TESTNET_ENTRY_HOLD';
+      if (!this.unsupportedBridgeWarnings.has(warningKey)) {
+        this.unsupportedBridgeWarnings.add(warningKey);
+        await this.log('WARN', 'Grid new entries are held in Delta Testnet mode; existing bridged Grid exits are preserved', {
+          symbol,
+          note: 'Grid order sizing and multi-rung lifecycle have not been migrated to the single-position Delta Testnet executor'
+        });
+      }
+    }
+    const effectiveEnabled = settings.grid_enabled === true && bridgeReady && !snapshotEntryBlocked && !testnetGridEntryHold;
     const evaluationSettings = {
       ...settings,
       grid_symbol: symbol,
@@ -1069,6 +1081,26 @@ export class DeltaEngine {
   }
 
   async accountSnapshot(settings = {}) {
+    if (CONFIG.deltaExecutionMode === 'testnet') {
+      const [wallet, deltaPositions] = await Promise.all([
+        deltaExecutor.getAccountSnapshot(),
+        deltaExecutor.getOpenPositions()
+      ]);
+      const positions = deltaPositions.map(position => ({
+        ...position,
+        size: position.signedSize,
+        qty: Math.abs(n(position.signedSize)),
+        mark_price: n(position.current_price),
+        unrealized_pnl: n(position.unrealized_pnl),
+        product_id: position.product_id
+      }));
+      return {
+        equity: wallet.equity,
+        available: wallet.available,
+        unrealized: positions.reduce((sum, position) => sum + n(position.unrealized_pnl), 0),
+        positions
+      };
+    }
     if (CONFIG.tradetronBridgeEnabled || !this.privateExecutionAvailable) {
       const equity = Math.max(0, Number(CONFIG.tradetronCapitalUsd) || 5000);
       return { equity, available: equity, unrealized: 0, positions: [] };
@@ -1096,7 +1128,7 @@ export class DeltaEngine {
 
     if (settings.emergency_stop) reasons.push('Emergency Stop');
     if (!settings.enabled || !settings.auto_trade) reasons.push('Auto OFF');
-    const routeBlock = tradetronRouteBlocker({
+    const routeBlock = CONFIG.deltaExecutionMode === 'testnet' ? '' : tradetronRouteBlocker({
       signalOnly: CONFIG.signalOnly,
       bridgeEnabled: CONFIG.tradetronBridgeEnabled,
       strategy,
@@ -2116,11 +2148,94 @@ export class DeltaEngine {
     return null;
   }
 
+  async executeSignal(signal, strategy, qty, clientOrderId) {
+    if (CONFIG.deltaExecutionMode === 'testnet') {
+      return deltaExecutor.placeBracketOrder(
+        signal.symbol, signal.side, qty, signal.price, signal.sl, signal.tp,
+        { strategy, clientOrderId }
+      );
+    }
+    const bridge = this.getTradetronBridgeForSymbol(signal.symbol);
+    if (!bridge || !bridge.isConfigured()) throw new Error('Tradetron bridge route is unavailable');
+    return bridge.emitEntry({
+      symbol: signal.symbol,
+      side: signal.side,
+      qty,
+      entryPrice: signal.price,
+      sl: signal.sl,
+      tp1: signal.tp1,
+      tp: signal.tp,
+      executionId: clientOrderId,
+      strategy
+    });
+  }
+
   async openTrade(item, strategy, signal, account, settings, openPositions, trades) {
     if (strategy === 'OPTIONS_BUY' || strategy === 'OPTIONS_SELL') return this.openOptionTrade(item, signal, account, settings, openPositions, trades);
     if (signal.stage !== 'CONFIRMED' || signal.score < n(settings.score_min || 80)) return false;
     const gate = await this.riskGate(signal, strategy, account, settings, openPositions, trades);
     if (gate.reasons.length || !gate.size) return false;
+
+    // Testnet is a separate, hardcoded Demo-only execution route. The existing
+    // Tradetron branch below remains unchanged for DELTA_EXECUTION_MODE=disabled.
+    if (CONFIG.deltaExecutionMode === 'testnet' && ['MOMENTUM', 'SCALPING'].includes(strategy)) {
+      const signalCandle = Number(signal.signalCandleTs || signal.candleTs || 0);
+      const normalizedCandleMs = signalCandle > 1e12 ? signalCandle
+        : signalCandle > 1e9 ? signalCandle * 1000 : Date.now();
+      const stableMinute = Math.floor(normalizedCandleMs / 60000).toString(36);
+      const entryCid = (strategy === 'MOMENTUM' ? 'DDM-' : 'DDS-') +
+        String(signal.symbol || '').toUpperCase().slice(0, 10) + '-' + stableMinute;
+      const priorTestnetOrders = await db.select(
+        'dd_orders',
+        'client_order_id=eq.' + encodeURIComponent(entryCid) + '&select=state&limit=1'
+      );
+      if (Array.isArray(priorTestnetOrders) && priorTestnetOrders.length) return false;
+      try {
+        const order = await this.executeSignal(signal, strategy, gate.size.qty, entryCid);
+        const orderId = String(order?.id ?? order?.order_id ?? entryCid);
+        try {
+          await db.upsert('dd_orders', {
+            id: orderId,
+            product_id: signal.productId,
+            symbol: signal.symbol,
+            side: signal.side === 'BUY' ? 'buy' : 'sell',
+            order_type: 'delta_testnet_order',
+            size: gate.size.qty,
+            unfilled_size: n(order?.unfilled_size),
+            state: order?.state || 'open',
+            client_order_id: entryCid,
+            role: 'ENTRY',
+            strategy,
+            execution_id: entryCid,
+            raw: {
+              source: 'delta_testnet',
+              entry_price: signal.price,
+              stop_price: signal.sl,
+              tp_price: signal.tp,
+              testnet_order_id: order?.id ?? null,
+              accepted: true
+            }
+          }, 'client_order_id');
+        } catch (persistError) {
+          await this.log('ERROR', 'Delta Testnet order accepted but order ledger persistence failed; no blind retry', {
+            symbol: signal.symbol, strategy, clientOrderId: entryCid,
+            error: String(persistError?.message || persistError)
+          });
+        }
+        await this.log('INFO', 'Delta Testnet bracket entry accepted', {
+          symbol: signal.symbol, strategy, side: signal.side, qty: gate.size.qty,
+          entry: signal.price, sl: signal.sl, tp: signal.tp,
+          clientOrderId: entryCid, orderId
+        });
+        return true;
+      } catch (error) {
+        await this.log('ERROR', 'Delta Testnet entry rejected or failed closed', {
+          symbol: signal.symbol, strategy, side: signal.side,
+          reason: String(error?.message || error)
+        });
+        return false;
+      }
+    }
 
     // When Tradetron bridge mode is enabled, Tradetron owns execution.
     // Never fall through to direct Delta order placement, which would create
@@ -3408,16 +3523,22 @@ export class DeltaEngine {
       }
       openRows = await db.select('dd_positions', 'qty=gt.0&order=updated_at.desc');
     }
-    // In production SIGNAL_ONLY mode, manage exits only for verified Tradetron
-    // futures positions materialized by the outbound activity webhook. This
-    // does not submit any direct Delta Exchange order.
-    if (CONFIG.signalOnly) await this.manageTradetronPositions(openRows || [], settings);
+    // Tradetron exit/risk sync remains the fallback when direct Testnet is disabled.
+    if (CONFIG.signalOnly && CONFIG.deltaExecutionMode !== 'testnet') {
+      await this.manageTradetronPositions(openRows || [], settings);
+    }
     let riskPositions = openRows || [];
     let reservationLookupFailed = false;
-    if (CONFIG.signalOnly) {
+    if (CONFIG.signalOnly && CONFIG.deltaExecutionMode !== 'testnet') {
       const merged = await this.getSignalOnlyPositions(openRows || []);
       if (Array.isArray(merged)) riskPositions = merged;
       else reservationLookupFailed = true;
+    } else if (CONFIG.deltaExecutionMode === 'testnet') {
+      riskPositions = (account.positions || []).map(position => ({
+        ...position,
+        qty: Math.abs(n(position.qty ?? position.size)),
+        side: position.side || (n(position.size) < 0 ? 'SELL' : 'BUY')
+      }));
     }
     const trades = await this.recentTrades();
     if (Date.now() - this.lastAnalysis > 55000 || !this.lastSignals.length) {
@@ -3430,13 +3551,14 @@ export class DeltaEngine {
       const gridStateForRouting = settings.grid_state && typeof settings.grid_state === 'object'
         ? settings.grid_state : {};
       const gridSymbolForRouting = String(settings.grid_symbol || 'ETHUSD').toUpperCase();
-      const gridPositionOpen = CONFIG.signalOnly &&
+      const gridPositionOpen = CONFIG.signalOnly && CONFIG.deltaExecutionMode !== 'testnet' &&
         (Array.isArray(gridStateForRouting.positions) ? gridStateForRouting.positions : [])
           .some(position => !!position?.bridgeExecutionId);
       for (const item of this.lastSignals) {
         // Momentum/Scalping may use the same Tradetron template, but must not
         // race a Grid position on the same netted futures symbol.
-        if (CONFIG.signalOnly && String(item.symbol || '').toUpperCase() === gridSymbolForRouting &&
+        if (CONFIG.signalOnly && CONFIG.deltaExecutionMode !== 'testnet' &&
+            String(item.symbol || '').toUpperCase() === gridSymbolForRouting &&
             (gridPositionOpen || settings.grid_bridge_action_this_cycle === true)) continue;
         const futuresChoices = [
           { strategy: 'MOMENTUM', signal: item.mom },
@@ -3469,7 +3591,7 @@ export class DeltaEngine {
       for (const c of candidates) {
         if (CONFIG.signalOnly && reservationLookupFailed) break;
         let capDecision = { blocked: false, reason: null };
-        if (CONFIG.signalOnly && CONFIG.tradetronBridgeEnabled) {
+        if (CONFIG.signalOnly && CONFIG.tradetronBridgeEnabled && CONFIG.deltaExecutionMode !== 'testnet') {
           const snapshotSafety = await this.getTradetronSnapshotRiskState();
           this.lastTradetronEntrySafety = snapshotSafety;
           if (snapshotSafety?.trusted === true &&
@@ -3509,7 +3631,7 @@ export class DeltaEngine {
         }
         const opened = routeAttempt.result;
         if (opened) {
-          if (CONFIG.signalOnly && CONFIG.tradetronBridgeEnabled) routedThisCycle++;
+          if (CONFIG.signalOnly && CONFIG.tradetronBridgeEnabled && CONFIG.deltaExecutionMode !== 'testnet') routedThisCycle++;
           await sleep(1000);
         }
       }
