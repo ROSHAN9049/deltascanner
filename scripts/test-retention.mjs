@@ -26,23 +26,23 @@ try {
     assert.match(engineSource, /Persist every stage observation to the history candidate batch/);
   });
 
-  await run('dedup is cold-start safe and preserves stage/side changes', async () => {
+  await run('dedup is cold-start safe and caps history across stage/side transitions', async () => {
     const engine = new DeltaEngine();
     const now = Date.now();
     const row = { symbol: 'BTCUSD', strategy: 'MOMENTUM', score: 90, stage: 'WATCH', side: '' };
 
     assert.equal(engine.isDuplicateSignalObservation(row, now), false, 'first observation must not be deduplicated');
     engine.rememberSignalObservation(row, now);
-    assert.equal(engine.isDuplicateSignalObservation({ ...row, score: 91 }, now + 60_000), true,
-      'score changes within the hourly sample window should be skipped when stage and side are unchanged');
-    assert.equal(engine.isDuplicateSignalObservation({ ...row, stage: 'SETUP' }, now + 60_000), false,
-      'stage transition must be recorded');
-    assert.equal(engine.isDuplicateSignalObservation({ ...row, side: 'BUY' }, now + 60_000), false,
-      'side transition must be recorded');
-    assert.equal(engine.isDuplicateSignalObservation({ ...row, score: 92 }, now + 60_000), true,
-      'larger score changes alone must not bypass the hourly sample cadence');
-    assert.equal(engine.isDuplicateSignalObservation(row, now + 61 * 60_000), false,
-      'unchanged observations are sampled again after the hourly window');
+    assert.equal(engine.isDuplicateSignalObservation({ ...row, score: 91 }, now + 60 * 60_000), true,
+      'score changes inside the sample window must be skipped');
+    assert.equal(engine.isDuplicateSignalObservation({ ...row, stage: 'SETUP' }, now + 60 * 60_000), true,
+      'stage transitions are sampled, but do not bypass the history cap');
+    assert.equal(engine.isDuplicateSignalObservation({ ...row, side: 'BUY' }, now + 60 * 60_000), true,
+      'side transitions must not bypass the history cap');
+    assert.equal(engine.isDuplicateSignalObservation({ ...row, score: 92 }, now + 119 * 60_000), true,
+      'observations remain capped for the full two-hour window');
+    assert.equal(engine.isDuplicateSignalObservation({ ...row, stage: 'SETUP', side: 'SELL' }, now + 121 * 60_000), false,
+      'the next eligible observation is persisted once the two-hour window expires');
   });
 
   await run('retention accepts SUPABASE_DB_URL when DATABASE_URL is absent', async () => {
@@ -64,6 +64,7 @@ try {
           if (/WITH batch AS/i.test(sql) && /DELETE FROM public\.dd_signals/i.test(sql)) {
             return { rows: [] };
           }
+          if (/DELETE FROM public\.dd_engine_logs/i.test(sql)) return { rows: [] };
           throw new Error('Unexpected SQL in env-fallback test');
         }
       });
@@ -78,11 +79,12 @@ try {
     }
   });
 
-  await run('retention preserves the configured 7-day window above 500,000 rows and batches dd_signals only', async () => {
+  await run('retention preserves configured age and batches dd_signals plus engine logs', async () => {
     const engine = new DeltaEngine();
     const calls = [];
     const logs = [];
-    let batchNumber = 0;
+    let signalBatchNumber = 0;
+    let engineLogBatchNumber = 0;
     engine.maintenanceLog = async (level, message, data = {}) => logs.push({ level, message, data });
     engine.getMaintenancePool = async () => ({
       query: async (sql, params = []) => {
@@ -90,10 +92,16 @@ try {
         if (/SELECT COUNT\(\*\)::text AS signal_rows/i.test(sql)) {
           return { rows: [{ signal_rows: '500001' }] };
         }
-        if (/WITH batch AS/i.test(sql) && /DELETE FROM public\.dd_signals/i.test(sql)) {
-          batchNumber += 1;
+        if (/DELETE FROM public\.dd_signals/i.test(sql)) {
+          signalBatchNumber += 1;
           return {
-            rows: Array.from({ length: batchNumber === 1 ? 5000 : 1 }, (_, index) => ({ id: index + 1 }))
+            rows: Array.from({ length: signalBatchNumber === 1 ? 5000 : 1 }, (_, index) => ({ id: index + 1 }))
+          };
+        }
+        if (/DELETE FROM public\.dd_engine_logs/i.test(sql)) {
+          engineLogBatchNumber += 1;
+          return {
+            rows: Array.from({ length: engineLogBatchNumber === 1 ? 5000 : 5 }, (_, index) => ({ id: index + 1 }))
           };
         }
         throw new Error('Unexpected SQL in retention test');
@@ -104,15 +112,18 @@ try {
     assert.equal(result.success, true);
     assert.equal(result.effectiveDays, 7);
     assert.equal(result.totalDeleted, 5001);
+    assert.equal(result.totalEngineLogsDeleted, 5005);
     const deleteCalls = calls.filter(call => /DELETE FROM/i.test(call.sql));
-    assert.equal(deleteCalls.length, 2, '5001 rows must be deleted in two bounded batches');
-    for (const call of deleteCalls) {
-      assert.deepEqual(call.params, [7, 5000]);
-      assert.match(call.sql, /DELETE FROM public\.dd_signals/i);
-      assert.doesNotMatch(call.sql, /dd_trades|dd_positions|dd_orders|dd_tradetron_events|position_ledger|webhook_events|system_meta/i);
-    }
+    const signalDeleteCalls = deleteCalls.filter(call => /DELETE FROM public\.dd_signals/i.test(call.sql));
+    const logDeleteCalls = deleteCalls.filter(call => /DELETE FROM public\.dd_engine_logs/i.test(call.sql));
+    assert.equal(signalDeleteCalls.length, 2, '5001 signal rows must be deleted in two bounded batches');
+    assert.equal(logDeleteCalls.length, 2, '5005 engine log rows must be deleted in two bounded batches');
+    for (const call of deleteCalls) assert.deepEqual(call.params, [7, 5000]);
+    assert.ok(logDeleteCalls.every(call => /created_at < NOW\(\)/i.test(call.sql)));
+    assert.ok(deleteCalls.every(call => !/dd_trades|dd_positions|dd_orders|dd_tradetron_events|position_ledger|webhook_events|system_meta/i.test(call.sql)));
     assert.ok(logs.some(log => /Critical row-count threshold exceeded/.test(log.message)));
     assert.ok(logs.some(log => /\[Retention\] Deleted 5000 rows/.test(log.message)));
+    assert.ok(logs.some(log => /\[Retention\] Deleted 5000 engine log rows/.test(log.message)));
   });
 
   await run('disk monitor pauses signal history at high size and preserves configured retention at critical count', async () => {
@@ -187,6 +198,7 @@ try {
       query: async sql => {
         if (/SELECT COUNT\(\*\)::text AS signal_rows/i.test(sql)) return { rows: [{ signal_rows: '100' }] };
         if (/WITH batch AS/i.test(sql) && /DELETE FROM public\.dd_signals/i.test(sql)) return { rows: [] };
+        if (/DELETE FROM public\.dd_engine_logs/i.test(sql)) return { rows: [] };
         throw new Error('Unexpected SQL in retention health summary test');
       }
     });
@@ -197,6 +209,7 @@ try {
     assert.equal(summary.data.status, 'SUCCESS');
     assert.equal(summary.data.effectiveDays, 1);
     assert.equal(summary.data.rowsDeleted, 0);
+    assert.equal(summary.data.engineLogRowsDeleted, 0);
     assert.equal(summary.data.reason, 'health-summary-test');
     assert.ok(Number.isSafeInteger(summary.data.configDays) && summary.data.configDays >= 1);
   });
