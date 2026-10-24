@@ -467,12 +467,9 @@ export function createDeltaExecutor({
         order_type: 'limit_order',
         limit_price: String(entry),
         client_order_id: buildClientOrderId(options?.clientOrderId, prefix, normalizedSymbol),
-        bracket_stop_loss_order_type: 'market_order',
         bracket_stop_loss_price: String(stop),
-        bracket_take_profit_order_type: 'market_order',
         bracket_take_profit_price: String(target),
-        bracket_stop_trigger_method: 'mark_price',
-        bracket_take_profit_trigger_method: 'mark_price'
+        bracket_stop_trigger_method: 'mark_price'
       };
       return submitOrder(product, body, { strategy, role: 'ENTRY' });
     });
