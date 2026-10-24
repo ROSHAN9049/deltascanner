@@ -67,9 +67,9 @@ const RETENTION_ENABLED = envBoolean('RETENTION_ENABLED', true);
 const RETENTION_DAYS = envInteger('RETENTION_DAYS', 1, 1, 3650);
 const RETENTION_BATCH_SIZE = envInteger('RETENTION_BATCH_SIZE', 5000, 1, 5000);
 const DEDUP_ENABLED = envBoolean('DEDUP_ENABLED', true);
-// Persist at most one unchanged observation per symbol/strategy per hour.
-// Stage and side transitions still bypass this cadence and are recorded immediately.
-const SIGNAL_HISTORY_SAMPLE_MINUTES = envInteger('SIGNAL_HISTORY_SAMPLE_MINUTES', 60, 1, 1440);
+// Bound persistent analytics history for a symbol/strategy across all stage/side transitions.
+// This affects historical sampling only; scan decisions, stage calculation, and routing are unchanged.
+const SIGNAL_HISTORY_SAMPLE_MINUTES = envInteger('SIGNAL_HISTORY_SAMPLE_MINUTES', 120, 1, 1440);
 const DEDUP_CACHE_MAX = envInteger('DEDUP_CACHE_MAX', 5000, 1, 100000);
 const DISK_WARN_ROWS = envInteger('DISK_WARN_ROWS', 250000, 1, 1000000000);
 const DISK_CRITICAL_ROWS = envInteger('DISK_CRITICAL_ROWS', 500000, 1, 1000000000);
@@ -90,6 +90,19 @@ const SIGNAL_RETENTION_DELETE_SQL = `
     LIMIT $2::int
   )
   DELETE FROM public.dd_signals AS target
+  USING batch
+  WHERE target.id = batch.id
+  RETURNING target.id
+`;
+const ENGINE_LOG_RETENTION_DELETE_SQL = `
+  WITH batch AS (
+    SELECT id
+    FROM public.dd_engine_logs
+    WHERE created_at < NOW() - ($1::int * INTERVAL '1 day')
+    ORDER BY created_at ASC
+    LIMIT $2::int
+  )
+  DELETE FROM public.dd_engine_logs AS target
   USING batch
   WHERE target.id = batch.id
   RETURNING target.id
@@ -1297,13 +1310,13 @@ export class DeltaEngine {
     const runStartedAt = iso();
     this.retentionInFlightDays = requestedDays;
     this.retentionInFlight = this.performSignalRetention(requestedDays, reason);
-    let result = { success: false, effectiveDays: requestedDays, totalDeleted: 0 };
+    let result = { success: false, effectiveDays: requestedDays, totalDeleted: 0, totalEngineLogsDeleted: 0 };
     let effectiveDays = requestedDays;
     try {
       result = await this.retentionInFlight;
       effectiveDays = result?.effectiveDays ?? requestedDays;
     } catch (error) {
-      result = { success: false, effectiveDays, totalDeleted: 0 };
+      result = { success: false, effectiveDays, totalDeleted: 0, totalEngineLogsDeleted: 0 };
       await this.maintenanceLog('WARN', '[Retention] Task failed; worker continues: ' + safeMaintenanceError(error), { reason });
     } finally {
       this.retentionInFlight = null;
@@ -1313,11 +1326,15 @@ export class DeltaEngine {
     const rowsDeleted = Number.isSafeInteger(result?.totalDeleted) && result.totalDeleted >= 0
       ? result.totalDeleted
       : 0;
+    const engineLogRowsDeleted = Number.isSafeInteger(result?.totalEngineLogsDeleted) && result.totalEngineLogsDeleted >= 0
+      ? result.totalEngineLogsDeleted
+      : 0;
     await this.maintenanceLog(result?.success === true ? 'INFO' : 'WARN', '[Retention] Run summary', {
       status: result?.success === true ? 'SUCCESS' : 'FAILURE',
       runStartedAt,
       runCompletedAt: iso(),
       rowsDeleted,
+      engineLogRowsDeleted,
       configDays: RETENTION_DAYS,
       effectiveDays,
       reason
@@ -1333,13 +1350,14 @@ export class DeltaEngine {
   async performSignalRetention(requestedDays, reason) {
     const startedAt = Date.now();
     let totalDeleted = 0;
+    let totalEngineLogsDeleted = 0;
     let effectiveDays = requestedDays;
 
     try {
       const pool = await this.getMaintenancePool();
       if (!pool) {
         await this.maintenanceLog('WARN', '[Retention] Retention disabled (no DATABASE_URL)', { reason });
-        return { success: false, effectiveDays, totalDeleted };
+        return { success: false, effectiveDays, totalDeleted, totalEngineLogsDeleted };
       }
 
       const countResult = await pool.query('SELECT COUNT(*)::text AS signal_rows FROM public.dd_signals');
@@ -1374,12 +1392,24 @@ export class DeltaEngine {
         await sleep(100);
       }
 
-      return { success: true, effectiveDays, totalDeleted };
+      while (true) {
+        const logResult = await pool.query(ENGINE_LOG_RETENTION_DELETE_SQL, [effectiveDays, RETENTION_BATCH_SIZE]);
+        const deleted = Array.isArray(logResult.rows) ? logResult.rows.length : 0;
+        totalEngineLogsDeleted += deleted;
+        const elapsedSeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+        await this.maintenanceLog('INFO',
+          `[Retention] Deleted ${deleted} engine log rows (total ${totalEngineLogsDeleted}, elapsed ${elapsedSeconds}s)`,
+          { reason, batch: deleted, totalDeleted: totalEngineLogsDeleted, elapsedSeconds: Number(elapsedSeconds), retentionDays: effectiveDays });
+        if (deleted === 0 || deleted < RETENTION_BATCH_SIZE) break;
+        await sleep(100);
+      }
+
+      return { success: true, effectiveDays, totalDeleted, totalEngineLogsDeleted };
     } catch (error) {
       await this.maintenanceLog('WARN',
         '[Retention] Task failed; worker continues: ' + safeMaintenanceError(error),
-        { reason, totalDeleted, retentionDays: effectiveDays });
-      return { success: false, effectiveDays, totalDeleted };
+        { reason, totalDeleted, totalEngineLogsDeleted, retentionDays: effectiveDays });
+      return { success: false, effectiveDays, totalDeleted, totalEngineLogsDeleted };
     }
   }
 
@@ -1486,14 +1516,12 @@ export class DeltaEngine {
     const key = `${String(row?.symbol || '').toUpperCase()}:${String(row?.strategy || '').toUpperCase()}`;
     const cached = this.signalDedupCache.get(key);
     if (!cached) return false;
-    const sameStage = String(row?.stage || '') === cached.stage;
-    const sameSide = String(row?.side || '') === cached.side;
     const elapsed = now - cached.insertedAt;
     const withinSampleWindow = Number.isFinite(elapsed) && elapsed >= 0 &&
       elapsed < SIGNAL_HISTORY_SAMPLE_MINUTES * 60 * 1000;
-    // Score fluctuations alone do not create another history row inside the sample window.
-    // A stage or side transition is always persisted immediately.
-    return sameStage && sameSide && withinSampleWindow;
+    // Keep one persisted observation per symbol/strategy per sample window.
+    // Stage/side transitions still affect live decisions immediately, but do not bypass this history-only cap.
+    return withinSampleWindow;
   }
 
   rememberSignalObservation(row, insertedAt = Date.now()) {
@@ -1578,9 +1606,24 @@ export class DeltaEngine {
       this.dedupSkippedCount += candidates.length;
       return 0;
     }
-    const accepted = [];
+    const acceptedByKey = new Map();
+    const acceptedWithoutKey = [];
 
     for (const row of candidates) {
+      const symbol = String(row?.symbol || '').toUpperCase();
+      const strategy = String(row?.strategy || '').toUpperCase();
+      const key = symbol + ':' + strategy;
+      if (!symbol || !strategy) {
+        acceptedWithoutKey.push(row);
+        continue;
+      }
+      if (acceptedByKey.has(key)) {
+        // Keep the latest observation for a key if a single analysis batch contains duplicates.
+        this.dedupSkippedCount += 1;
+        acceptedByKey.set(key, row);
+        continue;
+      }
+
       let duplicate = false;
       try {
         duplicate = this.isDuplicateSignalObservation(row);
@@ -1591,10 +1634,11 @@ export class DeltaEngine {
       if (duplicate) {
         this.dedupSkippedCount += 1;
       } else {
-        accepted.push(row);
+        acceptedByKey.set(key, row);
       }
     }
 
+    const accepted = [...acceptedByKey.values(), ...acceptedWithoutKey];
     if (accepted.length === 0) return 0;
     await db.insertMany('dd_signals', accepted);
     this.dedupInsertedCount += accepted.length;
