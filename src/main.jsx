@@ -390,18 +390,12 @@ function Card({ label, value, sub, title, tone = '' }) {
   return <div className={'card' + toneClass} title={title}><small>{label}</small><strong>{value}</strong><span>{sub}</span></div>;
 }
 function Dashboard({ market, settings, health, positions, accountDataProtected = false, signals, deltaTestnetPositions = [], deltaTestnetOpenPositionCount = null, deltaTestnetOrders = [], deltaTestnetOrderCount = null, deltaTestnetClosedTodayCount = null, deltaTestnetClosedTodayPnl = null, deltaTestnetClosedTodayPnlComplete = false, signalOrderStats = null, tradetronEvents = [], executionCoverage = null, developerSync = null, developerSnapshots = [], developerApiConfigured = false, developerDataProtected = false, developerNotifications = [], developerNotificationSync = null, developerPnlHistory = [], onInspect, inspect, logs }) {
-  const today = indiaDateKey(new Date());
-  const currentPositionSummary = summarizeCurrentPositionCount({ eventPositions: positions, deployments: developerSnapshots, syncState: developerSync, configured: developerApiConfigured });
   const configuredRouteSymbols = new Set(executionCoverage?.routedSymbols || []);
   const activeRoutedCount = configuredRouteSymbols.size
     ? (market || []).filter(row => configuredRouteSymbols.has(String(row.symbol || '').toUpperCase())).length
     : Math.min(executionCoverage?.routedFuturesSymbols || 0, market?.length || 0);
   const unroutedCount = Math.max(0, (market?.length || 0) - activeRoutedCount);
-  const developerSnapshotRowCount = (developerSnapshots || []).reduce(
-    (count, deployment) => count + (Array.isArray(deployment?.positions) ? deployment.positions.length : 0), 0
-  );
   const tradetronMirror = summarizeTradetronSnapshots(developerSnapshots);
-  const lastNonZeroPnlContext = formatLastNonZeroPnlContext(developerPnlHistory);
   const routeSafetyRequired = Number(executionCoverage?.configuredFuturesRoutes || 0) > 0;
   const routeSafetyBlocked = routeSafetyRequired && (executionCoverage?.tradetronEntrySafety?.trusted !== true || executionCoverage?.tradetronEntrySafety?.blocked === true || executionCoverage?.tradetronEntrySafety?.capReached === true);
   const routeSafetyReason = executionCoverage?.tradetronEntrySafety?.reason ||
