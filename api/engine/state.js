@@ -1,6 +1,7 @@
 import { CONFIG } from '../../server/config.js';
 import { count, select } from '../../server/db.js';
 import { protectEngineState } from '../../server/engine-state-privacy.js';
+import { indiaDateKey } from '../../src/date-utils.js';
 import { createEngineSessionCookie, hasEngineAccess, isEngineSessionValid } from '../../server/engine-session.js';
 
 export default async function handler(req, res) {
@@ -11,6 +12,8 @@ export default async function handler(req, res) {
     res.setHeader('Set-Cookie', createEngineSessionCookie(CONFIG.engineSecret));
   }
   try {
+    const deltaTodayStart = indiaDateKey(new Date()) + 'T00:00:00+05:30';
+    const deltaTodayStartQuery = encodeURIComponent(deltaTodayStart);
     const [settings, positions, signals, signalCache, marketCache, optionCache, trades, logs, ledger, counters, daily, signalOrders, tradetronEvents, signalOrderCount, signalSentCount, signalPendingCount, signalExpiredCount, signalFailedCount, tradetronEventCount, tradeRowCount, ledgerRowCount] = await Promise.all([
       select('dd_settings', 'id=eq.1&select=*'),
       CONFIG.signalOnly ? select('dd_positions', 'origin=eq.TRADETRON&qty=gt.0&order=updated_at.desc') : select('dd_positions', 'qty=gt.0&order=updated_at.desc'),
@@ -78,7 +81,12 @@ export default async function handler(req, res) {
       developerPnlHistoryRows,
       apiDerivedTradeRows,
       apiDerivedTradeCount,
-      deltaTestnetPositionRows
+      deltaTestnetPositionRows,
+      deltaTestnetOpenPositionCount,
+      deltaTestnetOrderRows,
+      deltaTestnetOrderCount,
+      deltaTestnetClosedTodayRows,
+      deltaTestnetClosedTodayCount
     ] = privateDataAuthorized
       ? await Promise.all([
           select('dd_tradetron_developer_sync_state', 'id=eq.1&select=*').catch(() => []),
@@ -91,9 +99,23 @@ export default async function handler(req, res) {
             console.error('[engine/state] exact API-derived trade count unavailable:', error.message);
             return null;
           }),
-          select('dd_delta_positions', 'order=opened_at.desc&limit=500').catch(() => [])
+          select('dd_delta_positions', 'order=opened_at.desc&limit=500').catch(() => []),
+          count('dd_delta_positions', 'status=eq.OPEN&select=id').catch(error => {
+            console.error('[engine/state] exact Delta Testnet open-position count unavailable:', error.message);
+            return null;
+          }),
+          select('dd_orders', 'order_type=eq.delta_testnet_order&order=created_at.desc&limit=1000').catch(() => []),
+          count('dd_orders', 'order_type=eq.delta_testnet_order&select=id').catch(error => {
+            console.error('[engine/state] exact Delta Testnet order count unavailable:', error.message);
+            return null;
+          }),
+          select('dd_delta_positions', 'status=eq.CLOSED&closed_at=gte.' + deltaTodayStartQuery + '&order=closed_at.desc&limit=1000').catch(() => []),
+          count('dd_delta_positions', 'status=eq.CLOSED&closed_at=gte.' + deltaTodayStartQuery + '&select=id').catch(error => {
+            console.error('[engine/state] exact Delta Testnet closed-today count unavailable:', error.message);
+            return null;
+          })
         ])
-      : [[], [], [], [], [], [], null, []];
+      : [[], [], [], [], [], [], null, [], null, [], null, [], null];
     const tradetronDeveloperSync = developerSyncRows?.[0] || null;
     const knownDeploymentIds = tradetronDeveloperSync?.details?.deploymentIds;
     const tradetronDeveloperSnapshots = Array.isArray(knownDeploymentIds)
@@ -103,6 +125,18 @@ export default async function handler(req, res) {
     const tradetronDeveloperNotifications = developerNotificationRows || [];
     const tradetronDeveloperPnlHistory = developerPnlHistoryRows || [];
     const deltaTestnetPositions = deltaTestnetPositionRows || [];
+    const deltaTestnetOrders = deltaTestnetOrderRows || [];
+    const deltaTestnetClosedTodayCountNumber = deltaTestnetClosedTodayCount == null
+      ? null : Number(deltaTestnetClosedTodayCount);
+    const deltaClosedTodayValues = (deltaTestnetClosedTodayRows || []).map(row =>
+      row?.realized_pnl === null || row?.realized_pnl === undefined || row?.realized_pnl === ''
+        ? null : Number(row.realized_pnl));
+    const deltaTestnetClosedTodayPnlComplete = deltaTestnetClosedTodayCountNumber !== null &&
+      deltaTestnetClosedTodayCountNumber === (deltaTestnetClosedTodayRows || []).length &&
+      deltaClosedTodayValues.every(value => Number.isFinite(value));
+    const deltaTestnetClosedTodayPnl = deltaTestnetClosedTodayPnlComplete
+      ? deltaClosedTodayValues.reduce((sum, value) => sum + value, 0)
+      : null;
     const routeTable = Array.isArray(CONFIG.tradetronBridgeRoutes) ? CONFIG.tradetronBridgeRoutes : [];
     const legacyFuturesConfigured = CONFIG.tradetronBridgeEnabled && !!CONFIG.tradetronAuthToken;
     const localSymbols = routeTable.length
@@ -162,7 +196,13 @@ export default async function handler(req, res) {
       tradetronDeveloperPnlHistory,
       apiDerivedTrades: apiDerivedTradeRows || [],
       apiDerivedTradeCount: apiDerivedTradeCount == null ? null : Number(apiDerivedTradeCount),
-      deltaTestnetPositions
+      deltaTestnetPositions,
+      deltaTestnetOpenPositionCount: deltaTestnetOpenPositionCount == null ? null : Number(deltaTestnetOpenPositionCount),
+      deltaTestnetOrders,
+      deltaTestnetOrderCount: deltaTestnetOrderCount == null ? null : Number(deltaTestnetOrderCount),
+      deltaTestnetClosedTodayCount: deltaTestnetClosedTodayCountNumber,
+      deltaTestnetClosedTodayPnl,
+      deltaTestnetClosedTodayPnlComplete
     }, privateDataAuthorized));
   } catch (e) {
     return res.status(503).json({ success: false, environment: CONFIG.environment, error: e.message });
