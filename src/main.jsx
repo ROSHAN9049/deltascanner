@@ -5,7 +5,7 @@ import { indiaDateKey } from './date-utils.js';
 import GridStrategy from './GridStrategy.jsx';
 import { routeStatusForSymbol } from './market-route-status.js';
 import { getTradetronDiagnosticDetails } from './tradetron-diagnostics.js';
-import { summarizeTradetronSnapshots } from './tradetron-position-sync.js';
+import { summarizeCurrentPositionCount, summarizeTradetronSnapshots } from './tradetron-position-sync.js';
 import { buildTradetronPositionReconciliation } from './tradetron-reconciliation.js';
 import { DEFAULT_VISIBLE_MARKET_LIMIT, selectVisibleMarketRows, selectVisibleSignalRows } from './market-view.js';
 import { assessDeltaRange, fmtMultiplier, fmtPrice as fmtRawPrice, fmtRsi, safeNum } from './formatters.js';
