@@ -22,7 +22,9 @@
     "diagnose:failed-signals": "node scripts/diagnose-failed-signals.mjs",
     "test:derived-trades": "node --test tests/tradetron-derived-trades.test.mjs",
     "import:tradetron-csv": "node scripts/import-tradetron-csv.mjs",
-    "score:distribution": "node scripts/score-distribution.mjs --database"
+    "score:distribution": "node scripts/score-distribution.mjs --database",
+    "cleanup:testnet-audit": "node scripts/cleanup-testnet-positions.mjs --audit",
+    "cleanup:testnet-close": "node scripts/cleanup-testnet-positions.mjs --close --confirm"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",
