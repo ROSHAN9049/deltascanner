@@ -1,9 +1,10 @@
 # DealDost Delta India Scanner
 
-Production-market signal-only perpetual futures scanner and Node worker using Delta Exchange India's documented v2 API. The scanner reads live Delta India market data and sends signals to Tradetron; it never places direct Delta production orders.
+Production-market perpetual futures scanner and Node worker using Delta Exchange India's v2 API. Public scanner market data remains separate from execution. Direct Delta orders are allowed only through an explicitly enabled Demo/Testnet executor; live production order placement is hard-locked. When direct Testnet execution is disabled, the existing Tradetron signal bridge remains available.
 
 ## Required environment
 DELTA_ENVIRONMENT=SIGNAL_ONLY
+DELTA_EXECUTION_MODE=disabled (or explicitly testnet for Demo testing; live is rejected)
 ENGINE_SECRET
 SUPABASE_URL
 SUPABASE_SERVICE_ROLE_KEY
@@ -13,7 +14,7 @@ Tradetron bridge execution additionally requires:
 TRADETRON_BRIDGE_ENABLED=true
 TRADETRON_AUTH_TOKEN
 
-The production Delta public market API is the only market-data endpoint used in SIGNAL_ONLY mode. Private Delta execution is structurally disabled.
+The production Delta public market API remains the read-only scanner feed in SIGNAL_ONLY mode. The separate executor uses a hardcoded Testnet REST host and refuses non-Testnet execution; production order URLs are not selectable by environment variable.
 
 ## Database
 Run db/schema.sql against a dedicated Supabase/Postgres trading database. Do not reuse an unrelated website database.
