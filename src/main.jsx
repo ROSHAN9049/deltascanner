@@ -42,7 +42,7 @@ function hasRawPnlAnomaly(row) {
 
 const tabs = [
   ['dashboard','Dashboard'],['rotation','Profit Rotation'],['momentum','Momentum'],['momentum-history','Mom History'],
-  ['scalping','Scalping'],['grid','Grid Strategy'],['scalp-history','Scalp History'],['options','Options'],['positions','Positions'],['trade-history','Trade History'],
+  ['scalping','Scalping'],['grid','Grid Strategy'],['scalp-history','Scalp History'],['options','Options'],['positions','Positions'],['delta-testnet-positions','Delta Testnet Positions'],['trade-history','Trade History'],
   ['pnl','PNL'],
   // Paper Trading: placeholder only, not implemented.
   // Hidden until a real simulation engine exists.
@@ -324,6 +324,7 @@ function App() {
     {tab === 'options' && <OptionsView signals={signals} settings={settings} optionCache={state?.optionCache || []} executionCoverage={state?.executionCoverage || null} />}
     {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" strategy="SCALPING" apiDerivedTrades={state?.apiDerivedTrades || []} apiDerivedTradeCount={state?.apiDerivedTradeCount ?? null} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'positions' && <><Positions rows={positions} tradetronDeployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} marketCache={state?.marketCache || []} snapshotsLocked={state?.tradetronDeveloperDataProtected === true} accountDataProtected={accountDataProtected} /><TradetronPositionReconciliationPanel deployments={state?.tradetronDeveloperDataProtected ? [] : (state?.tradetronDeveloperSnapshots || [])} enginePositions={positions} syncState={state?.tradetronDeveloperSync || null} privateDataProtected={accountDataProtected || state?.tradetronDeveloperDataProtected === true} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} marketCache={state?.marketCache || []} /></>}
+    {tab === 'delta-testnet-positions' && <DeltaTestnetPositions rows={state?.deltaTestnetPositions || []} accountDataProtected={accountDataProtected} mode={executionCoverage?.deltaExecutionMode || 'disabled'} />}
     {tab === 'trade-history' && <><TradeHistory trades={trades} title="Trade History · Webhook-Synced Tradetron Records" apiDerivedTrades={state?.apiDerivedTrades || []} apiDerivedTradeCount={state?.apiDerivedTradeCount ?? null} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} /><TradetronActivity events={state?.tradetronEvents || []} signalStats={state?.signalOrderStats || null} webhookSecretConfigured={executionCoverage?.webhookSecretConfigured === true} accountDataProtected={accountDataProtected} /></>}
     {tab === 'pnl' && <><PNL trades={trades} settings={settings} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.tradeRowCount ?? null} apiDerivedTrades={state?.apiDerivedTrades || []} apiDerivedTradeCount={state?.apiDerivedTradeCount ?? null} developerSnapshots={state?.tradetronDeveloperSnapshots || []} developerDataProtected={state?.tradetronDeveloperDataProtected === true} developerApiConfigured={executionCoverage?.tradetronDeveloperApiConfigured === true} marketCache={state?.marketCache || []} /><TradetronDeveloperApiPanel configured={executionCoverage?.tradetronDeveloperApiConfigured === true} sync={state?.tradetronDeveloperSync || null} deployments={state?.tradetronDeveloperSnapshots || []} privateDataProtected={state?.tradetronDeveloperDataProtected === true} notifications={state?.tradetronDeveloperNotifications || []} notificationSync={state?.tradetronDeveloperNotificationSync || null} pnlHistory={state?.tradetronDeveloperPnlHistory || []} marketCache={state?.marketCache || []} /></>}
     {tab === 'paper' && <Panel title="Paper Trading"><div className="lockedText">Scanner is signal-only. No Delta order is placed here; Tradetron Live Offline runs the simulated execution.</div></Panel>}
@@ -331,8 +332,55 @@ function App() {
     {tab === 'live' && <Panel title="Live Trading"><div className="liveLock">🔒 DIRECT DELTA EXECUTION LOCKED<br/><small>The scanner never sends production orders. Future live execution must be enabled manually in Tradetron.</small></div></Panel>}
     {tab === 'analytics' && <Analytics trades={trades} apiDerivedTrades={state?.apiDerivedTrades || []} apiDerivedTradeCount={state?.apiDerivedTradeCount ?? null} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.tradeRowCount ?? null} />}
     {tab === 'settings' && <Settings settings={settings} workerEntrySafety={workerEntrySafety} secret={secret} setSecret={v => { secretRef.current = v; setSecret(v); }} busy={busy} mutate={mutate} onUnlock={unlockSession} onLock={lockSession} authenticated={state?.accountDataProtected === false} />}
-    <footer>Delta Exchange India · production market feed · Tradetron signal-only · no direct orders · no guaranteed win rate</footer>
+    <footer>Delta Exchange India · public market feed · direct execution is Testnet-only when enabled · live orders hard-locked</footer>
   </div>;
+}
+
+function DeltaTestnetPositions({ rows = [], accountDataProtected = false, mode = 'disabled' }) {
+  const positions = Array.isArray(rows) ? rows : [];
+  const fmtUsd = value => {
+    const amount = safeNum(value);
+    if (amount === null) return '—';
+    const prefix = amount < 0 ? '-USD ' : 'USD ';
+    return prefix + Math.abs(amount).toLocaleString('en-US', { maximumFractionDigits: 4 });
+  };
+  const timestamp = value => {
+    if (!value) return '—';
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+  };
+  return <Panel title="Delta Testnet Positions">
+    <div className="muted" style={{ marginBottom: 10 }}>
+      Separate private Demo/Testnet ledger · mode: {String(mode).toUpperCase()} · never merged into Tradetron positions/P&amp;L.
+    </div>
+    {accountDataProtected
+      ? <div className="danger">🔒 Testnet account data is locked. Enter ENGINE_SECRET in Settings to view these positions.</div>
+      : positions.length === 0
+        ? <div className="muted">No Delta Testnet position rows recorded yet. The position ledger remains separate from Tradetron.</div>
+        : <div className="tablewrap"><table>
+          <thead><tr>
+            <th>Status</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Mark</th>
+            <th>Unrealized P&amp;L</th><th>Realized P&amp;L</th><th>Stop Loss</th><th>Take Profit</th>
+            <th>Strategy</th><th>Opened (IST)</th><th>Closed (IST)</th><th>Order ID</th>
+          </tr></thead>
+          <tbody>{positions.map((row, index) => <tr key={String(row.id || row.order_id || row.symbol) + ':' + index}>
+            <td><span className={'badge ' + (row.status === 'OPEN' ? 'test' : 'muted')}>{row.status || 'UNKNOWN'}</span></td>
+            <td className="symbol">{row.symbol || '—'}</td>
+            <td>{row.side || '—'}</td>
+            <td>{safeNum(row.qty) === null ? '—' : safeNum(row.qty)}</td>
+            <td>{price(row.entry_price)}</td>
+            <td>{price(row.current_price)}</td>
+            <td className={num(row.unrealized_pnl) > 0 ? 'up' : num(row.unrealized_pnl) < 0 ? 'down' : ''}>{fmtUsd(row.unrealized_pnl)}</td>
+            <td className={num(row.realized_pnl) > 0 ? 'up' : num(row.realized_pnl) < 0 ? 'down' : ''}>{fmtUsd(row.realized_pnl)}</td>
+            <td>{price(row.sl_price)}</td>
+            <td>{price(row.tp_price)}</td>
+            <td>{row.strategy || '—'}</td>
+            <td>{timestamp(row.opened_at)}</td>
+            <td>{timestamp(row.closed_at)}</td>
+            <td className="mono">{row.order_id || '—'}</td>
+          </tr>)}</tbody>
+        </table></div>}
+  </Panel>;
 }
 
 function Panel({ title, children }) {

@@ -77,7 +77,8 @@ export default async function handler(req, res) {
       developerNotificationRows,
       developerPnlHistoryRows,
       apiDerivedTradeRows,
-      apiDerivedTradeCount
+      apiDerivedTradeCount,
+      deltaTestnetPositionRows
     ] = privateDataAuthorized
       ? await Promise.all([
           select('dd_tradetron_developer_sync_state', 'id=eq.1&select=*').catch(() => []),
@@ -89,9 +90,10 @@ export default async function handler(req, res) {
           count('dd_api_derived_trades', 'select=id').catch(error => {
             console.error('[engine/state] exact API-derived trade count unavailable:', error.message);
             return null;
-          })
+          }),
+          select('dd_delta_positions', 'order=opened_at.desc&limit=500').catch(() => [])
         ])
-      : [[], [], [], [], [], [], null];
+      : [[], [], [], [], [], [], null, []];
     const tradetronDeveloperSync = developerSyncRows?.[0] || null;
     const knownDeploymentIds = tradetronDeveloperSync?.details?.deploymentIds;
     const tradetronDeveloperSnapshots = Array.isArray(knownDeploymentIds)
@@ -100,6 +102,7 @@ export default async function handler(req, res) {
     const tradetronDeveloperNotificationSync = developerNotificationSyncRows?.[0] || null;
     const tradetronDeveloperNotifications = developerNotificationRows || [];
     const tradetronDeveloperPnlHistory = developerPnlHistoryRows || [];
+    const deltaTestnetPositions = deltaTestnetPositionRows || [];
     const routeTable = Array.isArray(CONFIG.tradetronBridgeRoutes) ? CONFIG.tradetronBridgeRoutes : [];
     const legacyFuturesConfigured = CONFIG.tradetronBridgeEnabled && !!CONFIG.tradetronAuthToken;
     const localSymbols = routeTable.length
@@ -130,7 +133,8 @@ export default async function handler(req, res) {
         tradetronDeveloperApiStatus: workerTradetronDeveloperApi?.status || tradetronDeveloperSync?.status || 'NOT_CONFIGURED',
         routingStatusSource: workerRouting ? 'worker-heartbeat' : 'vercel-config-fallback',
         routingObservedAt: heartbeatLog?.created_at || null,
-        directDeltaExecutionEnabled: false
+        directDeltaExecutionEnabled: false,
+        deltaExecutionMode: CONFIG.deltaExecutionMode
       },
       settings: settings?.[0] || null,
       positions: positions || [], signals: signals || [],
@@ -157,7 +161,8 @@ export default async function handler(req, res) {
       tradetronDeveloperNotifications,
       tradetronDeveloperPnlHistory,
       apiDerivedTrades: apiDerivedTradeRows || [],
-      apiDerivedTradeCount: apiDerivedTradeCount == null ? null : Number(apiDerivedTradeCount)
+      apiDerivedTradeCount: apiDerivedTradeCount == null ? null : Number(apiDerivedTradeCount),
+      deltaTestnetPositions
     }, privateDataAuthorized));
   } catch (e) {
     return res.status(503).json({ success: false, environment: CONFIG.environment, error: e.message });

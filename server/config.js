@@ -1,3 +1,48 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+// Support local .env for non-Railway use without overwriting injected environment values.
+function loadLocalEnvFile() {
+  const envPath = fileURLToPath(new URL('../.env', import.meta.url));
+  let contents;
+  try { contents = readFileSync(envPath, 'utf8'); }
+  catch (error) { if (error?.code === 'ENOENT') return; throw error; }
+  for (const line of contents.split(/\r?\n/)) {
+    const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+    if (!match || process.env[match[1]] !== undefined) continue;
+    let value = match[2] || '';
+    if (value.length >= 2 && ((value[0] === '"' && value.at(-1) === '"') ||
+        (value[0] === "'" && value.at(-1) === "'"))) {
+      const quote = value[0];
+      value = value.slice(1, -1);
+      if (quote === '"') value = value.replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\"/g, '"');
+    } else {
+      value = value.replace(/\s+#.*$/, '').trim();
+    }
+    process.env[match[1]] = value;
+  }
+}
+loadLocalEnvFile();
+
+export function parseDeltaExecutionMode(value) {
+  const mode = String(value ?? 'disabled').trim().toLowerCase();
+  if (mode === 'live') throw new Error('Live mode requires explicit user approval via code change');
+  if (!['testnet', 'disabled'].includes(mode)) {
+    throw new Error('DELTA_EXECUTION_MODE must be either "testnet" or "disabled" for now');
+  }
+  return mode;
+}
+
+const deltaExecutionMode = parseDeltaExecutionMode(process.env.DELTA_EXECUTION_MODE);
+const deltaTestnetRestBase = String(process.env.DELTA_TESTNET_REST_BASE || 'https://cdn-ind.testnet.deltaex.org').trim().replace(/\/+$/, '');
+const deltaTestnetWsUrl = String(process.env.DELTA_TESTNET_WS_URL || 'wss://socket-ind.testnet.deltaex.org').trim();
+if (deltaExecutionMode === 'testnet' && deltaTestnetRestBase !== 'https://cdn-ind.testnet.deltaex.org') {
+  throw new Error('DELTA_TESTNET_REST_BASE must use the hardcoded Delta India Testnet endpoint');
+}
+if (deltaExecutionMode === 'testnet' && deltaTestnetWsUrl !== 'wss://socket-ind.testnet.deltaex.org') {
+  throw new Error('DELTA_TESTNET_WS_URL must use the private Delta India Testnet WebSocket endpoint');
+}
+
 const requested = String(process.env.DELTA_ENVIRONMENT || 'SIGNAL_ONLY').toUpperCase();
 const environment = requested === 'TESTNET' ? 'TESTNET' : 'SIGNAL_ONLY';
 const signalOnly = environment === 'SIGNAL_ONLY';
@@ -41,6 +86,9 @@ const tradetronBridgeRoutes = parseTradetronBridgeRoutes();
 export const CONFIG = Object.freeze({
   environment,
   signalOnly,
+  deltaExecutionMode,
+  deltaTestnetRestBase,
+  deltaTestnetWsUrl,
   directDeltaExecutionEnabled: false,
   restBase: signalOnly ? 'https://api.india.delta.exchange' : 'https://cdn-ind.testnet.deltaex.org',
   publicWs: signalOnly ? 'wss://public-socket.india.delta.exchange' : 'wss://socket-ind-pub.testnet.deltaex.org',

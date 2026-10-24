@@ -123,6 +123,7 @@ export function protectEngineState(payload, authorized) {
     tradetronDeveloperSnapshots: [],
     tradetronDeveloperNotificationSync: null,
     tradetronDeveloperNotifications: [],
-    tradetronDeveloperPnlHistory: []
+    tradetronDeveloperPnlHistory: [],
+    deltaTestnetPositions: []
   };
 }
