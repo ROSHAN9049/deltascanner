@@ -226,24 +226,28 @@ export function createDeltaExecutor({
   }
 
   async function getOpenOrders() {
-    const rows = [];
-    let after = '';
-    let previousAfter = '';
-    for (let page = 0; page < 10; page++) {
-      const response = await request('GET', '/v2/orders', {
-        contract_types: 'perpetual_futures',
-        state: 'open',
-        page_size: 100,
-        after
-      });
-      const pageRows = Array.isArray(response.result) ? response.result : [];
-      rows.push(...pageRows);
-      const nextAfter = stringOrEmpty(response.meta?.after);
-      if (!nextAfter || nextAfter === after || nextAfter === previousAfter || pageRows.length === 0) break;
-      previousAfter = after;
-      after = nextAfter;
+    const allRows = [];
+    for (const state of ['open', 'pending']) {
+      let after = '';
+      let previousAfter = '';
+      for (let page = 0; page < 10; page++) {
+        const response = await request('GET', '/v2/orders', {
+          contract_types: 'perpetual_futures',
+          state,
+          page_size: 100,
+          after
+        });
+        const pageRows = Array.isArray(response.result) ? response.result : [];
+        allRows.push(...pageRows);
+        const nextAfter = stringOrEmpty(response.meta?.after);
+        if (!nextAfter || nextAfter === after || nextAfter === previousAfter || pageRows.length === 0) break;
+        previousAfter = after;
+        after = nextAfter;
+      }
     }
-    return rows;
+    const unique = new Map();
+    for (const row of allRows) unique.set(String(row?.id ?? row?.client_order_id ?? JSON.stringify(row)), row);
+    return [...unique.values()];
   }
 
   async function getWalletSnapshot() {
@@ -485,6 +489,9 @@ export function createDeltaExecutor({
       const position = positions.find(row => row.symbol === normalizedSymbol);
       if (!position) throw new Error('No open Delta Testnet position exists for ' + normalizedSymbol);
       if (quantity > position.qty) throw new Error('Close quantity exceeds the open position quantity');
+      if (quantity !== position.qty) {
+        throw new Error('Partial close is disabled in this phase to avoid cancelling protection for a remaining position');
+      }
       const product = await resolveProduct(normalizedSymbol);
       const orders = await getOpenOrders();
       const matchingOrders = orders.filter(row =>
