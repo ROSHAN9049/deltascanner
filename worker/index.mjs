@@ -6,6 +6,7 @@ import { isGithubActionsPublicScanOnly } from './runtime-mode.mjs';
 import { warmupBTCHourly } from './candle-warmup.mjs';
 import { deltaExecutor } from './execution/delta-executor.mjs';
 import { DeltaTestnetTracker } from './execution/delta-tracker.mjs';
+import { checkDeltaTestnetPrivateApi, DELTA_TESTNET_PRIVATE_API_RETRY_MS } from './execution/testnet-private-api-health.mjs';
 
 const githubActionsPublicScanOnly = isGithubActionsPublicScanOnly();
 
@@ -19,6 +20,8 @@ if (!CONFIG.supabaseUrl || !CONFIG.supabaseAdminKey) throw new Error('SUPABASE_U
 const engine = new DeltaEngine();
 let btcHourlyWarmupTimer = null;
 let deltaTestnetTracker = null;
+let privateApiRetryTimer = null;
+let privateApiProbeInFlight = null;
 
 async function getOutboundIp() {
   try {
@@ -33,6 +36,59 @@ async function getOutboundIp() {
   }
 }
 
+async function verifyDeltaTestnetPrivateApi(reason = 'startup') {
+  if (privateApiProbeInFlight) return privateApiProbeInFlight;
+  privateApiProbeInFlight = (async () => {
+    try {
+      const { account, positions } = await checkDeltaTestnetPrivateApi(deltaExecutor);
+      const wasAvailable = engine.privateExecutionAvailable;
+      engine.privateExecutionAvailable = true;
+
+      if (reason === 'startup') {
+        console.log('[DeltaScanner] Authenticated Delta TESTNET API OK; equity=' + account.equity + '; open positions=' + positions.length);
+      } else if (!wasAvailable) {
+        console.log('[DeltaScanner] Delta Testnet private API restored; wallet and positions verified. Order execution unlocked.');
+        await log('INFO', 'Delta Testnet private API restored; wallet and positions verified; order execution unlocked', {
+          equity: account.equity,
+          openPositions: positions.length
+        }).catch(() => {});
+      }
+
+      if (!deltaTestnetTracker) {
+        const tracker = new DeltaTestnetTracker();
+        try {
+          await tracker.start();
+          deltaTestnetTracker = tracker;
+        } catch (error) {
+          try { await tracker.stop(); } catch {}
+          console.warn('[DeltaScanner] Delta Testnet private tracker could not start; REST health checks will continue:', String(error?.message || error));
+          await log('WARN', 'Delta Testnet private tracker could not start; REST health checks continue', {
+            error: String(error?.message || error).slice(0, 240)
+          }).catch(() => {});
+        }
+      }
+      return true;
+    } catch (error) {
+      const message = String(error?.message || error);
+      engine.privateExecutionAvailable = false;
+      console.warn('[DeltaScanner] Private Delta Testnet API unavailable. Continuing in SCAN-ONLY mode.', message);
+      await log('WARN', 'Private Delta Testnet API unavailable. Continuing in SCAN-ONLY mode.', {
+        reason,
+        error: message.slice(0, 240),
+        executionLocked: true,
+        retryMs: DELTA_TESTNET_PRIVATE_API_RETRY_MS
+      }).catch(() => {});
+      if (message.includes('ip_not_whitelisted_for_api_key')) {
+        console.error('[DeltaScanner] Railway outbound public IP:', await getOutboundIp());
+      }
+      return false;
+    } finally {
+      privateApiProbeInFlight = null;
+    }
+  })();
+  return privateApiProbeInFlight;
+}
+
 async function startupPreflight() {
   console.log('[DeltaScanner] Starting public-market signal scanner; DELTA_EXECUTION_MODE=' + CONFIG.deltaExecutionMode);
   try {
@@ -41,12 +97,9 @@ async function startupPreflight() {
     await engine.adapter.health();
     console.log('[DeltaScanner] Delta India production public market API OK');
     if (CONFIG.deltaExecutionMode === 'testnet') {
-      const [account, positions] = await Promise.all([
-        deltaExecutor.getAccountSnapshot(),
-        deltaExecutor.getOpenPositions()
-      ]);
-      engine.privateExecutionAvailable = true;
-      console.log('[DeltaScanner] Authenticated Delta TESTNET API OK; equity=' + account.equity + '; open positions=' + positions.length);
+      // Private API failures are non-fatal to the public scanner; execution stays locked
+      // until a later wallet + positions verification succeeds.
+      await verifyDeltaTestnetPrivateApi('startup');
     } else if (CONFIG.tradetronBridgeEnabled) {
       if (!engine.tradetron.isConfigured()) {
         console.warn('[DeltaScanner] Tradetron bridge enabled but auth token is missing; signals are blocked');
@@ -84,8 +137,8 @@ async function startupPreflight() {
   }
 }
 
-process.on('SIGTERM', async () => { console.log('[DeltaScanner] SIGTERM received; stopping safely'); if (btcHourlyWarmupTimer) clearInterval(btcHourlyWarmupTimer); await deltaTestnetTracker?.stop(); await engine.stop(); process.exit(0); });
-process.on('SIGINT', async () => { console.log('[DeltaScanner] SIGINT received; stopping safely'); if (btcHourlyWarmupTimer) clearInterval(btcHourlyWarmupTimer); await deltaTestnetTracker?.stop(); await engine.stop(); process.exit(0); });
+process.on('SIGTERM', async () => { console.log('[DeltaScanner] SIGTERM received; stopping safely'); if (btcHourlyWarmupTimer) clearInterval(btcHourlyWarmupTimer); if (privateApiRetryTimer) clearInterval(privateApiRetryTimer); await deltaTestnetTracker?.stop(); await engine.stop(); process.exit(0); });
+process.on('SIGINT', async () => { console.log('[DeltaScanner] SIGINT received; stopping safely'); if (btcHourlyWarmupTimer) clearInterval(btcHourlyWarmupTimer); if (privateApiRetryTimer) clearInterval(privateApiRetryTimer); await deltaTestnetTracker?.stop(); await engine.stop(); process.exit(0); });
 
 process.on('unhandledRejection', async error => {
   console.error('[DeltaScanner] Unhandled rejection:', String(error?.message || error));
@@ -100,6 +153,16 @@ process.on('uncaughtException', async error => {
 
 const preflightOk = await startupPreflight();
 if (!preflightOk) process.exit(1);
+
+if (CONFIG.deltaExecutionMode === 'testnet') {
+  privateApiRetryTimer = setInterval(() => {
+    if (engine.privateExecutionAvailable) return;
+    void verifyDeltaTestnetPrivateApi('retry').catch(error => {
+      console.error('[DeltaScanner] Delta Testnet private API retry failed safely:', String(error?.message || error));
+    });
+  }, DELTA_TESTNET_PRIVATE_API_RETRY_MS);
+  privateApiRetryTimer.unref?.();
+}
 
 async function runTradetronSelfTest() {
   if (CONFIG.deltaExecutionMode === 'testnet') return;
@@ -133,11 +196,6 @@ async function runTradetronSelfTest() {
 }
 
 await runTradetronSelfTest();
-
-if (CONFIG.deltaExecutionMode === 'testnet') {
-  deltaTestnetTracker = new DeltaTestnetTracker();
-  await deltaTestnetTracker.start();
-}
 
 // Fetch the global BTC hourly regime data immediately, then refresh it hourly.
 // This schedule is independent of the rotating 1m/5m/15m warmup and WebSocket.
