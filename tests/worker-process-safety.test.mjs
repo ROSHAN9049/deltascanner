@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readdir, readFile } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const read = path => readFile(new URL(path, import.meta.url), 'utf8');
@@ -72,7 +72,7 @@ test('worker process.exit calls are restricted to explicit signal shutdown', asy
     const groups = await Promise.all(entries.map(async entry => {
       const fullPath = join(directory, entry.name);
       if (entry.isDirectory()) return collectJsFiles(fullPath);
-      return /\\.(?:mjs|cjs|js)$/.test(entry.name) ? [fullPath] : [];
+      return entry.name.endsWith('.mjs') || entry.name.endsWith('.js') || entry.name.endsWith('.cjs') ? [fullPath] : [];
     }));
     return groups.flat();
   }
@@ -80,9 +80,9 @@ test('worker process.exit calls are restricted to explicit signal shutdown', asy
   const calls = [];
   for (const file of files) {
     const content = await readFile(file, 'utf8');
-    content.split('\\n').forEach((line, index) => {
-      if (/process\\.exit\\s*\\(/.test(line)) {
-        calls.push({ file: relative(workerRoot, file).replace(/\\\\/g, '/'), line: index + 1 });
+    content.split('\n').forEach((line, index) => {
+      if (line.includes('process.exit(')) {
+        calls.push({ file: relative(workerRoot, file).split(sep).join('/'), line: index + 1 });
       }
     });
   }
@@ -92,8 +92,8 @@ test('worker process.exit calls are restricted to explicit signal shutdown', asy
   const shutdownStart = index.indexOf('async function shutdownWorker(signal)');
   const shutdownEnd = index.indexOf("process.on('unhandledRejection'", shutdownStart);
   assert.ok(shutdownStart >= 0 && shutdownEnd > shutdownStart);
-  assert.doesNotMatch(index.slice(0, shutdownStart), /process\\.exit\\s*\\(/);
-  assert.doesNotMatch(index.slice(shutdownEnd), /process\\.exit\\s*\\(/);
+  assert.equal(index.slice(0, shutdownStart).includes('process.exit('), false);
+  assert.equal(index.slice(shutdownEnd).includes('process.exit('), false);
 });
 
 test('public and private websocket outbound callbacks catch send failures and reconnect', async () => {
