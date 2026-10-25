@@ -29,6 +29,7 @@ test('replaces an outlier tail candle with previous valid OHLCV while retaining 
   ];
   assert.deepEqual(replaceOutlierCandleWithPrevious(candles), [
     candles[0],
+    candles[1],
     { ...candles[1], time: 700, res: '5m' }
   ]);
   assert.equal(replaceOutlierCandleWithPrevious([]), null);

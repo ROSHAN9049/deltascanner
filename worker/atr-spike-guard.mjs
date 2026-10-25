@@ -13,7 +13,7 @@ export function replaceOutlierCandleWithPrevious(candles) {
   const outlier = candles.at(-1);
   if (!previous || !outlier || !Number.isFinite(Number(outlier.time))) return null;
   return [
-    ...candles.slice(0, -2),
+    ...candles.slice(0, -1),
     { ...previous, time: outlier.time, res: outlier.res ?? previous.res }
   ];
 }
