@@ -36,7 +36,7 @@ const keepAliveServer = createServer((request, response) => {
   response.statusCode = 200;
   response.setHeader('Content-Type', 'text/plain; charset=utf-8');
   response.setHeader('Cache-Control', 'no-store');
-  response.end('DeltaScanner worker alive\\n');
+  response.end('DeltaScanner worker alive\n');
 });
 keepAliveServer.on('error', error => {
   const details = processErrorDetails(error);
