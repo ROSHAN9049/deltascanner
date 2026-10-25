@@ -19,6 +19,7 @@ import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from '
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
 import { buildApiDerivedTrackingPlan, strategyForDerivedTrade } from './tradetron-derived-trades.mjs';
 import { deltaExecutor } from './execution/delta-executor.mjs';
+import { canExecuteDeltaTestnetOrders, checkDeltaTestnetPrivateApi, isPrivateApiConnectivityError } from './execution/testnet-private-api-health.mjs';
 import { evaluateGlobalPositionCap, routeUnlessGlobalPositionCapBlocked } from './global-position-cap.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -145,6 +146,7 @@ export class DeltaEngine {
     this.lastTradetronEntrySafetyLogAt = 0;
     this.lastGridEntrySafety = null;
     this.lastGridTestnetSkipLogAt = 0;
+    this.lastTestnetExecutionLockLogAt = 0;
     this.lastSignalReservationExpiryAt = 0;
     this.tradetronDeveloperSyncInFlight = null;
     this.tradetronDeveloperApiStatus = CONFIG.tradetronDeveloperApiKey ? 'WAITING_FOR_FIRST_SYNC' : 'NOT_CONFIGURED';
@@ -1234,24 +1236,34 @@ export class DeltaEngine {
 
   async accountSnapshot(settings = {}) {
     if (CONFIG.deltaExecutionMode === 'testnet') {
-      const [wallet, deltaPositions] = await Promise.all([
-        deltaExecutor.getAccountSnapshot(),
-        deltaExecutor.getOpenPositions()
-      ]);
-      const positions = deltaPositions.map(position => ({
-        ...position,
-        size: position.signedSize,
-        qty: Math.abs(n(position.signedSize)),
-        mark_price: n(position.current_price),
-        unrealized_pnl: n(position.unrealized_pnl),
-        product_id: position.product_id
-      }));
-      return {
-        equity: wallet.equity,
-        available: wallet.available,
-        unrealized: positions.reduce((sum, position) => sum + n(position.unrealized_pnl), 0),
-        positions
-      };
+      if (!this.privateExecutionAvailable) {
+        return { equity: 0, available: 0, unrealized: 0, positions: [], privateApiAvailable: false };
+      }
+      try {
+        const { account: wallet, positions: deltaPositions } = await checkDeltaTestnetPrivateApi(deltaExecutor);
+        const positions = deltaPositions.map(position => ({
+          ...position,
+          size: position.signedSize,
+          qty: Math.abs(n(position.signedSize)),
+          mark_price: n(position.current_price),
+          unrealized_pnl: n(position.unrealized_pnl),
+          product_id: position.product_id
+        }));
+        return {
+          equity: wallet.equity,
+          available: wallet.available,
+          unrealized: positions.reduce((sum, position) => sum + n(position.unrealized_pnl), 0),
+          positions,
+          privateApiAvailable: true
+        };
+      } catch (error) {
+        this.privateExecutionAvailable = false;
+        await this.log('WARN', 'Private Delta Testnet API unavailable. Continuing in SCAN-ONLY mode.', {
+          error: String(error?.message || error).slice(0, 240),
+          executionLocked: true
+        }).catch(() => {});
+        return { equity: 0, available: 0, unrealized: 0, positions: [], privateApiAvailable: false };
+      }
     }
     if (CONFIG.tradetronBridgeEnabled || !this.privateExecutionAvailable) {
       const equity = Math.max(0, Number(CONFIG.tradetronCapitalUsd) || 5000);
@@ -2304,10 +2316,25 @@ export class DeltaEngine {
 
   async executeSignal(signal, strategy, qty, clientOrderId) {
     if (CONFIG.deltaExecutionMode === 'testnet') {
-      return deltaExecutor.placeBracketOrder(
-        signal.symbol, signal.side, qty, signal.price, signal.sl, signal.tp,
-        { strategy, clientOrderId }
-      );
+      if (!canExecuteDeltaTestnetOrders(CONFIG.deltaExecutionMode, this.privateExecutionAvailable)) {
+        throw new Error('Delta Testnet private API unavailable; order execution is hard-locked in SCAN-ONLY mode');
+      }
+      try {
+        return await deltaExecutor.placeBracketOrder(
+          signal.symbol, signal.side, qty, signal.price, signal.sl, signal.tp,
+          { strategy, clientOrderId }
+        );
+      } catch (error) {
+        if (isPrivateApiConnectivityError(error)) {
+          this.privateExecutionAvailable = false;
+          await this.log('WARN', 'Private Delta Testnet API unavailable. Continuing in SCAN-ONLY mode.', {
+            error: String(error?.message || error).slice(0, 240),
+            symbol: signal.symbol,
+            executionLocked: true
+          }).catch(() => {});
+        }
+        throw error;
+      }
     }
     const bridge = this.getTradetronBridgeForSymbol(signal.symbol);
     if (!bridge || !bridge.isConfigured()) throw new Error('Tradetron bridge route is unavailable');
@@ -2332,6 +2359,19 @@ export class DeltaEngine {
       return this.openOptionTrade(item, signal, account, settings, openPositions, trades);
     }
     if (signal.stage !== 'CONFIRMED' || signal.score < n(settings.score_min || 80)) return false;
+    if (
+      CONFIG.deltaExecutionMode === 'testnet' &&
+      ['MOMENTUM', 'SCALPING'].includes(strategy) &&
+      !this.privateExecutionAvailable
+    ) {
+      if (Date.now() - this.lastTestnetExecutionLockLogAt >= 60_000) {
+        this.lastTestnetExecutionLockLogAt = Date.now();
+        await this.log('WARN', 'Delta Testnet entries blocked: private API is unavailable; scanner remains in SCAN-ONLY mode.', {
+          symbol: signal.symbol, strategy, side: signal.side, executionLocked: true
+        }).catch(() => {});
+      }
+      return false;
+    }
     const gate = await this.riskGate(signal, strategy, account, settings, openPositions, trades);
     if (gate.reasons.length || !gate.size) return false;
 
