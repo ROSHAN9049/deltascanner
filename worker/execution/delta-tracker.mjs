@@ -276,17 +276,34 @@ export class DeltaTestnetTracker {
         return;
       }
       this.clearAuthTimeout();
-      this.authenticated = true;
-      this.socket?.send(JSON.stringify({ type: 'enable_heartbeat' }));
-      this.socket?.send(JSON.stringify({
-        type: 'subscribe',
-        payload: { channels: [{ name: 'orders', symbols: ['all'] }] }
-      }));
-      this.socket?.send(JSON.stringify({
-        type: 'subscribe',
-        payload: { channels: [{ name: 'positions', symbols: ['all'] }] }
-      }));
-      await this.database.log('INFO', 'Delta Testnet private WebSocket authenticated; orders and positions subscribed', {});
+      const socket = this.socket;
+      if (!socket) return;
+      try {
+        socket.send(JSON.stringify({ type: 'enable_heartbeat' }));
+        socket.send(JSON.stringify({
+          type: 'subscribe',
+          payload: { channels: [{ name: 'orders', symbols: ['all'] }] }
+        }));
+        socket.send(JSON.stringify({
+          type: 'subscribe',
+          payload: { channels: [{ name: 'positions', symbols: ['all'] }] }
+        }));
+        this.authenticated = true;
+        await this.database.log('INFO', 'Delta Testnet private WebSocket authenticated; orders and positions subscribed', {});
+      } catch (error) {
+        const messageText = String(error?.message || error);
+        await this.logSocketWarning('Delta Testnet private WebSocket subscription failed; reconnect scheduled', {
+          error: messageText.slice(0, 240),
+          stack: String(error?.stack || '').slice(0, 3000)
+        }, 'WARN');
+        if (this.socket === socket) this.socket = null;
+        this.authenticated = false;
+        this.clearAuthTimeout();
+        this.scheduleReconnect({ rateLimited: /429|rate.?limit|too many/i.test(messageText) });
+        cleanupWebSocketListeners(socket);
+        try { socket.terminate?.(); } catch {}
+        try { socket.close(); } catch {}
+      }
       return;
     }
     const channel = stringValue(message?.type || message?.channel).toLowerCase();
