@@ -38,22 +38,28 @@ test('uncaught exceptions park the scanner fail-closed without terminating the p
   assert.doesNotMatch(handler, /process\.exit\s*\(/);
 });
 
-test('only graceful signal shutdown and fatal startup/error paths explicitly exit', async () => {
+test('transient startup and engine failures retry without process exit; lease conflicts skip cycles', async () => {
   const index = await read('../worker/index.mjs');
   const engine = await read('../worker/engine.mjs');
   const leaseStart = engine.indexOf('  async acquireLease() {');
   const leaseEnd = engine.indexOf('  async releaseLease()', leaseStart);
   assert.ok(leaseStart >= 0 && leaseEnd > leaseStart);
-  assert.doesNotMatch(engine.slice(leaseStart, leaseEnd), /process\.exit\s*\(/);
+  assert.doesNotMatch(engine.slice(leaseStart, leaseEnd), /process\\.exit\\s*\\(/);
   const runStart = engine.indexOf('  async run() {');
   const stopStart = engine.indexOf('  async stop() {', runStart);
   assert.ok(runStart >= 0 && stopStart > runStart);
-  assert.doesNotMatch(engine.slice(runStart, stopStart), /process\.exit\s*\(/);
+  assert.doesNotMatch(engine.slice(runStart, stopStart), /process\\.exit\\s*\\(/);
   assert.match(engine, /DUPLICATE WORKER DETECTED/);
   assert.match(engine, /Worker cycle skipped safely: trading lease is held by another worker/);
+  assert.match(index, /async function startupPreflightWithRetry\\(\\)/);
+  assert.match(index, /Startup preflight retry scheduled/);
+  assert.match(index, /async function runEngineWithRecovery\\(\\)/);
+  assert.match(index, /Engine loop failed; retry scheduled without process exit/);
+  const startupStart = index.indexOf('const preflightOk = await startupPreflightWithRetry();');
+  const engineLaunch = index.indexOf('void runEngineWithRecovery();', startupStart);
+  assert.ok(startupStart >= 0 && engineLaunch > startupStart);
+  assert.doesNotMatch(index.slice(startupStart, engineLaunch), /process\\.exit\\s*\\(/);
   assert.match(index, /Graceful shutdown finished; exitCode=0/);
-  assert.match(index, /Startup preflight FAILED/);
-  assert.match(index, /Fatal worker startup error/);
   assert.match(index, /Process exit event/);
 });
 
