@@ -164,18 +164,18 @@ export class DeltaTestnetTracker {
           });
           this.socket = null;
           this.authenticated = false;
+          this.scheduleReconnect();
           try { socket.terminate?.(); } catch {}
           try { socket.close(); } catch {}
-          this.scheduleReconnect();
         }, 10_000);
         this.authTimeoutTimer.unref?.();
       } catch (error) {
         void this.logSocketWarning('Delta Testnet WebSocket authentication setup failed', {
           error: String(error?.message || error).slice(0, 200)
         });
+        this.scheduleReconnect();
         try { socket.terminate?.(); } catch {}
         try { socket.close(); } catch {}
-        this.scheduleReconnect();
       }
     });
 
@@ -198,9 +198,9 @@ export class DeltaTestnetTracker {
       if (this.socket === socket) this.socket = null;
       this.authenticated = false;
       this.clearAuthTimeout();
+      this.scheduleReconnect({ rateLimited });
       try { socket.terminate?.(); } catch {}
       try { socket.close(); } catch {}
-      this.scheduleReconnect({ rateLimited });
     });
 
     socket.on('close', (code, reasonBuffer) => {
