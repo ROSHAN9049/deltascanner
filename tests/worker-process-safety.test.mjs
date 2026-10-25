@@ -28,14 +28,14 @@ test('worker logs exact unhandled rejection and uncaught exception details', asy
 test('uncaught exceptions park the scanner fail-closed without terminating the process', async () => {
   const index = await read('../worker/index.mjs');
   const handlerStart = index.indexOf("process.on('uncaughtException', (error, origin) => {");
-  const handlerEnd = index.indexOf("\\n\\nconst preflightOk = await startupPreflight();", handlerStart);
+  const handlerEnd = index.indexOf("const preflightOk = await startupPreflight();", handlerStart);
   assert.ok(handlerStart >= 0 && handlerEnd > handlerStart);
   const handler = index.slice(handlerStart, handlerEnd);
   assert.match(handler, /workerHalted = true/);
-  assert.match(handler, /engine\\.privateExecutionAvailable = false/);
-  assert.match(handler, /await engine\\.stop\\(\\)/);
+  assert.match(handler, /engine\.privateExecutionAvailable = false/);
+  assert.match(handler, /await engine\.stop\(\)/);
   assert.match(handler, /HTTP health listener remains available/);
-  assert.doesNotMatch(handler, /process\\.exit\\s*\\(/);
+  assert.doesNotMatch(handler, /process\.exit\s*\(/);
 });
 
 test('only graceful signal shutdown and fatal startup/error paths explicitly exit', async () => {
