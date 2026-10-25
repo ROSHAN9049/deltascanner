@@ -1,3 +1,4 @@
+import { createServer } from 'node:http';
 import { DeltaEngine } from './engine.mjs';
 import { CONFIG } from '../server/config.js';
 import * as db from '../server/db.js';
@@ -22,6 +23,61 @@ let btcHourlyWarmupTimer = null;
 let deltaTestnetTracker = null;
 let privateApiRetryTimer = null;
 let privateApiProbeInFlight = null;
+let shutdownPromise = null;
+
+const requestedPort = Number(process.env.PORT || 8000);
+const HTTP_PORT = Number.isInteger(requestedPort) && requestedPort >= 1 && requestedPort <= 65535
+  ? requestedPort : 8000;
+
+// Lightweight platform health endpoint. This server exposes no account data and
+// runs independently of the scanner's REST/WebSocket/background scan loop.
+const keepAliveServer = createServer((request, response) => {
+  request.resume();
+  response.statusCode = 200;
+  response.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  response.setHeader('Cache-Control', 'no-store');
+  response.end('DeltaScanner worker alive\\n');
+});
+keepAliveServer.on('error', error => {
+  const details = processErrorDetails(error);
+  console.error('[DeltaScanner] Keep-alive HTTP server error:', details.stack || details.message);
+  void log('ERROR', 'Keep-alive HTTP server error', details).catch(logError => {
+    console.error('[DeltaScanner] Could not persist HTTP server error:', String(logError?.message || logError));
+  });
+});
+keepAliveServer.listen(HTTP_PORT, '0.0.0.0', () => {
+  console.log('[DeltaScanner] Keep-alive HTTP server listening on 0.0.0.0:' + HTTP_PORT);
+});
+
+function processErrorDetails(error) {
+  if (error instanceof Error) {
+    return {
+      name: error.name || 'Error',
+      message: error.message || String(error),
+      stack: String(error.stack || '').slice(0, 12000),
+      code: error.code || null,
+      status: Number.isFinite(Number(error.status)) ? Number(error.status) : null,
+      cause: error.cause instanceof Error
+        ? { name: error.cause.name, message: error.cause.message, stack: String(error.cause.stack || '').slice(0, 3000) }
+        : error.cause === undefined ? null : String(error.cause).slice(0, 1000)
+    };
+  }
+  let serialized;
+  try { serialized = JSON.stringify(error); } catch { serialized = String(error); }
+  return {
+    name: typeof error,
+    message: String(error?.message || error || 'Unknown process error').slice(0, 2000),
+    stack: typeof error?.stack === 'string' ? error.stack.slice(0, 12000) : null,
+    detail: String(serialized || error).slice(0, 4000),
+    code: error?.code || null,
+    status: Number.isFinite(Number(error?.status)) ? Number(error.status) : null
+  };
+}
+
+async function closeKeepAliveServer() {
+  if (!keepAliveServer.listening) return;
+  await new Promise(resolve => keepAliveServer.close(() => resolve()));
+}
 
 async function getOutboundIp() {
   try {
@@ -137,18 +193,101 @@ async function startupPreflight() {
   }
 }
 
-process.on('SIGTERM', async () => { console.log('[DeltaScanner] SIGTERM received; stopping safely'); if (btcHourlyWarmupTimer) clearInterval(btcHourlyWarmupTimer); if (privateApiRetryTimer) clearInterval(privateApiRetryTimer); await deltaTestnetTracker?.stop(); await engine.stop(); process.exit(0); });
-process.on('SIGINT', async () => { console.log('[DeltaScanner] SIGINT received; stopping safely'); if (btcHourlyWarmupTimer) clearInterval(btcHourlyWarmupTimer); if (privateApiRetryTimer) clearInterval(privateApiRetryTimer); await deltaTestnetTracker?.stop(); await engine.stop(); process.exit(0); });
+async function shutdownWorker(signal) {
+  if (shutdownPromise) return shutdownPromise;
+  shutdownPromise = (async () => {
+    console.warn('[DeltaScanner] ' + signal + ' received; stopping safely', JSON.stringify({
+      pid: process.pid,
+      uptimeSeconds: Number(process.uptime().toFixed(1)),
+      httpHealthServerListening: keepAliveServer.listening,
+      privateApiAvailable: engine.privateExecutionAvailable
+    }));
+    if (btcHourlyWarmupTimer) clearInterval(btcHourlyWarmupTimer);
+    if (privateApiRetryTimer) clearInterval(privateApiRetryTimer);
+    const results = await Promise.allSettled([
+      Promise.resolve().then(() => deltaTestnetTracker?.stop()),
+      Promise.resolve().then(() => engine.stop())
+    ]);
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        console.error('[DeltaScanner] Shutdown cleanup failed:', processErrorDetails(result.reason).stack || String(result.reason));
+      }
+    }
+    await closeKeepAliveServer().catch(error => {
+      console.error('[DeltaScanner] Keep-alive HTTP shutdown failed:', processErrorDetails(error).stack || String(error));
+    });
+    console.log('[DeltaScanner] Graceful shutdown finished; exitCode=0');
+    process.exit(0);
+  })();
+  return shutdownPromise;
+}
 
-process.on('unhandledRejection', async error => {
-  console.error('[DeltaScanner] Unhandled rejection:', String(error?.message || error));
-  await log('ERROR', 'Unhandled rejection; engine remains fail-closed', { error: String(error?.message || error) });
+process.on('SIGTERM', () => {
+  void shutdownWorker('SIGTERM').catch(error => {
+    console.error('[DeltaScanner] SIGTERM shutdown failed:', processErrorDetails(error).stack || String(error));
+    process.exit(1);
+  });
 });
-process.on('uncaughtException', async error => {
-  console.error('[DeltaScanner] Uncaught exception:', error.message);
-  await log('ERROR', 'Uncaught exception; worker exiting fail-closed', { error: error.message });
-  try { await engine.stop(); } catch {}
-  process.exit(1);
+process.on('SIGINT', () => {
+  void shutdownWorker('SIGINT').catch(error => {
+    console.error('[DeltaScanner] SIGINT shutdown failed:', processErrorDetails(error).stack || String(error));
+    process.exit(1);
+  });
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  const details = processErrorDetails(reason);
+  console.error('[DeltaScanner] Unhandled promise rejection:', details.stack || details.message, {
+    code: details.code, status: details.status
+  });
+  if (CONFIG.deltaExecutionMode === 'testnet') {
+    engine.privateExecutionAvailable = false;
+    console.error('[DeltaScanner] Private execution locked after unhandled rejection; scanner will continue fail-closed.');
+  }
+  void log('ERROR', 'Unhandled promise rejection; exact rejection captured and private execution fail-closed', {
+    ...details,
+    pid: process.pid,
+    uptimeSeconds: Number(process.uptime().toFixed(1)),
+    promiseType: typeof promise
+  }).catch(logError => {
+    console.error('[DeltaScanner] Could not persist unhandled rejection:', String(logError?.message || logError));
+  });
+});
+process.on('uncaughtException', (error, origin) => {
+  const details = processErrorDetails(error);
+  // Write synchronously before any async cleanup so the real cause survives a
+  // platform restart even if the database connection is already unhealthy.
+  console.error('[DeltaScanner] UNCAUGHT EXCEPTION; worker must exit safely', JSON.stringify({
+    origin,
+    pid: process.pid,
+    uptimeSeconds: Number(process.uptime().toFixed(1)),
+    error: details
+  }));
+  const forceExitTimer = setTimeout(() => {
+    console.error('[DeltaScanner] Fatal error cleanup timed out; forcing exitCode=1');
+    process.exit(1);
+  }, 5000);
+  void (async () => {
+    try {
+      await log('ERROR', 'Uncaught exception; exact stack captured before fail-closed exit', {
+        ...details, origin, pid: process.pid, uptimeSeconds: Number(process.uptime().toFixed(1))
+      });
+    } catch (logError) {
+      console.error('[DeltaScanner] Could not persist uncaught exception:', String(logError?.message || logError));
+    }
+    try { await deltaTestnetTracker?.stop(); } catch (stopError) {
+      console.error('[DeltaScanner] Private tracker cleanup after uncaught exception failed:', String(stopError?.message || stopError));
+    }
+    try { await engine.stop(); } catch (stopError) {
+      console.error('[DeltaScanner] Engine cleanup after uncaught exception failed:', String(stopError?.message || stopError));
+    }
+    try { await closeKeepAliveServer(); } catch {}
+    clearTimeout(forceExitTimer);
+    process.exit(1);
+  })().catch(fatalHandlerError => {
+    console.error('[DeltaScanner] Fatal error handler itself failed:', processErrorDetails(fatalHandlerError).stack || String(fatalHandlerError));
+    process.exit(1);
+  });
 });
 
 const preflightOk = await startupPreflight();
