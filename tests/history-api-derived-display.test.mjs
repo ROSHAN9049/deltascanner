@@ -3,46 +3,34 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const source = await readFile(new URL('../src/main.jsx', import.meta.url), 'utf8');
-const historyStart = source.indexOf('function TradeHistory({');
-const historyEnd = source.indexOf('\nfunction PNL(', historyStart);
-assert.notEqual(historyStart, -1);
-assert.notEqual(historyEnd, -1);
-const history = source.slice(historyStart, historyEnd);
+const start = source.indexOf('function TradeHistory({');
+const end = source.indexOf('\nfunction PNL(', start);
+assert.notEqual(start, -1);
+assert.notEqual(end, -1);
+const history = source.slice(start, end);
 
-test('Momentum History, Scalp History, and Trade History receive total API-derived count', () => {
-  const callSites = [
-    /tab === 'momentum-history' && <TradeHistory[^\n]*strategy="MOMENTUM"[^\n]*apiDerivedTradeCount=\{state\?\.apiDerivedTradeCount \?\? null\}/,
-    /tab === 'scalp-history' && <TradeHistory[^\n]*strategy="SCALPING"[^\n]*apiDerivedTradeCount=\{state\?\.apiDerivedTradeCount \?\? null\}/,
-    /tab === 'trade-history' && <><TradeHistory/
-  ];
-  assert.match(source, callSites[0]);
-  assert.match(source, callSites[1]);
-  assert.match(source, /tab === 'trade-history' && <><TradeHistory[^\n]*apiDerivedTradeCount=\{state\?\.apiDerivedTradeCount \?\? null\}/);
+test('history tabs use Delta Testnet trades and have no Tradetron or mirror API props', () => {
+  assert.match(source, /tab === 'momentum-history' && <TradeHistory trades=\{trades\.filter\(t => t\.strategy === 'MOMENTUM'\)\} title="Momentum History"/);
+  assert.match(source, /tab === 'scalp-history' && <TradeHistory trades=\{trades\.filter\(t => t\.strategy === 'SCALPING'\)\} title="Scalping History"/);
+  assert.match(source, /tab === 'trade-history' && <TradeHistory trades=\{trades\} title="Trade History · Delta Testnet Ledger"/);
+  assert.doesNotMatch(source, /Tradetron|tradetron|apiDerivedTrades|apiDerivedTradeCount/);
 });
 
-test('all history tabs share the same API-derived, unverified section and strategy filter', () => {
-  assert.match(history, /API-Derived History · Unverified/);
-  assert.match(history, /Derived from API snapshots\. Not verified fills\./);
-  assert.match(history, /filter\(row => !strategy \|\| String\(row\?\.strategy \|\| ''\)\.toUpperCase\(\) === String\(strategy\)\.toUpperCase\(\)\)/);
-  assert.match(history, /UNVERIFIED/);
-  assert.match(history, /RAW/);
+test('trade history displays only the Delta Testnet ledger and does not merge inferred rows', () => {
+  assert.match(history, /Delta Testnet closed-trade history is unavailable or incomplete/);
+  assert.match(history, /DELTA TESTNET/);
+  assert.match(history, /tradesComplete/);
+  assert.doesNotMatch(history, /API-Derived|UNVERIFIED|raw_pnl|derivedRows|tradetron/i);
 });
 
-test('API-derived coverage distinguishes complete, partial, count mismatch, and unknown', () => {
-  assert.match(history, /derivedCoverage === 'COMPLETE'/);
-  assert.match(history, /derivedCoverage === 'PARTIAL'/);
-  assert.match(history, /derivedCoverage === 'MISMATCH'/);
-  assert.match(history, /derivedCount === null \|\| derivedCount < 0 \? 'UNKNOWN'/);
-  assert.match(history, /Partial API-derived history — loaded/);
-  assert.match(history, /row-count mismatch/);
-  assert.match(history, /Exact API-derived row count unavailable/);
-});
-
-test('strategy tabs give a scoped honest empty state without treating missing rows as verified closes', () => {
-  assert.match(history, /No API-derived closes stored yet for \$\{strategy\}/);
-  assert.match(history, /No API-derived closes match \$\{strategy\}/);
-  assert.match(history, /No API-derived closes stored yet\. Monitoring active\./);
-  assert.match(history, /No API-derived rows are available in the current response/);
-  assert.match(history, /trades\.map\(t =>/);
-  assert.doesNotMatch(history, /const allTrades = \[\.\.\.trades, \.\.\.derivedRows\]/);
+test('the dashboard no longer renders mirror coverage or signal record sections', () => {
+  for (const oldSection of [
+    'Tradetron Execution Coverage',
+    'Legacy Data · Tradetron Live Mirror',
+    'Tradetron Live Mirror',
+    'Tradetron Signal Records',
+    'function TradetronActivity',
+    'function TradetronDeveloperApiPanel',
+    '/api/tradetron/webhook'
+  ]) assert.equal(source.includes(oldSection), false, oldSection + ' must be removed');
 });
