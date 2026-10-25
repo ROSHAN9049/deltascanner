@@ -204,6 +204,62 @@ async function startupPreflight() {
   }
 }
 
+async function startupPreflightWithRetry() {
+  let attempt = 0;
+  while (!workerHalted && !shutdownPromise) {
+    if (await startupPreflight()) return !workerHalted && !shutdownPromise;
+    attempt += 1;
+    const delayMs = Math.min(60_000, 5_000 * (2 ** Math.min(attempt - 1, 4)));
+    console.warn('[DeltaScanner] Startup preflight retry scheduled; worker remains online', JSON.stringify({
+      attempt,
+      retryDelayMs: delayMs
+    }));
+    await new Promise(resolve => setTimeout(resolve, delayMs));
+  }
+  return false;
+}
+
+async function runEngineWithRecovery() {
+  let failureCount = 0;
+  while (!workerHalted && !shutdownPromise) {
+    try {
+      await engine.run();
+      if (workerHalted || shutdownPromise) return;
+      throw new Error('Engine loop returned unexpectedly without a shutdown signal');
+    } catch (error) {
+      if (workerHalted || shutdownPromise) return;
+      failureCount += 1;
+      const details = processErrorDetails(error);
+      const delayMs = Math.min(60_000, 5_000 * (2 ** Math.min(failureCount - 1, 4)));
+      console.error('[DeltaScanner] Engine loop failed; worker remains alive and will retry:', details.stack || details.message);
+      await log('ERROR', 'Engine loop failed; retry scheduled without process exit', {
+        ...details,
+        retryAttempt: failureCount,
+        retryDelayMs: delayMs,
+        pid: process.pid,
+        uptimeSeconds: Number(process.uptime().toFixed(1))
+      }).catch(logError => {
+        console.error('[DeltaScanner] Could not persist engine retry error:', String(logError?.message || logError));
+      });
+
+      const trackerToStop = deltaTestnetTracker;
+      deltaTestnetTracker = null;
+      const cleanupResults = await Promise.allSettled([
+        Promise.resolve().then(() => trackerToStop?.stop()),
+        Promise.resolve().then(() => engine.stop())
+      ]);
+      for (const result of cleanupResults) {
+        if (result.status === 'rejected') {
+          console.error('[DeltaScanner] Engine retry cleanup failed:', processErrorDetails(result.reason).stack || String(result.reason));
+        }
+      }
+      if (!workerHalted && !shutdownPromise) {
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+}
+
 async function shutdownWorker(signal) {
   if (shutdownPromise) return shutdownPromise;
   shutdownPromise = (async () => {
@@ -317,8 +373,8 @@ process.on('uncaughtException', (error, origin) => {
   });
 });
 
-const preflightOk = await startupPreflight();
-if (!preflightOk) process.exit(1);
+const preflightOk = await startupPreflightWithRetry();
+if (preflightOk && !workerHalted) {
 
 if (CONFIG.deltaExecutionMode === 'testnet') {
   privateApiRetryTimer = setInterval(() => {
@@ -361,26 +417,36 @@ async function runTradetronSelfTest() {
   }));
 }
 
-await runTradetronSelfTest();
+try {
+  await runTradetronSelfTest();
+} catch (error) {
+  const details = processErrorDetails(error);
+  console.warn('[DeltaScanner] Optional Tradetron self-test failed; worker startup will continue without the test signal:', details.stack || details.message);
+  await log('WARN', 'Optional Tradetron self-test failed; worker continues without test signal', details).catch(logError => {
+    console.error('[DeltaScanner] Could not persist self-test warning:', String(logError?.message || logError));
+  });
+}
 
 // Fetch the global BTC hourly regime data immediately, then refresh it hourly.
 // This schedule is independent of the rotating 1m/5m/15m warmup and WebSocket.
-await warmupBTCHourly(engine.adapter, engine.candles);
-btcHourlyWarmupTimer = setInterval(() => {
-  void warmupBTCHourly(engine.adapter, engine.candles);
-}, 60 * 60 * 1000);
-btcHourlyWarmupTimer.unref?.();
-
-console.log('[DeltaScanner] Scanner worker entering engine loop; execution=' + CONFIG.deltaExecutionMode);
-engine.run().catch(async error => {
-  const details = processErrorDetails(error);
-  console.error('[DeltaScanner] Fatal worker startup error:', details.stack || details.message);
-  try {
-    await log('ERROR', 'Fatal worker startup error; exact stack captured before exit', {
-      ...details, pid: process.pid, uptimeSeconds: Number(process.uptime().toFixed(1))
+if (!workerHalted && !shutdownPromise) {
+  await warmupBTCHourly(engine.adapter, engine.candles).catch(error => {
+    console.warn('[DeltaScanner] Initial BTC hourly warmup failed; worker will continue and retry on the next scheduled refresh:', String(error?.message || error));
+  });
+}
+if (!workerHalted && !shutdownPromise) {
+  btcHourlyWarmupTimer = setInterval(() => {
+    void warmupBTCHourly(engine.adapter, engine.candles).catch(error => {
+      console.warn('[DeltaScanner] Scheduled BTC hourly warmup failed:', String(error?.message || error));
     });
-  } catch (logError) {
-    console.error('[DeltaScanner] Could not persist fatal worker startup error:', String(logError?.message || logError));
-  }
-  process.exit(1);
-});
+  }, 60 * 60 * 1000);
+  btcHourlyWarmupTimer.unref?.();
+
+  console.log('[DeltaScanner] Scanner worker entering engine loop; execution=' + CONFIG.deltaExecutionMode);
+  void runEngineWithRecovery();
+} else {
+  console.warn('[DeltaScanner] Shutdown requested or fatal state latched during startup; engine launch skipped.');
+}
+} else {
+  console.error('[DeltaScanner] Worker is parked; engine startup skipped.');
+}
