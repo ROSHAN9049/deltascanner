@@ -411,7 +411,13 @@ function Dashboard({ market, settings, health, positions, accountDataProtected =
   const polReplacementAvailable = unavailableMarketSymbols.includes('MATICUSD') &&
     (market || []).some(row => String(row.symbol || '').toUpperCase() === 'POLUSD') &&
     !(executionCoverage?.configuredRouteSymbols || []).includes('POLUSD');
-  const deltaModeEnabled = String(executionCoverage?.deltaExecutionMode || '').toLowerCase() === 'testnet';
+  const deltaMode = String(executionCoverage?.deltaExecutionMode || '').trim().toLowerCase();
+  const deltaModeEnabled = deltaMode === 'testnet';
+  const deltaModeUnknown = !['testnet', 'disabled'].includes(deltaMode);
+  const deltaModeUnavailableLabel = deltaModeUnknown ? 'WORKER MODE UNKNOWN' : 'NOT TESTNET';
+  const deltaModeSubtitle = deltaModeUnknown
+    ? 'Waiting for a valid execution-mode heartbeat from the worker in Supabase'
+    : 'Delta Testnet mode is not enabled in the latest worker heartbeat';
   const deltaUsd = value => {
     const amount = safeNum(value);
     if (amount === null) return 'NO DATA';
@@ -429,34 +435,34 @@ function Dashboard({ market, settings, health, positions, accountDataProtected =
   ).length;
   const deltaPositionCount = deltaTestnetOpenPositionCount === null || deltaTestnetOpenPositionCount === undefined
     ? null : safeNum(deltaTestnetOpenPositionCount);
-  const deltaEquityText = accountDataProtected ? 'LOCKED' : !deltaModeEnabled ? 'NOT TESTNET' : deltaUsd(settings.equity);
-  const deltaPositionsText = accountDataProtected ? 'LOCKED' : !deltaModeEnabled ? 'NOT TESTNET' :
+  const deltaEquityText = accountDataProtected ? 'LOCKED' : !deltaModeEnabled ? deltaModeUnavailableLabel : deltaUsd(settings.equity);
+  const deltaPositionsText = accountDataProtected ? 'LOCKED' : !deltaModeEnabled ? deltaModeUnavailableLabel :
     deltaPositionCount === null ? 'NO DATA' : String(deltaPositionCount);
-  const deltaOpenOrdersText = accountDataProtected ? 'LOCKED' : !deltaModeEnabled ? 'NOT TESTNET' :
+  const deltaOpenOrdersText = accountDataProtected ? 'LOCKED' : !deltaModeEnabled ? deltaModeUnavailableLabel :
     deltaTestnetOrderCount === null || deltaTestnetOrderCount === undefined ? 'NO DATA' :
       !deltaOrderCountKnown ? 'INCOMPLETE DATA' : String(deltaOpenOrderCount);
-  const deltaPnlText = accountDataProtected ? 'LOCKED' : !deltaModeEnabled ? 'NOT TESTNET' :
+  const deltaPnlText = accountDataProtected ? 'LOCKED' : !deltaModeEnabled ? deltaModeUnavailableLabel :
     deltaTestnetClosedTodayPnlComplete ? deltaUsd(deltaTestnetClosedTodayPnl) :
       deltaTestnetClosedTodayCount === null || deltaTestnetClosedTodayCount === undefined ? 'NO DATA' : 'INCOMPLETE DATA';
   const deltaEquitySubtitle = accountDataProtected
     ? 'Unlock private dashboard data in Settings to view account balance'
     : !deltaModeEnabled
-      ? 'Delta Testnet mode is not enabled'
+      ? deltaModeSubtitle
       : 'Available margin: ' + deltaUsd(settings.available_balance) +
         ' · authenticated worker account snapshot' +
         (settings.last_tick_at ? ' · updated ' + new Date(settings.last_tick_at).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' }) : ' · waiting for first worker account snapshot');
   const deltaPositionSubtitle = accountDataProtected
     ? 'Unlock private dashboard data in Settings to view positions'
-    : !deltaModeEnabled ? 'Delta Testnet mode is not enabled'
+    : !deltaModeEnabled ? deltaModeSubtitle
       : 'Tracked Delta Testnet OPEN rows; exchange count is verified by the private REST cleanup audit';
   const deltaOrdersSubtitle = accountDataProtected
     ? 'Unlock private dashboard data in Settings to view orders'
-    : !deltaModeEnabled ? 'Delta Testnet mode is not enabled'
+    : !deltaModeEnabled ? deltaModeSubtitle
       : !deltaOrderCountKnown ? 'Delta order ledger rows are incomplete; open-order count is withheld'
         : 'Non-terminal rows in Delta Testnet order ledger; not a separate live REST open-orders poll';
   const deltaPnlSubtitle = accountDataProtected
     ? 'Unlock private dashboard data in Settings to view P&L'
-    : !deltaModeEnabled ? 'Delta Testnet mode is not enabled'
+    : !deltaModeEnabled ? deltaModeSubtitle
       : deltaTestnetClosedTodayCount === 0
         ? 'No Delta Testnet position rows recorded as closed today (IST)'
         : deltaTestnetClosedTodayPnlComplete

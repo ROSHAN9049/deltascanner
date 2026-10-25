@@ -68,6 +68,11 @@ export default async function handler(req, res) {
     const heartbeatLog = (logs || []).find(row =>
       row?.message === 'Worker heartbeat scan' && row?.data?.tradetronRouting
     );
+    const workerDeltaExecutionMode = String(heartbeatLog?.data?.deltaExecutionMode || '').trim().toLowerCase();
+    const deltaExecutionMode = ['testnet', 'disabled'].includes(workerDeltaExecutionMode)
+      ? workerDeltaExecutionMode
+      : 'unknown';
+    const workerModeSource = deltaExecutionMode === 'unknown' ? 'unavailable' : 'supabase-worker-heartbeat';
     const workerRouting = heartbeatLog?.data?.tradetronRouting || null;
     const workerTradetronDeveloperApi = heartbeatLog?.data?.tradetronDeveloperApi || null;
     // Tradetron positions/P&L are account-private. Do not query or serialize
@@ -168,7 +173,8 @@ export default async function handler(req, res) {
         routingStatusSource: workerRouting ? 'worker-heartbeat' : 'vercel-config-fallback',
         routingObservedAt: heartbeatLog?.created_at || null,
         directDeltaExecutionEnabled: false,
-        deltaExecutionMode: CONFIG.deltaExecutionMode
+        deltaExecutionMode,
+        deltaExecutionModeSource: workerModeSource
       },
       settings: settings?.[0] || null,
       positions: positions || [], signals: signals || [],
