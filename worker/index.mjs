@@ -36,9 +36,14 @@ const HTTP_PORT = Number.isInteger(requestedPort) && requestedPort >= 1 && reque
 const keepAliveServer = createServer((request, response) => {
   request.resume();
   response.statusCode = 200;
-  response.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  response.setHeader('Content-Type', 'application/json; charset=utf-8');
   response.setHeader('Cache-Control', 'no-store');
-  response.end('DeltaScanner worker alive\n');
+  response.end(JSON.stringify({
+    status: workerHalted ? 'degraded' : 'healthy',
+    uptime: Number(process.uptime().toFixed(1)),
+    worker: workerHalted ? 'parked-fail-closed' : 'running',
+    ...(workerHalted && fatalProcessError ? { reason: fatalProcessError.message } : {})
+  }));
 });
 keepAliveServer.on('error', error => {
   const details = processErrorDetails(error);

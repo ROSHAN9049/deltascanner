@@ -10,7 +10,9 @@ test('worker exposes a minimal HTTP health port before private API preflight', a
   assert.match(index, /Number\(process\.env\.PORT \|\| 8000\)/);
   assert.match(index, /keepAliveServer\.listen\(HTTP_PORT, '0\.0\.0\.0'/);
   assert.match(index, /response\.statusCode = 200/);
-  assert.match(index, /DeltaScanner worker alive/);
+  assert.ok(index.includes("application/json; charset=utf-8"));
+  assert.ok(index.includes("status: workerHalted"));
+  assert.ok(index.includes("uptime: Number(process.uptime().toFixed(1))"));
   assert.ok(index.indexOf('keepAliveServer.listen') < index.indexOf('const preflightOk = await startupPreflight()'));
 });
 
