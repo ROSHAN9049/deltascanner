@@ -3127,13 +3127,24 @@ export class DeltaEngine {
     await this.log('INFO', 'Real closed trade recorded', { executionId, symbol: row.symbol, reason, gross, fees, net });
   }
 
+  scheduleWsReconnect(delayMs) {
+    if (this.wsReconnectTimer || !this.running) return;
+    this.wsReconnectTimer = setTimeout(() => {
+      this.wsReconnectTimer = null;
+      if (this.running) this.connectWs();
+    }, Math.max(1_000, Number(delayMs) || 1_000));
+    this.wsReconnectTimer.unref?.();
+  }
+
   connectWs() {
-    if (this.ws) return;
+    if (this.ws || this.wsReconnectTimer || !this.running) return;
     try {
       const ws = new WebSocket(CONFIG.publicWs);
       this.ws = ws;
+      let openedAt = 0;
       ws.on('open', () => {
-        this.wsRetry = 0;
+        openedAt = Date.now();
+        this.wsOpenedAt = openedAt;
         this.wsConnected = true;
         void this.log('INFO', 'WebSocket connected; candle updates use canonical timeframe buckets', {}).catch(() => {});
         if (this.candleRestHealingNeeded) {
@@ -3227,30 +3238,51 @@ export class DeltaEngine {
       ws.on('close', (code, reasonBuffer) => {
         const wasConnected = this.wsConnected;
         this.wsConnected = false;
-        this.ws = null;
+        if (this.ws === ws) this.ws = null;
+        if (this.wsOpenedAt === openedAt) this.wsOpenedAt = 0;
         const reason = reasonBuffer ? reasonBuffer.toString().slice(0, 160) : '';
         if (wasConnected) this.preserveCandleCacheForHealing('websocket_disconnect');
-        const wait = Math.min(60000, 1000 * Math.pow(2, Math.min(this.wsRetry, 6)));
-        this.wsRetry = Math.min(this.wsRetry + 1, 6);
-        void this.log('WARN', 'WebSocket disconnected; exponential reconnect scheduled', {
-          code, reason, wasConnected, retryInMs: wait, retryAttempt: this.wsRetry
-        }).catch(() => {});
-        setTimeout(() => this.connectWs(), wait);
+
+        const uptimeMs = openedAt > 0 ? Date.now() - openedAt : 0;
+        if (uptimeMs >= 60_000) this.wsRetry = 0;
+        const rateLimited = this.wsRateLimited || Number(code) === 429 ||
+          /429|rate.?limit|too many connections/i.test(reason);
+        const wait = websocketReconnectDelay(this.wsRetry, { baseMs: 1_000, rateLimited });
+        this.wsRetry = Math.min(this.wsRetry + 1, 16);
+        this.wsRateLimited = false;
+        if (this.shouldLogWebSocketWarning()) {
+          void this.log('WARN', 'WebSocket disconnected; reconnect scheduled', {
+            code, reason, wasConnected, retryInMs: wait, retryAttempt: this.wsRetry,
+            rateLimited
+          }).catch(() => {});
+        }
+        this.scheduleWsReconnect(wait);
       });
       ws.on('error', error => {
-        void this.log('WARN', 'WebSocket error; requesting close so reconnect can heal candle history', {
-          error: String(error?.message || error).slice(0, 200)
-        }).catch(() => {});
+        const message = String(error?.message || error);
+        this.wsRateLimited = /429|rate.?limit|too many connections|unexpected server response: 429/i.test(message);
+        if (this.shouldLogWebSocketWarning()) {
+          void this.log('WARN', 'WebSocket error; requesting close so reconnect can heal candle history', {
+            error: message.slice(0, 200),
+            rateLimited: this.wsRateLimited
+          }).catch(() => {});
+        }
+        try { ws.terminate?.(); } catch {}
         try { ws.close(); } catch {}
       });
     } catch (error) {
       this.ws = null;
-      const wait = Math.min(60000, 1000 * Math.pow(2, Math.min(this.wsRetry, 6)));
-      this.wsRetry = Math.min(this.wsRetry + 1, 6);
-      void this.log('WARN', 'WebSocket construction failed; exponential reconnect scheduled', {
-        error: String(error?.message || error).slice(0, 200), retryInMs: wait
-      }).catch(() => {});
-      setTimeout(() => this.connectWs(), wait);
+      const message = String(error?.message || error);
+      const rateLimited = /429|rate.?limit|too many connections/i.test(message);
+      const wait = websocketReconnectDelay(this.wsRetry, { baseMs: 1_000, rateLimited });
+      this.wsRetry = Math.min(this.wsRetry + 1, 16);
+      this.wsRateLimited = false;
+      if (this.shouldLogWebSocketWarning()) {
+        void this.log('WARN', 'WebSocket construction failed; reconnect scheduled', {
+          error: message.slice(0, 200), retryInMs: wait, rateLimited
+        }).catch(() => {});
+      }
+      this.scheduleWsReconnect(wait);
     }
   }
 
@@ -3827,6 +3859,8 @@ export class DeltaEngine {
 
   async stop() {
     this.running = false;
+    if (this.wsReconnectTimer) clearTimeout(this.wsReconnectTimer);
+    this.wsReconnectTimer = null;
     try { this.ws?.close(); } catch {}
     await this.stopMaintenanceTasks();
     await this.releaseLease();
