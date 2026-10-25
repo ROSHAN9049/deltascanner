@@ -59,7 +59,7 @@ test('short or empty candle responses can be retried after the cooldown', () => 
 
   assert.equal(candleNeedsWarmup(candles.get(key), '5m', now, now + 10_000), false);
   assert.equal(candleNeedsWarmup(candles.get(key), '5m', now, now + CANDLE_WARMUP_RETRY_MS), true);
-  assert.equal(candleNeedsWarmup(Array.from({ length: MIN_RAW_CANDLES['5m'] }, () => ({})), '5m', 0, now), false);
+  assert.equal(candleNeedsWarmup(validCandles('5m', MIN_RAW_CANDLES['5m'], now), '5m', 0, now), false);
 });
 
 test('Testnet warmup is smaller and uses a five-minute retry cooldown', () => {
