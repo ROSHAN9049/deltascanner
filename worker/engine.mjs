@@ -182,6 +182,7 @@ export class DeltaEngine {
     this.candleCacheSymbols = new Set();
     this.lastCandleCachePruneLogAt = 0;
     this.memoryMonitorInterval = null;
+    this.wsCandleSubscribedSymbols = new Set();
     this.ws = null;
     this.wsRetry = 0;
     this.wsReconnectTimer = null;
@@ -1139,6 +1140,7 @@ export class DeltaEngine {
       healingInFlight: this.candleHealingInFlight
     });
     const removed = pruned.removedSeries + pruned.removedMetadataEntries + pruned.removedHealingKeys;
+    this.syncCandleWebSocketSubscription();
     if (removed > 0 && Date.now() - this.lastCandleCachePruneLogAt >= 60_000) {
       this.lastCandleCachePruneLogAt = Date.now();
       void this.log('INFO', 'Candle cache bounded to top turnover-ranked symbols', {
@@ -3298,6 +3300,43 @@ export class DeltaEngine {
     await this.log('INFO', 'Real closed trade recorded', { executionId, symbol: row.symbol, reason, gross, fees, net });
   }
 
+  syncCandleWebSocketSubscription(socket = this.ws) {
+    if (!socket || socket !== this.ws || socket.readyState !== WebSocket.OPEN || !this.running) return false;
+    const priorSymbols = this.wsCandleSubscribedSymbols instanceof Set
+      ? this.wsCandleSubscribedSymbols : new Set();
+    const nextSymbols = new Set(this.candleCacheSymbols);
+    const added = [...nextSymbols].filter(symbol => !priorSymbols.has(symbol));
+    const removed = [...priorSymbols].filter(symbol => !nextSymbols.has(symbol));
+    const resolutions = ['1m', '5m', '15m'];
+
+    const sendSubscription = (type, symbols) => {
+      if (!symbols.length) return;
+      socket.send(JSON.stringify({
+        type,
+        payload: {
+          channels: resolutions.map(resolution => ({
+            name: 'candlestick_' + resolution,
+            symbols
+          }))
+        }
+      }));
+    };
+
+    try {
+      sendSubscription('unsubscribe', removed);
+      sendSubscription('subscribe', added);
+      this.wsCandleSubscribedSymbols = nextSymbols;
+      return true;
+    } catch (error) {
+      this.wsCandleSubscribedSymbols = new Set();
+      void this.log('WARN', 'Bounded candle WebSocket subscription update failed', {
+        error: String(error?.message || error).slice(0, 200),
+        eligibleSymbols: nextSymbols.size
+      }).catch(() => {});
+      return false;
+    }
+  }
+
   scheduleWsReconnect(delayMs) {
     if (this.ws || this.wsReconnectTimer || !this.running) return;
     this.wsReconnectTimer = setTimeout(() => {
@@ -3312,6 +3351,7 @@ export class DeltaEngine {
     try {
       const ws = new WebSocket(CONFIG.publicWs);
       this.ws = ws;
+      this.wsCandleSubscribedSymbols = new Set();
       let openedAt = 0;
       ws.on('open', () => {
         openedAt = Date.now();
@@ -3331,13 +3371,11 @@ export class DeltaEngine {
           payload: {
             channels: [
               { name: 'ticker', symbols: ['perpetual_futures'] },
-              { name: 'mark_price', symbols: ['perpetual_futures'] },
-              { name: 'candlestick_1m', symbols: ['perpetual_futures'] },
-              { name: 'candlestick_5m', symbols: ['perpetual_futures'] },
-              { name: 'candlestick_15m', symbols: ['perpetual_futures'] }
+              { name: 'mark_price', symbols: ['perpetual_futures'] }
             ]
           }
         }));
+        this.syncCandleWebSocketSubscription(ws);
         ws.send(JSON.stringify({ type: 'enable_heartbeat' }));
       });
       ws.on('message', raw => {
@@ -3422,6 +3460,7 @@ export class DeltaEngine {
         if (wasCurrent) {
           this.wsConnected = false;
           this.ws = null;
+          this.wsCandleSubscribedSymbols = new Set();
         }
         if (this.wsOpenedAt === openedAt) this.wsOpenedAt = 0;
         const reason = reasonBuffer ? reasonBuffer.toString().slice(0, 160) : '';
@@ -3451,6 +3490,7 @@ export class DeltaEngine {
         if (wasCurrent) {
           this.ws = null;
           this.wsConnected = false;
+          this.wsCandleSubscribedSymbols = new Set();
           this.wsRateLimited = rateLimited;
           if (this.wsOpenedAt === openedAt) this.wsOpenedAt = 0;
         }
@@ -3796,7 +3836,12 @@ export class DeltaEngine {
       await this.cacheMarketState();
     }
     await this.refreshCandleWarmup();
-    if (settings.options_enabled !== false && (Date.now() - this.lastOptionTickerFetch > 60000 || !this.optionTickerMap.size)) await this.refreshOptionTickers();
+    // Testnet Options orders are deliberately hard-locked. Avoid retaining the
+    // much larger BTC/ETH/XAUT option chains in the 256 MB worker process.
+    if (CONFIG.deltaExecutionMode !== 'testnet' && settings.options_enabled !== false &&
+        (Date.now() - this.lastOptionTickerFetch > 60000 || !this.optionTickerMap.size)) {
+      await this.refreshOptionTickers();
+    }
 
     const account = await this.accountSnapshot(settings);
     try {
@@ -4095,6 +4140,7 @@ export class DeltaEngine {
     this.ws = null;
     this.wsConnected = false;
     this.wsOpenedAt = 0;
+    this.wsCandleSubscribedSymbols = new Set();
     if (socket) {
       cleanupWebSocketListeners(socket);
       try { socket.close(); } catch {}
