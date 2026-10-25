@@ -7,6 +7,7 @@ import {
   deltaHmacSha256
 } from './delta-executor.mjs';
 import { shouldEmitThrottledLog, websocketReconnectDelay, WS_ERROR_LOG_COOLDOWN_MS } from '../ws-resilience.mjs';
+import { cleanupWebSocketListeners } from '../websocket-lifecycle.mjs';
 
 const stringValue = value => String(value ?? '').trim();
 const numberOrNull = value => {
@@ -165,6 +166,7 @@ export class DeltaTestnetTracker {
           this.socket = null;
           this.authenticated = false;
           this.scheduleReconnect();
+          cleanupWebSocketListeners(socket);
           try { socket.terminate?.(); } catch {}
           try { socket.close(); } catch {}
         }, 10_000);
@@ -173,7 +175,11 @@ export class DeltaTestnetTracker {
         void this.logSocketWarning('Delta Testnet WebSocket authentication setup failed', {
           error: String(error?.message || error).slice(0, 200)
         });
+        if (this.socket === socket) this.socket = null;
+        this.authenticated = false;
+        this.clearAuthTimeout();
         this.scheduleReconnect();
+        cleanupWebSocketListeners(socket);
         try { socket.terminate?.(); } catch {}
         try { socket.close(); } catch {}
       }
@@ -189,28 +195,35 @@ export class DeltaTestnetTracker {
 
     socket.on('error', error => {
       const message = String(error?.message || error);
+      const wasCurrent = this.socket === socket;
       const rateLimited = /429|rate.?limit|too many connections|unexpected server response: 429/i.test(message);
       void this.logSocketWarning('Delta Testnet WebSocket error; reconnect scheduled', {
         error: message.slice(0, 200),
         rateLimited,
         retryPolicy: rateLimited ? 'cooldown' : 'exponential'
       }, rateLimited ? 'WARN' : 'DEBUG');
-      if (this.socket === socket) this.socket = null;
-      this.authenticated = false;
-      this.clearAuthTimeout();
-      this.scheduleReconnect({ rateLimited });
+      if (wasCurrent) {
+        this.socket = null;
+        this.authenticated = false;
+        this.clearAuthTimeout();
+        this.scheduleReconnect({ rateLimited });
+      }
+      cleanupWebSocketListeners(socket);
       try { socket.terminate?.(); } catch {}
       try { socket.close(); } catch {}
     });
 
     socket.on('close', (code, reasonBuffer) => {
-      if (this.socket === socket) this.socket = null;
-      this.authenticated = false;
-      this.clearAuthTimeout();
+      const wasCurrent = this.socket === socket;
+      if (wasCurrent) {
+        this.socket = null;
+        this.authenticated = false;
+        this.clearAuthTimeout();
+      }
       const uptimeMs = openedAt > 0 ? Date.now() - openedAt : 0;
-      if (uptimeMs >= 60_000) this.retryCount = 0;
+      if (wasCurrent && uptimeMs >= 60_000) this.retryCount = 0;
       const reason = reasonBuffer ? reasonBuffer.toString().slice(0, 120) : '';
-      if (!this.stopped) {
+      if (wasCurrent && !this.stopped) {
         const rateLimited = Number(code) === 429 || /429|rate.?limit|too many/i.test(reason);
         void this.logSocketWarning('Delta Testnet private WebSocket disconnected; reconnect scheduled', {
           code: Number(code) || null,
@@ -221,11 +234,12 @@ export class DeltaTestnetTracker {
         }, 'DEBUG');
         this.scheduleReconnect({ rateLimited });
       }
+      cleanupWebSocketListeners(socket);
     });
   }
 
   scheduleReconnect({ rateLimited = false } = {}) {
-    if (this.stopped || this.reconnectTimer) return;
+    if (this.stopped || this.socket || this.reconnectTimer) return;
     const delay = websocketReconnectDelay(this.retryCount, {
       baseMs: this.reconnectMs,
       rateLimited
@@ -253,11 +267,12 @@ export class DeltaTestnetTracker {
         const socket = this.socket;
         this.socket = null;
         this.authenticated = false;
-        try { socket?.terminate?.(); } catch {}
-        try { socket?.close(); } catch {}
         this.scheduleReconnect({
           rateLimited: Number(message.status_code) === 429 || /429|rate.?limit/i.test(String(message.status || ''))
         });
+        cleanupWebSocketListeners(socket);
+        try { socket?.terminate?.(); } catch {}
+        try { socket?.close(); } catch {}
         return;
       }
       this.clearAuthTimeout();
@@ -427,7 +442,9 @@ export class DeltaTestnetTracker {
     if (this.socket) {
       const socket = this.socket;
       this.socket = null;
+      cleanupWebSocketListeners(socket);
       try { socket.close(); } catch {}
+      try { socket.terminate?.(); } catch {}
     }
     this.authenticated = false;
   }
