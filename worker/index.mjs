@@ -24,6 +24,8 @@ let deltaTestnetTracker = null;
 let privateApiRetryTimer = null;
 let privateApiProbeInFlight = null;
 let shutdownPromise = null;
+let workerHalted = false;
+let fatalProcessError = null;
 
 const requestedPort = Number(process.env.PORT || 8000);
 const HTTP_PORT = Number.isInteger(requestedPort) && requestedPort >= 1 && requestedPort <= 65535
@@ -265,38 +267,48 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 process.on('uncaughtException', (error, origin) => {
   const details = processErrorDetails(error);
-  // Write synchronously before any async cleanup so the real cause survives a
-  // platform restart even if the database connection is already unhealthy.
-  console.error('[DeltaScanner] UNCAUGHT EXCEPTION; worker must exit safely', JSON.stringify({
+  if (workerHalted) {
+    console.error('[FATAL] Additional uncaught exception while worker is already parked:', details.message, details.stack || '');
+    return;
+  }
+
+  // Do not resume trading after an uncaught exception. Park the scanner fail-closed,
+  // release its resources, and keep the HTTP listener alive for platform health checks.
+  workerHalted = true;
+  fatalProcessError = { name: details.name, message: details.message };
+  engine.privateExecutionAvailable = false;
+  console.error('[FATAL] Uncaught Exception:', details.message, details.stack || '', JSON.stringify({
     origin,
     pid: process.pid,
     uptimeSeconds: Number(process.uptime().toFixed(1)),
-    error: details
+    scannerState: 'parked-fail-closed'
   }));
-  const forceExitTimer = setTimeout(() => {
-    console.error('[DeltaScanner] Fatal error cleanup timed out; forcing exitCode=1');
-    process.exit(1);
-  }, 5000);
+
+  if (btcHourlyWarmupTimer) clearInterval(btcHourlyWarmupTimer);
+  if (privateApiRetryTimer) clearInterval(privateApiRetryTimer);
+
   void (async () => {
     try {
-      await log('ERROR', 'Uncaught exception; exact stack captured before fail-closed exit', {
-        ...details, origin, pid: process.pid, uptimeSeconds: Number(process.uptime().toFixed(1))
+      await log('ERROR', 'Uncaught exception; exact stack captured before fail-closed exit of scanner loop; process remains alive', {
+        ...details,
+        origin,
+        pid: process.pid,
+        uptimeSeconds: Number(process.uptime().toFixed(1)),
+        scannerState: 'parked-fail-closed'
       });
     } catch (logError) {
       console.error('[DeltaScanner] Could not persist uncaught exception:', String(logError?.message || logError));
     }
+
     try { await deltaTestnetTracker?.stop(); } catch (stopError) {
       console.error('[DeltaScanner] Private tracker cleanup after uncaught exception failed:', String(stopError?.message || stopError));
     }
     try { await engine.stop(); } catch (stopError) {
       console.error('[DeltaScanner] Engine cleanup after uncaught exception failed:', String(stopError?.message || stopError));
     }
-    try { await closeKeepAliveServer(); } catch {}
-    clearTimeout(forceExitTimer);
-    process.exit(1);
-  })().catch(fatalHandlerError => {
-    console.error('[DeltaScanner] Fatal error handler itself failed:', processErrorDetails(fatalHandlerError).stack || String(fatalHandlerError));
-    process.exit(1);
+    console.error('[DeltaScanner] Worker parked in fail-closed mode; HTTP health listener remains available.');
+  })().catch(handlerError => {
+    console.error('[FATAL] Fail-closed exception handler cleanup failed:', processErrorDetails(handlerError).stack || String(handlerError));
   });
 });
 
