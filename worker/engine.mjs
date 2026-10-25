@@ -3682,6 +3682,11 @@ export class DeltaEngine {
       : 1);
     const optionsRouteConfigured = !!CONFIG.tradetronOptionsBridgeEnabled && this.tradetronOptions.isConfigured();
     await this.log('INFO', 'Worker heartbeat scan', {
+      // The dashboard API runs on Vercel, separately from the worker runtime.
+      // Publish the worker's effective mode into the shared Supabase heartbeat
+      // rather than relying on Vercel having the worker-only env variable.
+      deltaExecutionMode: CONFIG.deltaExecutionMode,
+      deltaEnvironment: CONFIG.environment,
       lastTickAt: this.lastTickAt,
       signals: this.lastSignals.length,
       positions: positions.filter(position => position.origin === 'TRADETRON' && n(position.qty) > 0).length,
