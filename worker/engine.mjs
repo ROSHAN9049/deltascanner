@@ -12,6 +12,7 @@ import { createGridState, evaluateGridTick } from './grid-strategy.mjs';
 import { CANDLE_WARMUP_BATCH_SIZE, CANDLE_WARMUP_RETRY_MS, CANDLE_TESTNET_WARMUP_BATCH_SIZE, CANDLE_TESTNET_WARMUP_CONCURRENCY, CANDLE_TESTNET_WARMUP_RETRY_MS, planCandleWarmup } from './candle-warmup.mjs';
 import { shouldWriteMarketCache } from './market-cache-policy.mjs';
 import { MIN_RAW_CANDLES_FOR_ATR, mergeCandleUpdate, normalizeCandleBatch, normalizeEpochSeconds } from './candle-normalization.mjs';
+import { detectAtrSpike } from './atr-spike-guard.mjs';
 import { shouldEmitThrottledLog, websocketReconnectDelay, WS_ERROR_LOG_COOLDOWN_MS } from './ws-resilience.mjs';
 import { isOptionsExecutionAllowed, OPTIONS_EXECUTION_LOCK_REASON } from './options-execution-lock.mjs';
 import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from './signal-failure-diagnostics.mjs';
@@ -185,6 +186,7 @@ export class DeltaEngine {
     this.candleFailureLogAt = new Map();
     this.candleUpdateCounts = new Map();
     this.lastObservedAtr = new Map();
+    this.lastAtrJumpLogAt = new Map();
     this.candleHealingInFlight = new Set();
     this.wsConnected = false;
     this.candleRestHealingNeeded = false;
@@ -962,6 +964,8 @@ export class DeltaEngine {
       throw new Error('candle_batch_rejected:' + normalized.reason);
     }
     const rows = normalized.candles.slice(-120);
+    const previousRows = this.getCandles(symbol, resolution);
+    if (this.rejectAtrSpike(symbol, resolution, previousRows, rows, 'REST')) return previousRows;
     this.candles.set(key, rows);
     this.candleFailureLogAt.delete(key);
     await this.log('INFO', 'Candle REST batch normalized', {
@@ -994,6 +998,30 @@ export class DeltaEngine {
     }
   }
 
+  rejectAtrSpike(symbol, resolution, previousCandles, candidateCandles, source = 'unknown') {
+    if (!Array.isArray(previousCandles) || !Array.isArray(candidateCandles) || previousCandles.length < 16 || candidateCandles.length < 16) return false;
+    const previousAtr = calculateAtr(previousCandles);
+    const candidateAtr = calculateAtr(candidateCandles);
+    const jump = detectAtrSpike(previousAtr, candidateAtr, 3);
+    if (!jump) return false;
+    const key = resolution + ':' + symbol;
+    const now = Date.now();
+    const cooldownMs = CONFIG.deltaExecutionMode === 'testnet' ? CANDLE_TESTNET_WARMUP_RETRY_MS : CANDLE_WARMUP_RETRY_MS;
+    const previousLogAt = this.lastAtrJumpLogAt.get(key) || 0;
+    if (shouldEmitThrottledLog(previousLogAt, now, cooldownMs)) {
+      this.lastAtrJumpLogAt.set(key, now);
+      void this.log('DEBUG', 'ATR 3x jump ignored; preserving previous valid candle series', {
+        symbol, resolution, source,
+        previousAtr: Number(jump.previousAtr.toFixed(10)), candidateAtr: Number(jump.candidateAtr.toFixed(10)),
+        ratio: Number(jump.ratio.toFixed(3)),
+        previousCandleTimestamp: previousCandles.at(-1)?.time ?? null,
+        candidateCandleTimestamp: candidateCandles.at(-1)?.time ?? null,
+        action: 'candidate candle series rejected; last valid cache retained'
+      }).catch(() => {});
+    }
+    return true;
+  }
+
   recordAtrDiagnostics(signal) {
     const symbol = String(signal?.symbol || '').toUpperCase();
     if (!symbol) return;
@@ -1008,7 +1036,7 @@ export class DeltaEngine {
         const ratio = Math.max(previous, item.value) / Math.min(previous, item.value);
         if (ratio >= 3) {
           const candles = this.getCandles(symbol, item.resolution);
-          void this.log('WARN', 'ATR changed by at least 3x between analyses', {
+          void this.log('DEBUG', 'ATR changed by at least 3x between analyses; candle guard retained the last valid series when applicable', {
             symbol, resolution: item.resolution, previousAtr: previous,
             currentAtr: item.value, ratio: Number(ratio.toFixed(3)),
             candleCount: candles.length,
@@ -3226,6 +3254,7 @@ export class DeltaEngine {
                 continue;
               }
               const series = merged.candles.slice(-120);
+              if (this.rejectAtrSpike(symbol, resolution, current, series, 'WebSocket')) continue;
               this.candles.set(key, series);
               if (merged.action === 'appended') {
                 const count = (this.candleUpdateCounts.get(key) || 0) + 1;

@@ -108,11 +108,11 @@ export class DeltaTestnetTracker {
     this.connect();
   }
 
-  async logSocketWarning(message, data = {}) {
+  async logSocketWarning(message, data = {}, level = 'WARN') {
     const now = Date.now();
     if (!shouldEmitThrottledLog(this.lastSocketWarningAt, now, WS_ERROR_LOG_COOLDOWN_MS)) return;
     this.lastSocketWarningAt = now;
-    await this.database.log('WARN', message, data).catch(() => {});
+    await this.database.log(level, message, data).catch(() => {});
   }
 
   clearAuthTimeout() {
@@ -133,7 +133,7 @@ export class DeltaTestnetTracker {
     } catch (error) {
       void this.logSocketWarning('Delta Testnet WebSocket construction failed; reconnect scheduled', {
         error: String(error?.message || error).slice(0, 200)
-      });
+      }, 'DEBUG');
       this.scheduleReconnect({ rateLimited: /429|rate.?limit|too many/i.test(String(error?.message || error)) });
       return;
     }
@@ -161,7 +161,7 @@ export class DeltaTestnetTracker {
           void this.logSocketWarning('Delta Testnet WebSocket auth timed out; reconnect scheduled', {
             timeoutMs: 10_000,
             endpoint: 'Delta India Testnet private WebSocket'
-          });
+          }, 'DEBUG');
           this.socket = null;
           this.authenticated = false;
           this.scheduleReconnect();
@@ -194,7 +194,7 @@ export class DeltaTestnetTracker {
         error: message.slice(0, 200),
         rateLimited,
         retryPolicy: rateLimited ? 'cooldown' : 'exponential'
-      });
+      }, rateLimited ? 'WARN' : 'DEBUG');
       if (this.socket === socket) this.socket = null;
       this.authenticated = false;
       this.clearAuthTimeout();
@@ -211,9 +211,15 @@ export class DeltaTestnetTracker {
       if (uptimeMs >= 60_000) this.retryCount = 0;
       const reason = reasonBuffer ? reasonBuffer.toString().slice(0, 120) : '';
       if (!this.stopped) {
-        this.scheduleReconnect({
-          rateLimited: Number(code) === 429 || /429|rate.?limit|too many/i.test(reason)
-        });
+        const rateLimited = Number(code) === 429 || /429|rate.?limit|too many/i.test(reason);
+        void this.logSocketWarning('Delta Testnet private WebSocket disconnected; reconnect scheduled', {
+          code: Number(code) || null,
+          reason,
+          uptimeMs,
+          rateLimited,
+          retryPolicy: rateLimited ? 'cooldown' : 'exponential'
+        }, 'DEBUG');
+        this.scheduleReconnect({ rateLimited });
       }
     });
   }
