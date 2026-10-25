@@ -189,6 +189,8 @@ export class DeltaEngine {
     this.wsConnected = false;
     this.candleRestHealingNeeded = false;
     this.lastLeaseContentionLogAt = 0;
+    this.consecutiveLeaseFailures = 0;
+    this.lastDuplicateWorkerLogAt = 0;
 
     // Maintenance uses the direct PostgreSQL pool only; scanner writes remain
     // on the existing Supabase REST adapter.
@@ -221,14 +223,26 @@ export class DeltaEngine {
     const result = await db.rpc('acquire_dd_lease', {
       p_lease_id: this.leaseId,
       p_worker_id: CONFIG.workerId,
-      p_ttl_seconds: 45
+      p_ttl_seconds: 30
     });
     const ok = Array.isArray(result) ? result.some(x => x === true || x.acquire_dd_lease === true) : result === true;
     if (!ok) throw new Error('Trading lease is held by another worker');
   }
 
   async releaseLease() {
-    try { await db.rpc('release_dd_lease', { p_lease_id: this.leaseId }); } catch {}
+    try {
+      await db.rpc('release_dd_lease', { p_lease_id: this.leaseId });
+      return true;
+    } catch (error) {
+      try {
+        await this.log('WARN', 'Trading lease release failed; database TTL will expire the lease', {
+          workerId: CONFIG.workerId,
+          error: String(error?.message || error).slice(0, 240),
+          fallbackTtlSeconds: 30
+        });
+      } catch {}
+      return false;
+    }
   }
 
   async loadSettings() {
@@ -3589,6 +3603,7 @@ export class DeltaEngine {
 
   async scanOnce() {
     await this.acquireLease();
+    try {
     await this.expireStaleSignalReservations();
     const settings = { ...{
       enabled: true, auto_trade: true, emergency_stop: false, continuous_mode: true,
@@ -3835,8 +3850,10 @@ export class DeltaEngine {
         lastAttemptAt: this.lastTradetronDeveloperSyncAt ? new Date(this.lastTradetronDeveloperSyncAt).toISOString() : null
       }
     });
+    } finally {
+      await this.releaseLease();
+    }
   }
-
   async run() {
     if (!CONFIG.signalOnly || CONFIG.directDeltaExecutionEnabled) throw new Error('Production direct execution disabled; scanner must be SIGNAL_ONLY');
     this.running = true;
@@ -3847,21 +3864,32 @@ export class DeltaEngine {
     // Verify database headroom before the first scan can append a history batch.
     if (hasMaintenanceDatabaseUrl()) await this.checkDiskHealth();
     while (this.running) {
-      try { await this.scanOnce(); }
-      catch (e) {
+      try {
+        await this.scanOnce();
+        this.consecutiveLeaseFailures = 0;
+      } catch (e) {
         const message = String(e?.message || e);
         if (message.includes('Trading lease is held by another worker')) {
-          // Expected during a rolling Railway deployment: the old replica may
-          // retain the lease briefly while the replacement starts. Never loosen
-          // the lease or scan without it; report the skipped cycle as INFO.
+          this.consecutiveLeaseFailures += 1;
+          if (this.consecutiveLeaseFailures >= 3 && Date.now() - this.lastDuplicateWorkerLogAt >= 60_000) {
+            this.lastDuplicateWorkerLogAt = Date.now();
+            await this.log('ERROR', 'DUPLICATE WORKER DETECTED', {
+              workerId: CONFIG.workerId,
+              consecutiveLeaseFailures: this.consecutiveLeaseFailures,
+              leaseTtlSeconds: 30,
+              reason: 'Another worker repeatedly owns the trading lease; this worker made no scan or entry attempt'
+            });
+          }
           if (Date.now() - this.lastLeaseContentionLogAt >= 60_000) {
             this.lastLeaseContentionLogAt = Date.now();
             await this.log('INFO', 'Worker cycle skipped safely: trading lease is held by another worker', {
               workerId: CONFIG.workerId,
-              reason: 'Lease contention during worker overlap; no scan or entry attempted'
+              consecutiveLeaseFailures: this.consecutiveLeaseFailures,
+              reason: 'Lease contention; no scan or entry attempted'
             });
           }
         } else {
+          this.consecutiveLeaseFailures = 0;
           await this.log('ERROR', 'Engine failed closed for cycle', {
             error: message, code: e?.code || null, status: e?.status || null, details: e?.details || null
           });
