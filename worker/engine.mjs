@@ -144,6 +144,7 @@ export class DeltaEngine {
     this.tradetronSnapshotRiskStateInFlight = null;
     this.lastTradetronEntrySafetyLogAt = 0;
     this.lastGridEntrySafety = null;
+    this.lastGridTestnetSkipLogAt = 0;
     this.lastSignalReservationExpiryAt = 0;
     this.tradetronDeveloperSyncInFlight = null;
     this.tradetronDeveloperApiStatus = CONFIG.tradetronDeveloperApiKey ? 'WAITING_FOR_FIRST_SYNC' : 'NOT_CONFIGURED';
@@ -473,6 +474,24 @@ export class DeltaEngine {
   }
 
   async manageGridStrategy(settings, account) {
+    // Grid still uses the retired external-bridge lifecycle. Keep it out of the
+    // Delta Testnet executor until its entry/exit lifecycle is explicitly migrated.
+    if (CONFIG.deltaExecutionMode === 'testnet') {
+      this.lastGridEntrySafety = {
+        configured: false,
+        trusted: null,
+        blocked: settings.grid_enabled === true,
+        reason: settings.grid_enabled === true ? 'GRID_NOT_MIGRATED_TO_DELTA_TESTNET' : null
+      };
+      if (settings.grid_enabled === true && Date.now() - this.lastGridTestnetSkipLogAt >= 60_000) {
+        this.lastGridTestnetSkipLogAt = Date.now();
+        await this.log('INFO', 'Grid strategy held safely: Delta Testnet Grid lifecycle is not migrated; external bridge routing is disabled', {
+          symbol: String(settings.grid_symbol || 'ETHUSD').toUpperCase(),
+          reason: 'GRID_NOT_MIGRATED_TO_DELTA_TESTNET'
+        });
+      }
+      return;
+    }
     let priorState = settings.grid_state;
     if (typeof priorState === 'string') {
       try { priorState = JSON.parse(priorState); } catch { priorState = null; }
@@ -2286,7 +2305,12 @@ export class DeltaEngine {
   }
 
   async openTrade(item, strategy, signal, account, settings, openPositions, trades) {
-    if (strategy === 'OPTIONS_BUY' || strategy === 'OPTIONS_SELL') return this.openOptionTrade(item, signal, account, settings, openPositions, trades);
+    if (strategy === 'OPTIONS_BUY' || strategy === 'OPTIONS_SELL') {
+      // Testnet option orders are intentionally locked; never fall back to a
+      // legacy external strategy bridge when direct Testnet option execution is unavailable.
+      if (CONFIG.deltaExecutionMode === 'testnet') return false;
+      return this.openOptionTrade(item, signal, account, settings, openPositions, trades);
+    }
     if (signal.stage !== 'CONFIRMED' || signal.score < n(settings.score_min || 80)) return false;
     const gate = await this.riskGate(signal, strategy, account, settings, openPositions, trades);
     if (gate.reasons.length || !gate.size) return false;
@@ -3644,9 +3668,6 @@ export class DeltaEngine {
     this.currentSettings = settings;
     // Optional read-only account sync runs off the scanner's critical path. The
     // single leased worker coordinates it to at most one run per minute.
-    if (CONFIG.tradetronDeveloperApiKey && Date.now() - this.lastTradetronDeveloperSyncAt >= 60000) {
-      void this.syncTradetronDeveloperApi();
-    }
     if (Date.now() - this.lastUniverseRefresh > 15 * 60 * 1000 || !this.products.length) await this.refreshProducts();
     if (Date.now() - this.lastTickerFetch > 30000 || !this.tickerMap.size) {
       await this.refreshTickers();
@@ -3827,57 +3848,15 @@ export class DeltaEngine {
       last_tick_at: new Date(this.lastTickAt || Date.now()).toISOString(),
       worker_started_at: new Date(this.startedAt).toISOString(), idle_reason: idle
     });
-    const bridgeRoutes = Array.isArray(CONFIG.tradetronBridgeRoutes) ? CONFIG.tradetronBridgeRoutes : [];
-    const bridgeConfigured = !!CONFIG.tradetronBridgeEnabled && (
-      bridgeRoutes.length
-        ? bridgeRoutes.some(route => !!route.authToken && (this.tradetronRouteBridges.get(route.id)?.isConfigured() || false))
-        : this.tradetron.isConfigured()
-    );
-    const configuredSymbols = !bridgeConfigured ? [] : (bridgeRoutes.length
-      ? [...new Set(bridgeRoutes.filter(route => route.authToken && this.tradetronRouteBridges.get(route.id)?.isConfigured()).flatMap(route => route.symbols))]
-      : [...new Set(CONFIG.tradetronSupportedSymbols)]);
-    // Only report contracts that are both configured on the Tradetron bridge
-    // and present in the currently refreshed live market universe.
-    const supportedSymbols = configuredSymbols.filter(symbol => this.tickerMap.has(symbol));
-    const unavailableMarketSymbols = configuredSymbols.filter(symbol => !this.tickerMap.has(symbol));
-    const configuredBridgeCount = !bridgeConfigured ? 0 : (bridgeRoutes.length
-      ? bridgeRoutes.filter(route => route.authToken && this.tradetronRouteBridges.get(route.id)?.isConfigured()).length
-      : 1);
-    const optionsRouteConfigured = !!CONFIG.tradetronOptionsBridgeEnabled && this.tradetronOptions.isConfigured();
     await this.log('INFO', 'Worker heartbeat scan', {
-      // The dashboard API runs on Vercel, separately from the worker runtime.
-      // Publish the worker's effective mode into the shared Supabase heartbeat
-      // rather than relying on Vercel having the worker-only env variable.
       deltaExecutionMode: CONFIG.deltaExecutionMode,
       deltaEnvironment: CONFIG.environment,
       lastTickAt: this.lastTickAt,
       signals: this.lastSignals.length,
-      positions: positions.filter(position => position.origin === 'TRADETRON' && n(position.qty) > 0).length,
-      reservedSignals: positions.filter(position => position.origin === 'SIGNAL_RESERVATION').length,
-      signalReservationTtlMs: SIGNAL_RESERVATION_TTL_MS,
-      tradetronEntrySafety: {
-        configured: this.lastTradetronEntrySafety?.configured === true,
-        trusted: this.lastTradetronEntrySafety?.trusted ?? null,
-        reason: this.lastTradetronEntrySafety?.reason || null,
-        lastSuccessAt: this.lastTradetronEntrySafety?.lastSuccessAt || null,
-        ageMs: Number.isFinite(this.lastTradetronEntrySafety?.ageMs) ? this.lastTradetronEntrySafety.ageMs : null,
-        openPositionCount: this.lastTradetronEntrySafety?.trusted === true ? this.lastTradetronEntrySafety.positionCount : null
-      },
-      gridEntrySafety: this.lastGridEntrySafety || null,
-      tradetronRouting: {
-        bridgeConfigured,
-        configuredRoutes: configuredBridgeCount,
-        configuredSymbols,
-        supportedSymbols,
-        unavailableMarketSymbols,
-        marketSymbolCount: this.tickerMap.size,
-        optionsRouteConfigured
-      },
-      tradetronDeveloperApi: {
-        configured: this.tradetronDeveloperApi.isConfigured(),
-        status: this.tradetronDeveloperApiStatus,
-        lastAttemptAt: this.lastTradetronDeveloperSyncAt ? new Date(this.lastTradetronDeveloperSyncAt).toISOString() : null
-      }
+      positions: (positions || []).filter(position =>
+        Math.abs(n(position?.qty ?? position?.size)) > 0
+      ).length,
+      gridEntrySafety: this.lastGridEntrySafety || null
     });
     } finally {
       await this.releaseLease();

@@ -18,7 +18,7 @@ test('Analytics uses only the Delta Testnet trade ledger', () => {
 
 test('Delta analytics retain safe partial-history labels and only use verified trade rows for the equity curve', () => {
   assert.match(analytics, /tradesComplete\?'Recorded exit reason labels':'Partial data — loaded records only \(history incomplete\)'/);
-  assert.match(analytics, /tradesComplete && trades.length > 0 && trades.every\(t=>safeNum\(t.net_pnl\)!==null\)/);
+  assert.match(analytics, /tradesComplete&&trades.length>0&&trades.every\(t=>safeNum\(t.net_pnl\)!==null\)/);
   assert.match(analytics, /equityPoints\(trades\)/);
   assert.doesNotMatch(analytics, /equityPoints\(derivedRows\)/);
 });

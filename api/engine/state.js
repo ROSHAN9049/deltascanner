@@ -6,211 +6,108 @@ import { createEngineSessionCookie, hasEngineAccess, isEngineSessionValid } from
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate');
-  // Sliding inactivity expiry: keep a valid HttpOnly session alive while the
-  // dashboard is actively polling, without ever returning the original secret.
   if (CONFIG.engineSecret && isEngineSessionValid(req, CONFIG.engineSecret)) {
     res.setHeader('Set-Cookie', createEngineSessionCookie(CONFIG.engineSecret));
   }
+
   try {
-    const deltaTodayStart = indiaDateKey(new Date()) + 'T00:00:00+05:30';
-    const deltaTodayStartQuery = encodeURIComponent(deltaTodayStart);
-    const [settings, positions, signals, signalCache, marketCache, optionCache, trades, logs, ledger, counters, daily, signalOrders, tradetronEvents, signalOrderCount, signalSentCount, signalPendingCount, signalExpiredCount, signalFailedCount, tradetronEventCount, tradeRowCount, ledgerRowCount] = await Promise.all([
+    const todayStart = indiaDateKey(new Date()) + 'T00:00:00+05:30';
+    const todayStartQuery = encodeURIComponent(todayStart);
+    const [settingsRows, signals, signalCache, marketCache, optionCache, rawLogs, ledger, ledgerRowCount] = await Promise.all([
       select('dd_settings', 'id=eq.1&select=*'),
-      CONFIG.signalOnly ? select('dd_positions', 'origin=eq.TRADETRON&qty=gt.0&order=updated_at.desc') : select('dd_positions', 'qty=gt.0&order=updated_at.desc'),
       select('dd_signals', 'order=captured_at.desc&limit=200'),
       select('dd_signal_cache', 'order=score.desc'),
       select('dd_market_cache', 'active=eq.true&order=market_rank.asc'),
       select('dd_option_cache', 'order=score.desc'),
-      select('dd_trades', 'order=closed_at.desc&limit=200'),
       select('dd_engine_logs', 'order=created_at.desc&limit=200'),
       select('dd_rotation_ledger', 'order=created_at.desc&limit=200'),
-      select('dd_counters', 'id=eq.1&select=*'),
-      select('dd_daily_pnl', 'order=trade_date.desc&limit=1'),
-      select('dd_orders', 'order_type=eq.tradetron_signal&order=created_at.desc&limit=200'),
-      select('dd_tradetron_events', 'order=created_at.desc&limit=200'),
-      count('dd_orders', 'order_type=eq.tradetron_signal&select=id').catch(error => {
-        console.error('[engine/state] exact Tradetron signal count unavailable:', error.message);
-        return null;
-      }),
-      count('dd_orders', 'order_type=eq.tradetron_signal&or=(raw->>bridge_accepted.eq.true,raw->>bridge_response.eq.Ok)&select=id').catch(error => {
-        console.error('[engine/state] Tradetron sent-signal count unavailable:', error.message);
-        return null;
-      }),
-      count('dd_orders', 'order_type=eq.tradetron_signal&state=eq.PENDING&select=id').catch(error => {
-        console.error('[engine/state] Tradetron pending-signal count unavailable:', error.message);
-        return null;
-      }),
-      count('dd_orders', 'order_type=eq.tradetron_signal&state=eq.EXPIRED&select=id').catch(error => {
-        console.error('[engine/state] Tradetron expired-signal count unavailable:', error.message);
-        return null;
-      }),
-      count('dd_orders', 'order_type=eq.tradetron_signal&state=in.(FAILED,DB_ERROR)&select=id').catch(error => {
-        console.error('[engine/state] Tradetron failed-signal count unavailable:', error.message);
-        return null;
-      }),
-      count('dd_tradetron_events', 'select=event_id').catch(error => {
-        console.error('[engine/state] exact Tradetron event count unavailable:', error.message);
-        return null;
-      }),
-      count('dd_trades', 'select=id').catch(error => {
-        console.error('[engine/state] exact closed-trade row count unavailable:', error.message);
-        return null;
-      }),
-      count('dd_rotation_ledger', 'select=execution_id').catch(error => {
-        console.error('[engine/state] exact rotation-ledger row count unavailable:', error.message);
-        return null;
-      })
+      count('dd_rotation_ledger', 'select=execution_id').catch(() => null)
     ]);
-    // The Vercel API and Railway worker have separate environment variables.
-    // Prefer routing status reported by the live worker heartbeat; otherwise a
-    // Vercel-side missing token could incorrectly show zero routes while Railway
-    // is correctly configured.
-    const heartbeatLog = (logs || []).find(row =>
-      row?.message === 'Worker heartbeat scan' && row?.data?.tradetronRouting
-    );
-    const workerDeltaExecutionMode = String(heartbeatLog?.data?.deltaExecutionMode || '').trim().toLowerCase();
-    const deltaExecutionMode = ['testnet', 'disabled'].includes(workerDeltaExecutionMode)
-      ? workerDeltaExecutionMode
-      : 'unknown';
-    const workerModeSource = deltaExecutionMode === 'unknown' ? 'unavailable' : 'supabase-worker-heartbeat';
-    const workerRouting = heartbeatLog?.data?.tradetronRouting || null;
-    const workerTradetronDeveloperApi = heartbeatLog?.data?.tradetronDeveloperApi || null;
-    // Tradetron positions/P&L are account-private. Do not query or serialize
-    // the private snapshot tables for unauthenticated dashboard requests.
+
+    // The heartbeat's environment mode is shared with the dashboard through
+    // Supabase. It no longer depends on any legacy bridge or mirror metadata.
+    const heartbeatLog = (rawLogs || []).find(row => row?.message === 'Worker heartbeat scan');
+    const heartbeatMode = String(heartbeatLog?.data?.deltaExecutionMode || '').trim().toLowerCase();
+    const deltaExecutionMode = ['testnet', 'disabled'].includes(heartbeatMode) ? heartbeatMode : 'unknown';
+    const deltaExecutionModeSource = deltaExecutionMode === 'unknown' ? 'unavailable' : 'supabase-worker-heartbeat';
     const privateDataAuthorized = Boolean(CONFIG.engineSecret) && hasEngineAccess(req, CONFIG.engineSecret);
+
+    // Hide legacy bridge records from dashboard logs even if they remain in the
+    // historical database. Current Delta Testnet telemetry and errors remain visible.
+    const logs = (rawLogs || []).filter(row =>
+      !/tradetron/i.test(String(row?.message || '')) &&
+      !/tradetron/i.test(JSON.stringify(row?.data || {}))
+    );
+
     const [
-      developerSyncRows,
-      developerSnapshotRows,
-      developerNotificationSyncRows,
-      developerNotificationRows,
-      developerPnlHistoryRows,
-      apiDerivedTradeRows,
-      apiDerivedTradeCount,
       deltaTestnetPositionRows,
       deltaTestnetOpenPositionCount,
       deltaTestnetOrderRows,
       deltaTestnetOrderCount,
+      deltaTestnetTradeRows,
+      deltaTestnetTradeRowCount,
       deltaTestnetClosedTodayRows,
       deltaTestnetClosedTodayCount
     ] = privateDataAuthorized
       ? await Promise.all([
-          select('dd_tradetron_developer_sync_state', 'id=eq.1&select=*').catch(() => []),
-          select('dd_tradetron_developer_snapshots', 'order=deployment_id.asc').catch(() => []),
-          select('dd_tradetron_developer_notification_sync_state', 'id=eq.1&select=*').catch(() => []),
-          select('dd_tradetron_developer_notifications', 'order=event_at.desc.nullslast,updated_at.desc&limit=200').catch(() => []),
-          select('dd_tradetron_developer_pnl_history', 'order=captured_at.desc&limit=1000').catch(() => []),
-          select('dd_api_derived_trades', 'order=detected_at.desc&limit=1000').catch(() => []),
-          count('dd_api_derived_trades', 'select=id').catch(error => {
-            console.error('[engine/state] exact API-derived trade count unavailable:', error.message);
-            return null;
-          }),
           select('dd_delta_positions', 'order=opened_at.desc&limit=500').catch(() => []),
-          count('dd_delta_positions', 'status=eq.OPEN&select=id').catch(error => {
-            console.error('[engine/state] exact Delta Testnet open-position count unavailable:', error.message);
-            return null;
-          }),
+          count('dd_delta_positions', 'status=eq.OPEN&select=id').catch(() => null),
           select('dd_orders', 'order_type=eq.delta_testnet_order&order=created_at.desc&limit=1000').catch(() => []),
-          count('dd_orders', 'order_type=eq.delta_testnet_order&select=id').catch(error => {
-            console.error('[engine/state] exact Delta Testnet order count unavailable:', error.message);
-            return null;
-          }),
-          select('dd_delta_positions', 'status=eq.CLOSED&closed_at=gte.' + deltaTodayStartQuery + '&order=closed_at.desc&limit=1000').catch(() => []),
-          count('dd_delta_positions', 'status=eq.CLOSED&closed_at=gte.' + deltaTodayStartQuery + '&select=id').catch(error => {
-            console.error('[engine/state] exact Delta Testnet closed-today count unavailable:', error.message);
-            return null;
-          })
+          count('dd_orders', 'order_type=eq.delta_testnet_order&select=id').catch(() => null),
+          select('dd_delta_positions', 'status=eq.CLOSED&order=closed_at.desc&limit=200').catch(() => []),
+          count('dd_delta_positions', 'status=eq.CLOSED&select=id').catch(() => null),
+          select('dd_delta_positions', 'status=eq.CLOSED&closed_at=gte.' + todayStartQuery + '&order=closed_at.desc&limit=1000').catch(() => []),
+          count('dd_delta_positions', 'status=eq.CLOSED&closed_at=gte.' + todayStartQuery + '&select=id').catch(() => null)
         ])
-      : [[], [], [], [], [], [], null, [], null, [], null, [], null];
-    const tradetronDeveloperSync = developerSyncRows?.[0] || null;
-    const knownDeploymentIds = tradetronDeveloperSync?.details?.deploymentIds;
-    const tradetronDeveloperSnapshots = Array.isArray(knownDeploymentIds)
-      ? (developerSnapshotRows || []).filter(row => knownDeploymentIds.includes(Number(row.deployment_id)))
-      : (developerSnapshotRows || []);
-    const tradetronDeveloperNotificationSync = developerNotificationSyncRows?.[0] || null;
-    const tradetronDeveloperNotifications = developerNotificationRows || [];
-    const tradetronDeveloperPnlHistory = developerPnlHistoryRows || [];
+      : [[], null, [], null, [], null, [], null];
+
     const deltaTestnetPositions = deltaTestnetPositionRows || [];
     const deltaTestnetOrders = deltaTestnetOrderRows || [];
-    const deltaTestnetClosedTodayCountNumber = deltaTestnetClosedTodayCount == null
-      ? null : Number(deltaTestnetClosedTodayCount);
-    const deltaClosedTodayValues = (deltaTestnetClosedTodayRows || []).map(row =>
+    const deltaTestnetTrades = deltaTestnetTradeRows || [];
+    const closedTodayCount = deltaTestnetClosedTodayCount == null ? null : Number(deltaTestnetClosedTodayCount);
+    const closedTodayValues = (deltaTestnetClosedTodayRows || []).map(row =>
       row?.realized_pnl === null || row?.realized_pnl === undefined || row?.realized_pnl === ''
-        ? null : Number(row.realized_pnl));
-    const deltaTestnetClosedTodayPnlComplete = deltaTestnetClosedTodayCountNumber !== null &&
-      deltaTestnetClosedTodayCountNumber === (deltaTestnetClosedTodayRows || []).length &&
-      deltaClosedTodayValues.every(value => Number.isFinite(value));
+        ? null : Number(row.realized_pnl)
+    );
+    const deltaTestnetClosedTodayPnlComplete = closedTodayCount !== null &&
+      closedTodayCount === (deltaTestnetClosedTodayRows || []).length &&
+      closedTodayValues.every(value => Number.isFinite(value));
     const deltaTestnetClosedTodayPnl = deltaTestnetClosedTodayPnlComplete
-      ? deltaClosedTodayValues.reduce((sum, value) => sum + value, 0)
+      ? closedTodayValues.reduce((sum, value) => sum + value, 0)
       : null;
-    const routeTable = Array.isArray(CONFIG.tradetronBridgeRoutes) ? CONFIG.tradetronBridgeRoutes : [];
-    const legacyFuturesConfigured = CONFIG.tradetronBridgeEnabled && !!CONFIG.tradetronAuthToken;
-    const localSymbols = routeTable.length
-      ? [...new Set(routeTable.filter(route => route.authToken).flatMap(route => route.symbols))]
-      : (legacyFuturesConfigured ? [...new Set(CONFIG.tradetronSupportedSymbols)] : []);
-    const routedFuturesSymbols = workerRouting && Array.isArray(workerRouting.supportedSymbols)
-      ? [...new Set(workerRouting.supportedSymbols.map(symbol => String(symbol || '').toUpperCase()).filter(Boolean))]
-      : localSymbols;
-    const configuredFuturesRoutes = workerRouting
-      ? Number(workerRouting.configuredRoutes) || 0
-      : (routeTable.length
-        ? routeTable.filter(route => route.authToken).length
-        : (legacyFuturesConfigured ? 1 : 0));
-    const optionsRouteConfigured = workerRouting
-      ? workerRouting.optionsRouteConfigured === true
-      : CONFIG.tradetronOptionsBridgeEnabled && !!CONFIG.tradetronOptionsAuthToken;
 
     return res.status(200).json(protectEngineState({
-      success: true, environment: CONFIG.environment,
+      success: true,
+      environment: CONFIG.environment,
       executionCoverage: {
-        routedFuturesSymbols: routedFuturesSymbols.length,
-        routedSymbols: routedFuturesSymbols,
-        configuredFuturesRoutes,
-        optionsUnderlyings: ['BTC', 'ETH', 'XAUT'],
-        optionsRouteConfigured,
-        webhookSecretConfigured: !!CONFIG.tradetronWebhookSecret,
-        tradetronDeveloperApiConfigured: workerTradetronDeveloperApi?.configured === true,
-        tradetronDeveloperApiStatus: workerTradetronDeveloperApi?.status || tradetronDeveloperSync?.status || 'NOT_CONFIGURED',
-        routingStatusSource: workerRouting ? 'worker-heartbeat' : 'vercel-config-fallback',
-        routingObservedAt: heartbeatLog?.created_at || null,
         directDeltaExecutionEnabled: false,
         deltaExecutionMode,
-        deltaExecutionModeSource: workerModeSource
+        deltaExecutionModeSource,
+        gridEntrySafety: privateDataAuthorized ? heartbeatLog?.data?.gridEntrySafety || null : null
       },
-      settings: settings?.[0] || null,
-      positions: positions || [], signals: signals || [],
-      signalCache: signalCache || [], marketCache: marketCache || [], optionCache: optionCache || [],
-      trades: trades || [], logs: logs || [], ledger: ledger || [], counters: counters?.[0] || null,
-      daily: daily?.[0] || null,
-      tradeRowCount: tradeRowCount == null ? null : Number(tradeRowCount),
+      settings: settingsRows?.[0] || null,
+      signals: signals || [],
+      signalCache: signalCache || [],
+      marketCache: marketCache || [],
+      optionCache: optionCache || [],
+      logs,
+      ledger: ledger || [],
       ledgerRowCount: ledgerRowCount == null ? null : Number(ledgerRowCount),
-      signalOrders: signalOrders || [],
-      signalOrderCount: signalOrderCount == null ? null : Number(signalOrderCount),
-      signalOrderStats: {
-        total: signalOrderCount == null ? null : Number(signalOrderCount),
-        sent: signalSentCount == null ? null : Number(signalSentCount),
-        pending: signalPendingCount == null ? null : Number(signalPendingCount),
-        expired: signalExpiredCount == null ? null : Number(signalExpiredCount),
-        failed: signalFailedCount == null ? null : Number(signalFailedCount),
-        events: tradetronEventCount == null ? null : Number(tradetronEventCount)
-      },
-      tradetronEvents: tradetronEvents || [],
-      tradetronDeveloperDataProtected: !privateDataAuthorized,
-      tradetronDeveloperSync,
-      tradetronDeveloperSnapshots,
-      tradetronDeveloperNotificationSync,
-      tradetronDeveloperNotifications,
-      tradetronDeveloperPnlHistory,
-      apiDerivedTrades: apiDerivedTradeRows || [],
-      apiDerivedTradeCount: apiDerivedTradeCount == null ? null : Number(apiDerivedTradeCount),
       deltaTestnetPositions,
       deltaTestnetOpenPositionCount: deltaTestnetOpenPositionCount == null ? null : Number(deltaTestnetOpenPositionCount),
       deltaTestnetOrders,
       deltaTestnetOrderCount: deltaTestnetOrderCount == null ? null : Number(deltaTestnetOrderCount),
-      deltaTestnetClosedTodayCount: deltaTestnetClosedTodayCountNumber,
+      deltaTestnetTrades,
+      deltaTestnetTradeRowCount: deltaTestnetTradeRowCount == null ? null : Number(deltaTestnetTradeRowCount),
+      deltaTestnetClosedTodayCount: closedTodayCount,
       deltaTestnetClosedTodayPnl,
       deltaTestnetClosedTodayPnlComplete
     }, privateDataAuthorized));
-  } catch (e) {
-    return res.status(503).json({ success: false, environment: CONFIG.environment, error: e.message });
+  } catch (error) {
+    return res.status(503).json({
+      success: false,
+      environment: CONFIG.environment,
+      error: error.message
+    });
   }
 }

@@ -175,8 +175,6 @@ function App() {
 
   const selectedScalp = selected ? signals.find(x => x.symbol === selected.symbol && x.strategy === 'SCALPING') : null;
   const stale = !health?.tickFresh;
-  const workerEntrySafety = state?.deltaTestnetEntrySafety || null;
-  const workerGridEntrySafety = state?.gridEntrySafety || null;
   const executionCoverage = state?.executionCoverage || null;
   const routeSafetyBlocked = false;
   const routeSafetyReason = 'Delta Testnet position state unavailable';
