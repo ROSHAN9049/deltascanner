@@ -184,8 +184,12 @@ async function startupPreflight() {
     }
     return true;
   } catch (error) {
+    const details = processErrorDetails(error);
     const message = String(error?.message || error);
-    console.error('[DeltaScanner] Startup preflight FAILED:', message);
+    console.error('[DeltaScanner] Startup preflight FAILED:', details.stack || details.message);
+    await log('ERROR', 'Startup preflight failed with full error details', details).catch(logError => {
+      console.error('[DeltaScanner] Could not persist startup preflight error:', String(logError?.message || logError));
+    });
     if (message.includes('ip_not_whitelisted_for_api_key')) {
       console.error('[DeltaScanner] Railway outbound public IP:', await getOutboundIp());
     }
@@ -233,6 +237,12 @@ process.on('SIGINT', () => {
     console.error('[DeltaScanner] SIGINT shutdown failed:', processErrorDetails(error).stack || String(error));
     process.exit(1);
   });
+});
+
+process.on('exit', code => {
+  console.warn('[DeltaScanner] Process exit event', JSON.stringify({
+    exitCode: code, pid: process.pid, uptimeSeconds: Number(process.uptime().toFixed(1))
+  }));
 });
 
 process.on('unhandledRejection', (reason, promise) => {
@@ -346,7 +356,14 @@ btcHourlyWarmupTimer.unref?.();
 
 console.log('[DeltaScanner] Scanner worker entering engine loop; execution=' + CONFIG.deltaExecutionMode);
 engine.run().catch(async error => {
-  console.error('[DeltaScanner] Fatal worker startup error:', error.message);
-  await log('ERROR', 'Fatal worker startup error', { error: error.message });
+  const details = processErrorDetails(error);
+  console.error('[DeltaScanner] Fatal worker startup error:', details.stack || details.message);
+  try {
+    await log('ERROR', 'Fatal worker startup error; exact stack captured before exit', {
+      ...details, pid: process.pid, uptimeSeconds: Number(process.uptime().toFixed(1))
+    });
+  } catch (logError) {
+    console.error('[DeltaScanner] Could not persist fatal worker startup error:', String(logError?.message || logError));
+  }
   process.exit(1);
 });
