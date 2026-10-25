@@ -3194,12 +3194,18 @@ export class DeltaEngine {
               };
               const merged = mergeCandleUpdate(current, rawCandle, resolution);
               if (!merged.ok) {
-                void this.log('WARN', 'WebSocket candle update rejected', {
-                  symbol, resolution, reason: merged.reason,
-                  incomingTimestamp: rawCandle.time ?? null,
-                  latestTimestamp: current.at(-1)?.time ?? null,
-                  count: current.length
-                }).catch(() => {});
+                // WebSocket feeds can replay duplicates/out-of-order buckets.
+                // Log a representative failure per cooldown, not every tick.
+                if (this.shouldLogCandleFailure(key)) {
+                  void this.log('WARN', 'WebSocket candle update rejected; cached series preserved', {
+                    symbol, resolution, reason: merged.reason,
+                    incomingTimestamp: rawCandle.time ?? null,
+                    latestTimestamp: current.at(-1)?.time ?? null,
+                    count: current.length,
+                    retryAfterMs: CONFIG.deltaExecutionMode === 'testnet'
+                      ? CANDLE_TESTNET_WARMUP_RETRY_MS : CANDLE_WARMUP_RETRY_MS
+                  }).catch(() => {});
+                }
                 if (['invalid_existing_series','stale_candle','future_timestamp'].includes(merged.reason)) {
                   this.scheduleCandleHealing(symbol, resolution, merged.reason);
                 }
