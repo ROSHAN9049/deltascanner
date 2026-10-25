@@ -3266,13 +3266,21 @@ export class DeltaEngine {
       });
       ws.on('error', error => {
         const message = String(error?.message || error);
-        this.wsRateLimited = /429|rate.?limit|too many connections|unexpected server response: 429/i.test(message);
+        const rateLimited = /429|rate.?limit|too many connections|unexpected server response: 429/i.test(message);
+        this.wsRateLimited = rateLimited;
+        if (this.ws === ws) this.ws = null;
+        // Schedule the retry before terminating the socket so a missing close
+        // event cannot strand the scanner without a market-data connection.
+        const wait = websocketReconnectDelay(this.wsRetry, { baseMs: 1_000, rateLimited });
+        this.wsRetry = Math.min(this.wsRetry + 1, 16);
         if (this.shouldLogWebSocketWarning()) {
-          void this.log('WARN', 'WebSocket error; requesting close so reconnect can heal candle history', {
+          void this.log('WARN', 'WebSocket error; reconnect scheduled and candle cache preserved', {
             error: message.slice(0, 200),
-            rateLimited: this.wsRateLimited
+            retryInMs: wait,
+            rateLimited
           }).catch(() => {});
         }
+        this.scheduleWsReconnect(wait);
         try { ws.terminate?.(); } catch {}
         try { ws.close(); } catch {}
       });
