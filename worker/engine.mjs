@@ -3417,9 +3417,12 @@ export class DeltaEngine {
         } catch {}
       });
       ws.on('close', (code, reasonBuffer) => {
-        const wasConnected = this.wsConnected;
-        this.wsConnected = false;
-        if (this.ws === ws) this.ws = null;
+        const wasCurrent = this.ws === ws;
+        const wasConnected = wasCurrent && this.wsConnected;
+        if (wasCurrent) {
+          this.wsConnected = false;
+          this.ws = null;
+        }
         if (this.wsOpenedAt === openedAt) this.wsOpenedAt = 0;
         const reason = reasonBuffer ? reasonBuffer.toString().slice(0, 160) : '';
         if (wasConnected) this.preserveCandleCacheForHealing('websocket_disconnect');
@@ -3431,31 +3434,40 @@ export class DeltaEngine {
         const wait = websocketReconnectDelay(this.wsRetry, { baseMs: 1_000, rateLimited });
         this.wsRetry = Math.min(this.wsRetry + 1, 16);
         this.wsRateLimited = false;
-        if (this.shouldLogWebSocketWarning()) {
+        if (wasCurrent && this.shouldLogWebSocketWarning()) {
           void this.log('WARN', 'WebSocket disconnected; reconnect scheduled', {
             code, reason, wasConnected, retryInMs: wait, retryAttempt: this.wsRetry,
             rateLimited
           }).catch(() => {});
         }
-        this.scheduleWsReconnect(wait);
+        if (wasCurrent) this.scheduleWsReconnect(wait);
+        cleanupWebSocketListeners(ws);
       });
       ws.on('error', error => {
         const message = String(error?.message || error);
+        const wasCurrent = this.ws === ws;
+        const wasConnected = wasCurrent && this.wsConnected;
         const rateLimited = /429|rate.?limit|too many connections|unexpected server response: 429/i.test(message);
-        this.wsRateLimited = rateLimited;
-        if (this.ws === ws) this.ws = null;
-        // Schedule the retry before terminating the socket so a missing close
+        if (wasCurrent) {
+          this.ws = null;
+          this.wsConnected = false;
+          this.wsRateLimited = rateLimited;
+          if (this.wsOpenedAt === openedAt) this.wsOpenedAt = 0;
+        }
+        if (wasConnected) this.preserveCandleCacheForHealing('websocket_error');
+        // Schedule the retry before tearing down this socket so a missing close
         // event cannot strand the scanner without a market-data connection.
         const wait = websocketReconnectDelay(this.wsRetry, { baseMs: 1_000, rateLimited });
         this.wsRetry = Math.min(this.wsRetry + 1, 16);
-        if (this.shouldLogWebSocketWarning()) {
+        if (wasCurrent && this.shouldLogWebSocketWarning()) {
           void this.log('WARN', 'WebSocket error; reconnect scheduled and candle cache preserved', {
             error: message.slice(0, 200),
             retryInMs: wait,
             rateLimited
           }).catch(() => {});
         }
-        this.scheduleWsReconnect(wait);
+        if (wasCurrent) this.scheduleWsReconnect(wait);
+        cleanupWebSocketListeners(ws);
         try { ws.terminate?.(); } catch {}
         try { ws.close(); } catch {}
       });
