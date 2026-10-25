@@ -19,10 +19,23 @@ function hmac(secret, text) {
   return crypto.createHmac('sha256', secret).update(text, 'utf8').digest('hex');
 }
 
+/**
+ * Public market data remains production-sourced even while private execution is
+ * on Testnet. Product catalog and all authenticated requests stay on the
+ * environment-specific base so Testnet product/account identifiers aren't mixed.
+ */
+export function resolveDeltaRequestBase({ auth = false, marketData = false } = {}, {
+  base = CONFIG.restBase,
+  marketDataBase = CONFIG.marketDataRestBase || 'https://api.india.delta.exchange'
+} = {}) {
+  return marketData && !auth ? marketDataBase : base;
+}
+
 export class DeltaAdapter {
   constructor() {
     if (!['TESTNET', 'SIGNAL_ONLY'].includes(CONFIG.environment)) throw new Error('Unsupported scanner environment');
     this.base = CONFIG.restBase;
+    this.marketDataBase = CONFIG.marketDataRestBase || 'https://api.india.delta.exchange';
     this.apiKey = CONFIG.apiKey;
     this.apiSecret = CONFIG.apiSecret;
     this.privateAuthConfigured = !!this.apiKey && !!this.apiSecret;
@@ -61,7 +74,11 @@ export class DeltaAdapter {
           headers.timestamp = ts;
         }
         if (body !== undefined && body !== null) headers['Content-Type'] = 'application/json';
-        const response = await fetch(this.base + path + query, {
+        const requestBase = resolveDeltaRequestBase({ auth, marketData: options.marketData === true }, {
+          base: this.base,
+          marketDataBase: this.marketDataBase
+        });
+        const response = await fetch(requestBase + path + query, {
           method,
           headers,
           body: body === undefined || body === null ? undefined : payload
@@ -101,7 +118,7 @@ export class DeltaAdapter {
     if (auth || method !== 'GET') return this.enqueue(execute);
     return execute();
   }
-  async health() { return this.request('GET', '/v2/tickers', { contract_types: 'perpetual_futures' }, null, false); }
+  async health() { return this.request('GET', '/v2/tickers', { contract_types: 'perpetual_futures' }, null, false, { marketData: true }); }
   async products() {
     const all = [];
     let after = '';
@@ -124,14 +141,14 @@ export class DeltaAdapter {
     }
     return all;
   }
-  tickers() { return this.request('GET', '/v2/tickers', { contract_types: 'perpetual_futures' }, null, false); }
+  tickers() { return this.request('GET', '/v2/tickers', { contract_types: 'perpetual_futures' }, null, false, { marketData: true }); }
   optionTickers(underlying) {
     const asset = String(underlying || '').trim().toUpperCase();
     if (!/^[A-Z0-9]+$/.test(asset)) throw new Error('Invalid option underlying');
     return this.request('GET', '/v2/tickers', {
       contract_types: 'call_options,put_options',
       underlying_asset_symbols: asset
-    }, null, false);
+    }, null, false, { marketData: true });
   }
   candles(symbol, resolution, limit) {
     // Resolution → seconds per candle. Unknown resolutions fall back
@@ -145,7 +162,7 @@ export class DeltaAdapter {
     })[resolution] || 300;
     const end = Math.floor((Date.now() + this.offsetMs) / 1000);
     const start = end - seconds * ((limit || 120) + 3);
-    return this.request('GET', '/v2/history/candles', { resolution, symbol, start, end }, null, false);
+    return this.request('GET', '/v2/history/candles', { resolution, symbol, start, end }, null, false, { marketData: true });
   }
   positions(identifier) {
     const raw = String(identifier ?? '').trim();

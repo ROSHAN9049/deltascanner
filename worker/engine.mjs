@@ -9,9 +9,10 @@ import { buildTradetronPnlHistoryRows, TradetronDeveloperApi } from '../server/t
 import { buildTradetronSnapshotRiskState, TRADETRON_SNAPSHOT_MAX_AGE_MS } from '../src/tradetron-position-sync.js';
 import { indiaDateKey } from '../src/date-utils.js';
 import { createGridState, evaluateGridTick } from './grid-strategy.mjs';
-import { CANDLE_WARMUP_BATCH_SIZE, CANDLE_WARMUP_RETRY_MS, planCandleWarmup } from './candle-warmup.mjs';
+import { CANDLE_WARMUP_BATCH_SIZE, CANDLE_WARMUP_RETRY_MS, CANDLE_TESTNET_WARMUP_BATCH_SIZE, CANDLE_TESTNET_WARMUP_CONCURRENCY, CANDLE_TESTNET_WARMUP_RETRY_MS, planCandleWarmup } from './candle-warmup.mjs';
 import { shouldWriteMarketCache } from './market-cache-policy.mjs';
-import { MIN_RAW_CANDLES_FOR_ATR, mergeCandleUpdate, normalizeCandleBatch } from './candle-normalization.mjs';
+import { MIN_RAW_CANDLES_FOR_ATR, mergeCandleUpdate, normalizeCandleBatch, normalizeEpochSeconds } from './candle-normalization.mjs';
+import { shouldEmitThrottledLog, websocketReconnectDelay, WS_ERROR_LOG_COOLDOWN_MS } from './ws-resilience.mjs';
 import { isOptionsExecutionAllowed, OPTIONS_EXECUTION_LOCK_REASON } from './options-execution-lock.mjs';
 import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from './signal-failure-diagnostics.mjs';
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
@@ -172,11 +173,16 @@ export class DeltaEngine {
     this.candles = new Map();
     this.ws = null;
     this.wsRetry = 0;
+    this.wsReconnectTimer = null;
+    this.wsOpenedAt = 0;
+    this.wsRateLimited = false;
+    this.lastWsWarningAt = 0;
     this.running = false;
     this.privateExecutionAvailable = false;
     this.lastMarketCacheWrite = 0;
     this.candleWarmCursor = 0;
     this.candleFetchAt = new Map();
+    this.candleFailureLogAt = new Map();
     this.candleUpdateCounts = new Map();
     this.lastObservedAtr = new Map();
     this.candleHealingInFlight = new Set();
@@ -900,10 +906,26 @@ export class DeltaEngine {
     }
   }
 
+  shouldLogCandleFailure(key, now = Date.now()) {
+    const cooldownMs = CONFIG.deltaExecutionMode === 'testnet'
+      ? CANDLE_TESTNET_WARMUP_RETRY_MS
+      : CANDLE_WARMUP_RETRY_MS;
+    const previous = this.candleFailureLogAt.get(key) || 0;
+    if (!shouldEmitThrottledLog(previous, now, cooldownMs)) return false;
+    this.candleFailureLogAt.set(key, now);
+    return true;
+  }
+
+  shouldLogWebSocketWarning(now = Date.now()) {
+    if (!shouldEmitThrottledLog(this.lastWsWarningAt, now, WS_ERROR_LOG_COOLDOWN_MS)) return false;
+    this.lastWsWarningAt = now;
+    return true;
+  }
+
   async refreshCandle(symbol, resolution) {
     const key = resolution + ':' + symbol;
-    // Track attempts even when the API fails or returns a partial series so a
-    // deficient response is retried after the cooldown instead of every cycle.
+    // Track attempts even when the API fails or returns a partial series. Testnet
+    // mode uses a longer cooldown so thin/empty products cannot trigger retry storms.
     this.candleFetchAt.set(key, Date.now());
     const value = await this.adapter.candles(symbol, resolution, 100);
     const normalized = normalizeCandleBatch(value, resolution, {
@@ -915,13 +937,19 @@ export class DeltaEngine {
         count: normalized.count ?? (Array.isArray(value) ? value.length : null),
         index: normalized.index ?? null,
         latestTimestamp: normalized.latest ?? null,
-        ageSeconds: normalized.ageSeconds ?? null
+        ageSeconds: normalized.ageSeconds ?? null,
+        preservedCandleCount: this.getCandles(symbol, resolution).length,
+        retryAfterMs: CONFIG.deltaExecutionMode === 'testnet'
+          ? CANDLE_TESTNET_WARMUP_RETRY_MS : CANDLE_WARMUP_RETRY_MS
       };
-      await this.log('WARN', 'Candle REST batch rejected; preserving prior valid series', detail);
+      if (this.shouldLogCandleFailure(key)) {
+        await this.log('WARN', 'Candle REST batch rejected; preserving prior valid series', detail);
+      }
       throw new Error('candle_batch_rejected:' + normalized.reason);
     }
     const rows = normalized.candles.slice(-120);
     this.candles.set(key, rows);
+    this.candleFailureLogAt.delete(key);
     await this.log('INFO', 'Candle REST batch normalized', {
       symbol, resolution, candleCount: rows.length,
       firstTimestamp: rows[0]?.time ?? null,
@@ -930,7 +958,7 @@ export class DeltaEngine {
     return rows;
   }
 
-  invalidateCandleCacheForHealing(reason) {
+  preserveCandleCacheForHealing(reason) {
     const symbols = new Set([
       ...this.productMap.keys(),
       ...this.tickerMap.keys()
@@ -938,19 +966,18 @@ export class DeltaEngine {
     for (const key of this.candles.keys()) {
       if (/^(1m|5m|15m):/.test(key)) symbols.add(key.slice(key.indexOf(':') + 1));
     }
-    for (const symbol of symbols) {
-      for (const resolution of ['1m', '5m', '15m']) {
-        const key = resolution + ':' + symbol;
-        this.candles.delete(key);
-        this.candleFetchAt.delete(key);
-        this.candleUpdateCounts.delete(key);
-      }
-    }
+    // Do not throw away validated history on a transient socket outage.
+    // Stale series trigger REST rewarm after cooldown and are blocked from
+    // generating executable signals by applyTestnetCandleFreshness().
     this.candleWarmCursor = 0;
     this.candleRestHealingNeeded = true;
-    void this.log('WARN', 'Candle cache invalidated after WebSocket disconnect; REST rewarm required', {
-      reason, symbolCount: symbols.size, seriesCount: symbols.size * 3
-    }).catch(() => {});
+    if (this.shouldLogWebSocketWarning()) {
+      void this.log('WARN', 'WebSocket disconnected; preserving cached candles for REST fallback', {
+        reason, symbolCount: symbols.size,
+        cachedSeriesCount: [...this.candles.keys()].filter(key => /^(1m|5m|15m):/.test(key)).length,
+        note: 'Stale candle series are blocked from entries until they refresh'
+      }).catch(() => {});
+    }
   }
 
   recordAtrDiagnostics(signal) {
@@ -987,14 +1014,21 @@ export class DeltaEngine {
     this.candleHealingInFlight.add(key);
     void (async () => {
       try {
-        await this.log('WARN', 'Starting REST candle healing after rejected WebSocket update', {
-          symbol, resolution, reason
-        });
+        if (CONFIG.deltaExecutionMode !== 'testnet' && this.shouldLogCandleFailure(key)) {
+          await this.log('WARN', 'Starting REST candle healing after rejected WebSocket update', {
+            symbol, resolution, reason
+          });
+        }
         await this.refreshCandle(symbol, resolution);
       } catch (error) {
-        await this.log('WARN', 'REST candle healing failed; previous validated cache preserved', {
-          symbol, resolution, reason, error: String(error?.message || error).slice(0, 200)
-        });
+        if (this.shouldLogCandleFailure(key)) {
+          await this.log('WARN', 'REST candle healing failed; previous validated cache preserved', {
+            symbol, resolution, reason, error: String(error?.message || error).slice(0, 200),
+            preservedCandleCount: this.getCandles(symbol, resolution).length,
+            retryAfterMs: CONFIG.deltaExecutionMode === 'testnet'
+              ? CANDLE_TESTNET_WARMUP_RETRY_MS : CANDLE_WARMUP_RETRY_MS
+          });
+        }
       } finally {
         this.candleHealingInFlight.delete(key);
       }
@@ -1006,14 +1040,19 @@ export class DeltaEngine {
       .sort((a, b) => n(b.turnover_usd || b.turnover) - n(a.turnover_usd || a.turnover));
     if (!ranked.length) return;
 
+    const testnetCandleMode = CONFIG.deltaExecutionMode === 'testnet';
+    const warmupBatchSize = testnetCandleMode
+      ? CANDLE_TESTNET_WARMUP_BATCH_SIZE : CANDLE_WARMUP_BATCH_SIZE;
+    const retryAfterMs = testnetCandleMode
+      ? CANDLE_TESTNET_WARMUP_RETRY_MS : CANDLE_WARMUP_RETRY_MS;
     const plan = planCandleWarmup(
       ranked.map(row => row.symbol),
       this.candles,
       this.candleFetchAt,
       this.candleWarmCursor,
-      CANDLE_WARMUP_BATCH_SIZE,
+      warmupBatchSize,
       Date.now(),
-      CANDLE_WARMUP_RETRY_MS
+      retryAfterMs
     );
     this.candleWarmCursor = plan.nextCursor;
     if (!plan.work.length) return;
@@ -1030,14 +1069,23 @@ export class DeltaEngine {
           if (rows.length >= minimumRows) warmed++;
         } catch (e) {
           failed++;
-          await this.log('WARN', 'Candle warmup failed', { symbol, resolution, error: e.message });
+          const key = resolution + ':' + symbol;
+          if (this.shouldLogCandleFailure(key)) {
+            await this.log('WARN', testnetCandleMode
+              ? 'Testnet candle refresh unavailable; cached history preserved'
+              : 'Candle warmup failed', {
+              symbol, resolution, error: e.message,
+              preservedCandleCount: this.getCandles(symbol, resolution).length,
+              retryAfterMs
+            });
+          }
         }
       }
     };
-    // Keep a bounded six-request concurrency while warming three resolutions
-    // for 24 symbols per cycle. This covers the complete 231-symbol universe
-    // in about 10 cycles instead of about 29, absent API retries/failures.
-    await Promise.all([runner(), runner(), runner(), runner(), runner(), runner()]);
+    // Production keeps the normal high-throughput batch. Testnet execution uses
+    // two concurrent REST reads and a smaller batch to avoid error/retry floods.
+    const concurrency = testnetCandleMode ? CANDLE_TESTNET_WARMUP_CONCURRENCY : 6;
+    await Promise.all(Array.from({ length: concurrency }, () => runner()));
     this.lastCandleRefresh = Date.now();
     await this.log('INFO', 'Candle warm-up batch finished', {
       symbolsQueued: plan.symbols.length,
@@ -1047,6 +1095,29 @@ export class DeltaEngine {
       nextCursor: plan.nextCursor,
       universe: ranked.length
     });
+  }
+
+  candleSeriesIsFresh(symbol, resolution, now = Date.now()) {
+    const series = this.getCandles(symbol, resolution);
+    const intervalSeconds = ({ '1m': 60, '5m': 300, '15m': 900 })[resolution];
+    if (!intervalSeconds || !series.length) return false;
+    const latest = normalizeEpochSeconds(series.at(-1)?.time);
+    if (latest === null) return false;
+    const ageSeconds = now / 1000 - latest;
+    return Number.isFinite(ageSeconds) && ageSeconds >= -intervalSeconds && ageSeconds <= intervalSeconds * 3;
+  }
+
+  applyTestnetCandleFreshness(signal, entryResolution) {
+    if (CONFIG.deltaExecutionMode !== 'testnet' || !signal) return;
+    const resolutions = [...new Set([entryResolution, '5m', '15m'])];
+    const stale = resolutions.filter(resolution => !this.candleSeriesIsFresh(signal.symbol, resolution));
+    if (!stale.length) return;
+    signal.candlesFresh = false;
+    signal.ready = false;
+    signal.blocked = [...new Set([
+      ...(Array.isArray(signal.blocked) ? signal.blocked : []),
+      'Fresh candles unavailable or stale: ' + stale.join(', ')
+    ])];
   }
 
   getCandles(symbol, resolution) {
@@ -1971,6 +2042,8 @@ export class DeltaEngine {
       });
       mom.normalizedScore = normalizedScores.get('MOMENTUM:' + mom.symbol) ?? null;
       scalp.normalizedScore = normalizedScores.get('SCALPING:' + scalp.symbol) ?? null;
+      this.applyTestnetCandleFreshness(mom, '5m');
+      this.applyTestnetCandleFreshness(scalp, '1m');
       this.recordAtrDiagnostics(mom);
       this.recordAtrDiagnostics(scalp);
       for (const s of [mom, scalp]) {
@@ -3054,13 +3127,24 @@ export class DeltaEngine {
     await this.log('INFO', 'Real closed trade recorded', { executionId, symbol: row.symbol, reason, gross, fees, net });
   }
 
+  scheduleWsReconnect(delayMs) {
+    if (this.wsReconnectTimer || !this.running) return;
+    this.wsReconnectTimer = setTimeout(() => {
+      this.wsReconnectTimer = null;
+      if (this.running) this.connectWs();
+    }, Math.max(1_000, Number(delayMs) || 1_000));
+    this.wsReconnectTimer.unref?.();
+  }
+
   connectWs() {
-    if (this.ws) return;
+    if (this.ws || this.wsReconnectTimer || !this.running) return;
     try {
       const ws = new WebSocket(CONFIG.publicWs);
       this.ws = ws;
+      let openedAt = 0;
       ws.on('open', () => {
-        this.wsRetry = 0;
+        openedAt = Date.now();
+        this.wsOpenedAt = openedAt;
         this.wsConnected = true;
         void this.log('INFO', 'WebSocket connected; candle updates use canonical timeframe buckets', {}).catch(() => {});
         if (this.candleRestHealingNeeded) {
@@ -3110,12 +3194,18 @@ export class DeltaEngine {
               };
               const merged = mergeCandleUpdate(current, rawCandle, resolution);
               if (!merged.ok) {
-                void this.log('WARN', 'WebSocket candle update rejected', {
-                  symbol, resolution, reason: merged.reason,
-                  incomingTimestamp: rawCandle.time ?? null,
-                  latestTimestamp: current.at(-1)?.time ?? null,
-                  count: current.length
-                }).catch(() => {});
+                // WebSocket feeds can replay duplicates/out-of-order buckets.
+                // Log a representative failure per cooldown, not every tick.
+                if (this.shouldLogCandleFailure(key)) {
+                  void this.log('WARN', 'WebSocket candle update rejected; cached series preserved', {
+                    symbol, resolution, reason: merged.reason,
+                    incomingTimestamp: rawCandle.time ?? null,
+                    latestTimestamp: current.at(-1)?.time ?? null,
+                    count: current.length,
+                    retryAfterMs: CONFIG.deltaExecutionMode === 'testnet'
+                      ? CANDLE_TESTNET_WARMUP_RETRY_MS : CANDLE_WARMUP_RETRY_MS
+                  }).catch(() => {});
+                }
                 if (['invalid_existing_series','stale_candle','future_timestamp'].includes(merged.reason)) {
                   this.scheduleCandleHealing(symbol, resolution, merged.reason);
                 }
@@ -3154,30 +3244,59 @@ export class DeltaEngine {
       ws.on('close', (code, reasonBuffer) => {
         const wasConnected = this.wsConnected;
         this.wsConnected = false;
-        this.ws = null;
+        if (this.ws === ws) this.ws = null;
+        if (this.wsOpenedAt === openedAt) this.wsOpenedAt = 0;
         const reason = reasonBuffer ? reasonBuffer.toString().slice(0, 160) : '';
-        if (wasConnected) this.invalidateCandleCacheForHealing('websocket_disconnect');
-        const wait = Math.min(60000, 1000 * Math.pow(2, Math.min(this.wsRetry, 6)));
-        this.wsRetry = Math.min(this.wsRetry + 1, 6);
-        void this.log('WARN', 'WebSocket disconnected; exponential reconnect scheduled', {
-          code, reason, wasConnected, retryInMs: wait, retryAttempt: this.wsRetry
-        }).catch(() => {});
-        setTimeout(() => this.connectWs(), wait);
+        if (wasConnected) this.preserveCandleCacheForHealing('websocket_disconnect');
+
+        const uptimeMs = openedAt > 0 ? Date.now() - openedAt : 0;
+        if (uptimeMs >= 60_000) this.wsRetry = 0;
+        const rateLimited = this.wsRateLimited || Number(code) === 429 ||
+          /429|rate.?limit|too many connections/i.test(reason);
+        const wait = websocketReconnectDelay(this.wsRetry, { baseMs: 1_000, rateLimited });
+        this.wsRetry = Math.min(this.wsRetry + 1, 16);
+        this.wsRateLimited = false;
+        if (this.shouldLogWebSocketWarning()) {
+          void this.log('WARN', 'WebSocket disconnected; reconnect scheduled', {
+            code, reason, wasConnected, retryInMs: wait, retryAttempt: this.wsRetry,
+            rateLimited
+          }).catch(() => {});
+        }
+        this.scheduleWsReconnect(wait);
       });
       ws.on('error', error => {
-        void this.log('WARN', 'WebSocket error; requesting close so reconnect can heal candle history', {
-          error: String(error?.message || error).slice(0, 200)
-        }).catch(() => {});
+        const message = String(error?.message || error);
+        const rateLimited = /429|rate.?limit|too many connections|unexpected server response: 429/i.test(message);
+        this.wsRateLimited = rateLimited;
+        if (this.ws === ws) this.ws = null;
+        // Schedule the retry before terminating the socket so a missing close
+        // event cannot strand the scanner without a market-data connection.
+        const wait = websocketReconnectDelay(this.wsRetry, { baseMs: 1_000, rateLimited });
+        this.wsRetry = Math.min(this.wsRetry + 1, 16);
+        if (this.shouldLogWebSocketWarning()) {
+          void this.log('WARN', 'WebSocket error; reconnect scheduled and candle cache preserved', {
+            error: message.slice(0, 200),
+            retryInMs: wait,
+            rateLimited
+          }).catch(() => {});
+        }
+        this.scheduleWsReconnect(wait);
+        try { ws.terminate?.(); } catch {}
         try { ws.close(); } catch {}
       });
     } catch (error) {
       this.ws = null;
-      const wait = Math.min(60000, 1000 * Math.pow(2, Math.min(this.wsRetry, 6)));
-      this.wsRetry = Math.min(this.wsRetry + 1, 6);
-      void this.log('WARN', 'WebSocket construction failed; exponential reconnect scheduled', {
-        error: String(error?.message || error).slice(0, 200), retryInMs: wait
-      }).catch(() => {});
-      setTimeout(() => this.connectWs(), wait);
+      const message = String(error?.message || error);
+      const rateLimited = /429|rate.?limit|too many connections/i.test(message);
+      const wait = websocketReconnectDelay(this.wsRetry, { baseMs: 1_000, rateLimited });
+      this.wsRetry = Math.min(this.wsRetry + 1, 16);
+      this.wsRateLimited = false;
+      if (this.shouldLogWebSocketWarning()) {
+        void this.log('WARN', 'WebSocket construction failed; reconnect scheduled', {
+          error: message.slice(0, 200), retryInMs: wait, rateLimited
+        }).catch(() => {});
+      }
+      this.scheduleWsReconnect(wait);
     }
   }
 
@@ -3754,6 +3873,8 @@ export class DeltaEngine {
 
   async stop() {
     this.running = false;
+    if (this.wsReconnectTimer) clearTimeout(this.wsReconnectTimer);
+    this.wsReconnectTimer = null;
     try { this.ws?.close(); } catch {}
     await this.stopMaintenanceTasks();
     await this.releaseLease();

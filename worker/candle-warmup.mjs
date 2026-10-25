@@ -1,20 +1,42 @@
-import { normalizeCandleBatch, MIN_RAW_CANDLES_FOR_ATR } from './candle-normalization.mjs';
+import { normalizeCandleBatch, normalizeEpochSeconds, MIN_RAW_CANDLES_FOR_ATR } from './candle-normalization.mjs';
 
 // Closed-candle analysis drops the last (possibly still-open) candle.
 // Fetch at least one extra row beyond the strategy's minimum closed-candle count.
 export const CANDLE_RESOLUTIONS = Object.freeze(['1m', '5m', '15m']);
 export const CANDLE_WARMUP_BATCH_SIZE = 24;
 export const CANDLE_WARMUP_RETRY_MS = 60_000;
+// In Testnet execution mode the candle source may include thin or newly listed
+// products. Process a smaller batch and retry deficient series less often.
+export const CANDLE_TESTNET_WARMUP_BATCH_SIZE = 6;
+export const CANDLE_TESTNET_WARMUP_CONCURRENCY = 2;
+export const CANDLE_TESTNET_WARMUP_RETRY_MS = 5 * 60_000;
+const RESOLUTION_SECONDS = Object.freeze({ '1m': 60, '5m': 300, '15m': 900 });
 export const MIN_RAW_CANDLES = Object.freeze({
   '1m': 21,  // 20 closed candles for Scalping
   '5m': 31,  // 30 closed candles for Momentum and trend context
   '15m': 31  // 30 closed candles for trend confirmation
 });
 
+export function candleSeriesIsFresh(candles, resolution, now = Date.now(), maxAgeIntervals = 3) {
+  const intervalSeconds = RESOLUTION_SECONDS[resolution];
+  if (!intervalSeconds || !Array.isArray(candles) || !candles.length) return false;
+  const latest = normalizeEpochSeconds(candles.at(-1)?.time);
+  if (latest === null) return false;
+  const ageSeconds = Number(now) / 1000 - latest;
+  // Candle timestamps are bucket starts: allow a candle in the current bucket
+  // and tolerate up to three intervals of age, matching REST normalization.
+  return Number.isFinite(ageSeconds) &&
+    ageSeconds >= -intervalSeconds &&
+    ageSeconds <= intervalSeconds * Math.max(1, Number(maxAgeIntervals) || 3);
+}
+
 export function candleNeedsWarmup(candles, resolution, fetchedAt, now = Date.now(), retryAfterMs = CANDLE_WARMUP_RETRY_MS) {
   const requiredRows = MIN_RAW_CANDLES[resolution] || 31;
-  if (Array.isArray(candles) && candles.length >= requiredRows) return false;
+  const enoughRows = Array.isArray(candles) && candles.length >= requiredRows;
+  if (enoughRows && candleSeriesIsFresh(candles, resolution, now)) return false;
 
+  // Avoid tight retries on empty/short/stale responses, but retry after cooldown
+  // even when a previous cache has enough rows if its latest candle is stale.
   const lastFetch = Number(fetchedAt) || 0;
   return lastFetch <= 0 || now - lastFetch >= retryAfterMs;
 }
