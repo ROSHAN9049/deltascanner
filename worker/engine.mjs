@@ -3346,6 +3346,37 @@ export class DeltaEngine {
     this.wsReconnectTimer.unref?.();
   }
 
+  handleMarketWebSocketCallbackFailure(socket, error, source) {
+    const message = String(error?.message || error);
+    const details = {
+      source,
+      error: message.slice(0, 500),
+      stack: String(error?.stack || '').slice(0, 5000),
+      code: error?.code || null,
+      pid: process.pid
+    };
+    const wasCurrent = this.ws === socket;
+    if (wasCurrent) {
+      this.ws = null;
+      this.wsConnected = false;
+      this.wsOpenedAt = 0;
+      this.wsCandleSubscribedSymbols = new Set();
+      const rateLimited = /429|rate.?limit|too many connections/i.test(message);
+      const wait = websocketReconnectDelay(this.wsRetry, { baseMs: 1_000, rateLimited });
+      this.wsRetry = Math.min(this.wsRetry + 1, 16);
+      this.wsRateLimited = false;
+      this.scheduleWsReconnect(wait);
+      details.retryInMs = wait;
+      details.rateLimited = rateLimited;
+    }
+    void this.log('ERROR', 'WebSocket callback failed safely; reconnect scheduled', details).catch(logError => {
+      console.error('[DeltaScanner] Could not persist WebSocket callback error:', String(logError?.message || logError));
+    });
+    cleanupWebSocketListeners(socket);
+    try { socket?.terminate?.(); } catch {}
+    try { socket?.close(); } catch {}
+  }
+
   connectWs() {
     if (this.ws || this.wsReconnectTimer || !this.running) return;
     try {
@@ -3366,17 +3397,21 @@ export class DeltaEngine {
             })
           );
         }
-        ws.send(JSON.stringify({
-          type: 'subscribe',
-          payload: {
-            channels: [
-              { name: 'ticker', symbols: ['perpetual_futures'] },
-              { name: 'mark_price', symbols: ['perpetual_futures'] }
-            ]
-          }
-        }));
-        this.syncCandleWebSocketSubscription(ws);
-        ws.send(JSON.stringify({ type: 'enable_heartbeat' }));
+        try {
+          ws.send(JSON.stringify({
+            type: 'subscribe',
+            payload: {
+              channels: [
+                { name: 'ticker', symbols: ['perpetual_futures'] },
+                { name: 'mark_price', symbols: ['perpetual_futures'] }
+              ]
+            }
+          }));
+          this.syncCandleWebSocketSubscription(ws);
+          ws.send(JSON.stringify({ type: 'enable_heartbeat' }));
+        } catch (error) {
+          this.handleMarketWebSocketCallbackFailure(ws, error, 'open/subscription');
+        }
       });
       ws.on('message', raw => {
         this.lastTickAt = Date.now();
