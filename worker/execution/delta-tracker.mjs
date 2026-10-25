@@ -6,6 +6,7 @@ import {
   DELTA_TESTNET_PRIVATE_WS_URL,
   deltaHmacSha256
 } from './delta-executor.mjs';
+import { shouldEmitThrottledLog, websocketReconnectDelay, WS_ERROR_LOG_COOLDOWN_MS } from '../ws-resilience.mjs';
 
 const stringValue = value => String(value ?? '').trim();
 const numberOrNull = value => {
@@ -82,6 +83,8 @@ export class DeltaTestnetTracker {
     this.retryCount = 0;
     this.symbolTimers = new Map();
     this.reconcileInFlight = false;
+    this.authTimeoutTimer = null;
+    this.lastSocketWarningAt = 0;
   }
 
   async start() {
@@ -105,18 +108,41 @@ export class DeltaTestnetTracker {
     this.connect();
   }
 
+  async logSocketWarning(message, data = {}) {
+    const now = Date.now();
+    if (!shouldEmitThrottledLog(this.lastSocketWarningAt, now, WS_ERROR_LOG_COOLDOWN_MS)) return;
+    this.lastSocketWarningAt = now;
+    await this.database.log('WARN', message, data).catch(() => {});
+  }
+
+  clearAuthTimeout() {
+    if (this.authTimeoutTimer) clearTimeout(this.authTimeoutTimer);
+    this.authTimeoutTimer = null;
+  }
+
   connect() {
-    if (this.stopped || this.socket) return;
+    if (this.stopped || this.socket || this.reconnectTimer) return;
     const configuredUrl = stringValue(this.env.DELTA_TESTNET_WS_URL || DELTA_TESTNET_PRIVATE_WS_URL);
     if (configuredUrl !== DELTA_TESTNET_PRIVATE_WS_URL) {
       void this.database.log('ERROR', 'Delta Testnet private tracker refused an unapproved WebSocket URL', {});
       return;
     }
-    const socket = new this.WebSocketImpl(DELTA_TESTNET_PRIVATE_WS_URL);
+    let socket;
+    try {
+      socket = new this.WebSocketImpl(DELTA_TESTNET_PRIVATE_WS_URL);
+    } catch (error) {
+      void this.logSocketWarning('Delta Testnet WebSocket construction failed; reconnect scheduled', {
+        error: String(error?.message || error).slice(0, 200)
+      });
+      this.scheduleReconnect({ rateLimited: /429|rate.?limit|too many/i.test(String(error?.message || error)) });
+      return;
+    }
     this.socket = socket;
     this.authenticated = false;
+    let openedAt = 0;
 
     socket.on('open', () => {
+      openedAt = Date.now();
       try {
         const credentials = assertDeltaTestnetConfiguration(this.env);
         const timestamp = String(Math.floor(Date.now() / 1000));
@@ -129,11 +155,27 @@ export class DeltaTestnetTracker {
             timestamp: Number(timestamp)
           }
         }));
+        this.clearAuthTimeout();
+        this.authTimeoutTimer = setTimeout(() => {
+          if (this.stopped || this.socket !== socket || this.authenticated) return;
+          void this.logSocketWarning('Delta Testnet WebSocket auth timed out; reconnect scheduled', {
+            timeoutMs: 10_000,
+            endpoint: 'Delta India Testnet private WebSocket'
+          });
+          this.socket = null;
+          this.authenticated = false;
+          try { socket.terminate?.(); } catch {}
+          try { socket.close(); } catch {}
+          this.scheduleReconnect();
+        }, 10_000);
+        this.authTimeoutTimer.unref?.();
       } catch (error) {
-        void this.database.log('ERROR', 'Delta Testnet WebSocket authentication setup failed', {
-          error: String(error?.message || error)
+        void this.logSocketWarning('Delta Testnet WebSocket authentication setup failed', {
+          error: String(error?.message || error).slice(0, 200)
         });
-        socket.close();
+        try { socket.terminate?.(); } catch {}
+        try { socket.close(); } catch {}
+        this.scheduleReconnect();
       }
     });
 
@@ -141,26 +183,47 @@ export class DeltaTestnetTracker {
       void this.handleMessage(raw).catch(error =>
         this.database.log('ERROR', 'Delta Testnet private event processing failed', {
           error: String(error?.message || error)
-        })
+        }).catch(() => {})
       );
     });
 
     socket.on('error', error => {
-      void this.database.log('WARN', 'Delta Testnet WebSocket error', {
-        error: String(error?.message || error)
+      const message = String(error?.message || error);
+      const rateLimited = /429|rate.?limit|too many connections|unexpected server response: 429/i.test(message);
+      void this.logSocketWarning('Delta Testnet WebSocket error; reconnect scheduled', {
+        error: message.slice(0, 200),
+        rateLimited,
+        retryPolicy: rateLimited ? 'cooldown' : 'exponential'
       });
-    });
-
-    socket.on('close', () => {
       if (this.socket === socket) this.socket = null;
       this.authenticated = false;
-      if (!this.stopped) this.scheduleReconnect();
+      this.clearAuthTimeout();
+      try { socket.terminate?.(); } catch {}
+      try { socket.close(); } catch {}
+      this.scheduleReconnect({ rateLimited });
+    });
+
+    socket.on('close', (code, reasonBuffer) => {
+      if (this.socket === socket) this.socket = null;
+      this.authenticated = false;
+      this.clearAuthTimeout();
+      const uptimeMs = openedAt > 0 ? Date.now() - openedAt : 0;
+      if (uptimeMs >= 60_000) this.retryCount = 0;
+      const reason = reasonBuffer ? reasonBuffer.toString().slice(0, 120) : '';
+      if (!this.stopped) {
+        this.scheduleReconnect({
+          rateLimited: Number(code) === 429 || /429|rate.?limit|too many/i.test(reason)
+        });
+      }
     });
   }
 
-  scheduleReconnect() {
+  scheduleReconnect({ rateLimited = false } = {}) {
     if (this.stopped || this.reconnectTimer) return;
-    const delay = Math.min(60000, this.reconnectMs * Math.max(1, 2 ** Math.min(this.retryCount, 4)));
+    const delay = websocketReconnectDelay(this.retryCount, {
+      baseMs: this.reconnectMs,
+      rateLimited
+    });
     this.retryCount += 1;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -175,15 +238,25 @@ export class DeltaTestnetTracker {
     catch { return; }
     if (message?.type === 'key-auth') {
       if (message.success !== true) {
-        await this.database.log('ERROR', 'Delta Testnet private WebSocket authentication was rejected', {
+        await this.logSocketWarning('Delta Testnet private WebSocket authentication was rejected', {
           status: message.status || null,
-          statusCode: message.status_code || null
+          statusCode: message.status_code || null,
+          message: String(message.message || '').slice(0, 160)
         });
-        this.socket?.close();
+        this.clearAuthTimeout();
+        const socket = this.socket;
+        this.socket = null;
+        this.authenticated = false;
+        try { socket?.terminate?.(); } catch {}
+        try { socket?.close(); } catch {}
+        this.scheduleReconnect({
+          rateLimited: Number(message.status_code) === 429 || /429|rate.?limit/i.test(String(message.status || ''))
+        });
         return;
       }
+      this.clearAuthTimeout();
       this.authenticated = true;
-      this.retryCount = 0;
+      this.socket?.send(JSON.stringify({ type: 'enable_heartbeat' }));
       this.socket?.send(JSON.stringify({
         type: 'subscribe',
         payload: { channels: [{ name: 'orders', symbols: ['all'] }] }
@@ -340,6 +413,7 @@ export class DeltaTestnetTracker {
     this.stopped = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.reconcileTimer) clearInterval(this.reconcileTimer);
+    this.clearAuthTimeout();
     this.reconnectTimer = null;
     this.reconcileTimer = null;
     for (const timer of this.symbolTimers.values()) clearTimeout(timer);
