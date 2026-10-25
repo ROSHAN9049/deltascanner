@@ -1,0 +1,59 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+
+const read = path => readFile(new URL(path, import.meta.url), 'utf8');
+
+test('worker exposes a minimal HTTP health port before private API preflight', async () => {
+  const index = await read('../worker/index.mjs');
+  assert.match(index, /import \{ createServer \} from 'node:http'/);
+  assert.match(index, /Number\(process\.env\.PORT \|\| 8000\)/);
+  assert.match(index, /keepAliveServer\.listen\(HTTP_PORT, '0\.0\.0\.0'/);
+  assert.match(index, /response\.statusCode = 200/);
+  assert.match(index, /DeltaScanner worker alive/);
+  assert.ok(index.indexOf('keepAliveServer.listen') < index.indexOf('const preflightOk = await startupPreflight()'));
+});
+
+test('worker logs exact unhandled rejection and uncaught exception details', async () => {
+  const index = await read('../worker/index.mjs');
+  assert.match(index, /process\.on\('unhandledRejection'/);
+  assert.match(index, /process\.on\('uncaughtException'/);
+  assert.match(index, /processErrorDetails\(error\)/);
+  assert.match(index, /details\.stack/);
+  assert.match(index, /origin, pid: process\.pid/);
+  assert.match(index, /Unhandled promise rejection; exact rejection captured/);
+  assert.match(index, /Uncaught exception; exact stack captured before fail-closed exit/);
+});
+
+test('only graceful signal shutdown and fatal startup/error paths explicitly exit', async () => {
+  const index = await read('../worker/index.mjs');
+  const engine = await read('../worker/engine.mjs');
+  const leaseStart = engine.indexOf('  async acquireLease() {');
+  const leaseEnd = engine.indexOf('  async releaseLease()', leaseStart);
+  assert.ok(leaseStart >= 0 && leaseEnd > leaseStart);
+  assert.doesNotMatch(engine.slice(leaseStart, leaseEnd), /process\.exit\s*\(/);
+  const runStart = engine.indexOf('  async run() {');
+  const stopStart = engine.indexOf('  async stop() {', runStart);
+  assert.ok(runStart >= 0 && stopStart > runStart);
+  assert.doesNotMatch(engine.slice(runStart, stopStart), /process\.exit\s*\(/);
+  assert.match(index, /Graceful shutdown finished; exitCode=0/);
+  assert.match(index, /Startup preflight FAILED/);
+  assert.match(index, /Fatal worker startup error/);
+});
+
+test('public and private websocket outbound callbacks catch send failures and reconnect', async () => {
+  const engine = await read('../worker/engine.mjs');
+  const tracker = await read('../worker/execution/delta-tracker.mjs');
+  assert.match(engine, /handleMarketWebSocketCallbackFailure\(ws, error, 'open\/subscription'\)/);
+  assert.match(engine, /WebSocket callback failed safely; reconnect scheduled/);
+  assert.match(tracker, /private WebSocket subscription failed; reconnect scheduled/);
+  assert.match(tracker, /cleanupWebSocketListeners\(socket\)/);
+});
+
+test('SIGTERM logs uptime and health-server state before an intentional graceful exit', async () => {
+  const index = await read('../worker/index.mjs');
+  assert.match(index, /process\.on\('SIGTERM'/);
+  assert.match(index, /httpHealthServerListening: keepAliveServer\.listening/);
+  assert.match(index, /uptimeSeconds: Number\(process\.uptime\(\)\.toFixed\(1\)\)/);
+  assert.match(index, /process\.exit\(0\)/);
+});
