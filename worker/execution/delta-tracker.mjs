@@ -413,6 +413,7 @@ export class DeltaTestnetTracker {
     this.stopped = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.reconcileTimer) clearInterval(this.reconcileTimer);
+    this.clearAuthTimeout();
     this.reconnectTimer = null;
     this.reconcileTimer = null;
     for (const timer of this.symbolTimers.values()) clearTimeout(timer);
