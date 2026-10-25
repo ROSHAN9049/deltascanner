@@ -3299,7 +3299,7 @@ export class DeltaEngine {
   }
 
   scheduleWsReconnect(delayMs) {
-    if (this.wsReconnectTimer || !this.running) return;
+    if (this.ws || this.wsReconnectTimer || !this.running) return;
     this.wsReconnectTimer = setTimeout(() => {
       this.wsReconnectTimer = null;
       if (this.running) this.connectWs();
@@ -3945,6 +3945,13 @@ export class DeltaEngine {
       }
     }
 
+    const heartbeatMemory = summarizeMemoryUsage(process.memoryUsage());
+    let heartbeatCandleCount = 0;
+    for (const series of this.candles.values()) {
+      if (Array.isArray(series)) heartbeatCandleCount += series.length;
+    }
+    const heartbeatMessage = 'Worker heartbeat scan ' + formatMemoryLog(heartbeatMemory);
+    console.log(heartbeatMessage);
     const unrealized = account.positions.reduce((s, p) => s + n(p.unrealized_pnl), 0);
     const closed = trades || [];
     const realized = closed.reduce((s, t) => s + n(t.net_pnl), 0);
@@ -3956,9 +3963,16 @@ export class DeltaEngine {
       last_tick_at: new Date(this.lastTickAt || Date.now()).toISOString(),
       worker_started_at: new Date(this.startedAt).toISOString(), idle_reason: idle
     });
-    await this.log('INFO', 'Worker heartbeat scan', {
+    await this.log('INFO', heartbeatMessage, {
       deltaExecutionMode: CONFIG.deltaExecutionMode,
       deltaEnvironment: CONFIG.environment,
+      ...heartbeatMemory,
+      candleCacheLimit: this.candleCacheLimit,
+      candleCacheSymbols: this.candleCacheSymbols.size,
+      candleCacheSeries: this.candles.size,
+      cachedCandles: heartbeatCandleCount,
+      tickerSymbols: this.tickerMap.size,
+      optionTickerSymbols: this.optionTickerMap.size,
       lastTickAt: this.lastTickAt,
       signals: this.lastSignals.length,
       positions: (positions || []).filter(position =>
@@ -3970,9 +3984,53 @@ export class DeltaEngine {
       await this.releaseLease();
     }
   }
+  async recordMemoryUsage(reason = 'periodic') {
+    const memory = summarizeMemoryUsage(process.memoryUsage());
+    let cachedCandleCount = 0;
+    for (const series of this.candles.values()) {
+      if (Array.isArray(series)) cachedCandleCount += series.length;
+    }
+    const data = {
+      reason,
+      ...memory,
+      candleCacheLimit: this.candleCacheLimit,
+      candleCacheSymbols: this.candleCacheSymbols.size,
+      candleCacheSeries: this.candles.size,
+      cachedCandles: cachedCandleCount,
+      tickerSymbols: this.tickerMap.size,
+      optionTickerSymbols: this.optionTickerMap.size
+    };
+    const message = formatMemoryLog(memory);
+    console.log(message + ' | reason=' + reason +
+      ' | candles=' + cachedCandleCount +
+      ' | candleSeries=' + this.candles.size +
+      ' | cacheSymbols=' + this.candleCacheSymbols.size +
+      ' | optionTickers=' + this.optionTickerMap.size);
+    try {
+      await this.log('INFO', message, data);
+    } catch (error) {
+      console.warn('[Memory] Could not persist memory metrics:', safeMaintenanceError(error));
+    }
+    return data;
+  }
+
+  startMemoryMonitor() {
+    if (this.memoryMonitorInterval) return;
+    void this.recordMemoryUsage('startup').catch(error => {
+      console.warn('[Memory] Startup memory sample failed:', safeMaintenanceError(error));
+    });
+    this.memoryMonitorInterval = setInterval(() => {
+      void this.recordMemoryUsage('periodic').catch(error => {
+        console.warn('[Memory] Periodic memory sample failed:', safeMaintenanceError(error));
+      });
+    }, MEMORY_LOG_INTERVAL_MS);
+    this.memoryMonitorInterval.unref?.();
+  }
+
   async run() {
     if (!CONFIG.signalOnly || CONFIG.directDeltaExecutionEnabled) throw new Error('Production direct execution disabled; scanner must be SIGNAL_ONLY');
     this.running = true;
+    this.startMemoryMonitor();
     this.startMaintenanceTasks();
     this.connectWs();
     await this.log('INFO', 'Delta production SIGNAL_ONLY worker started', { workerId: CONFIG.workerId });
@@ -4019,7 +4077,17 @@ export class DeltaEngine {
     this.running = false;
     if (this.wsReconnectTimer) clearTimeout(this.wsReconnectTimer);
     this.wsReconnectTimer = null;
-    try { this.ws?.close(); } catch {}
+    if (this.memoryMonitorInterval) clearInterval(this.memoryMonitorInterval);
+    this.memoryMonitorInterval = null;
+    const socket = this.ws;
+    this.ws = null;
+    this.wsConnected = false;
+    this.wsOpenedAt = 0;
+    if (socket) {
+      cleanupWebSocketListeners(socket);
+      try { socket.close(); } catch {}
+      try { socket.terminate?.(); } catch {}
+    }
     await this.stopMaintenanceTasks();
     await this.releaseLease();
   }
