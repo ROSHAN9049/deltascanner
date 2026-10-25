@@ -12,7 +12,7 @@ import { createGridState, evaluateGridTick } from './grid-strategy.mjs';
 import { CANDLE_WARMUP_BATCH_SIZE, CANDLE_WARMUP_RETRY_MS, CANDLE_TESTNET_WARMUP_BATCH_SIZE, CANDLE_TESTNET_WARMUP_CONCURRENCY, CANDLE_TESTNET_WARMUP_RETRY_MS, planCandleWarmup } from './candle-warmup.mjs';
 import { shouldWriteMarketCache } from './market-cache-policy.mjs';
 import { MIN_RAW_CANDLES_FOR_ATR, mergeCandleUpdate, normalizeCandleBatch, normalizeEpochSeconds } from './candle-normalization.mjs';
-import { detectAtrSpike } from './atr-spike-guard.mjs';
+import { detectAtrSpike, replaceOutlierCandleWithPrevious } from './atr-spike-guard.mjs';
 import { shouldEmitThrottledLog, websocketReconnectDelay, WS_ERROR_LOG_COOLDOWN_MS } from './ws-resilience.mjs';
 import { isOptionsExecutionAllowed, OPTIONS_EXECUTION_LOCK_REASON } from './options-execution-lock.mjs';
 import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from './signal-failure-diagnostics.mjs';
@@ -984,7 +984,7 @@ export class DeltaEngine {
     }
     const rows = normalized.candles.slice(-120);
     const previousRows = this.getCandles(symbol, resolution);
-    if (this.rejectAtrSpike(symbol, resolution, previousRows, rows, 'REST')) return previousRows;
+    if (this.rejectAtrSpike(symbol, resolution, previousRows, rows, 'REST')) return this.getCandles(symbol, resolution);
     this.candles.set(key, rows);
     this.candleFailureLogAt.delete(key);
     await this.log('INFO', 'Candle REST batch normalized', {
@@ -1026,6 +1026,23 @@ export class DeltaEngine {
     const key = resolution + ':' + symbol;
     const now = Date.now();
     const cooldownMs = CONFIG.deltaExecutionMode === 'testnet' ? CANDLE_TESTNET_WARMUP_RETRY_MS : CANDLE_WARMUP_RETRY_MS;
+    let tailSanitized = false;
+    const previousTail = previousCandles.at(-1);
+    const candidatePreviousTail = candidateCandles.at(-2);
+    const candidateTail = candidateCandles.at(-1);
+    // On a new time bucket, the previously-forming candle becomes closed. If
+    // that exact candle causes the 3x jump, replace its OHLCV with the prior
+    // valid bar while retaining its timestamp so subsequent buckets can advance.
+    if (previousTail && candidatePreviousTail && candidateTail &&
+        Number(candidatePreviousTail.time) === Number(previousTail.time) &&
+        Number(candidateTail.time) > Number(previousTail.time)) {
+      const sanitized = replaceOutlierCandleWithPrevious(previousCandles);
+      if (sanitized) {
+        this.candles.set(key, sanitized.slice(-120));
+        tailSanitized = true;
+      }
+    }
+
     const previousLogAt = this.lastAtrJumpLogAt.get(key) || 0;
     if (shouldEmitThrottledLog(previousLogAt, now, cooldownMs)) {
       this.lastAtrJumpLogAt.set(key, now);
@@ -1033,9 +1050,12 @@ export class DeltaEngine {
         symbol, resolution, source,
         previousAtr: Number(jump.previousAtr.toFixed(10)), candidateAtr: Number(jump.candidateAtr.toFixed(10)),
         ratio: Number(jump.ratio.toFixed(3)),
-        previousCandleTimestamp: previousCandles.at(-1)?.time ?? null,
-        candidateCandleTimestamp: candidateCandles.at(-1)?.time ?? null,
-        action: 'candidate candle series rejected; last valid cache retained'
+        previousCandleTimestamp: previousTail?.time ?? null,
+        candidateCandleTimestamp: candidateTail?.time ?? null,
+        tailSanitized,
+        action: tailSanitized
+          ? 'suspect candle OHLCV replaced with previous valid candle values'
+          : 'candidate candle series rejected; previous valid cache retained'
       }).catch(() => {});
     }
     return true;
