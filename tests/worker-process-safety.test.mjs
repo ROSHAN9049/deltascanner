@@ -12,8 +12,10 @@ test('worker exposes a minimal HTTP health port before private API preflight', a
   assert.match(index, /Number\(process\.env\.PORT \|\| 8000\)/);
   assert.match(index, /keepAliveServer\.listen\(HTTP_PORT, '0\.0\.0\.0'/);
   assert.match(index, /response\.statusCode = 200/);
-  assert.match(index, /DeltaScanner worker alive/);
-  assert.ok(index.indexOf('keepAliveServer.listen') < index.indexOf('const preflightOk = await startupPreflight()'));
+  assert.ok(index.includes("application/json; charset=utf-8"));
+  assert.ok(index.includes("status: workerHalted"));
+  assert.ok(index.includes("uptime: Number(process.uptime().toFixed(1))"));
+  assert.ok(index.indexOf('keepAliveServer.listen') < index.indexOf('const preflightOk = await startupPreflightWithRetry()'));
 });
 
 test('worker logs exact unhandled rejection and uncaught exception details', async () => {
@@ -22,15 +24,16 @@ test('worker logs exact unhandled rejection and uncaught exception details', asy
   assert.match(index, /process\.on\('uncaughtException'/);
   assert.match(index, /processErrorDetails\(error\)/);
   assert.match(index, /details\.stack/);
-  assert.match(index, /origin, pid: process\.pid/);
+  assert.match(index, /origin,/);
+  assert.match(index, /pid: process\.pid/);
   assert.match(index, /Unhandled promise rejection; exact rejection captured/);
-  assert.match(index, /Uncaught exception; exact stack captured before fail-closed exit/);
+  assert.match(index, /Uncaught exception; exact stack captured before fail-closed exit of scanner loop; process remains alive/);
 });
 
 test('uncaught exceptions park the scanner fail-closed without terminating the process', async () => {
   const index = await read('../worker/index.mjs');
   const handlerStart = index.indexOf("process.on('uncaughtException', (error, origin) => {");
-  const handlerEnd = index.indexOf("const preflightOk = await startupPreflight();", handlerStart);
+  const handlerEnd = index.indexOf("const preflightOk = await startupPreflightWithRetry();", handlerStart);
   assert.ok(handlerStart >= 0 && handlerEnd > handlerStart);
   const handler = index.slice(handlerStart, handlerEnd);
   assert.match(handler, /workerHalted = true/);
