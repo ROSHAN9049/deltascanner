@@ -199,11 +199,10 @@ async function startupPreflight() {
   }
 }
 
-
 async function startupPreflightWithRetry() {
   let attempt = 0;
-  while (!workerHalted) {
-    if (await startupPreflight()) return true;
+  while (!workerHalted && !shutdownPromise) {
+    if (await startupPreflight()) return !workerHalted && !shutdownPromise;
     attempt += 1;
     const delayMs = Math.min(60_000, 5_000 * (2 ** Math.min(attempt - 1, 4)));
     console.warn('[DeltaScanner] Startup preflight retry scheduled; worker remains online', JSON.stringify({
@@ -413,22 +412,36 @@ async function runTradetronSelfTest() {
   }));
 }
 
-await runTradetronSelfTest();
+try {
+  await runTradetronSelfTest();
+} catch (error) {
+  const details = processErrorDetails(error);
+  console.warn('[DeltaScanner] Optional Tradetron self-test failed; worker startup will continue without the test signal:', details.stack || details.message);
+  await log('WARN', 'Optional Tradetron self-test failed; worker continues without test signal', details).catch(logError => {
+    console.error('[DeltaScanner] Could not persist self-test warning:', String(logError?.message || logError));
+  });
+}
 
 // Fetch the global BTC hourly regime data immediately, then refresh it hourly.
 // This schedule is independent of the rotating 1m/5m/15m warmup and WebSocket.
-await warmupBTCHourly(engine.adapter, engine.candles).catch(error => {
-  console.warn('[DeltaScanner] Initial BTC hourly warmup failed; worker will continue and retry on the next scheduled refresh:', String(error?.message || error));
-});
-btcHourlyWarmupTimer = setInterval(() => {
-  void warmupBTCHourly(engine.adapter, engine.candles).catch(error => {
-    console.warn('[DeltaScanner] Scheduled BTC hourly warmup failed:', String(error?.message || error));
+if (!workerHalted && !shutdownPromise) {
+  await warmupBTCHourly(engine.adapter, engine.candles).catch(error => {
+    console.warn('[DeltaScanner] Initial BTC hourly warmup failed; worker will continue and retry on the next scheduled refresh:', String(error?.message || error));
   });
-}, 60 * 60 * 1000);
-btcHourlyWarmupTimer.unref?.();
+}
+if (!workerHalted && !shutdownPromise) {
+  btcHourlyWarmupTimer = setInterval(() => {
+    void warmupBTCHourly(engine.adapter, engine.candles).catch(error => {
+      console.warn('[DeltaScanner] Scheduled BTC hourly warmup failed:', String(error?.message || error));
+    });
+  }, 60 * 60 * 1000);
+  btcHourlyWarmupTimer.unref?.();
 
-console.log('[DeltaScanner] Scanner worker entering engine loop; execution=' + CONFIG.deltaExecutionMode);
-void runEngineWithRecovery();
+  console.log('[DeltaScanner] Scanner worker entering engine loop; execution=' + CONFIG.deltaExecutionMode);
+  void runEngineWithRecovery();
+} else {
+  console.warn('[DeltaScanner] Shutdown requested or fatal state latched during startup; engine launch skipped.');
+}
 } else {
   console.error('[DeltaScanner] Worker is parked; engine startup skipped.');
 }
