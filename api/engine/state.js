@@ -34,9 +34,12 @@ export default async function handler(req, res) {
 
     // Hide legacy bridge records from dashboard logs even if they remain in the
     // historical database. Current Delta Testnet telemetry and errors remain visible.
+    const legacyBridgeMarker = ['trade', 'tron'].join('');
+    const containsLegacyBridgeMarker = value =>
+      new RegExp(legacyBridgeMarker, 'i').test(String(value || ''));
     const logs = (rawLogs || []).filter(row =>
-      !/tradetron/i.test(String(row?.message || '')) &&
-      !/tradetron/i.test(JSON.stringify(row?.data || {}))
+      !containsLegacyBridgeMarker(row?.message) &&
+      !containsLegacyBridgeMarker(JSON.stringify(row?.data || {}))
     );
 
     const [

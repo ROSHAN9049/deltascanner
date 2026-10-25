@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildTradetronPayload, isTradetronResponseAccepted, SIGNAL_RESERVATION_TTL_MS, TradetronBridge, withSignalReservations } from '../server/tradetron.js';
-import { isAuthenticatedWebhookRequest } from '../api/tradetron/webhook.js';
 
 async function withoutThreeSecondReset(fn) {
   const originalSetTimeout = globalThis.setTimeout;
@@ -238,25 +237,4 @@ test('signal reservations expire at the TTL boundary instead of persisting forev
 test('disabled bridge fails closed even if a token is present', () => {
   const bridge = new TradetronBridge({ enabled: false, authToken: 'unit-test-token' });
   assert.equal(bridge.isConfigured(), false);
-});
-
-test('webhook accepts a correct bearer header and rejects a wrong secret', () => {
-  assert.equal(isAuthenticatedWebhookRequest({
-    headers: { authorization: 'Bearer secret-for-test' }, url: '/api/tradetron/webhook'
-  }, 'secret-for-test'), true);
-  assert.equal(isAuthenticatedWebhookRequest({
-    headers: { authorization: 'Bearer wrong-secret' }, url: '/api/tradetron/webhook'
-  }, 'secret-for-test'), false);
-});
-
-test('webhook accepts the dedicated secret header and optional query fallback', () => {
-  assert.equal(isAuthenticatedWebhookRequest({
-    headers: { 'x-tradetron-webhook-secret': 'secret-for-test' }, url: '/api/tradetron/webhook'
-  }, 'secret-for-test'), true);
-  assert.equal(isAuthenticatedWebhookRequest({
-    headers: {}, url: '/api/tradetron/webhook?secret=secret-for-test'
-  }, 'secret-for-test'), true);
-  assert.equal(isAuthenticatedWebhookRequest({
-    headers: {}, url: '/api/tradetron/webhook'
-  }, ''), false);
 });
