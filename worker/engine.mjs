@@ -20,6 +20,9 @@ import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
 import { buildApiDerivedTrackingPlan, strategyForDerivedTrade } from './tradetron-derived-trades.mjs';
 import { deltaExecutor } from './execution/delta-executor.mjs';
 import { canExecuteDeltaTestnetOrders, checkDeltaTestnetPrivateApi, isPrivateApiConnectivityError } from './execution/testnet-private-api-health.mjs';
+import { DEFAULT_CANDLE_CACHE_SYMBOL_LIMIT, pruneCandleCacheState, resolveCandleCacheSymbolLimit, selectTopCandleSymbols } from './candle-cache-policy.mjs';
+import { formatMemoryLog, MEMORY_LOG_INTERVAL_MS, summarizeMemoryUsage } from './memory-monitor.mjs';
+import { cleanupWebSocketListeners } from './websocket-lifecycle.mjs';
 import { evaluateGlobalPositionCap, routeUnlessGlobalPositionCapBlocked } from './global-position-cap.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -175,6 +178,10 @@ export class DeltaEngine {
     this.products = [];
     this.productMap = new Map();
     this.candles = new Map();
+    this.candleCacheLimit = resolveCandleCacheSymbolLimit(process.env.CANDLE_CACHE_MAX_SYMBOLS, DEFAULT_CANDLE_CACHE_SYMBOL_LIMIT);
+    this.candleCacheSymbols = new Set();
+    this.lastCandleCachePruneLogAt = 0;
+    this.memoryMonitorInterval = null;
     this.ws = null;
     this.wsRetry = 0;
     this.wsReconnectTimer = null;
@@ -873,6 +880,7 @@ export class DeltaEngine {
     }
     const ranked = [...next.values()].sort((a, b) => n(b.turnover_usd || b.turnover) - n(a.turnover_usd || a.turnover));
     this.tickerMap = new Map(ranked.map(x => [x.symbol, x]));
+    this.updateCandleCacheUniverse(ranked);
     if (ranked.length) this.lastTickAt = Date.now();
     this.lastTickerFetch = Date.now();
   }
@@ -960,6 +968,9 @@ export class DeltaEngine {
   }
 
   async refreshCandle(symbol, resolution) {
+    const normalizedSymbol = String(symbol || '').trim().toUpperCase();
+    if (!['1m', '5m', '15m'].includes(resolution) || !this.candleCacheSymbols.has(normalizedSymbol)) return [];
+    symbol = normalizedSymbol;
     const key = resolution + ':' + symbol;
     // Track attempts even when the API fails or returns a partial series. Testnet
     // mode uses a longer cooldown so thin/empty products cannot trigger retry storms.
@@ -998,13 +1009,7 @@ export class DeltaEngine {
   }
 
   preserveCandleCacheForHealing(reason) {
-    const symbols = new Set([
-      ...this.productMap.keys(),
-      ...this.tickerMap.keys()
-    ]);
-    for (const key of this.candles.keys()) {
-      if (/^(1m|5m|15m):/.test(key)) symbols.add(key.slice(key.indexOf(':') + 1));
-    }
+    const symbols = new Set(this.candleCacheSymbols);
     // Do not throw away validated history on a transient socket outage.
     // Stale series trigger REST rewarm after cooldown and are blocked from
     // generating executable signals by applyTestnetCandleFreshness().
@@ -1118,10 +1123,43 @@ export class DeltaEngine {
     })();
   }
 
+  updateCandleCacheUniverse(rankedTickers = [...this.tickerMap.values()]) {
+    const nextSymbols = selectTopCandleSymbols(rankedTickers, this.candleCacheLimit);
+    this.candleCacheSymbols = nextSymbols;
+    const pruned = pruneCandleCacheState({
+      candles: this.candles,
+      eligibleSymbols: nextSymbols,
+      metadataMaps: [
+        this.candleFetchAt,
+        this.candleFailureLogAt,
+        this.candleUpdateCounts,
+        this.lastObservedAtr,
+        this.lastAtrJumpLogAt
+      ],
+      healingInFlight: this.candleHealingInFlight
+    });
+    const removed = pruned.removedSeries + pruned.removedMetadataEntries + pruned.removedHealingKeys;
+    if (removed > 0 && Date.now() - this.lastCandleCachePruneLogAt >= 60_000) {
+      this.lastCandleCachePruneLogAt = Date.now();
+      void this.log('INFO', 'Candle cache bounded to top turnover-ranked symbols', {
+        cacheLimit: this.candleCacheLimit,
+        eligibleSymbols: nextSymbols.size,
+        cachedSeries: this.candles.size,
+        removedSeries: pruned.removedSeries,
+        removedMetadataEntries: pruned.removedMetadataEntries,
+        removedHealingKeys: pruned.removedHealingKeys
+      }).catch(() => {});
+    }
+    return nextSymbols;
+  }
+
   async refreshCandleWarmup() {
     const ranked = [...this.tickerMap.values()]
       .sort((a, b) => n(b.turnover_usd || b.turnover) - n(a.turnover_usd || a.turnover));
     if (!ranked.length) return;
+    this.updateCandleCacheUniverse(ranked);
+    const cacheRanked = ranked.filter(row => this.candleCacheSymbols.has(String(row.symbol || '').toUpperCase()));
+    if (!cacheRanked.length) return;
 
     const testnetCandleMode = CONFIG.deltaExecutionMode === 'testnet';
     const warmupBatchSize = testnetCandleMode
@@ -1129,7 +1167,7 @@ export class DeltaEngine {
     const retryAfterMs = testnetCandleMode
       ? CANDLE_TESTNET_WARMUP_RETRY_MS : CANDLE_WARMUP_RETRY_MS;
     const plan = planCandleWarmup(
-      ranked.map(row => row.symbol),
+      cacheRanked.map(row => row.symbol),
       this.candles,
       this.candleFetchAt,
       this.candleWarmCursor,
@@ -1176,7 +1214,9 @@ export class DeltaEngine {
       seriesReady: warmed,
       seriesFailed: failed,
       nextCursor: plan.nextCursor,
-      universe: ranked.length
+      universe: ranked.length,
+      candleCacheUniverse: cacheRanked.length,
+      candleCacheLimit: this.candleCacheLimit
     });
   }
 
@@ -2050,7 +2090,9 @@ export class DeltaEngine {
     const out = [];
     const signalCacheRows = [];
     const signalHistoryRows = [];
-    const tickers = [...this.tickerMap.values()];
+    const tickers = [...this.tickerMap.values()].filter(ticker =>
+      this.candleCacheSymbols.has(String(ticker.symbol || '').toUpperCase())
+    );
 
     // Shadow pre-pass: compute normalized scores across this strategy universe.
     // Analyse remains pure here; the existing sequential riskGate/cache loop
@@ -2186,7 +2228,10 @@ export class DeltaEngine {
             btcRegimeSource: shadowRegime ? 'live-1h' : null,
             btcAtrPct: shadowRegime?.btcAtrPct ?? null,
             btcRegimeComputedAt: shadowRegime?.btcRegimeComputedAt ?? null,
-            fullMarketScan: true
+            fullMarketScan: tickers.length === this.tickerMap.size,
+            analysisUniverse: 'TOP_TURNOVER_CANDLE_CACHE',
+            candleCacheUniverseSize: this.candleCacheSymbols.size,
+            candleCacheSymbolLimit: this.candleCacheLimit
           }, strategyName)
         };
         signalCacheRows.push(cacheRow);
@@ -3307,6 +3352,9 @@ export class DeltaEngine {
               const t = this.tickerMap.get(symbol);
               if (t) this.tickerMap.set(symbol, { ...t, mark_price: n(x.p || x.mark_price || x.c || t.mark_price) });
             } else if (String(msg.type || '').startsWith('candlestick_')) {
+              // The exchange can stream candle events for every listed perpetual.
+              // Do not build/retain history for symbols outside the bounded cache.
+              if (!this.candleCacheSymbols.has(String(symbol).toUpperCase())) continue;
               const match = String(msg.type || '').match(/^candlestick_(.+)$/);
               const resolution = match?.[1] || String(x.res || '');
               if (!resolution || !['1m','5m','15m'].includes(resolution)) continue;
