@@ -36,6 +36,10 @@ export function parseDeltaExecutionMode(value) {
 const deltaExecutionMode = parseDeltaExecutionMode(process.env.DELTA_EXECUTION_MODE);
 const deltaTestnetRestBase = String(process.env.DELTA_TESTNET_REST_BASE || 'https://cdn-ind.testnet.deltaex.org').trim().replace(/\/+$/, '');
 const deltaTestnetWsUrl = String(process.env.DELTA_TESTNET_WS_URL || 'wss://socket-ind.testnet.deltaex.org').trim();
+// Scanner prices/candles always come from the liquid production public feed.
+// Testnet is reserved for authenticated account, order and position operations.
+const marketDataRestBase = 'https://api.india.delta.exchange';
+const publicMarketDataWs = 'wss://public-socket.india.delta.exchange';
 if (deltaExecutionMode === 'testnet' && deltaTestnetRestBase !== 'https://cdn-ind.testnet.deltaex.org') {
   throw new Error('DELTA_TESTNET_REST_BASE must use the hardcoded Delta India Testnet endpoint');
 }
@@ -89,9 +93,12 @@ export const CONFIG = Object.freeze({
   deltaExecutionMode,
   deltaTestnetRestBase,
   deltaTestnetWsUrl,
+  marketDataRestBase,
   directDeltaExecutionEnabled: false,
+  // Keep private REST operations on the environment-specific API base. Public
+  // scanner data has an explicit production feed, independent of execution mode.
   restBase: signalOnly ? 'https://api.india.delta.exchange' : 'https://cdn-ind.testnet.deltaex.org',
-  publicWs: signalOnly ? 'wss://public-socket.india.delta.exchange' : 'wss://socket-ind-pub.testnet.deltaex.org',
+  publicWs: publicMarketDataWs,
   privateWs: signalOnly ? '' : 'wss://socket-ind.testnet.deltaex.org',
   apiKey: signalOnly ? '' : String(process.env.DELTA_TESTNET_API_KEY || '').trim(),
   apiSecret: signalOnly ? '' : String(process.env.DELTA_TESTNET_API_SECRET || '').trim(),
