@@ -36,9 +36,12 @@ test('only graceful signal shutdown and fatal startup/error paths explicitly exi
   const stopStart = engine.indexOf('  async stop() {', runStart);
   assert.ok(runStart >= 0 && stopStart > runStart);
   assert.doesNotMatch(engine.slice(runStart, stopStart), /process\.exit\s*\(/);
+  assert.match(engine, /DUPLICATE WORKER DETECTED/);
+  assert.match(engine, /Worker cycle skipped safely: trading lease is held by another worker/);
   assert.match(index, /Graceful shutdown finished; exitCode=0/);
   assert.match(index, /Startup preflight FAILED/);
   assert.match(index, /Fatal worker startup error/);
+  assert.match(index, /Process exit event/);
 });
 
 test('public and private websocket outbound callbacks catch send failures and reconnect', async () => {
