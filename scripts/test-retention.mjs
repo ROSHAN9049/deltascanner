@@ -151,6 +151,25 @@ try {
     assert.deepEqual(retentionRequest, { reason: 'row-count-critical' });
   });
 
+  await run('signal-history writes pause before the 400 MiB operational target', async () => {
+    assert.match(engineSource, /envInteger\\('SIGNAL_HISTORY_PAUSE_DB_MB', 370, 300, 380\\)/);
+    const engine = new DeltaEngine();
+    const logs = [];
+    engine.maintenanceLog = async (level, message, data = {}) => logs.push({ level, message, data });
+    engine.getMaintenancePool = async () => ({
+      query: async () => ({
+        rows: [{ db_bytes: String(390 * MB), signal_rows: '8000', expired_rows: '0' }]
+      })
+    });
+
+    await engine.checkDiskHealth();
+    assert.equal(engine.signalHistoryWritesPaused, true,
+      'history writes must pause while database size remains below 400 MiB but exceeds the configured guard');
+    const pauseLog = logs.find(log => /pausing new dd_signals history writes/.test(log.message));
+    assert.ok(pauseLog, 'disk monitor should log the protective pause');
+    assert.equal(pauseLog.data.pauseAtMb, 370);
+  });
+
   await run('expired retention-window backlog triggers configured retention below the critical row count', async () => {
     const engine = new DeltaEngine();
     const logs = [];
@@ -183,7 +202,7 @@ try {
     await engine.checkDiskHealth();
     assert.equal(engine.signalHistoryWritesPaused, true, 'high database size must pause history writes');
 
-    dbBytes = 405 * MB;
+    dbBytes = 345 * MB;
     await engine.checkDiskHealth();
     assert.equal(engine.signalHistoryWritesPaused, false, 'history writes resume after the database falls below the recovery threshold');
     assert.ok(logs.some(log => /resuming dd_signals history writes/.test(log.message)));
