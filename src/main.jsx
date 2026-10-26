@@ -38,6 +38,37 @@ const latestSignals = list => {
   return [...m.values()];
 };
 
+class AppErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, info) {
+    console.error('[Dashboard] React render error:', error, info?.componentStack || '');
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return <div className="terminal">
+        <section className="panel">
+          <div className="panelTitle"><h2>Dashboard could not render</h2></div>
+          <div className="pad">
+            <p>The dashboard caught a rendering error instead of showing a blank screen.</p>
+            <pre className="error" role="alert">{String(this.state.error?.message || 'Unknown React rendering error')}</pre>
+            <button className="action" type="button" onClick={() => window.location.reload()}>Reload dashboard</button>
+          </div>
+        </section>
+      </div>;
+    }
+    return this.props.children;
+  }
+}
+
 function App() {
   const [tab, setTab] = useState('dashboard');
   const [state, setState] = useState(null);
@@ -132,14 +163,20 @@ function App() {
   useEffect(() => { void load(); const id = setInterval(() => { void load(); }, 10000); return () => clearInterval(id); }, [load]);
   useEffect(() => { const id = setInterval(() => setClock(Date.now()), 1000); return () => clearInterval(id); }, []);
 
-  const settings = state?.settings || {};
-  const trades = state?.deltaTestnetTrades || [];
-  const positions = state?.deltaTestnetPositions || [];
+  const settings = state?.settings && typeof state.settings === 'object' && !Array.isArray(state.settings) ? state.settings : {};
+  const trades = Array.isArray(state?.deltaTestnetTrades) ? state.deltaTestnetTrades : [];
+  const positions = Array.isArray(state?.deltaTestnetPositions) ? state.deltaTestnetPositions : [];
   const accountDataProtected = state?.accountDataProtected === true;
   const tradeHistoryComplete = state?.deltaTestnetTradeRowCount != null && Number(state.deltaTestnetTradeRowCount) === trades.length;
-  const rotationLedger = state?.ledger || [];
+  const rotationLedger = Array.isArray(state?.ledger) ? state.ledger : [];
   const rotationLedgerComplete = state?.ledgerRowCount != null && Number(state.ledgerRowCount) === rotationLedger.length;
-  const signals = latestSignals(state?.signalCache || state?.signals || []);
+  const signalRows = Array.isArray(state?.signalCache)
+    ? state.signalCache
+    : Array.isArray(state?.signals) ? state.signals : [];
+  const optionCache = Array.isArray(state?.optionCache) ? state.optionCache : [];
+  const deltaTestnetOrders = Array.isArray(state?.deltaTestnetOrders) ? state.deltaTestnetOrders : [];
+  const logs = Array.isArray(state?.logs) ? state.logs : [];
+  const signals = latestSignals(signalRows);
   const today = indiaDateKey(new Date());
   const todayTrades = trades.filter(t => indiaDateKey(t.closed_at) === today);
   const wins = todayTrades.filter(t => num(t.net_pnl) > 0).length;
@@ -175,7 +212,7 @@ function App() {
 
   const selectedScalp = selected ? signals.find(x => x.symbol === selected.symbol && x.strategy === 'SCALPING') : null;
   const stale = !health?.tickFresh;
-  const executionCoverage = state?.executionCoverage || null;
+  const executionCoverage = state?.executionCoverage && typeof state.executionCoverage === 'object' && !Array.isArray(state.executionCoverage) ? state.executionCoverage : null;
   const routeSafetyBlocked = false;
   const routeSafetyReason = 'Delta Testnet position state unavailable';
   const openPositionSymbols = new Set((Array.isArray(positions) ? positions : []).filter(position => Math.abs(Number(position?.qty) || 0) > 0).map(position => String(position?.symbol || '').toUpperCase()).filter(Boolean));
@@ -202,13 +239,13 @@ function App() {
     <nav>{tabs.map(([id,label]) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}{id === 'live' ? ' 🔒' : ''}</button>)}</nav>
     {accountDataProtected ? <div className="danger">🔒 ACCOUNT DATA LOCKED — Enter ENGINE_SECRET in Settings to view private positions, closed trades, P&amp;L, rotation ledger, Grid state, and account-specific logs. Hidden data is not zero.</div> : null}
 
-    {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} positions={positions} accountDataProtected={accountDataProtected} signals={signals} deltaTestnetOpenPositionCount={state?.deltaTestnetOpenPositionCount ?? null} deltaTestnetOrders={state?.deltaTestnetOrders || []} deltaTestnetOrderCount={state?.deltaTestnetOrderCount ?? null} deltaTestnetClosedTodayCount={state?.deltaTestnetClosedTodayCount ?? null} deltaTestnetClosedTodayPnl={state?.deltaTestnetClosedTodayPnl ?? null} deltaTestnetClosedTodayPnlComplete={state?.deltaTestnetClosedTodayPnlComplete === true} executionCoverage={executionCoverage} onInspect={setInspect} inspect={selected} logs={state?.logs || []} />}
+    {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} positions={positions} accountDataProtected={accountDataProtected} signals={signals} deltaTestnetOpenPositionCount={state?.deltaTestnetOpenPositionCount ?? null} deltaTestnetOrders={deltaTestnetOrders} deltaTestnetOrderCount={state?.deltaTestnetOrderCount ?? null} deltaTestnetClosedTodayCount={state?.deltaTestnetClosedTodayCount ?? null} deltaTestnetClosedTodayPnl={state?.deltaTestnetClosedTodayPnl ?? null} deltaTestnetClosedTodayPnlComplete={state?.deltaTestnetClosedTodayPnlComplete === true} executionCoverage={executionCoverage} onInspect={setInspect} inspect={selected} logs={logs} />}
     {tab === 'rotation' && <Rotation ledger={rotationLedger} accountDataProtected={accountDataProtected} ledgerComplete={rotationLedgerComplete} ledgerRowCount={state?.ledgerRowCount ?? null} />}
     {tab === 'momentum' && <EngineView engine="MOMENTUM" signals={signals} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols} />}
     {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" strategy="MOMENTUM" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'scalping' && <EngineView engine="SCALPING" signals={signals} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols} />}
     {tab === 'grid' && <GridStrategy settings={settings} market={market} busy={busy} mutate={mutate} accountDataProtected={accountDataProtected} gridEntrySafety={executionCoverage?.gridEntrySafety || null} />}
-    {tab === 'options' && <OptionsView signals={signals} settings={settings} optionCache={state?.optionCache || []} executionCoverage={state?.executionCoverage || null} />}
+    {tab === 'options' && <OptionsView signals={signals} settings={settings} optionCache={optionCache} executionCoverage={state?.executionCoverage || null} />}
     {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" strategy="SCALPING" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'positions' && <Positions rows={positions} accountDataProtected={accountDataProtected} />}
     {tab === 'delta-testnet-positions' && <DeltaTestnetPositions rows={state?.deltaTestnetPositions || []} accountDataProtected={accountDataProtected} mode={executionCoverage?.deltaExecutionMode || 'disabled'} />}
@@ -305,7 +342,7 @@ function Dashboard({ market, settings, health, positions, accountDataProtected =
   const openSymbols=new Set((positions||[]).filter(p=>Math.abs(Number(p?.qty)||0)>0).map(p=>String(p.symbol||'').toUpperCase()));
   return <>
     <section className="cards"><Card label="DELTA TESTNET EQUITY" value={equityText} sub={equitySub}/><Card label="DELTA OPEN POSITIONS" value={positionText} sub={posSub}/><Card label="DELTA OPEN ORDERS" value={orderText} sub={orderSub}/><Card label="TODAY'S P&L (DELTA)" value={pnlText} sub={pnlSub}/></section>
-    <Panel title={'Full Delta Market Scanner · '+(market?.length||0)+' live perpetuals · Signal Only'}><MarketTable market={market} signals={signals} routedSymbols={[]} entrySafetyBlocked={false} entrySafetyReason="" openPositionSymbols={openSymbols}/></Panel>
+    <Panel title={'Full Delta Market Scanner · '+(market?.length||0)+' live perpetuals · Signal Only'}><MarketTable market={market} signals={signals} openPositionSymbols={openSymbols}/></Panel>
     <section className="grid2"><RiskGovernor signals={signals} health={health} positions={accountDataProtected?null:positions} onInspect={onInspect} inspect={inspect} routedSymbols={[]} routeDataVerified={false} entrySafetyTrusted={null}/>
       <Panel title={'Signal Stages · '+visibleCoinCount+' coins · WATCH → SETUP → CONFIRMED'}><div className="marketCount">Momentum and Scalping status for the same top {visibleCoinCount} coins shown in the market table.</div>
         <div className="tablewrap"><table><thead><tr><th>COIN</th><th>ENG</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>QTY</th><th>NOTIONAL</th><th>RISK</th><th>READY</th><th>WHY BLOCKED</th></tr></thead><tbody>
@@ -338,22 +375,20 @@ function fmtQty(v) {
   return num(v) === 0 ? '—' : num(v).toLocaleString('en-IN', { maximumFractionDigits: 0 });
 }
 
-function MarketTable({ market, signals, routedSymbols = [], entrySafetyBlocked = false, entrySafetyReason = null, openPositionSymbols = new Set() }) {
+function MarketTable({ market, signals, openPositionSymbols = new Set() }) {
   const visibleMarket = selectVisibleMarketRows(market, DEFAULT_VISIBLE_MARKET_LIMIT);
   const map = new Map();
-  for (const s of signals || []) {
-    if (!map.has(s.symbol)) map.set(s.symbol, {});
-    map.get(s.symbol)[s.strategy] = s;
+  for (const signal of Array.isArray(signals) ? signals : []) {
+    if (!signal?.symbol) continue;
+    if (!map.has(signal.symbol)) map.set(signal.symbol, {});
+    map.get(signal.symbol)[signal.strategy] = signal;
   }
-  return <><div className="marketCount">Showing {visibleMarket.length} of {(market || []).length} instruments · sorted by 24h turnover · full background scanner remains active.</div><div className="tablewrap"><table><thead><tr><th>#</th><th>COIN</th><th>PRICE</th><th>24H %</th><th>TURNOVER</th><th>VOL SPIKE</th><th>MOM</th><th>SCALP</th><th>TREND</th><th>SUPPORT</th><th>RESIST.</th><th>SIGNAL</th><th>TT ROUTE</th></tr></thead><tbody>{visibleMarket.map((m,i) => {
-    const x = map.get(m.symbol) || {};
+  const marketRows = Array.isArray(market) ? market : [];
+  return <><div className="marketCount">Showing {visibleMarket.length} of {marketRows.length} instruments · sorted by 24h turnover · full background scanner remains active.</div><div className="tablewrap"><table><thead><tr><th>#</th><th>COIN</th><th>PRICE</th><th>24H %</th><th>TURNOVER</th><th>VOL SPIKE</th><th>MOM</th><th>SCALP</th><th>TREND</th><th>SUPPORT</th><th>RESIST.</th><th>SIGNAL</th><th>POSITION</th></tr></thead><tbody>{visibleMarket.map((marketRow,i) => {
+    const x = map.get(marketRow.symbol) || {};
     const best = [x.MOMENTUM,x.SCALPING].filter(Boolean).sort((a,b) => num(b.score)-num(a.score))[0];
-    const routeInfo = routeStatusForSymbol(m.symbol, [x.MOMENTUM, x.SCALPING], routedSymbols);
-    const hasOpenPosition = openPositionSymbols.has(String(m.symbol || '').toUpperCase());
-    const routeLabel = entrySafetyBlocked ? 'SAFETY LOCK' : hasOpenPosition ? 'POSITION OPEN' : routeInfo.label;
-    const routeTone = entrySafetyBlocked || hasOpenPosition ? 'warn' : routeInfo.tone;
-    const routeTitle = entrySafetyBlocked ? 'New signal entries are blocked because the current Delta Testnet position snapshot is not trusted: ' + (entrySafetyReason || 'unknown reason') : hasOpenPosition ? 'A current engine/event or Delta Testnet API snapshot already has this symbol open; duplicate entry is blocked.' : routeInfo.title;
-    return <tr key={m.symbol}><td>{i+1}</td><td className="symbol">{m.symbol}</td><td>{price(m.mark_price || m.close)}</td><td className={safeNum(m.ltp_change_24h) === null ? 'muted' : safeNum(m.ltp_change_24h) >= 0 ? 'up' : 'down'}>{pct(m.ltp_change_24h)}</td><td>{money(m.turnover_usd)}</td><td>{fmtMultiplier(best?.volume_spike)}</td><td><span className={x.MOMENTUM?.side==='BUY'?'up':x.MOMENTUM?.side==='SELL'?'down':''}>{x.MOMENTUM ? (safeNum(x.MOMENTUM.score) === null ? 'NO DATA' : safeNum(x.MOMENTUM.score).toFixed(0)) + ' ' + (x.MOMENTUM.side || '') : '—'}</span></td><td><span className={x.SCALPING?.side==='BUY'?'up':x.SCALPING?.side==='SELL'?'down':''}>{x.SCALPING ? (safeNum(x.SCALPING.score) === null ? 'NO DATA' : safeNum(x.SCALPING.score).toFixed(0)) + ' ' + (x.SCALPING.side || '') : '—'}</span></td><td>{best?.trend || '—'} / {best?.confirm_trend || '—'}</td><td>{price(best?.support)}</td><td>{price(best?.resistance)}</td><td><b className={best?.stage==='CONFIRMED'?'up':best?.stage==='SETUP'?'warn':'muted'}>{best?.stage || 'WATCH'}</b></td><td><button className={`tiny ${routeTone}`} disabled title={routeTitle}>{routeLabel}</button></td></tr>;
+    const hasOpenPosition = openPositionSymbols instanceof Set && openPositionSymbols.has(String(marketRow.symbol || '').toUpperCase());
+    return <tr key={marketRow.symbol}><td>{i+1}</td><td className="symbol">{marketRow.symbol}</td><td>{price(marketRow.mark_price || marketRow.close)}</td><td className={safeNum(marketRow.ltp_change_24h) === null ? 'muted' : safeNum(marketRow.ltp_change_24h) >= 0 ? 'up' : 'down'}>{pct(marketRow.ltp_change_24h)}</td><td>{money(marketRow.turnover_usd)}</td><td>{fmtMultiplier(best?.volume_spike)}</td><td><span className={x.MOMENTUM?.side==='BUY'?'up':x.MOMENTUM?.side==='SELL'?'down':''}>{x.MOMENTUM ? (safeNum(x.MOMENTUM.score) === null ? 'NO DATA' : safeNum(x.MOMENTUM.score).toFixed(0)) + ' ' + (x.MOMENTUM.side || '') : '—'}</span></td><td><span className={x.SCALPING?.side==='BUY'?'up':x.SCALPING?.side==='SELL'?'down':''}>{x.SCALPING ? (safeNum(x.SCALPING.score) === null ? 'NO DATA' : safeNum(x.SCALPING.score).toFixed(0)) + ' ' + (x.SCALPING.side || '') : '—'}</span></td><td>{best?.trend || '—'} / {best?.confirm_trend || '—'}</td><td>{price(best?.support)}</td><td>{price(best?.resistance)}</td><td><b className={best?.stage==='CONFIRMED'?'up':best?.stage==='SETUP'?'warn':'muted'}>{best?.stage || 'WATCH'}</b></td><td><span className={hasOpenPosition?'warn':'muted'} title={hasOpenPosition?'An open Delta Testnet position exists for this symbol.':'No open Delta Testnet position detected.'}>{hasOpenPosition?'OPEN':'—'}</span></td></tr>;
   })}</tbody></table></div></>;
 }
 
@@ -769,4 +804,4 @@ function Log({rows=[]}) {
  return <div className="log">{rows.length?rows.map(row=><div key={row.id}><small>{new Date(row.created_at).toLocaleTimeString()}</small><b>{row.level}</b><div className="logBody"><span>{row.message}</span></div></div>):<div className="muted">The dashboard includes the last 200 engine logs when the database is connected.</div>}</div>;
 }
 
-createRoot(document.getElementById('root')).render(<App/>);
+createRoot(document.getElementById('root')).render(<AppErrorBoundary><App /></AppErrorBoundary>);
