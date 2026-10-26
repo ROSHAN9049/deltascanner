@@ -11,6 +11,14 @@ export const CANDLE_SECONDS_BY_RESOLUTION = Object.freeze({
 // to calculate 14 true ranges. That means at least 16 raw rows are needed.
 export const MIN_RAW_CANDLES_FOR_ATR = 16;
 
+// Testnet 1m candles may arrive a couple of minutes late over REST/WebSocket.
+// Keep other timeframe freshness windows unchanged because candle timestamps
+// are bucket starts, not candle-close timestamps.
+export const DEFAULT_CANDLE_MAX_AGE_INTERVALS = 3;
+export function candleMaxAgeIntervals(resolution, testnetMode = false) {
+  return testnetMode && resolution === '1m' ? 5 : DEFAULT_CANDLE_MAX_AGE_INTERVALS;
+}
+
 export function candleIntervalSeconds(resolution) {
   return CANDLE_SECONDS_BY_RESOLUTION[resolution] || 0;
 }
@@ -101,7 +109,7 @@ export function validateNormalizedSeries(candles) {
 export function normalizeCandleBatch(
   rows,
   resolution,
-  { nowMs = Date.now(), minCandles = MIN_RAW_CANDLES_FOR_ATR, maxAgeIntervals = 3 } = {}
+  { nowMs = Date.now(), minCandles = MIN_RAW_CANDLES_FOR_ATR, maxAgeIntervals = DEFAULT_CANDLE_MAX_AGE_INTERVALS } = {}
 ) {
   if (!Array.isArray(rows)) return { ok: false, reason: 'not_array', count: 0 };
   if (rows.length < minCandles) {
@@ -137,7 +145,7 @@ export function mergeCandleUpdate(
   current,
   rawCandle,
   resolution,
-  { nowMs = Date.now(), maxAgeIntervals = 3 } = {}
+  { nowMs = Date.now(), maxAgeIntervals = DEFAULT_CANDLE_MAX_AGE_INTERVALS } = {}
 ) {
   const normalized = normalizeCandle(rawCandle, resolution);
   if (!normalized.ok) return { ok: false, reason: normalized.reason };

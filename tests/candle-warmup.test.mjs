@@ -12,6 +12,7 @@ import {
   candleNeedsWarmup,
   planCandleWarmup
 } from '../worker/candle-warmup.mjs';
+import { candleMaxAgeIntervals } from '../worker/candle-normalization.mjs';
 
 function validCandles(resolution, count, now = Date.now()) {
   const interval = ({ '1m': 60, '5m': 300, '15m': 900 })[resolution];
@@ -75,6 +76,28 @@ test('a full but stale cached candle series is retried after the cooldown', () =
   assert.equal(candleNeedsWarmup(stale, '5m', now - 1_000, now, CANDLE_TESTNET_WARMUP_RETRY_MS), false);
   assert.equal(candleNeedsWarmup(stale, '5m', now - CANDLE_TESTNET_WARMUP_RETRY_MS, now, CANDLE_TESTNET_WARMUP_RETRY_MS), true);
   assert.equal(candleSeriesIsFresh(validCandles('5m', 31, now), '5m', now), true);
+});
+
+test('Testnet 1m candles delayed by four minutes stay fresh and do not requeue warmup', () => {
+  const now = 2_000_000_000_000;
+  const minuteBucket = Math.floor(now / 60_000) * 60;
+  const delayedLatest = minuteBucket - 240;
+  const oneMinute = validCandles('1m', MIN_RAW_CANDLES['1m'], now);
+  const offset = oneMinute.at(-1).time - delayedLatest;
+  const delayedOneMinute = oneMinute.map(candle => ({ ...candle, time: candle.time - offset }));
+  const fiveMinute = validCandles('5m', MIN_RAW_CANDLES['5m'], now);
+  const fifteenMinute = validCandles('15m', MIN_RAW_CANDLES['15m'], now);
+
+  assert.equal(candleSeriesIsFresh(delayedOneMinute, '1m', now), false);
+  assert.equal(candleSeriesIsFresh(delayedOneMinute, '1m', now, candleMaxAgeIntervals('1m', true)), true);
+
+  const cache = new Map([
+    ['1m:BTCUSD', delayedOneMinute],
+    ['5m:BTCUSD', fiveMinute],
+    ['15m:BTCUSD', fifteenMinute]
+  ]);
+  const plan = planCandleWarmup(['BTCUSD'], cache, new Map(), 0, 1, now, CANDLE_TESTNET_WARMUP_RETRY_MS, true);
+  assert.deepEqual(plan.work, []);
 });
 
 test('only deficient resolutions are queued when a symbol has partial history', () => {

@@ -1,6 +1,6 @@
 import { CONFIG } from '../../server/config.js';
 import { count, select } from '../../server/db.js';
-import { protectEngineState } from '../../server/engine-state-privacy.js';
+import { findWorkerHeartbeatRow, normalizeWorkerExecutionMode, protectEngineState } from '../../server/engine-state-privacy.js';
 import { indiaDateKey } from '../../src/date-utils.js';
 import { createEngineSessionCookie, hasEngineAccess, isEngineSessionValid } from '../../server/engine-session.js';
 
@@ -26,9 +26,8 @@ export default async function handler(req, res) {
 
     // The heartbeat's environment mode is shared with the dashboard through
     // Supabase. It no longer depends on any legacy bridge or mirror metadata.
-    const heartbeatLog = (rawLogs || []).find(row => row?.message === 'Worker heartbeat scan');
-    const heartbeatMode = String(heartbeatLog?.data?.deltaExecutionMode || '').trim().toLowerCase();
-    const deltaExecutionMode = ['testnet', 'disabled'].includes(heartbeatMode) ? heartbeatMode : 'unknown';
+    const heartbeatLog = findWorkerHeartbeatRow(rawLogs);
+    const deltaExecutionMode = normalizeWorkerExecutionMode(heartbeatLog);
     const deltaExecutionModeSource = deltaExecutionMode === 'unknown' ? 'unavailable' : 'supabase-worker-heartbeat';
     const privateDataAuthorized = Boolean(CONFIG.engineSecret) && hasEngineAccess(req, CONFIG.engineSecret);
 

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { atr } from '../worker/strategy.mjs';
 import {
   MIN_RAW_CANDLES_FOR_ATR,
+  candleMaxAgeIntervals,
   candleBucketSeconds,
   mergeCandleUpdate,
   normalizeCandle,
@@ -89,6 +90,37 @@ test('newest-first REST response is sorted and duplicate buckets reject the enti
   const rejected = normalizeCandleBatch(duplicate, '5m', { nowMs: NOW_MS });
   assert.equal(rejected.ok, false);
   assert.equal(rejected.reason, 'duplicate_bucket');
+});
+
+test('Testnet 1m candles tolerate a four-minute API delay while other modes stay strict', () => {
+  const rows = rawBatch(21, '1m');
+  const latestStart = BASE + 20 * 60;
+  const delayedNow = (latestStart + 240) * 1000;
+
+  assert.equal(candleMaxAgeIntervals('1m', true), 5);
+  assert.equal(candleMaxAgeIntervals('1m', false), 3);
+  assert.equal(candleMaxAgeIntervals('5m', true), 3);
+  assert.equal(normalizeCandleBatch(rows, '1m', { nowMs: delayedNow }).reason, 'stale_series');
+
+  const accepted = normalizeCandleBatch(rows, '1m', {
+    nowMs: delayedNow,
+    maxAgeIntervals: candleMaxAgeIntervals('1m', true)
+  });
+  assert.equal(accepted.ok, true);
+  assert.equal(accepted.candles.length, 21);
+});
+
+test('Testnet 1m WebSocket candle update accepts a delayed bucket only within five intervals', () => {
+  const nowMs = (BASE + 250) * 1000;
+  const delayed = candle(BASE, 0);
+
+  assert.equal(mergeCandleUpdate([], delayed, '1m', { nowMs }).reason, 'stale_candle');
+  const accepted = mergeCandleUpdate([], delayed, '1m', {
+    nowMs,
+    maxAgeIntervals: candleMaxAgeIntervals('1m', true)
+  });
+  assert.equal(accepted.ok, true);
+  assert.equal(accepted.candles[0].time, BASE);
 });
 
 test('15 closed candles provide a valid 14-period ATR without changing strategy logic', () => {
