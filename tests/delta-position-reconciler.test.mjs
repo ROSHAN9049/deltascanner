@@ -161,7 +161,7 @@ test('external-closure schema and dashboard queries preserve the audit marker', 
   assert.match(migration, /ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ/i);
   assert.match(api, /status=in\.\(CLOSED,CLOSED_EXTERNALLY\)/);
   assert.match(ui, /CLOSED EXTERNALLY/);
-  assert.match(ui, /P&amp;L UNVERIFIED/);
+  assert.match(ui, /P&amp;L NOT VERIFIED/);
 });
 
 test('malformed REST snapshots are not treated as an empty account by the executor', async () => {
