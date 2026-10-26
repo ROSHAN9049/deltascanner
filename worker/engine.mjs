@@ -81,8 +81,9 @@ const DEDUP_CACHE_MAX = envInteger('DEDUP_CACHE_MAX', 5000, 1, 100000);
 const DISK_WARN_ROWS = envInteger('DISK_WARN_ROWS', 250000, 1, 1000000000);
 const DISK_CRITICAL_ROWS = envInteger('DISK_CRITICAL_ROWS', 500000, 1, 1000000000);
 const RETENTION_OLD_ROWS_TRIGGER = envInteger('RETENTION_OLD_ROWS_TRIGGER', 50000, 1, 1000000000);
-// Stop adding bulky history rows before a Free-tier database reaches its hard limit.
-const SIGNAL_HISTORY_PAUSE_DB_MB = envInteger('SIGNAL_HISTORY_PAUSE_DB_MB', 430, 300, 490);
+// Pause bulky signal-history writes with at least 20 MiB of headroom below the 400 MiB operational target.
+// Keep the configured value capped even if the deployment still defines an older 430 MiB value.
+const SIGNAL_HISTORY_PAUSE_DB_MB = envInteger('SIGNAL_HISTORY_PAUSE_DB_MB', 370, 300, 380);
 const SIGNAL_HISTORY_RESUME_DB_MB = Math.max(280, SIGNAL_HISTORY_PAUSE_DB_MB - 20);
 const MAINTENANCE_START_DELAY_MS = 5 * 60 * 1000;
 const RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -4157,7 +4158,7 @@ export class DeltaEngine {
           }
           if (Date.now() - this.lastLeaseContentionLogAt >= 60_000) {
             this.lastLeaseContentionLogAt = Date.now();
-            await this.log('INFO', 'Worker cycle skipped safely: trading lease is held by another worker', {
+            await this.log('WARN', 'Worker cycle skipped safely: trading lease is held by another worker', {
               workerId: CONFIG.workerId,
               consecutiveLeaseFailures: this.consecutiveLeaseFailures,
               reason: 'Lease contention; no scan or entry attempted'
