@@ -4,6 +4,16 @@ export const DEFAULT_VISIBLE_MARKET_LIMIT = 40;
 
 const SIGNAL_STRATEGIES = Object.freeze(['MOMENTUM', 'SCALPING']);
 
+// Only authoritative OPEN ledger rows should mark a symbol as occupied.
+// CLOSED_EXTERNALLY rows retain historical quantity for audit but are not positions.
+export function selectOpenPositionSymbols(positions) {
+  return new Set((Array.isArray(positions) ? positions : [])
+    .filter(position => String(position?.status || '').trim().toUpperCase() === 'OPEN' &&
+      Math.abs(Number(position?.qty) || 0) > 0)
+    .map(position => String(position?.symbol || '').trim().toUpperCase())
+    .filter(Boolean));
+}
+
 export function selectVisibleMarketRows(market, limit = DEFAULT_VISIBLE_MARKET_LIMIT) {
   if (!Array.isArray(market)) return [];
   const requested = Number(limit);
