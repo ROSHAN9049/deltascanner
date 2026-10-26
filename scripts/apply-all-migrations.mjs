@@ -13,7 +13,9 @@ const MIGRATIONS = [
   'db/migrations/20261011055500_secure_open_positions_summary_view.sql',
   'db/migrations/20261012080000_tradetron_developer_api_sync.sql',
   'db/migrations/20261013090000_tradetron_developer_notifications_history.sql',
-  'db/migrations/20261016000000_postgrest_schema_refresh.sql'
+  'db/migrations/20261016000000_postgrest_schema_refresh.sql',
+  'db/migrations/20261024100000_delta_testnet_positions.sql',
+  'db/migrations/20261026120000_delta_position_external_close.sql'
 ];
 
 // These are the four "already exists" SQLSTATEs explicitly approved for skipping.
@@ -25,6 +27,7 @@ const EXPECTED_TABLES = [
   'dd_signals',
   'dd_positions',
   'dd_orders',
+  'dd_delta_positions',
   'dd_trades',
   'dd_fills',
   'dd_signal_cache',

@@ -220,9 +220,17 @@ export function createDeltaExecutor({
 
   async function getOpenPositions() {
     const response = await request('GET', '/v2/positions/margined', { contract_types: 'perpetual_futures' });
-    return (Array.isArray(response.result) ? response.result : [])
-      .map(normalizePosition)
-      .filter(position => position && position.qty > 0);
+    if (!Array.isArray(response?.result)) {
+      throw new Error('Delta Testnet positions response is malformed; refusing to treat it as an empty account');
+    }
+    const normalized = response.result.map(row => {
+      const position = normalizePosition(row);
+      if (!position) {
+        throw new Error('Delta Testnet positions response contains an invalid row; refusing reconciliation');
+      }
+      return position;
+    });
+    return normalized.filter(position => position.qty > 0);
   }
 
   async function getOpenOrders() {
