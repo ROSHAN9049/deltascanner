@@ -4056,6 +4056,9 @@ export class DeltaEngine {
       worker_started_at: new Date(this.startedAt).toISOString(), idle_reason: idle
     });
     await this.log('INFO', heartbeatMessage, {
+      // Keep the generic mode alias for dashboard/API consumers; deltaExecutionMode
+      // remains the canonical worker configuration key.
+      executionMode: CONFIG.deltaExecutionMode,
       deltaExecutionMode: CONFIG.deltaExecutionMode,
       deltaEnvironment: CONFIG.environment,
       ...heartbeatMemory,
