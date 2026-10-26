@@ -4151,6 +4151,8 @@ export class DeltaEngine {
               consecutiveLeaseFailures: this.consecutiveLeaseFailures,
               leaseTtlSeconds: 30,
               reason: 'Another worker repeatedly owns the trading lease; this worker made no scan or entry attempt'
+            }).catch(logError => {
+              console.warn('[DeltaScanner] Could not persist duplicate-worker diagnostic; cycle remains safely skipped:', String(logError?.message || logError));
             });
           }
           if (Date.now() - this.lastLeaseContentionLogAt >= 60_000) {
@@ -4159,6 +4161,8 @@ export class DeltaEngine {
               workerId: CONFIG.workerId,
               consecutiveLeaseFailures: this.consecutiveLeaseFailures,
               reason: 'Lease contention; no scan or entry attempted'
+            }).catch(logError => {
+              console.warn('[DeltaScanner] Could not persist lease-skip diagnostic; cycle remains safely skipped:', String(logError?.message || logError));
             });
           }
         } else {
