@@ -1,1 +1,0 @@
-One-time trigger for the approved three-hour storage-safeguard validation run on 2026-10-24. Do not edit casually: pushing this path starts a 180-minute SIGNAL_ONLY scan.
