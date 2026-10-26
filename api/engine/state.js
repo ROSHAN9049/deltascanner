@@ -56,10 +56,10 @@ export default async function handler(req, res) {
           count('dd_delta_positions', 'status=eq.OPEN&select=id').catch(() => null),
           select('dd_orders', 'order_type=eq.delta_testnet_order&order=created_at.desc&limit=1000').catch(() => []),
           count('dd_orders', 'order_type=eq.delta_testnet_order&select=id').catch(() => null),
-          select('dd_delta_positions', 'status=eq.CLOSED&order=closed_at.desc&limit=200').catch(() => []),
-          count('dd_delta_positions', 'status=eq.CLOSED&select=id').catch(() => null),
-          select('dd_delta_positions', 'status=eq.CLOSED&closed_at=gte.' + todayStartQuery + '&order=closed_at.desc&limit=1000').catch(() => []),
-          count('dd_delta_positions', 'status=eq.CLOSED&closed_at=gte.' + todayStartQuery + '&select=id').catch(() => null)
+          select('dd_delta_positions', 'status=in.(CLOSED,CLOSED_EXTERNALLY)&order=closed_at.desc&limit=200').catch(() => []),
+          count('dd_delta_positions', 'status=in.(CLOSED,CLOSED_EXTERNALLY)&select=id').catch(() => null),
+          select('dd_delta_positions', 'status=in.(CLOSED,CLOSED_EXTERNALLY)&closed_at=gte.' + todayStartQuery + '&order=closed_at.desc&limit=1000').catch(() => []),
+          count('dd_delta_positions', 'status=in.(CLOSED,CLOSED_EXTERNALLY)&closed_at=gte.' + todayStartQuery + '&select=id').catch(() => null)
         ])
       : [[], null, [], null, [], null, [], null];
 
