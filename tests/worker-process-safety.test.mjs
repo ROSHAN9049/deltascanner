@@ -56,6 +56,8 @@ test('transient startup and engine failures retry without process exit; lease co
   assert.doesNotMatch(engine.slice(runStart, stopStart), /process\.exit\s*\(/);
   assert.match(engine, /DUPLICATE WORKER DETECTED/);
   assert.match(engine, /Worker cycle skipped safely: trading lease is held by another worker/);
+  assert.match(engine, /await this\\.log\\('ERROR', 'DUPLICATE WORKER DETECTED'[\\s\\S]{0,700}\\.catch\\(logError/);
+  assert.match(engine, /await this\\.log\\('INFO', 'Worker cycle skipped safely: trading lease is held by another worker'[\\s\\S]{0,500}\\.catch\\(logError/);
   assert.match(index, /async function startupPreflightWithRetry\(\)/);
   assert.match(index, /Startup preflight retry scheduled/);
   assert.match(index, /async function runEngineWithRecovery\(\)/);
