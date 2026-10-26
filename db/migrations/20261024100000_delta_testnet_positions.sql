@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS public.dd_delta_positions (
   realized_pnl NUMERIC NULL,
   sl_price NUMERIC NULL,
   tp_price NUMERIC NULL,
-  status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'CLOSED')),
+  status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'CLOSED', 'CLOSED_EXTERNALLY')),
   strategy TEXT NOT NULL DEFAULT 'MOMENTUM' CHECK (strategy IN ('MOMENTUM', 'SCALPING', 'GRID')),
   opened_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   closed_at TIMESTAMPTZ NULL,
@@ -31,7 +31,7 @@ CREATE INDEX IF NOT EXISTS dd_delta_positions_symbol_opened_idx
   ON public.dd_delta_positions (symbol, opened_at DESC);
 CREATE INDEX IF NOT EXISTS dd_delta_positions_closed_idx
   ON public.dd_delta_positions (closed_at DESC)
-  WHERE status = 'CLOSED';
+  WHERE status IN ('CLOSED', 'CLOSED_EXTERNALLY');
 
 ALTER TABLE public.dd_delta_positions ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE public.dd_delta_positions FROM anon, authenticated;
