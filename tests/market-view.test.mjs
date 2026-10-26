@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_VISIBLE_MARKET_LIMIT, selectVisibleMarketRows, selectVisibleSignalRows } from '../src/market-view.js';
+import { DEFAULT_VISIBLE_MARKET_LIMIT, selectOpenPositionSymbols, selectVisibleMarketRows, selectVisibleSignalRows } from '../src/market-view.js';
 
 test('the visible list shows only the top 40 without changing the complete universe', () => {
   const market = Array.from({ length: 231 }, (_, i) => ({
@@ -54,4 +54,23 @@ test('signal stage rows cover both engines for the same visible top-40 coin list
   assert.equal(missing.snapshot_missing, true);
   assert.equal(rows.find(row => row.symbol === 'ETHUSD' && row.strategy === 'SCALPING').stage, 'SETUP');
   assert.equal(rows.some(row => row.symbol === 'SOLUSD'), false);
+});
+
+
+test('only positive-quantity OPEN ledger rows appear as active symbols', () => {
+  const positions = [
+    { symbol: 'PAXGUSD', qty: 16, status: 'CLOSED_EXTERNALLY' },
+    { symbol: 'XRPUSD', qty: -42, status: 'CLOSED_EXTERNALLY' },
+    { symbol: 'ETHUSD', qty: 2, status: 'OPEN' },
+    { symbol: 'BTCUSD', qty: 0, status: 'OPEN' },
+    { symbol: 'SOLUSD', qty: 1, status: 'CLOSED' },
+    { symbol: 'DOGEUSD', qty: 1, status: 'open' }
+  ];
+  assert.deepEqual([...selectOpenPositionSymbols(positions)].sort(), ['DOGEUSD', 'ETHUSD']);
+});
+
+test('open position symbol selection handles missing or invalid rows safely', () => {
+  assert.deepEqual([...selectOpenPositionSymbols(null)], []);
+  assert.deepEqual([...selectOpenPositionSymbols({})], []);
+  assert.deepEqual([...selectOpenPositionSymbols([{ symbol: 'BTCUSD', qty: 3 }])], []);
 });
