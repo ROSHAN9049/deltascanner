@@ -14,13 +14,13 @@ The default supported-symbol allowlist is:
 
 `AAPLXUSD, ADAUSD, ALGOUSD, AMDBUSD, AMZNXUSD, ATOMUSD, AVAXUSD, BCHUSD, BNBUSD, BTCUSD, CBRSBUSD, COINXUSD, CRCLXUSD, DOGEUSD, DRAMBUSD, ETHUSD, EWYBUSD, GOOGLXUSD, INTCBUSD, LINKUSD, LITEBUSD, LTCUSD, MATICUSD, METAXUSD, MSTRBUSD, MUBUSD, NBISBUSD, NEARUSD, PAXGUSD, SNDKBUSD, SOXLBUSD, SPCXXUSD, WDCBUSD, WIFUSD`
 
-To change the allowlist for a single strategy, set Railway variable `TRADETRON_SUPPORTED_SYMBOLS` to the comma-separated set of futures symbols actually configured in the linked Tradetron strategy. Adding a symbol to this variable does not add a leg to Tradetron; the strategy itself must be updated first.
+To change the allowlist for a single strategy, set Hostless worker variable `TRADETRON_SUPPORTED_SYMBOLS` to the comma-separated set of futures symbols actually configured in the linked Tradetron strategy. Adding a symbol to this variable does not add a leg to Tradetron; the strategy itself must be updated first.
 
 ### Multiple static bridges for a larger universe
 
-When multiple Tradetron basket strategies have actually been created and each has its own API token, configure Railway variable `TRADETRON_BRIDGES_JSON` as a JSON array. When present, it **replaces** the single-token routing/allowlist; do not use a partial route table while expecting fallback to the existing strategy.
+When multiple Tradetron basket strategies have actually been created and each has its own API token, configure Hostless worker variable `TRADETRON_BRIDGES_JSON` as a JSON array. When present, it **replaces** the single-token routing/allowlist; do not use a partial route table while expecting fallback to the existing strategy.
 
-Example only (replace placeholder tokens in Railway Variables; never paste actual tokens into chat or source control):
+Example only (replace placeholder tokens in Hostless worker environment variables; never paste actual tokens into chat or source control):
 
 ```json
 [
@@ -64,7 +64,7 @@ The worker can send a scanner-driven `<SYMBOL>_xl` or `<SYMBOL>_xs` exit trigger
 
 A submitted exit trigger is recorded to prevent repeated triggers while awaiting an authenticated activity event to confirm the position update/close. This is a signal to Tradetron, not direct Delta order placement. If event delivery is unavailable or positions cannot be linked to a scanner engine, automatic scanner-driven exits will not run.
 
-The inbound endpoint `/api/tradetron/webhook` rejects POST requests until `TRADETRON_WEBHOOK_SECRET` is configured. Because this endpoint is a Vercel serverless function, set the secret as a **sensitive Production environment variable on the Vercel `deltascanner` project**, then redeploy Vercel; setting it only in Railway will not configure this handler. The sender must provide the secret using `Authorization: Bearer <secret>` or `x-tradetron-webhook-secret: <secret>`; `?secret=<secret>` is supported only for senders that cannot set headers and is less preferred because URLs may be logged. Keep the secret out of source control. Configuring this secret protects the receiver only; it does not set up a sender or event subscription.
+The inbound endpoint `/api/tradetron/webhook` rejects POST requests until `TRADETRON_WEBHOOK_SECRET` is configured. Because this endpoint is a Vercel serverless function, set the secret as a **sensitive Production environment variable on the Vercel `deltascanner` project**, then redeploy Vercel; setting it only in the Hostless worker environment will not configure this handler. The sender must provide the secret using `Authorization: Bearer <secret>` or `x-tradetron-webhook-secret: <secret>`; `?secret=<secret>` is supported only for senders that cannot set headers and is less preferred because URLs may be logged. Keep the secret out of source control. Configuring this secret protects the receiver only; it does not set up a sender or event subscription.
 
 For this account, Tradetron support has indicated that direct outbound webhook delivery is unavailable. Treat `/api/tradetron/webhook` as an inbound receiver only; do not assume the receiver can cause Tradetron to send events. The read-only Developer API's deployment/position snapshots and generic notification timeline are stored separately and are never promoted to fills, open-trade ledger rows, or closed trades. A separate relay is possible only if an independently verified source exposes the required event data and the relay sends authenticated, schema-validated callbacks. Do not infer executions from signal acceptance, notification text, raw position P&L, or an empty position array.
 
@@ -74,14 +74,14 @@ This monitor does not claim exchange-side/Tradetron-side protection exists until
 
 The existing futures basket has no Options legs. The Options scanner is hard-limited to exactly three underlyings: BTC, ETH and Gold (Delta symbol XAUT). It never expands to the 231+ perpetual-futures universe. The scanner's `tt_option_*` variables are not consumed by the existing 34-symbol futures strategy.
 
-Options routing is fail-closed unless these Railway variables are explicitly configured after a dedicated Tradetron Options strategy exists:
+Options routing is fail-closed unless these Hostless worker variables are explicitly configured after a dedicated Tradetron Options strategy exists:
 
 - `TRADETRON_OPTIONS_BRIDGE_ENABLED=true`
 - `TRADETRON_OPTIONS_AUTH_TOKEN=<token linked to the dedicated Options strategy>`
 
 Do not enable these settings before creating and verifying the appropriate Options BUY and defined-risk Options SELL strategy in Tradetron. Do not route naked/unhedged short options.
 
-## Required Railway variables
+## Required worker variables
 
 Futures:
 - `TRADETRON_BRIDGE_ENABLED=true`
