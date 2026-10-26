@@ -7,6 +7,7 @@ import { isGithubActionsPublicScanOnly } from './runtime-mode.mjs';
 import { warmupBTCHourly } from './candle-warmup.mjs';
 import { deltaExecutor } from './execution/delta-executor.mjs';
 import { DeltaTestnetTracker } from './execution/delta-tracker.mjs';
+import { createDeltaPositionReconciler } from './execution/delta-reconciler.mjs';
 import { checkDeltaTestnetPrivateApi, DELTA_TESTNET_PRIVATE_API_RETRY_MS } from './execution/testnet-private-api-health.mjs';
 
 const githubActionsPublicScanOnly = isGithubActionsPublicScanOnly();
@@ -21,6 +22,7 @@ if (!CONFIG.supabaseUrl || !CONFIG.supabaseAdminKey) throw new Error('SUPABASE_U
 const engine = new DeltaEngine();
 let btcHourlyWarmupTimer = null;
 let deltaTestnetTracker = null;
+let deltaPositionReconciler = null;
 let privateApiRetryTimer = null;
 let privateApiProbeInFlight = null;
 let shutdownPromise = null;
@@ -115,6 +117,25 @@ async function verifyDeltaTestnetPrivateApi(reason = 'startup') {
           equity: account.equity,
           openPositions: positions.length
         }).catch(() => {});
+      }
+
+      if (CONFIG.deltaExecutionMode === 'testnet' && !deltaPositionReconciler) {
+        const reconciler = createDeltaPositionReconciler({
+          env: process.env,
+          database: db,
+          executor: deltaExecutor
+        });
+        deltaPositionReconciler = reconciler;
+        try {
+          await reconciler.start();
+        } catch (error) {
+          deltaPositionReconciler = null;
+          try { await reconciler.stop(); } catch {}
+          console.warn('[DeltaScanner] Delta Testnet position reconciler could not start:', String(error?.message || error));
+          await log('ERROR', 'Delta Testnet position reconciler could not start', {
+            error: String(error?.message || error).slice(0, 240)
+          }).catch(() => {});
+        }
       }
 
       if (!deltaTestnetTracker) {
@@ -271,7 +292,10 @@ async function shutdownWorker(signal) {
     }));
     if (btcHourlyWarmupTimer) clearInterval(btcHourlyWarmupTimer);
     if (privateApiRetryTimer) clearInterval(privateApiRetryTimer);
+    const reconcilerToStop = deltaPositionReconciler;
+    deltaPositionReconciler = null;
     const results = await Promise.allSettled([
+      Promise.resolve().then(() => reconcilerToStop?.stop()),
       Promise.resolve().then(() => deltaTestnetTracker?.stop()),
       Promise.resolve().then(() => engine.stop())
     ]);
@@ -363,6 +387,9 @@ process.on('uncaughtException', (error, origin) => {
 
     try { await deltaTestnetTracker?.stop(); } catch (stopError) {
       console.error('[DeltaScanner] Private tracker cleanup after uncaught exception failed:', String(stopError?.message || stopError));
+    }
+    try { await deltaPositionReconciler?.stop(); } catch (stopError) {
+      console.error('[DeltaScanner] Position reconciler cleanup after uncaught exception failed:', String(stopError?.message || stopError));
     }
     try { await engine.stop(); } catch (stopError) {
       console.error('[DeltaScanner] Engine cleanup after uncaught exception failed:', String(stopError?.message || stopError));
