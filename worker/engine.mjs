@@ -11,7 +11,7 @@ import { indiaDateKey } from '../src/date-utils.js';
 import { createGridState, evaluateGridTick } from './grid-strategy.mjs';
 import { CANDLE_WARMUP_BATCH_SIZE, CANDLE_WARMUP_RETRY_MS, CANDLE_TESTNET_WARMUP_BATCH_SIZE, CANDLE_TESTNET_WARMUP_CONCURRENCY, CANDLE_TESTNET_WARMUP_RETRY_MS, planCandleWarmup } from './candle-warmup.mjs';
 import { shouldWriteMarketCache } from './market-cache-policy.mjs';
-import { MIN_RAW_CANDLES_FOR_ATR, mergeCandleUpdate, normalizeCandleBatch, normalizeEpochSeconds } from './candle-normalization.mjs';
+import { MIN_RAW_CANDLES_FOR_ATR, mergeCandleUpdate, normalizeCandleBatch, normalizeEpochSeconds, candleMaxAgeIntervals } from './candle-normalization.mjs';
 import { detectAtrSpike, replaceOutlierCandleWithPrevious } from './atr-spike-guard.mjs';
 import { shouldEmitThrottledLog, websocketReconnectDelay, WS_ERROR_LOG_COOLDOWN_MS } from './ws-resilience.mjs';
 import { isOptionsExecutionAllowed, OPTIONS_EXECUTION_LOCK_REASON } from './options-execution-lock.mjs';
@@ -978,7 +978,8 @@ export class DeltaEngine {
     this.candleFetchAt.set(key, Date.now());
     const value = await this.adapter.candles(symbol, resolution, 100);
     const normalized = normalizeCandleBatch(value, resolution, {
-      minCandles: MIN_RAW_CANDLES_FOR_ATR
+      minCandles: MIN_RAW_CANDLES_FOR_ATR,
+      maxAgeIntervals: candleMaxAgeIntervals(resolution, CONFIG.deltaExecutionMode === 'testnet')
     });
     if (!normalized.ok) {
       const detail = {
@@ -1175,7 +1176,8 @@ export class DeltaEngine {
       this.candleWarmCursor,
       warmupBatchSize,
       Date.now(),
-      retryAfterMs
+      retryAfterMs,
+      testnetCandleMode
     );
     this.candleWarmCursor = plan.nextCursor;
     if (!plan.work.length) return;
@@ -1229,7 +1231,7 @@ export class DeltaEngine {
     const latest = normalizeEpochSeconds(series.at(-1)?.time);
     if (latest === null) return false;
     const ageSeconds = now / 1000 - latest;
-    return Number.isFinite(ageSeconds) && ageSeconds >= -intervalSeconds && ageSeconds <= intervalSeconds * 3;
+    return Number.isFinite(ageSeconds) && ageSeconds >= -intervalSeconds && ageSeconds <= intervalSeconds * candleMaxAgeIntervals(resolution, CONFIG.deltaExecutionMode === 'testnet');
   }
 
   applyTestnetCandleFreshness(signal, entryResolution) {
@@ -3439,7 +3441,9 @@ export class DeltaEngine {
                 time: x.cst ?? x.candle_start_time ?? x.ts ?? x.timestamp ?? x.t,
                 open: x.o, high: x.h, low: x.l, close: x.c, volume: x.v, res: resolution
               };
-              const merged = mergeCandleUpdate(current, rawCandle, resolution);
+              const merged = mergeCandleUpdate(current, rawCandle, resolution, {
+                maxAgeIntervals: candleMaxAgeIntervals(resolution, CONFIG.deltaExecutionMode === 'testnet')
+              });
               if (!merged.ok) {
                 // WebSocket feeds can replay duplicates/out-of-order buckets.
                 // Log a representative failure per cooldown, not every tick.
