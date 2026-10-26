@@ -239,7 +239,7 @@ function App() {
     <nav>{tabs.map(([id,label]) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}{id === 'live' ? ' 🔒' : ''}</button>)}</nav>
     {accountDataProtected ? <div className="danger">🔒 ACCOUNT DATA LOCKED — Enter ENGINE_SECRET in Settings to view private positions, closed trades, P&amp;L, rotation ledger, Grid state, and account-specific logs. Hidden data is not zero.</div> : null}
 
-    {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} positions={positions} accountDataProtected={accountDataProtected} signals={signals} deltaTestnetOpenPositionCount={state?.deltaTestnetOpenPositionCount ?? null} deltaTestnetOrders={deltaTestnetOrders} deltaTestnetOrderCount={state?.deltaTestnetOrderCount ?? null} deltaTestnetClosedTodayCount={state?.deltaTestnetClosedTodayCount ?? null} deltaTestnetClosedTodayPnl={state?.deltaTestnetClosedTodayPnl ?? null} deltaTestnetClosedTodayPnlComplete={state?.deltaTestnetClosedTodayPnlComplete === true} executionCoverage={executionCoverage} onInspect={setInspect} inspect={selected} logs={logs} />}
+    {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} positions={positions} accountDataProtected={accountDataProtected} signals={signals} activity={state?.activity || null} deltaTestnetOpenPositionCount={state?.deltaTestnetOpenPositionCount ?? null} deltaTestnetOrders={deltaTestnetOrders} deltaTestnetOrderCount={state?.deltaTestnetOrderCount ?? null} deltaTestnetClosedTodayCount={state?.deltaTestnetClosedTodayCount ?? null} deltaTestnetClosedTodayPnl={state?.deltaTestnetClosedTodayPnl ?? null} deltaTestnetClosedTodayPnlComplete={state?.deltaTestnetClosedTodayPnlComplete === true} executionCoverage={executionCoverage} onInspect={setInspect} inspect={selected} logs={logs} />}
     {tab === 'rotation' && <Rotation ledger={rotationLedger} accountDataProtected={accountDataProtected} ledgerComplete={rotationLedgerComplete} ledgerRowCount={state?.ledgerRowCount ?? null} />}
     {tab === 'momentum' && <EngineView engine="MOMENTUM" signals={signals} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols} />}
     {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" strategy="MOMENTUM" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
@@ -314,7 +314,16 @@ function Card({ label, value, sub, title, tone = '' }) {
   const toneClass = tone === 'critical' ? ' card-critical' : tone === 'warning' ? ' card-warning' : '';
   return <div className={'card' + toneClass} title={title}><small>{label}</small><strong>{value}</strong><span>{sub}</span></div>;
 }
-function Dashboard({ market, settings, health, positions, accountDataProtected = false, signals, deltaTestnetOpenPositionCount = null, deltaTestnetOrders = [], deltaTestnetOrderCount = null, deltaTestnetClosedTodayCount = null, deltaTestnetClosedTodayPnl = null, deltaTestnetClosedTodayPnlComplete = false, executionCoverage = null, onInspect, inspect, logs }) {
+function activityTimestamp(value) {
+  const timestamp = Date.parse(value || '');
+  return Number.isFinite(timestamp)
+    ? new Date(timestamp).toLocaleString('en-IN', {
+        timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short',
+        hour: '2-digit', minute: '2-digit', hour12: true
+      })
+    : '—';
+}
+function Dashboard({ market, settings, health, positions, accountDataProtected = false, signals, activity = null, deltaTestnetOpenPositionCount = null, deltaTestnetOrders = [], deltaTestnetOrderCount = null, deltaTestnetClosedTodayCount = null, deltaTestnetClosedTodayPnl = null, deltaTestnetClosedTodayPnlComplete = false, executionCoverage = null, onInspect, inspect, logs }) {
   const deltaMode = String(executionCoverage?.deltaExecutionMode || '').trim().toLowerCase();
   const deltaModeEnabled = deltaMode === 'testnet';
   const deltaModeUnknown = !['testnet', 'disabled'].includes(deltaMode);
@@ -342,6 +351,15 @@ function Dashboard({ market, settings, health, positions, accountDataProtected =
   const openSymbols=selectOpenPositionSymbols(positions);
   return <>
     <section className="cards"><Card label="DELTA TESTNET EQUITY" value={equityText} sub={equitySub}/><Card label="DELTA OPEN POSITIONS" value={positionText} sub={posSub}/><Card label="DELTA OPEN ORDERS" value={orderText} sub={orderSub}/><Card label="TODAY'S P&L (DELTA)" value={pnlText} sub={pnlSub}/></section>
+    <Panel title="Last Signal · System Activity">
+      <section className="cards">
+        <Card label="LAST CONFIRMED SIGNAL" value={activity?.lastConfirmedSignalAvailable === false || !activity ? 'NO DATA' : activity.lastConfirmedSignalAt ? activityTimestamp(activity.lastConfirmedSignalAt) : 'None in last 24h'} sub="CONFIRMED + READY + normalized score ≥ 80 · IST"/>
+        <Card label="LAST EXECUTED TRADE" value={accountDataProtected ? 'LOCKED' : activity?.lastExecutedTradeAvailable === true ? (activity.lastExecutedTradeAt ? activityTimestamp(activity.lastExecutedTradeAt) : 'None recorded') : 'NO DATA'} sub={accountDataProtected ? 'Unlock ENGINE_SECRET to view trade timestamps' : 'Most recent executed position opened_at · IST'}/>
+        <Card label="TRADES TODAY · EXECUTED" value={accountDataProtected ? 'LOCKED' : activity?.executedTradesTodayCount == null ? 'NO DATA' : Number(activity.executedTradesTodayCount).toLocaleString('en-IN')} sub={accountDataProtected ? 'Unlock ENGINE_SECRET to view private trade counts' : 'Positions opened today (IST), including still-open trades'}/>
+        <Card label="SIGNALS TODAY · GENERATED" value={activity?.signalsTodayCount == null ? 'NO DATA' : Number(activity.signalsTodayCount).toLocaleString('en-IN')} sub="Persisted dd_signals observations; history sampling/retention applies"/>
+      </section>
+      <div className="muted">Visibility only. The signal total is the exact count of stored history observations, not every repeated scan calculation; unchanged observations may be sampled and writes can pause under database storage safeguards.</div>
+    </Panel>
     <Panel title={'Full Delta Market Scanner · '+(market?.length||0)+' live perpetuals · Signal Only'}><MarketTable market={market} signals={signals} openPositionSymbols={openSymbols}/></Panel>
     <section className="grid2"><RiskGovernor signals={signals} health={health} positions={accountDataProtected?null:positions} onInspect={onInspect} inspect={inspect} routedSymbols={[]} routeDataVerified={false} entrySafetyTrusted={null}/>
       <Panel title={'Signal Stages · '+visibleCoinCount+' coins · WATCH → SETUP → CONFIRMED'}><div className="marketCount">Momentum and Scalping status for the same top {visibleCoinCount} coins shown in the market table.</div>

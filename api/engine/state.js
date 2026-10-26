@@ -4,6 +4,18 @@ import { findWorkerHeartbeatRow, normalizeWorkerExecutionMode, protectEngineStat
 import { indiaDateKey } from '../../src/date-utils.js';
 import { createEngineSessionCookie, hasEngineAccess, isEngineSessionValid } from '../../server/engine-session.js';
 
+function normalizedScoreFromSignalRow(row) {
+  let details = row?.details;
+  if (typeof details === 'string') {
+    try { details = JSON.parse(details); } catch { details = {}; }
+  }
+  const value = row?.normalizedScore ?? details?.normalizedScore;
+  if (value === null || value === undefined || value === '') return null;
+  const score = Number(value);
+  return Number.isFinite(score) ? score : null;
+}
+
+
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate');
   if (CONFIG.engineSecret && isEngineSessionValid(req, CONFIG.engineSecret)) {
@@ -13,6 +25,7 @@ export default async function handler(req, res) {
   try {
     const todayStart = indiaDateKey(new Date()) + 'T00:00:00+05:30';
     const todayStartQuery = encodeURIComponent(todayStart);
+    const last24HoursQuery = encodeURIComponent(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
     const [settingsRows, signals, signalCache, marketCache, optionCache, rawLogs, ledger, ledgerRowCount] = await Promise.all([
       select('dd_settings', 'id=eq.1&select=*'),
       select('dd_signals', 'order=captured_at.desc&limit=200'),
@@ -63,6 +76,36 @@ export default async function handler(req, res) {
         ])
       : [[], null, [], null, [], null, [], null];
 
+    const [lastConfirmedSignalResult, signalsTodayCount] = await Promise.all([
+      select(
+        'dd_signals',
+        'stage=eq.CONFIRMED&ready=eq.true&captured_at=gte.' + last24HoursQuery +
+          '&select=captured_at,details&order=captured_at.desc&limit=1000'
+      ).then(rows => ({ ok: true, rows: Array.isArray(rows) ? rows : [] }))
+        .catch(() => ({ ok: false, rows: [] })),
+      count('dd_signals', 'captured_at=gte.' + todayStartQuery + '&select=id').catch(() => null)
+    ]);
+    const lastConfirmedSignal = lastConfirmedSignalResult.ok
+      ? lastConfirmedSignalResult.rows.find(row => {
+          const score = normalizedScoreFromSignalRow(row);
+          return score !== null && score >= 80;
+        }) || null
+      : null;
+
+    const [lastExecutedTradeResult, executedTradesTodayCount] = privateDataAuthorized
+      ? await Promise.all([
+          select(
+            'dd_delta_positions',
+            'status=in.(OPEN,CLOSED,CLOSED_EXTERNALLY)&select=opened_at&order=opened_at.desc&limit=1'
+          ).then(rows => ({ ok: true, row: Array.isArray(rows) ? rows[0] || null : null }))
+            .catch(() => ({ ok: false, row: null })),
+          count(
+            'dd_delta_positions',
+            'status=in.(OPEN,CLOSED,CLOSED_EXTERNALLY)&opened_at=gte.' + todayStartQuery + '&select=id'
+          ).catch(() => null)
+        ])
+      : [{ ok: false, row: null }, null];
+
     const deltaTestnetPositions = deltaTestnetPositionRows || [];
     const deltaTestnetOrders = deltaTestnetOrderRows || [];
     const deltaTestnetTrades = deltaTestnetTradeRows || [];
@@ -77,6 +120,15 @@ export default async function handler(req, res) {
     const deltaTestnetClosedTodayPnl = deltaTestnetClosedTodayPnlComplete
       ? closedTodayValues.reduce((sum, value) => sum + value, 0)
       : null;
+    const activity = {
+      lastConfirmedSignalAt: lastConfirmedSignal?.captured_at || null,
+      lastConfirmedSignalAvailable: lastConfirmedSignalResult.ok,
+      signalsTodayCount: signalsTodayCount == null ? null : Number(signalsTodayCount),
+      lastExecutedTradeAt: lastExecutedTradeResult.ok ? lastExecutedTradeResult.row?.opened_at || null : null,
+      lastExecutedTradeAvailable: privateDataAuthorized && lastExecutedTradeResult.ok === true,
+      executedTradesTodayCount: privateDataAuthorized && executedTradesTodayCount != null
+        ? Number(executedTradesTodayCount) : null
+    };
 
     return res.status(200).json(protectEngineState({
       success: true,
@@ -88,6 +140,7 @@ export default async function handler(req, res) {
         gridEntrySafety: privateDataAuthorized ? heartbeatLog?.data?.gridEntrySafety || null : null
       },
       settings: settingsRows?.[0] || null,
+      activity,
       signals: signals || [],
       signalCache: signalCache || [],
       marketCache: marketCache || [],

@@ -24,6 +24,7 @@ import { DEFAULT_CANDLE_CACHE_SYMBOL_LIMIT, pruneCandleCacheState, resolveCandle
 import { formatMemoryLog, MEMORY_LOG_INTERVAL_MS, summarizeMemoryUsage } from './memory-monitor.mjs';
 import { cleanupWebSocketListeners } from './websocket-lifecycle.mjs';
 import { evaluateGlobalPositionCap, routeUnlessGlobalPositionCapBlocked } from './global-position-cap.mjs';
+import { createConfirmedSignalTelegramNotifier } from './telegram-alerts.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const n = v => Number.isFinite(+v) ? +v : 0;
@@ -227,6 +228,11 @@ export class DeltaEngine {
     this.dedupSkippedCount = 0;
     this.dedupInsertedCount = 0;
     this.globalPositionCapLogged = new Set();
+    this.telegramSignalAlerts = createConfirmedSignalTelegramNotifier({
+      env: process.env,
+      database: db,
+      log: (...args) => this.log(...args)
+    });
   }
 
   async log(level, message, data) {
@@ -2278,6 +2284,10 @@ export class DeltaEngine {
       item.options = byUnderlying.get(key) || {};
     }
     await db.upsertMany('dd_signal_cache', signalCacheRows, 'cache_key');
+    // Notification-only side effect: use the fully gated cache rows and never feed results back into routing.
+    void this.telegramSignalAlerts.observe(signalCacheRows).catch(error => {
+      console.warn('[Telegram] Confirmed signal observer failed; scanner continues:', safeMaintenanceError(error));
+    });
     await this.removeStaleUniverseRows('dd_signal_cache', signalCacheRows.map(row => row.symbol));
 
     const optionCache = new Map();

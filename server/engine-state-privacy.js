@@ -70,6 +70,14 @@ export function protectEngineState(payload, authorized) {
   return {
     ...state,
     settings,
+    activity: payload?.activity && typeof payload.activity === 'object'
+      ? {
+          ...payload.activity,
+          lastExecutedTradeAt: null,
+          lastExecutedTradeAvailable: false,
+          executedTradesTodayCount: null
+        }
+      : null,
     ledger: [],
     ledgerRowCount: null,
     signals: hideSignalSizing(payload?.signals),
