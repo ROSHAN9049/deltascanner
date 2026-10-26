@@ -143,6 +143,9 @@ try {
     engine.runSignalRetention = async options => { retentionRequest = options; };
 
     await engine.checkDiskHealth();
+    const diskSummary = logs.find(log => log.message.startsWith('[Disk] DB:'));
+    assert.equal(diskSummary?.data?.pauseAtMb, 370);
+    assert.equal(diskSummary?.data?.resumeAtMb, 350);
     assert.ok(logs.some(log => /\[Disk\] DB: 436\.0 MB, signals: 510000 rows, expired_1d: 60000/.test(log.message)));
     assert.ok(logs.some(log => /pausing new dd_signals history writes/.test(log.message)));
     assert.equal(engine.signalHistoryWritesPaused, true);
