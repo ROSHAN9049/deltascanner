@@ -38,6 +38,37 @@ const latestSignals = list => {
   return [...m.values()];
 };
 
+class AppErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, info) {
+    console.error('[Dashboard] React render error:', error, info?.componentStack || '');
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return <div className="terminal">
+        <section className="panel">
+          <div className="panelTitle"><h2>Dashboard could not render</h2></div>
+          <div className="pad">
+            <p>The dashboard caught a rendering error instead of showing a blank screen.</p>
+            <pre className="error" role="alert">{String(this.state.error?.message || 'Unknown React rendering error')}</pre>
+            <button className="action" type="button" onClick={() => window.location.reload()}>Reload dashboard</button>
+          </div>
+        </section>
+      </div>;
+    }
+    return this.props.children;
+  }
+}
+
 function App() {
   const [tab, setTab] = useState('dashboard');
   const [state, setState] = useState(null);
@@ -132,14 +163,20 @@ function App() {
   useEffect(() => { void load(); const id = setInterval(() => { void load(); }, 10000); return () => clearInterval(id); }, [load]);
   useEffect(() => { const id = setInterval(() => setClock(Date.now()), 1000); return () => clearInterval(id); }, []);
 
-  const settings = state?.settings || {};
-  const trades = state?.deltaTestnetTrades || [];
-  const positions = state?.deltaTestnetPositions || [];
+  const settings = state?.settings && typeof state.settings === 'object' && !Array.isArray(state.settings) ? state.settings : {};
+  const trades = Array.isArray(state?.deltaTestnetTrades) ? state.deltaTestnetTrades : [];
+  const positions = Array.isArray(state?.deltaTestnetPositions) ? state.deltaTestnetPositions : [];
   const accountDataProtected = state?.accountDataProtected === true;
   const tradeHistoryComplete = state?.deltaTestnetTradeRowCount != null && Number(state.deltaTestnetTradeRowCount) === trades.length;
-  const rotationLedger = state?.ledger || [];
+  const rotationLedger = Array.isArray(state?.ledger) ? state.ledger : [];
   const rotationLedgerComplete = state?.ledgerRowCount != null && Number(state.ledgerRowCount) === rotationLedger.length;
-  const signals = latestSignals(state?.signalCache || state?.signals || []);
+  const signalRows = Array.isArray(state?.signalCache)
+    ? state.signalCache
+    : Array.isArray(state?.signals) ? state.signals : [];
+  const optionCache = Array.isArray(state?.optionCache) ? state.optionCache : [];
+  const deltaTestnetOrders = Array.isArray(state?.deltaTestnetOrders) ? state.deltaTestnetOrders : [];
+  const logs = Array.isArray(state?.logs) ? state.logs : [];
+  const signals = latestSignals(signalRows);
   const today = indiaDateKey(new Date());
   const todayTrades = trades.filter(t => indiaDateKey(t.closed_at) === today);
   const wins = todayTrades.filter(t => num(t.net_pnl) > 0).length;
@@ -175,7 +212,7 @@ function App() {
 
   const selectedScalp = selected ? signals.find(x => x.symbol === selected.symbol && x.strategy === 'SCALPING') : null;
   const stale = !health?.tickFresh;
-  const executionCoverage = state?.executionCoverage || null;
+  const executionCoverage = state?.executionCoverage && typeof state.executionCoverage === 'object' && !Array.isArray(state.executionCoverage) ? state.executionCoverage : null;
   const routeSafetyBlocked = false;
   const routeSafetyReason = 'Delta Testnet position state unavailable';
   const openPositionSymbols = new Set((Array.isArray(positions) ? positions : []).filter(position => Math.abs(Number(position?.qty) || 0) > 0).map(position => String(position?.symbol || '').toUpperCase()).filter(Boolean));
@@ -202,13 +239,13 @@ function App() {
     <nav>{tabs.map(([id,label]) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}{id === 'live' ? ' 🔒' : ''}</button>)}</nav>
     {accountDataProtected ? <div className="danger">🔒 ACCOUNT DATA LOCKED — Enter ENGINE_SECRET in Settings to view private positions, closed trades, P&amp;L, rotation ledger, Grid state, and account-specific logs. Hidden data is not zero.</div> : null}
 
-    {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} positions={positions} accountDataProtected={accountDataProtected} signals={signals} deltaTestnetOpenPositionCount={state?.deltaTestnetOpenPositionCount ?? null} deltaTestnetOrders={state?.deltaTestnetOrders || []} deltaTestnetOrderCount={state?.deltaTestnetOrderCount ?? null} deltaTestnetClosedTodayCount={state?.deltaTestnetClosedTodayCount ?? null} deltaTestnetClosedTodayPnl={state?.deltaTestnetClosedTodayPnl ?? null} deltaTestnetClosedTodayPnlComplete={state?.deltaTestnetClosedTodayPnlComplete === true} executionCoverage={executionCoverage} onInspect={setInspect} inspect={selected} logs={state?.logs || []} />}
+    {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} positions={positions} accountDataProtected={accountDataProtected} signals={signals} deltaTestnetOpenPositionCount={state?.deltaTestnetOpenPositionCount ?? null} deltaTestnetOrders={deltaTestnetOrders} deltaTestnetOrderCount={state?.deltaTestnetOrderCount ?? null} deltaTestnetClosedTodayCount={state?.deltaTestnetClosedTodayCount ?? null} deltaTestnetClosedTodayPnl={state?.deltaTestnetClosedTodayPnl ?? null} deltaTestnetClosedTodayPnlComplete={state?.deltaTestnetClosedTodayPnlComplete === true} executionCoverage={executionCoverage} onInspect={setInspect} inspect={selected} logs={logs} />}
     {tab === 'rotation' && <Rotation ledger={rotationLedger} accountDataProtected={accountDataProtected} ledgerComplete={rotationLedgerComplete} ledgerRowCount={state?.ledgerRowCount ?? null} />}
     {tab === 'momentum' && <EngineView engine="MOMENTUM" signals={signals} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols} />}
     {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" strategy="MOMENTUM" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'scalping' && <EngineView engine="SCALPING" signals={signals} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols} />}
     {tab === 'grid' && <GridStrategy settings={settings} market={market} busy={busy} mutate={mutate} accountDataProtected={accountDataProtected} gridEntrySafety={executionCoverage?.gridEntrySafety || null} />}
-    {tab === 'options' && <OptionsView signals={signals} settings={settings} optionCache={state?.optionCache || []} executionCoverage={state?.executionCoverage || null} />}
+    {tab === 'options' && <OptionsView signals={signals} settings={settings} optionCache={optionCache} executionCoverage={state?.executionCoverage || null} />}
     {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" strategy="SCALPING" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'positions' && <Positions rows={positions} accountDataProtected={accountDataProtected} />}
     {tab === 'delta-testnet-positions' && <DeltaTestnetPositions rows={state?.deltaTestnetPositions || []} accountDataProtected={accountDataProtected} mode={executionCoverage?.deltaExecutionMode || 'disabled'} />}
@@ -769,4 +806,4 @@ function Log({rows=[]}) {
  return <div className="log">{rows.length?rows.map(row=><div key={row.id}><small>{new Date(row.created_at).toLocaleTimeString()}</small><b>{row.level}</b><div className="logBody"><span>{row.message}</span></div></div>):<div className="muted">The dashboard includes the last 200 engine logs when the database is connected.</div>}</div>;
 }
 
-createRoot(document.getElementById('root')).render(<App/>);
+createRoot(document.getElementById('root')).render(<AppErrorBoundary><App /></AppErrorBoundary>);
