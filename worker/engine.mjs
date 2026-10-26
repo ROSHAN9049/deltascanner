@@ -1693,6 +1693,8 @@ export class DeltaEngine {
           warnRows: DISK_WARN_ROWS,
           criticalRows: DISK_CRITICAL_ROWS,
           olderRowsTrigger: RETENTION_OLD_ROWS_TRIGGER,
+          pauseAtMb: SIGNAL_HISTORY_PAUSE_DB_MB,
+          resumeAtMb: SIGNAL_HISTORY_RESUME_DB_MB,
           historyWritesPaused: this.signalHistoryWritesPaused
         });
 
