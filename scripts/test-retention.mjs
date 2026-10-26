@@ -152,7 +152,7 @@ try {
   });
 
   await run('signal-history writes pause before the 400 MiB operational target', async () => {
-    assert.match(engineSource, /envInteger\\('SIGNAL_HISTORY_PAUSE_DB_MB', 370, 300, 380\\)/);
+    assert.ok(engineSource.includes("envInteger('SIGNAL_HISTORY_PAUSE_DB_MB', 370, 300, 380)"));
     const engine = new DeltaEngine();
     const logs = [];
     engine.maintenanceLog = async (level, message, data = {}) => logs.push({ level, message, data });
