@@ -342,7 +342,7 @@ function Dashboard({ market, settings, health, positions, accountDataProtected =
   const openSymbols=new Set((positions||[]).filter(p=>Math.abs(Number(p?.qty)||0)>0).map(p=>String(p.symbol||'').toUpperCase()));
   return <>
     <section className="cards"><Card label="DELTA TESTNET EQUITY" value={equityText} sub={equitySub}/><Card label="DELTA OPEN POSITIONS" value={positionText} sub={posSub}/><Card label="DELTA OPEN ORDERS" value={orderText} sub={orderSub}/><Card label="TODAY'S P&L (DELTA)" value={pnlText} sub={pnlSub}/></section>
-    <Panel title={'Full Delta Market Scanner · '+(market?.length||0)+' live perpetuals · Signal Only'}><MarketTable market={market} signals={signals} routedSymbols={[]} entrySafetyBlocked={false} entrySafetyReason="" openPositionSymbols={openSymbols}/></Panel>
+    <Panel title={'Full Delta Market Scanner · '+(market?.length||0)+' live perpetuals · Signal Only'}><MarketTable market={market} signals={signals} openPositionSymbols={openSymbols}/></Panel>
     <section className="grid2"><RiskGovernor signals={signals} health={health} positions={accountDataProtected?null:positions} onInspect={onInspect} inspect={inspect} routedSymbols={[]} routeDataVerified={false} entrySafetyTrusted={null}/>
       <Panel title={'Signal Stages · '+visibleCoinCount+' coins · WATCH → SETUP → CONFIRMED'}><div className="marketCount">Momentum and Scalping status for the same top {visibleCoinCount} coins shown in the market table.</div>
         <div className="tablewrap"><table><thead><tr><th>COIN</th><th>ENG</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>QTY</th><th>NOTIONAL</th><th>RISK</th><th>READY</th><th>WHY BLOCKED</th></tr></thead><tbody>
@@ -375,22 +375,20 @@ function fmtQty(v) {
   return num(v) === 0 ? '—' : num(v).toLocaleString('en-IN', { maximumFractionDigits: 0 });
 }
 
-function MarketTable({ market, signals, routedSymbols = [], entrySafetyBlocked = false, entrySafetyReason = null, openPositionSymbols = new Set() }) {
+function MarketTable({ market, signals, openPositionSymbols = new Set() }) {
   const visibleMarket = selectVisibleMarketRows(market, DEFAULT_VISIBLE_MARKET_LIMIT);
   const map = new Map();
-  for (const s of signals || []) {
-    if (!map.has(s.symbol)) map.set(s.symbol, {});
-    map.get(s.symbol)[s.strategy] = s;
+  for (const signal of Array.isArray(signals) ? signals : []) {
+    if (!signal?.symbol) continue;
+    if (!map.has(signal.symbol)) map.set(signal.symbol, {});
+    map.get(signal.symbol)[signal.strategy] = signal;
   }
-  return <><div className="marketCount">Showing {visibleMarket.length} of {(market || []).length} instruments · sorted by 24h turnover · full background scanner remains active.</div><div className="tablewrap"><table><thead><tr><th>#</th><th>COIN</th><th>PRICE</th><th>24H %</th><th>TURNOVER</th><th>VOL SPIKE</th><th>MOM</th><th>SCALP</th><th>TREND</th><th>SUPPORT</th><th>RESIST.</th><th>SIGNAL</th><th>TT ROUTE</th></tr></thead><tbody>{visibleMarket.map((m,i) => {
-    const x = map.get(m.symbol) || {};
+  const marketRows = Array.isArray(market) ? market : [];
+  return <><div className="marketCount">Showing {visibleMarket.length} of {marketRows.length} instruments · sorted by 24h turnover · full background scanner remains active.</div><div className="tablewrap"><table><thead><tr><th>#</th><th>COIN</th><th>PRICE</th><th>24H %</th><th>TURNOVER</th><th>VOL SPIKE</th><th>MOM</th><th>SCALP</th><th>TREND</th><th>SUPPORT</th><th>RESIST.</th><th>SIGNAL</th><th>POSITION</th></tr></thead><tbody>{visibleMarket.map((marketRow,i) => {
+    const x = map.get(marketRow.symbol) || {};
     const best = [x.MOMENTUM,x.SCALPING].filter(Boolean).sort((a,b) => num(b.score)-num(a.score))[0];
-    const routeInfo = routeStatusForSymbol(m.symbol, [x.MOMENTUM, x.SCALPING], routedSymbols);
-    const hasOpenPosition = openPositionSymbols.has(String(m.symbol || '').toUpperCase());
-    const routeLabel = entrySafetyBlocked ? 'SAFETY LOCK' : hasOpenPosition ? 'POSITION OPEN' : routeInfo.label;
-    const routeTone = entrySafetyBlocked || hasOpenPosition ? 'warn' : routeInfo.tone;
-    const routeTitle = entrySafetyBlocked ? 'New signal entries are blocked because the current Delta Testnet position snapshot is not trusted: ' + (entrySafetyReason || 'unknown reason') : hasOpenPosition ? 'A current engine/event or Delta Testnet API snapshot already has this symbol open; duplicate entry is blocked.' : routeInfo.title;
-    return <tr key={m.symbol}><td>{i+1}</td><td className="symbol">{m.symbol}</td><td>{price(m.mark_price || m.close)}</td><td className={safeNum(m.ltp_change_24h) === null ? 'muted' : safeNum(m.ltp_change_24h) >= 0 ? 'up' : 'down'}>{pct(m.ltp_change_24h)}</td><td>{money(m.turnover_usd)}</td><td>{fmtMultiplier(best?.volume_spike)}</td><td><span className={x.MOMENTUM?.side==='BUY'?'up':x.MOMENTUM?.side==='SELL'?'down':''}>{x.MOMENTUM ? (safeNum(x.MOMENTUM.score) === null ? 'NO DATA' : safeNum(x.MOMENTUM.score).toFixed(0)) + ' ' + (x.MOMENTUM.side || '') : '—'}</span></td><td><span className={x.SCALPING?.side==='BUY'?'up':x.SCALPING?.side==='SELL'?'down':''}>{x.SCALPING ? (safeNum(x.SCALPING.score) === null ? 'NO DATA' : safeNum(x.SCALPING.score).toFixed(0)) + ' ' + (x.SCALPING.side || '') : '—'}</span></td><td>{best?.trend || '—'} / {best?.confirm_trend || '—'}</td><td>{price(best?.support)}</td><td>{price(best?.resistance)}</td><td><b className={best?.stage==='CONFIRMED'?'up':best?.stage==='SETUP'?'warn':'muted'}>{best?.stage || 'WATCH'}</b></td><td><button className={`tiny ${routeTone}`} disabled title={routeTitle}>{routeLabel}</button></td></tr>;
+    const hasOpenPosition = openPositionSymbols instanceof Set && openPositionSymbols.has(String(marketRow.symbol || '').toUpperCase());
+    return <tr key={marketRow.symbol}><td>{i+1}</td><td className="symbol">{marketRow.symbol}</td><td>{price(marketRow.mark_price || marketRow.close)}</td><td className={safeNum(marketRow.ltp_change_24h) === null ? 'muted' : safeNum(marketRow.ltp_change_24h) >= 0 ? 'up' : 'down'}>{pct(marketRow.ltp_change_24h)}</td><td>{money(marketRow.turnover_usd)}</td><td>{fmtMultiplier(best?.volume_spike)}</td><td><span className={x.MOMENTUM?.side==='BUY'?'up':x.MOMENTUM?.side==='SELL'?'down':''}>{x.MOMENTUM ? (safeNum(x.MOMENTUM.score) === null ? 'NO DATA' : safeNum(x.MOMENTUM.score).toFixed(0)) + ' ' + (x.MOMENTUM.side || '') : '—'}</span></td><td><span className={x.SCALPING?.side==='BUY'?'up':x.SCALPING?.side==='SELL'?'down':''}>{x.SCALPING ? (safeNum(x.SCALPING.score) === null ? 'NO DATA' : safeNum(x.SCALPING.score).toFixed(0)) + ' ' + (x.SCALPING.side || '') : '—'}</span></td><td>{best?.trend || '—'} / {best?.confirm_trend || '—'}</td><td>{price(best?.support)}</td><td>{price(best?.resistance)}</td><td><b className={best?.stage==='CONFIRMED'?'up':best?.stage==='SETUP'?'warn':'muted'}>{best?.stage || 'WATCH'}</b></td><td><span className={hasOpenPosition?'warn':'muted'} title={hasOpenPosition?'An open Delta Testnet position exists for this symbol.':'No open Delta Testnet position detected.'}>{hasOpenPosition?'OPEN':'—'}</span></td></tr>;
   })}</tbody></table></div></>;
 }
 
