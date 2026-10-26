@@ -68,7 +68,6 @@ export class DeltaTestnetTracker {
     executor = deltaExecutor,
     WebSocketImpl = WebSocket,
     reconnectMs = 5000,
-    reconcileMs = 30000
   } = {}) {
     this.env = env;
     this.database = database;
