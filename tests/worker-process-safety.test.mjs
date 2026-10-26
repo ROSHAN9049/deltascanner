@@ -57,7 +57,7 @@ test('transient startup and engine failures retry without process exit; lease co
   assert.match(engine, /DUPLICATE WORKER DETECTED/);
   assert.match(engine, /Worker cycle skipped safely: trading lease is held by another worker/);
   const duplicateLogStart = engine.indexOf("await this.log('ERROR', 'DUPLICATE WORKER DETECTED'");
-  const leaseSkipLogStart = engine.indexOf("await this.log('INFO', 'Worker cycle skipped safely: trading lease is held by another worker'");
+  const leaseSkipLogStart = engine.indexOf("await this.log('WARN', 'Worker cycle skipped safely: trading lease is held by another worker'");
   assert.ok(duplicateLogStart >= 0 && engine.slice(duplicateLogStart, duplicateLogStart + 700).includes('}).catch(logError => {'));
   assert.ok(leaseSkipLogStart >= 0 && engine.slice(leaseSkipLogStart, leaseSkipLogStart + 500).includes('}).catch(logError => {'));
   assert.match(index, /async function startupPreflightWithRetry\(\)/);
