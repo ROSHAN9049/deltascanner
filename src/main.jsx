@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import './style.css';
 import { indiaDateKey } from './date-utils.js';
 import GridStrategy from './GridStrategy.jsx';
-import { DEFAULT_VISIBLE_MARKET_LIMIT, selectVisibleMarketRows, selectVisibleSignalRows } from './market-view.js';
+import { DEFAULT_VISIBLE_MARKET_LIMIT, selectOpenPositionSymbols, selectVisibleMarketRows, selectVisibleSignalRows } from './market-view.js';
 import { assessDeltaRange, fmtMultiplier, fmtPrice as fmtRawPrice, fmtRsi, safeNum } from './formatters.js';
 import { blockersDisplay, gateTooltip } from './gate-result.js';
 import { buildRiskGovernorGates, buildNormalizedScoreDiagnostic } from './risk-governor.js';
@@ -215,7 +215,7 @@ function App() {
   const executionCoverage = state?.executionCoverage && typeof state.executionCoverage === 'object' && !Array.isArray(state.executionCoverage) ? state.executionCoverage : null;
   const routeSafetyBlocked = false;
   const routeSafetyReason = 'Delta Testnet position state unavailable';
-  const openPositionSymbols = new Set((Array.isArray(positions) ? positions : []).filter(position => Math.abs(Number(position?.qty) || 0) > 0).map(position => String(position?.symbol || '').toUpperCase()).filter(Boolean));
+  const openPositionSymbols = selectOpenPositionSymbols(positions);
 
   return <div className="terminal">
     <header className="topbar">
@@ -339,7 +339,7 @@ function Dashboard({ market, settings, health, positions, accountDataProtected =
   const top=Object.entries(blocked).sort((a,b)=>b[1]-a[1]).slice(0,3).map(x=>x[0]+' ('+x[1]+')').join(', ');
   const visibleSignals=selectVisibleSignalRows(market,signals,DEFAULT_VISIBLE_MARKET_LIMIT);
   const visibleCoinCount=new Set(visibleSignals.map(s=>s.symbol)).size;
-  const openSymbols=new Set((positions||[]).filter(p=>Math.abs(Number(p?.qty)||0)>0).map(p=>String(p.symbol||'').toUpperCase()));
+  const openSymbols=selectOpenPositionSymbols(positions);
   return <>
     <section className="cards"><Card label="DELTA TESTNET EQUITY" value={equityText} sub={equitySub}/><Card label="DELTA OPEN POSITIONS" value={positionText} sub={posSub}/><Card label="DELTA OPEN ORDERS" value={orderText} sub={orderSub}/><Card label="TODAY'S P&L (DELTA)" value={pnlText} sub={pnlSub}/></section>
     <Panel title={'Full Delta Market Scanner · '+(market?.length||0)+' live perpetuals · Signal Only'}><MarketTable market={market} signals={signals} openPositionSymbols={openSymbols}/></Panel>
