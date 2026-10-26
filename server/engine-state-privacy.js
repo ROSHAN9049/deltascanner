@@ -14,10 +14,21 @@ const hideSignalSizing = rows => (Array.isArray(rows) ? rows : []).map(row => {
   };
 });
 
+export function findWorkerHeartbeatRow(logs) {
+  return (Array.isArray(logs) ? logs : []).find(item =>
+    String(item?.message || '').startsWith('Worker heartbeat scan')
+  ) || null;
+}
+
+export function normalizeWorkerExecutionMode(row) {
+  const mode = String(row?.data?.executionMode || row?.data?.deltaExecutionMode || '').trim().toLowerCase();
+  return ['testnet', 'disabled'].includes(mode) ? mode : 'unknown';
+}
+
 function publicHeartbeatRows(logs) {
-  const row = (Array.isArray(logs) ? logs : []).find(item => item?.message === 'Worker heartbeat scan');
+  const row = findWorkerHeartbeatRow(logs);
   if (!row) return [];
-  const mode = String(row?.data?.deltaExecutionMode || '').trim().toLowerCase();
+  const mode = normalizeWorkerExecutionMode(row);
   const grid = row?.data?.gridEntrySafety;
   return [{
     id: row.id ?? null,
@@ -25,7 +36,8 @@ function publicHeartbeatRows(logs) {
     message: 'Worker heartbeat scan',
     created_at: row.created_at ?? null,
     data: {
-      deltaExecutionMode: ['testnet', 'disabled'].includes(mode) ? mode : 'unknown',
+      executionMode: mode,
+      deltaExecutionMode: mode,
       deltaEnvironment: String(row?.data?.deltaEnvironment || '').slice(0, 40) || null,
       lastTickAt: row?.data?.lastTickAt || null,
       gridEntrySafety: grid && typeof grid === 'object' ? {
