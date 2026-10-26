@@ -46,3 +46,22 @@ test('both public and private WebSockets detach listeners on teardown', async ()
   assert.match(engine, /cleanupWebSocketListeners\(socket\)/);
   assert.match(tracker, /cleanupWebSocketListeners\(socket\)/);
 });
+
+test('lease contention is a non-fatal WARN and the worker retries the next cycle', async () => {
+  const engine = await read('../worker/engine.mjs');
+  const runStart = engine.indexOf('  async run() {');
+  const runEnd = engine.indexOf('  async stop()', runStart);
+  assert.ok(runStart >= 0 && runEnd > runStart, 'worker run loop should be present');
+  const run = engine.slice(runStart, runEnd);
+  assert.ok(run.includes("if (message.includes('Trading lease is held by another worker'))"),
+    'lease acquisition failures must be handled as a skipped cycle');
+  assert.ok(run.includes("await this.log('WARN', 'Worker cycle skipped safely: trading lease is held by another worker'"),
+    'lease skips must be visible at WARN level');
+  assert.ok(run.includes('await sleep(15000);'),
+    'lease contention must yield until the next scan cycle');
+  const leaseBranchStart = run.indexOf("if (message.includes('Trading lease is held by another worker'))");
+  const leaseBranchEnd = run.indexOf("} else {\n          this.consecutiveLeaseFailures", leaseBranchStart);
+  assert.ok(leaseBranchStart >= 0 && leaseBranchEnd > leaseBranchStart, 'lease branch should be bounded');
+  assert.doesNotMatch(run.slice(leaseBranchStart, leaseBranchEnd), /\\bthrow\\b/,
+    'the lease branch must not throw and crash the scan loop');
+});
