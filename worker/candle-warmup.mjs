@@ -24,7 +24,7 @@ export function candleSeriesIsFresh(candles, resolution, now = Date.now(), maxAg
   if (latest === null) return false;
   const ageSeconds = Number(now) / 1000 - latest;
   // Candle timestamps are bucket starts: allow a candle in the current bucket
-  // and tolerate up to three intervals of age, matching REST normalization.
+  // and use the selected freshness window, matching REST and WebSocket validation.
   return Number.isFinite(ageSeconds) &&
     ageSeconds >= -intervalSeconds &&
     ageSeconds <= intervalSeconds * Math.max(1, Number(maxAgeIntervals) || 3);
