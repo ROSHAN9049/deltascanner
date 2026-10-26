@@ -75,15 +75,12 @@ export class DeltaTestnetTracker {
     this.executor = executor;
     this.WebSocketImpl = WebSocketImpl;
     this.reconnectMs = reconnectMs;
-    this.reconcileMs = reconcileMs;
     this.socket = null;
     this.reconnectTimer = null;
-    this.reconcileTimer = null;
     this.stopped = true;
     this.authenticated = false;
     this.retryCount = 0;
     this.symbolTimers = new Map();
-    this.reconcileInFlight = false;
     this.authTimeoutTimer = null;
     this.lastSocketWarningAt = 0;
   }
@@ -92,20 +89,8 @@ export class DeltaTestnetTracker {
     assertDeltaTestnetConfiguration(this.env);
     if (!this.stopped) return;
     this.stopped = false;
-    try { await this.reconcilePositions(); }
-    catch (error) {
-      await this.database.log('ERROR', 'Delta Testnet initial position reconciliation failed; executor remains fail-closed', {
-        error: String(error?.message || error)
-      });
-    }
-    this.reconcileTimer = setInterval(() => {
-      void this.reconcilePositions().catch(error =>
-        this.database.log('ERROR', 'Delta Testnet REST position reconciliation failed', {
-          error: String(error?.message || error)
-        })
-      );
-    }, this.reconcileMs);
-    this.reconcileTimer.unref?.();
+    // Global REST reconciliation is owned by DeltaPositionReconciler.
+    // This tracker only processes WebSocket events and event-triggered symbol refreshes.
     this.connect();
   }
 
@@ -422,38 +407,11 @@ export class DeltaTestnetTracker {
     this.symbolTimers.set(key, timer);
   }
 
-  async reconcilePositions() {
-    if (this.reconcileInFlight || this.stopped) return;
-    this.reconcileInFlight = true;
-    try {
-      const positions = await this.executor.getOpenPositions();
-      const openRows = await this.database.select(
-        'dd_delta_positions',
-        'status=eq.OPEN&select=id,symbol,realized_pnl&limit=1000'
-      );
-      const currentSymbols = new Set();
-      for (const position of positions) {
-        currentSymbols.add(position.symbol);
-        await this.processPosition(position.raw || position);
-      }
-      for (const row of Array.isArray(openRows) ? openRows : []) {
-        const symbol = stringValue(row?.symbol).toUpperCase();
-        if (symbol && !currentSymbols.has(symbol)) {
-          await this.processPosition({ symbol, size: 0, realized_pnl: row.realized_pnl }, { action: 'delete' });
-        }
-      }
-    } finally {
-      this.reconcileInFlight = false;
-    }
-  }
-
   async stop() {
     this.stopped = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    if (this.reconcileTimer) clearInterval(this.reconcileTimer);
     this.clearAuthTimeout();
     this.reconnectTimer = null;
-    this.reconcileTimer = null;
     for (const timer of this.symbolTimers.values()) clearTimeout(timer);
     this.symbolTimers.clear();
     if (this.socket) {
