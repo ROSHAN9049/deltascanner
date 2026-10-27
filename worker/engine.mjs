@@ -1405,28 +1405,32 @@ export class DeltaEngine {
 
     // In Testnet mode, missing/zero available-margin data must not be treated
     // as proof that a position is affordable.
-    if (
-      (testnet && (!(available > 0) || marginEstimate > available)) ||
-      (!testnet && available > 0 && marginEstimate > available)
-    ) {
-      logSizing(0, 'estimated margin exceeds available margin or available margin is unavailable', {
+    // Defense in depth: the final size must stay within the 15% margin budget.
+    if (!(available > 0) || marginEstimate > maxMarginPerTrade) {
+      logSizing(0, 'estimated margin exceeds 15% per-trade margin cap or available margin is unavailable', {
         qty,
         notional,
         risk,
         marginEstimate,
         available,
-        minimumContractFallback
+        maxMarginPerTrade,
+        maxQtyByMargin,
+        finalQty: 0
       });
       return null;
     }
 
-    logSizing(qty, minimumContractFallback ? 'Testnet one-contract minimum sizing fallback' : null, {
+    logSizing(qty, null, {
       riskQty,
       maxQtyByNotional,
+      maxQtyByMargin,
+      notionalCap,
+      maxNotionalEquityMultiplier,
+      maxMarginPerTrade,
       notional,
       risk,
       marginEstimate,
-      minimumContractFallback
+      finalQty: qty
     });
 
     return {
@@ -1437,7 +1441,12 @@ export class DeltaEngine {
       riskBudget,
       riskPerContract,
       notionalPerContract,
-      minimumContractFallback
+      riskQty,
+      maxQtyByNotional,
+      maxQtyByMargin,
+      notionalCap,
+      maxNotionalEquityMultiplier,
+      maxMarginPerTrade
     };
   }
 
