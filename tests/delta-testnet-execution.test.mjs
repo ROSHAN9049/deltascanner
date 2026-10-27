@@ -383,3 +383,24 @@ test('private WebSocket fill event updates the order row and records explicit fi
   assert.ok(updates.some(row => row.table === 'dd_orders' && row.patch.raw?.fill_confirmed_by_private_websocket === true));
   assert.ok(logs.some(row => row.message.includes('private WebSocket confirmed order fill')));
 });
+
+test('bracket entry rejects SL distance below the 1.5 percent minimum', async () => {
+  const runtime = fakeRuntime({ markPrice: 2317 });
+  const executor = createDeltaExecutor({
+    env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database
+  });
+  await assert.rejects(
+    executor.placeBracketOrder('ETHUSD', 'SELL', 1, 2310.75, 2332.9, 2256, {
+      strategy: 'MOMENTUM', clientOrderId: 'DDM-ETHUSD-TIGHTSL'
+    }),
+    /SL distance too tight \(0\.96%\), minimum required 1\.50%/
+  );
+  assert.equal(
+    runtime.httpCalls.some(call => new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST'),
+    false,
+    'tight-stop bracket must be blocked before submission'
+  );
+  assert.ok(runtime.logs.some(row =>
+    row.message.includes('SL distance too tight') && row.data.minimumSlDistancePct === 1.5
+  ));
+});
