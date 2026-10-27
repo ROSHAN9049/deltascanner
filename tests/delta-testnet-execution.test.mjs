@@ -249,3 +249,137 @@ test('WebSocket position normalizer handles signed size and strategy ids', () =>
   assert.equal(strategyFromClientOrderId('DDS-BTCUSD-123'), 'SCALPING');
   assert.equal(strategyFromClientOrderId('DDG-ETHUSD-123'), 'GRID');
 });
+
+test('bracket entry fails closed if the live mark has crossed the requested SL/TP bracket', async () => {
+  const runtime = fakeRuntime({ markPrice: 61000 });
+  const executor = createDeltaExecutor({
+    env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database
+  });
+
+  await assert.rejects(
+    executor.placeBracketOrder('BTCUSD', 'SELL', 1, 60000, 60500, 59000, {
+      strategy: 'MOMENTUM', clientOrderId: 'DDM-BTCUSD-CROSSED'
+    }),
+    /Live mark has moved outside the requested SL\/TP bracket/
+  );
+  assert.equal(
+    runtime.httpCalls.some(call => new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST'),
+    false,
+    'stale/crossed bracket must be blocked before order submission'
+  );
+  assert.ok(runtime.logs.some(row => row.message.includes('live mark moved outside requested SL/TP bracket')));
+});
+
+test('closed REST order acknowledgement immediately polls and persists an OPEN position', async () => {
+  const runtime = fakeRuntime({
+    orderState: 'closed',
+    orderAverageFillPrice: 60010,
+    positionsAfterFill: [{
+      product_id: 27,
+      product_symbol: 'BTCUSD',
+      size: -1,
+      entry_price: '60010',
+      mark_price: '60012',
+      unrealized_pnl: '-0.02',
+      realized_pnl: '0'
+    }]
+  });
+  const executor = createDeltaExecutor({
+    env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database
+  });
+
+  const order = await executor.placeBracketOrder('BTCUSD', 'SELL', 1, 60000, 61000, 59000, {
+    strategy: 'MOMENTUM', clientOrderId: 'DDM-BTCUSD-RESTFILL'
+  });
+
+  assert.equal(order.state, 'closed');
+  assert.equal(runtime.persistedPositions.length, 1);
+  const position = runtime.persistedPositions[0];
+  assert.equal(position.symbol, 'BTCUSD');
+  assert.equal(position.side, 'SELL');
+  assert.equal(position.qty, 1);
+  assert.equal(position.status, 'OPEN');
+  assert.equal(position.entry_price, 60010);
+  assert.equal(position.order_id, '123');
+  assert.equal(position.client_order_id, 'DDM-BTCUSD-RESTFILL');
+  assert.ok(runtime.logs.some(row =>
+    row.message.includes('REST fill confirmation persisted to dd_delta_positions')
+  ));
+  assert.ok(runtime.logs.some(row =>
+    row.message.includes('order acknowledgement and fill confirmation status') &&
+    row.data.fillConfirmedByRest === true &&
+    row.data.positionSnapshotConfirmedByRest === true
+  ));
+});
+
+test('private WebSocket auth subscribes to all-symbol orders and positions channels', async () => {
+  const sent = [];
+  const socket = { send: value => sent.push(JSON.parse(value)) };
+  const logs = [];
+  const tracker = new DeltaTestnetTracker({
+    env: demoEnv(),
+    database: { async log(level, message, data) { logs.push({ level, message, data }); } },
+    executor: { async getOpenPositions() { return []; } },
+    WebSocketImpl: class {}
+  });
+  tracker.stopped = false;
+  tracker.socket = socket;
+
+  await tracker.handleMessage(JSON.stringify({ type: 'key-auth', success: true }));
+
+  assert.equal(tracker.authenticated, true);
+  assert.equal(sent[0].type, 'enable_heartbeat');
+  assert.deepEqual(sent[1], {
+    type: 'subscribe',
+    payload: { channels: [{ name: 'orders', symbols: ['all'] }] }
+  });
+  assert.deepEqual(sent[2], {
+    type: 'subscribe',
+    payload: { channels: [{ name: 'positions', symbols: ['all'] }] }
+  });
+  assert.ok(logs.some(row => row.message.includes('authenticated; orders and positions subscribed')));
+});
+
+test('private WebSocket fill event updates the order row and records explicit fill confirmation', async () => {
+  const updates = [];
+  const logs = [];
+  const orderRow = { raw: { fill_confirmed_by_rest: false } };
+  const database = {
+    async select(table) {
+      if (table === 'dd_orders') return [orderRow];
+      return [];
+    },
+    async update(table, query, patch) {
+      updates.push({ table, query, patch });
+      if (table === 'dd_orders' && patch.raw) orderRow.raw = patch.raw;
+      return [];
+    },
+    async log(level, message, data) { logs.push({ level, message, data }); }
+  };
+  const tracker = new DeltaTestnetTracker({
+    env: demoEnv(),
+    database,
+    executor: { async getOpenPositions() { return []; } },
+    WebSocketImpl: class {}
+  });
+  tracker.stopped = true;
+  tracker.scheduleSymbolReconcile = () => {};
+
+  await tracker.processOrder({
+    symbol: 'ETHUSD',
+    product_symbol: 'ETHUSD',
+    side: 'sell',
+    state: 'closed',
+    reason: 'fill',
+    size: 14,
+    unfilled_size: 0,
+    id: 2176469490,
+    client_order_id: 'DDM-ETHUSD-test',
+    average_fill_price: '2310.75'
+  });
+
+  assert.equal(orderRow.raw.fill_confirmed_by_private_websocket, true);
+  assert.ok(orderRow.raw.fill_confirmed_by_private_websocket_at);
+  assert.ok(updates.some(row => row.table === 'dd_orders' && row.patch.raw?.fill_confirmed_by_private_websocket === true));
+  assert.ok(logs.some(row => row.message.includes('private WebSocket confirmed order fill')));
+});
