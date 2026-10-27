@@ -251,13 +251,13 @@ test('WebSocket position normalizer handles signed size and strategy ids', () =>
 });
 
 test('bracket entry fails closed if the live mark has crossed the requested SL/TP bracket', async () => {
-  const runtime = fakeRuntime({ markPrice: 61000 });
+  const runtime = fakeRuntime({ markPrice: 61500 });
   const executor = createDeltaExecutor({
     env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database
   });
 
   await assert.rejects(
-    executor.placeBracketOrder('BTCUSD', 'SELL', 1, 60000, 60500, 59000, {
+    executor.placeBracketOrder('BTCUSD', 'SELL', 1, 60000, 61000, 59000, {
       strategy: 'MOMENTUM', clientOrderId: 'DDM-BTCUSD-CROSSED'
     }),
     /Live mark has moved outside the requested SL\/TP bracket/
