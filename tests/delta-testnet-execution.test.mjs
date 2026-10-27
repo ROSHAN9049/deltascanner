@@ -6,7 +6,7 @@ import {
   DELTA_TESTNET_REST_BASE,
   DELTA_TESTNET_PRIVATE_WS_URL
 } from '../worker/execution/delta-executor.mjs';
-import { normalizeDeltaWsPosition, strategyFromClientOrderId } from '../worker/execution/delta-tracker.mjs';
+import { DeltaTestnetTracker, normalizeDeltaWsPosition, strategyFromClientOrderId } from '../worker/execution/delta-tracker.mjs';
 import { parseDeltaExecutionMode } from '../server/config.js';
 
 const demoEnv = () => ({
@@ -21,43 +21,97 @@ function response(body, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 }
 
-function fakeRuntime({ emergencyStop = false, positions = [], closedRows = [], orders = [], equity = 1000, available = equity } = {}) {
+function fakeRuntime({
+  emergencyStop = false,
+  positions = [],
+  positionsAfterFill = null,
+  closedRows = [],
+  orders = [],
+  equity = 1000,
+  available = equity,
+  markPrice = 60000,
+  orderState = 'open',
+  orderAverageFillPrice = 60000
+} = {}) {
   const httpCalls = [];
+  const logs = [];
+  const updates = [];
+  const persistedPositions = [];
+  let hasPostedOrder = false;
+
   const database = {
     async select(table, query) {
       if (table === 'dd_settings') return [{ id: 1, emergency_stop: emergencyStop }];
-      if (table === 'dd_delta_positions' && query.includes('status=eq.CLOSED')) return closedRows;
-      if (table === 'dd_delta_positions' && query.includes('status=eq.OPEN')) {
-        return positions.map(row => ({ symbol: row.product_symbol || row.symbol }));
+      if (table === 'dd_delta_positions') {
+        const symbolMatch = query.match(/symbol=eq\\.([^&]+)/);
+        if (symbolMatch) {
+          const symbol = decodeURIComponent(symbolMatch[1]);
+          return persistedPositions.filter(row => row.status === 'OPEN' && row.symbol === symbol).map(row => ({ ...row }));
+        }
+        if (query.includes('status=eq.CLOSED')) return closedRows;
+        if (query.includes('status=eq.OPEN')) {
+          return [
+            ...positions.map(row => ({ symbol: row.product_symbol || row.symbol })),
+            ...persistedPositions.filter(row => row.status === 'OPEN').map(row => ({ symbol: row.symbol }))
+          ];
+        }
       }
       if (table === 'dd_orders') return orders;
       return [];
     },
-    async log() {},
-    async update() {},
-    async insert() {},
+    async log(level, message, data = {}) { logs.push({ level, message, data }); },
+    async update(table, query, patch) {
+      updates.push({ table, query, patch: { ...patch } });
+      if (table === 'dd_delta_positions') {
+        const idMatch = query.match(/id=eq\\.([^&]+)/);
+        const row = persistedPositions.find(item => String(item.id) === decodeURIComponent(idMatch?.[1] || ''));
+        if (row) Object.assign(row, patch);
+      }
+      return [];
+    },
+    async insert(table, row) {
+      if (table === 'dd_delta_positions') {
+        persistedPositions.push({ id: persistedPositions.length + 1, ...row });
+      }
+      return [];
+    },
     async upsert() {}
   };
+
   const fetchImpl = async (url, init = {}) => {
     const parsed = new URL(url);
     httpCalls.push({ url, init, body: init.body ? JSON.parse(init.body) : null });
     if (parsed.pathname === '/v2/products') {
       return response({ success: true, result: [{ id: 27, symbol: 'BTCUSD', contract_type: 'perpetual_futures' }], meta: {} });
     }
-    if (parsed.pathname === '/v2/positions/margined') return response({ success: true, result: positions });
+    if (parsed.pathname.startsWith('/v2/tickers/')) {
+      return response({ success: true, result: { symbol: parsed.pathname.split('/').pop(), mark_price: String(markPrice) } });
+    }
+    if (parsed.pathname === '/v2/positions/margined') {
+      const rows = hasPostedOrder && positionsAfterFill !== null ? positionsAfterFill : positions;
+      return response({ success: true, result: rows });
+    }
     if (parsed.pathname === '/v2/orders' && init.method === 'GET') return response({ success: true, result: [] });
     if (parsed.pathname === '/v2/wallet/balances') {
       return response({ success: true, result: [], meta: { net_equity: String(equity), available_balance: String(available) } });
     }
     if (parsed.pathname === '/v2/orders' && init.method === 'POST') {
-      return response({ success: true, result: { id: 123, state: 'open', client_order_id: JSON.parse(init.body).client_order_id } });
+      hasPostedOrder = true;
+      const clientOrderId = JSON.parse(init.body).client_order_id;
+      const order = { id: 123, state: orderState, client_order_id: clientOrderId };
+      if (['closed', 'filled'].includes(String(orderState).toLowerCase())) {
+        order.unfilled_size = 0;
+        order.average_fill_price = String(orderAverageFillPrice);
+      }
+      return response({ success: true, result: order });
     }
     if (parsed.pathname === '/v2/orders' && init.method === 'DELETE') {
       return response({ success: true, result: { id: JSON.parse(init.body).id, state: 'cancelled' } });
     }
     return response({ success: false, error: { code: 'unexpected_test_request' } }, 400);
   };
-  return { httpCalls, database, fetchImpl };
+
+  return { httpCalls, database, fetchImpl, logs, updates, persistedPositions };
 }
 
 test('configuration accepts only disabled/testnet and explicitly rejects live', () => {
