@@ -107,6 +107,32 @@ test('bracket entry is a Testnet market order with exchange-side SL/TP and signe
   assert.equal(post.init.headers.timestamp, '1770000000');
 });
 
+test('bracket entry fails closed on invalid SL or TP before making any API request', async () => {
+  for (const badStop of [0, NaN, null, undefined, 'not-a-number']) {
+    const runtime = fakeRuntime();
+    const executor = createDeltaExecutor({
+      env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database
+    });
+    await assert.rejects(
+      executor.placeBracketOrder('BTCUSD', 'BUY', 1, 60000, badStop, 62000),
+      /Invalid SL price/
+    );
+    assert.equal(runtime.httpCalls.length, 0, 'invalid SL must be rejected before any API call');
+  }
+
+  for (const badTarget of [0, NaN, null, undefined, 'not-a-number']) {
+    const runtime = fakeRuntime();
+    const executor = createDeltaExecutor({
+      env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database
+    });
+    await assert.rejects(
+      executor.placeBracketOrder('BTCUSD', 'BUY', 1, 60000, 59000, badTarget),
+      /Invalid TP price/
+    );
+    assert.equal(runtime.httpCalls.length, 0, 'invalid TP must be rejected before any API call');
+  }
+});
+
 test('placeOrder chooses market without price and limit with price', async () => {
   const runtime = fakeRuntime();
   const executor = createDeltaExecutor({
