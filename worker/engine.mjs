@@ -2573,6 +2573,20 @@ export class DeltaEngine {
       try {
         const order = await this.executeSignal(signal, strategy, gate.size.qty, entryCid);
         const orderId = String(order?.id ?? order?.order_id ?? entryCid);
+
+        // Keep missing unfilled_size unknown (null), rather than falsely treating it as zero.
+        const unfilledRaw = order?.unfilled_size;
+        const unfilledText = unfilledRaw === undefined || unfilledRaw === null
+          ? ''
+          : String(unfilledRaw).trim();
+        const unfilledSize = unfilledText === ''
+          ? null
+          : Number.isFinite(Number(unfilledText))
+            ? Number(unfilledText)
+            : null;
+        const apiState = String(order?.state ?? 'UNKNOWN');
+        const orderType = String(order?.order_type ?? 'market_order');
+
         try {
           await db.upsert('dd_orders', {
             id: entryCid,
@@ -2581,31 +2595,59 @@ export class DeltaEngine {
             side: signal.side === 'BUY' ? 'buy' : 'sell',
             order_type: 'delta_testnet_order',
             size: gate.size.qty,
-            unfilled_size: n(order?.unfilled_size),
-            state: order?.state || 'open',
+            unfilled_size: unfilledSize,
+            state: apiState,
             client_order_id: entryCid,
             role: 'ENTRY',
             strategy,
             execution_id: entryCid,
             raw: {
               source: 'delta_testnet',
+              environment: 'testnet',
+              requested_order_type: orderType,
               entry_price: signal.price,
               stop_price: signal.sl,
               tp_price: signal.tp,
               testnet_order_id: order?.id ?? null,
+              exchange_state: order?.state ?? null,
+              unfilled_size: unfilledSize,
+              average_fill_price: order?.average_fill_price ?? null,
               accepted: true
             }
           }, 'client_order_id');
         } catch (persistError) {
-          await this.log('ERROR', 'Delta Testnet order accepted but order ledger persistence failed; no blind retry', {
-            symbol: signal.symbol, strategy, clientOrderId: entryCid,
+          await this.log('ERROR', '[Executor] Delta Testnet API accepted the order but order-ledger persistence failed; no blind retry', {
+            environment: 'testnet',
+            endpoint: 'POST /v2/orders',
+            symbol: signal.symbol,
+            strategy,
+            side: signal.side,
+            qty: gate.size.qty,
+            clientOrderId: entryCid,
+            orderId,
             error: String(persistError?.message || persistError)
           });
         }
-        await this.log('INFO', 'Delta Testnet bracket entry accepted', {
-          symbol: signal.symbol, strategy, side: signal.side, qty: gate.size.qty,
-          entry: signal.price, sl: signal.sl, tp: signal.tp,
-          clientOrderId: entryCid, orderId
+
+        await this.log('INFO', '[Executor] Delta Testnet API order acknowledged; exchange fill confirmation pending', {
+          environment: 'testnet',
+          endpoint: 'POST /v2/orders',
+          symbol: signal.symbol,
+          strategy,
+          side: signal.side,
+          qty: gate.size.qty,
+          orderType,
+          entry: signal.price,
+          sl: signal.sl,
+          tp: signal.tp,
+          clientOrderId: entryCid,
+          orderId,
+          apiState,
+          unfilledSize,
+          unfilledSizeStatus: unfilledSize === null ? 'unknown' : unfilledSize,
+          averageFillPrice: order?.average_fill_price ?? null,
+          restAcknowledgementOnly: true,
+          fillConfirmationSource: 'Delta private WebSocket / position reconciliation'
         });
         return true;
       } catch (error) {
