@@ -360,15 +360,40 @@ export class DeltaTestnetTracker {
     const clientOrderId = stringValue(order?.client_order_id);
     const state = stringValue(order?.state || order?.order_state || order?.status).toLowerCase();
     const orderId = order?.id ?? order?.order_id;
+    const eventReason = stringValue(order?.reason || order?.event_reason).toLowerCase();
+    const unfilledSize = numberOrNull(order?.unfilled_size);
+    const size = numberOrNull(order?.size);
+    const averageFillPrice = numberOrNull(order?.average_fill_price ?? order?.avg_fill_price);
+    const botEntry = /^DD[MSG]-/.test(clientOrderId.toUpperCase());
+    const wsFillConfirmed = botEntry &&
+      ['filled', 'closed'].includes(state) &&
+      (eventReason === 'fill' || (unfilledSize === 0 && ((size !== null && size > 0) || (averageFillPrice !== null && averageFillPrice > 0))));
+
     if (clientOrderId && state) {
-      await this.database.update(
-        'dd_orders',
-        'client_order_id=eq.' + encodeURIComponent(clientOrderId),
-        { state, updated_at: nowIso() }
-      ).catch(() => {});
+      const query = 'client_order_id=eq.' + encodeURIComponent(clientOrderId);
+      const update = { state, updated_at: nowIso() };
+      if (wsFillConfirmed) {
+        const existing = await this.database.select(
+          'dd_orders',
+          query + '&select=raw&limit=1'
+        ).catch(() => []);
+        let existingRaw = existing?.[0]?.raw;
+        if (typeof existingRaw === 'string') {
+          try { existingRaw = JSON.parse(existingRaw); } catch { existingRaw = {}; }
+        }
+        update.raw = {
+          ...(existingRaw && typeof existingRaw === 'object' && !Array.isArray(existingRaw) ? existingRaw : {}),
+          fill_confirmed_by_private_websocket: true,
+          fill_confirmed_by_private_websocket_at: nowIso(),
+          private_websocket_fill_reason: eventReason || null,
+          private_websocket_average_fill_price: averageFillPrice
+        };
+      }
+      await this.database.update('dd_orders', query, update).catch(() => {});
     }
+
     if (!symbol) return;
-    if (clientOrderId && /^DD[MSG]-/.test(clientOrderId.toUpperCase())) {
+    if (clientOrderId && botEntry) {
       const active = await this.findOpenRow(symbol).catch(() => null);
       if (active) {
         const patch = { updated_at: nowIso() };
@@ -378,6 +403,12 @@ export class DeltaTestnetTracker {
         if (numberOrNull(order?.bracket_take_profit_price) !== null) patch.tp_price = numberOrNull(order.bracket_take_profit_price);
         await this.database.update('dd_delta_positions', 'id=eq.' + encodeURIComponent(active.id), patch);
       }
+    }
+    if (wsFillConfirmed) {
+      await this.database.log('INFO', '[Tracker] Delta Testnet private WebSocket confirmed order fill', {
+        symbol, orderId: orderId ?? null, clientOrderId,
+        state, reason: eventReason || null, size, unfilledSize, averageFillPrice
+      }).catch(() => {});
     }
     if (['filled', 'closed', 'cancelled', 'canceled', 'rejected'].includes(state)) this.scheduleSymbolReconcile(symbol);
   }

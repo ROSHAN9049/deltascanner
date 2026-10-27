@@ -366,6 +366,94 @@ export function createDeltaExecutor({
     return normalized;
   }
 
+  async function getFreshMarkPrice(symbol) {
+    const response = await request('GET', '/v2/tickers/' + encodeURIComponent(symbol));
+    const ticker = Array.isArray(response?.result) ? response.result[0] : response?.result;
+    const markPrice = numberOrNull(ticker?.mark_price);
+    if (!(markPrice > 0)) {
+      throw new Error('Fresh Delta Testnet mark price is unavailable for ' + stringOrEmpty(symbol).toUpperCase());
+    }
+    return markPrice;
+  }
+
+  async function persistRestConfirmedPosition({ product, body, order, clientOrderId, strategy }) {
+    const symbol = stringOrEmpty(product?.symbol).toUpperCase();
+    try {
+      let position = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const positions = await getOpenPositions();
+          position = positions.find(row => row.symbol === symbol && row.qty > 0) || null;
+        } catch (error) {
+          await logExecutor('WARN', '[Executor] Immediate REST position confirmation attempt failed', {
+            symbol, clientOrderId, attempt: attempt + 1,
+            error: String(error?.message || error).slice(0, 200)
+          });
+        }
+        if (position) break;
+        if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+      }
+
+      if (!position) {
+        await logExecutor('WARN', '[Executor] REST order response confirms fill but position snapshot is delayed; periodic reconciler remains the backup', {
+          symbol, orderId: order?.id ?? null, clientOrderId,
+          attempts: 3, averageFillPrice: numberOrNull(order?.average_fill_price) ?? null
+        });
+        return false;
+      }
+
+      const timestamp = new Date(now()).toISOString();
+      const row = {
+        symbol,
+        side: position.side || (stringOrEmpty(body?.side).toLowerCase() === 'sell' ? 'SELL' : 'BUY'),
+        qty: position.qty,
+        status: 'OPEN',
+        strategy: strategyValue(strategy),
+        opened_at: position.opened_at || timestamp,
+        closed_at: null,
+        updated_at: timestamp,
+        order_id: String(order?.id ?? position.order_id ?? ''),
+        client_order_id: clientOrderId,
+        product_id: position.product_id ?? product.id,
+        entry_price: numberOrNull(position.entry_price) ?? numberOrNull(order?.average_fill_price),
+        current_price: numberOrNull(position.current_price),
+        unrealized_pnl: numberOrNull(position.unrealized_pnl),
+        realized_pnl: numberOrNull(position.realized_pnl),
+        sl_price: numberOrNull(position.sl_price) ?? numberOrNull(body?.bracket_stop_loss_price),
+        tp_price: numberOrNull(position.tp_price) ?? numberOrNull(body?.bracket_take_profit_price)
+      };
+
+      const query = 'symbol=eq.' + encodeURIComponent(symbol) + '&status=eq.OPEN&select=id&limit=1';
+      const existing = await database.select('dd_delta_positions', query);
+      if (!Array.isArray(existing)) throw new Error('REST position sync could not read existing OPEN rows');
+      if (existing[0]?.id !== undefined && existing[0]?.id !== null) {
+        await database.update('dd_delta_positions', 'id=eq.' + encodeURIComponent(existing[0].id), row);
+      } else {
+        try {
+          await database.insert('dd_delta_positions', row);
+        } catch (insertError) {
+          const concurrent = await database.select('dd_delta_positions', query);
+          if (!Array.isArray(concurrent) || concurrent[0]?.id === undefined || concurrent[0]?.id === null) throw insertError;
+          await database.update('dd_delta_positions', 'id=eq.' + encodeURIComponent(concurrent[0].id), row);
+        }
+      }
+
+      await logExecutor('INFO', '[Executor] REST fill confirmation persisted to dd_delta_positions', {
+        symbol, side: row.side, qty: row.qty, orderId: row.order_id, clientOrderId,
+        entryPrice: row.entry_price, positionSnapshotSource: 'GET /v2/positions/margined'
+      });
+      return true;
+    } catch (error) {
+      // Do not report a confirmed exchange fill as a rejected order merely
+      // because local persistence failed. The five-minute reconciler retries.
+      await logExecutor('ERROR', '[Executor] REST fill confirmed but immediate local position persistence failed; reconciler remains the backup', {
+        symbol, clientOrderId, orderId: order?.id ?? null,
+        error: String(error?.message || error).slice(0, 240)
+      });
+      return false;
+    }
+  }
+
   async function submitOrder(
     product,
     body,
@@ -451,6 +539,15 @@ export function createDeltaExecutor({
       const unfilledSize = numberOrNull(order?.unfilled_size);
       const apiState = stringOrEmpty(order?.state || 'UNKNOWN').toUpperCase();
       const testnetOrderId = order.id ?? null;
+      const averageFillPrice = numberOrNull(order?.average_fill_price ?? order?.avg_fill_price);
+      const fillConfirmedByRest =
+        ['FILLED', 'CLOSED'].includes(apiState) &&
+        unfilledSize === 0 &&
+        averageFillPrice !== null &&
+        averageFillPrice > 0;
+      const positionSnapshotConfirmedByRest = fillConfirmedByRest && reserve && role === 'ENTRY'
+        ? await persistRestConfirmedPosition({ product, body, order, clientOrderId, strategy })
+        : false;
 
       if (reserve) {
         await database.update(
@@ -467,7 +564,9 @@ export function createDeltaExecutor({
               testnet_order_id: testnetOrderId,
               exchange_state: order.state ?? null,
               unfilled_size: unfilledSize,
-              average_fill_price: order.average_fill_price ?? null
+              average_fill_price: order.average_fill_price ?? null,
+              fill_confirmed_by_rest: fillConfirmedByRest,
+              position_snapshot_confirmed_by_rest: positionSnapshotConfirmedByRest
             }
           }
         ).catch(error => database.log(
@@ -483,7 +582,7 @@ export function createDeltaExecutor({
 
       await logExecutor(
         'INFO',
-        '[Executor] Delta Testnet API acknowledged order; REST acknowledgement is not fill confirmation',
+        '[Executor] Delta Testnet order acknowledgement and fill confirmation status',
         {
           ...requestDetails,
           orderId: testnetOrderId,
@@ -491,8 +590,12 @@ export function createDeltaExecutor({
           unfilledSize,
           unfilledSizeStatus: unfilledSize === null ? 'unknown' : unfilledSize,
           averageFillPrice: order.average_fill_price ?? null,
-          fillConfirmedByPrivateWebSocket: false,
-          note: 'Confirm fill and open position from private WebSocket or exchange reconciliation'
+          fillConfirmedByRest,
+          positionSnapshotConfirmedByRest,
+          fillConfirmedByPrivateWebSocketAtAcknowledgement: false,
+          note: fillConfirmedByRest
+            ? 'REST order response confirms fill; private WebSocket confirmation may arrive independently'
+            : 'Waiting for a private WebSocket fill event or REST position reconciliation'
         }
       );
 
@@ -601,6 +704,33 @@ export function createDeltaExecutor({
       }
       await assertSafety(normalizedSymbol, 'ENTRY');
       const product = await resolveProduct(normalizedSymbol);
+
+      let liveMarkPrice;
+      try {
+        liveMarkPrice = await getFreshMarkPrice(normalizedSymbol);
+      } catch (error) {
+        await logExecutor('WARN', '[Executor] Blocked bracket order: fresh mark price unavailable', {
+          environment: 'testnet', symbol: normalizedSymbol, referenceEntryPrice: entry,
+          stopLossPrice: stop, takeProfitPrice: target,
+          error: String(error?.message || error).slice(0, 200),
+          executionBlocked: true
+        });
+        throw new Error('Fresh Delta Testnet mark price unavailable; entry blocked');
+      }
+      const bracketContainsLiveMark = direction === 'BUY'
+        ? stop < liveMarkPrice && liveMarkPrice < target
+        : target < liveMarkPrice && liveMarkPrice < stop;
+      if (!bracketContainsLiveMark) {
+        const referenceDriftPct = entry > 0 ? Math.abs(liveMarkPrice - entry) / entry * 100 : null;
+        await logExecutor('WARN', '[Executor] Blocked bracket order: live mark moved outside requested SL/TP bracket', {
+          environment: 'testnet', symbol: normalizedSymbol, side: direction,
+          referenceEntryPrice: entry, liveMarkPrice, referenceDriftPct,
+          stopLossPrice: stop, takeProfitPrice: target,
+          executionBlocked: true, reason: 'LIVE_MARK_OUTSIDE_BRACKET'
+        });
+        throw new Error('Live mark has moved outside the requested SL/TP bracket; refresh signal before entry');
+      }
+
       const strategy = strategyValue(options?.strategy);
       const prefix = strategy === 'MOMENTUM' ? 'DDM' : strategy === 'SCALPING' ? 'DDS' : 'DDG';
       const body = {

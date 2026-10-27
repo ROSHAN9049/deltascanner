@@ -1374,9 +1374,10 @@ export class DeltaEngine {
     const maxQtyByNotional = Math.floor(notionalCap / notionalPerContract);
 
     const marginPerContract = notionalPerContract / maxLeverage;
-    // Leave 85% of currently available margin unallocated for each new entry.
-    // Zero/unknown available margin therefore produces a zero margin quantity.
-    const maxMarginPerTrade = available > 0 ? available * 0.15 : 0;
+    // Leave at least 90% of currently available margin unallocated for each
+    // new entry. This extra Testnet liquidation buffer is deliberately
+    // conservative; zero/unknown available margin produces zero margin qty.
+    const maxMarginPerTrade = available > 0 ? available * 0.10 : 0;
     const maxQtyByMargin = marginPerContract > 0
       ? Math.floor(maxMarginPerTrade / marginPerContract)
       : 0;
@@ -1405,9 +1406,9 @@ export class DeltaEngine {
 
     // Defense in depth in every execution mode: missing margin data cannot
     // be treated as proof of affordability, and the final size must stay
-    // within the 15% available-margin budget.
+    // within the 10% available-margin budget.
     if (!(available > 0) || marginEstimate > maxMarginPerTrade) {
-      logSizing(0, 'estimated margin exceeds 15% per-trade margin cap or available margin is unavailable', {
+      logSizing(0, 'estimated margin exceeds 10% per-trade margin cap or available margin is unavailable', {
         qty,
         notional,
         risk,
