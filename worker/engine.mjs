@@ -1403,9 +1403,9 @@ export class DeltaEngine {
     const risk = qty * riskPerContract;
     const marginEstimate = notional / maxLeverage;
 
-    // In Testnet mode, missing/zero available-margin data must not be treated
-    // as proof that a position is affordable.
-    // Defense in depth: the final size must stay within the 15% margin budget.
+    // Defense in depth in every execution mode: missing margin data cannot
+    // be treated as proof of affordability, and the final size must stay
+    // within the 15% available-margin budget.
     if (!(available > 0) || marginEstimate > maxMarginPerTrade) {
       logSizing(0, 'estimated margin exceeds 15% per-trade margin cap or available margin is unavailable', {
         qty,
