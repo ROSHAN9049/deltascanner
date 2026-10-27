@@ -1355,33 +1355,46 @@ export class DeltaEngine {
     }
 
     const riskQty = Math.floor(riskBudget / riskPerContract);
-    const configuredNotionalCap = equity * maxLeverage;
+
+    // Cap gross notional independently of leverage. Defaults to 2x equity;
+    // deployments may lower/raise this with DD_MAX_NOTIONAL_EQUITY_MULTIPLIER.
+    const rawNotionalMultiplier = process.env.DD_MAX_NOTIONAL_EQUITY_MULTIPLIER;
+    const parsedNotionalMultiplier = rawNotionalMultiplier === undefined || String(rawNotionalMultiplier).trim() === ''
+      ? 2
+      : Number(rawNotionalMultiplier);
+    const maxNotionalEquityMultiplier =
+      Number.isFinite(parsedNotionalMultiplier) && parsedNotionalMultiplier > 0 && parsedNotionalMultiplier <= 100
+        ? parsedNotionalMultiplier
+        : 2;
+    const configuredNotionalCap = equity * maxNotionalEquityMultiplier;
     const productNotionalCap = n(signal.maxLeverageNotional) > 0
       ? n(signal.maxLeverageNotional)
       : configuredNotionalCap;
     const notionalCap = Math.min(configuredNotionalCap, productNotionalCap);
     const maxQtyByNotional = Math.floor(notionalCap / notionalPerContract);
-    let qty = Math.min(riskQty, maxQtyByNotional);
-    let minimumContractFallback = false;
 
     const marginPerContract = notionalPerContract / maxLeverage;
+    // Leave 85% of currently available margin unallocated for each new entry.
+    // Zero/unknown available margin therefore produces a zero margin quantity.
+    const maxMarginPerTrade = available > 0 ? available * 0.15 : 0;
+    const maxQtyByMargin = marginPerContract > 0
+      ? Math.floor(maxMarginPerTrade / marginPerContract)
+      : 0;
 
-    // On Testnet only, permit a single-contract sizing test when the risk
-    // budget rounds down to zero, the product/notional cap supports one full
-    // contract, and the known free margin can cover the estimated margin.
-    if (qty < 1 && testnet && maxQtyByNotional >= 1) {
-      if (available > 0 && marginPerContract <= available) {
-        qty = 1;
-        minimumContractFallback = true;
-      }
-    }
+    // Do not bypass any cap for a one-contract fallback: final quantity must
+    // satisfy risk, product/equity notional, and available-margin constraints.
+    const qty = Math.min(riskQty, maxQtyByNotional, maxQtyByMargin);
 
     if (qty < 1) {
-      logSizing(0, 'risk budget, product notional cap, or available margin does not permit one contract', {
+      logSizing(0, 'BELOW_MIN_CONTRACT', {
         riskQty,
         maxQtyByNotional,
+        maxQtyByMargin,
+        notionalCap,
+        maxNotionalEquityMultiplier,
+        maxMarginPerTrade,
         marginPerContract,
-        minimumContractFallback
+        finalQty: 0
       });
       return null;
     }
