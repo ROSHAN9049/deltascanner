@@ -2589,13 +2589,13 @@ export class DeltaEngine {
       signal.score < n(settings.score_min || 80)
     ) return false;
 
-    const entryPrice = Number(signal?.price);
-    const stopPrice = Number(signal?.sl);
-    const takeProfitPrice = Number(signal?.tp);
+    const validatedEntryPrice = Number(signal?.price);
+    const validatedStopPrice = Number(signal?.sl);
+    const validatedTakeProfitPrice = Number(signal?.tp);
     if (
-      !(Number.isFinite(entryPrice) && entryPrice > 0) ||
-      !(Number.isFinite(stopPrice) && stopPrice > 0) ||
-      !(Number.isFinite(takeProfitPrice) && takeProfitPrice > 0)
+      !(Number.isFinite(validatedEntryPrice) && validatedEntryPrice > 0) ||
+      !(Number.isFinite(validatedStopPrice) && validatedStopPrice > 0) ||
+      !(Number.isFinite(validatedTakeProfitPrice) && validatedTakeProfitPrice > 0)
     ) {
       await this.log('WARN', '[Executor] Entry blocked: entry, SL and TP must be finite positive prices', {
         symbol: signal?.symbol ?? null,
