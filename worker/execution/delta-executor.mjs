@@ -702,6 +702,17 @@ export function createDeltaExecutor({
       if (direction === 'SELL' && !(target < entry && stop > entry)) {
         throw new Error('SELL bracket prices must satisfy TP < entry < SL');
       }
+      const slDistancePct = Math.abs(stop - entry) / entry * 100;
+      const minSlDistancePct = Math.max(1.5, Number(process.env.DELTA_MIN_SL_DISTANCE_PCT) || 1.5);
+      if (slDistancePct + 1e-9 < minSlDistancePct) {
+        await logExecutor('WARN', '[Executor] SL distance too tight; entry blocked', {
+          environment: 'testnet', symbol: normalizedSymbol, side: direction,
+          entryPrice: entry, stopLossPrice: stop, slDistancePct: Number(slDistancePct.toFixed(4)),
+          minimumSlDistancePct: minSlDistancePct, executionBlocked: true,
+          reason: 'SL_DISTANCE_BELOW_MINIMUM'
+        });
+        throw new Error('SL distance too tight (' + slDistancePct.toFixed(2) + '%), minimum required ' + minSlDistancePct.toFixed(2) + '%');
+      }
       await assertSafety(normalizedSymbol, 'ENTRY');
       const product = await resolveProduct(normalizedSymbol);
 
