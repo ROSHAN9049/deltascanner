@@ -84,7 +84,7 @@ test('executor requires testnet and refuses any non-testnet URL', async () => {
   await assert.rejects(liveHost.getOpenPositions(), /hardcoded Testnet endpoint/);
 });
 
-test('bracket entry is a Testnet limit order with exchange-side SL/TP and signed HMAC headers', async () => {
+test('bracket entry is a Testnet market order with exchange-side SL/TP and signed HMAC headers', async () => {
   const runtime = fakeRuntime();
   const executor = createDeltaExecutor({
     env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database,
@@ -97,10 +97,11 @@ test('bracket entry is a Testnet limit order with exchange-side SL/TP and signed
   const post = runtime.httpCalls.find(call => new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST');
   assert.ok(post);
   assert.equal(new URL(post.url).origin, DELTA_TESTNET_REST_BASE);
-  assert.equal(post.body.order_type, 'limit_order');
-  assert.equal(post.body.limit_price, '60000');
+  assert.equal(post.body.order_type, 'market_order');
+  assert.equal(post.body.limit_price, undefined);
   assert.equal(post.body.bracket_stop_loss_price, '59000');
   assert.equal(post.body.bracket_take_profit_price, '62000');
+  assert.equal(post.body.bracket_stop_trigger_method, 'mark_price');
   assert.equal(post.body.client_order_id, 'DDM-BTCUSD-TEST-1');
   assert.match(post.init.headers.signature, /^[0-9a-f]{64}$/);
   assert.equal(post.init.headers.timestamp, '1770000000');

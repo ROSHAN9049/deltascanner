@@ -1264,25 +1264,144 @@ export class DeltaEngine {
   }
 
   positionSizing(signal, account, settings) {
-    const equity = n(account.equity);
-    const cv = n(signal.contractValue);
-    const price = n(signal.price);
-    const stopDistance = Math.abs(n(signal.price) - n(signal.sl));
-    const riskBudget = equity * n(settings.risk_pct || 1) / 100;
-    if (!equity || !cv || !price || !stopDistance || !riskBudget) return null;
-    if (signal.notionalType && signal.notionalType !== 'vanilla') return null;
-    const riskPerContract = stopDistance * cv;
-    let qty = roundDown(riskBudget / riskPerContract, 1);
-    const configuredCap = equity * n(settings.max_leverage || 3);
-    const productCap = n(signal.maxLeverageNotional) > 0 ? n(signal.maxLeverageNotional) : configuredCap;
-    const notionalCap = Math.min(configuredCap, productCap);
-    qty = Math.min(qty, roundDown(notionalCap / (price * cv), 1));
-    if (qty < 1) return null;
-    const notional = qty * price * cv;
+    const testnet = CONFIG.deltaExecutionMode === 'testnet';
+    const symbol = String(signal?.symbol || 'UNKNOWN').toUpperCase();
+    const equity = n(account?.equity);
+    const available = n(account?.available);
+    const contractValue = n(signal?.contractValue);
+    const price = n(signal?.price);
+    const stopPrice = n(signal?.sl);
+    const stopDistance = Math.abs(price - stopPrice);
+    const riskPct = n(settings?.risk_pct || 1);
+    const riskBudget = equity * riskPct / 100;
+    const maxLeverage = Math.max(1, n(settings?.max_leverage || 3));
+
+    const logSizing = (qty, reason = null, details = {}) => {
+      if (!testnet) return;
+      const message =
+        `[Sizing] Symbol: ${symbol} | Risk: $${riskBudget.toFixed(2)} | SL: $${stopDistance.toFixed(6)} | Qty: ${qty}`;
+      console.info(message, JSON.stringify({
+        environment: 'testnet',
+        equity,
+        availableMargin: available,
+        riskPct,
+        contractValue,
+        entryPrice: price,
+        stopPrice,
+        stopDistance,
+        notionalPerContract: price * contractValue,
+        riskPerContract: stopDistance * contractValue,
+        reason,
+        ...details
+      }));
+    };
+
+    if (
+      !(equity > 0) ||
+      !(contractValue > 0) ||
+      !(price > 0) ||
+      !(stopDistance > 0) ||
+      !(riskBudget > 0)
+    ) {
+      logSizing(0, 'invalid equity, contract value, entry price, stop distance, or risk budget');
+      return null;
+    }
+
+    if (signal.notionalType && signal.notionalType !== 'vanilla') {
+      logSizing(0, 'unsupported contract notional type', {
+        notionalType: signal.notionalType
+      });
+      return null;
+    }
+
+    const notionalPerContract = price * contractValue;
+    const riskPerContract = stopDistance * contractValue;
+
+    if (
+      !Number.isFinite(notionalPerContract) ||
+      !Number.isFinite(riskPerContract) ||
+      !(notionalPerContract > 0) ||
+      !(riskPerContract > 0)
+    ) {
+      logSizing(0, 'invalid per-contract notional or risk', {
+        notionalPerContract,
+        riskPerContract
+      });
+      return null;
+    }
+
+    const riskQty = Math.floor(riskBudget / riskPerContract);
+    const configuredNotionalCap = equity * maxLeverage;
+    const productNotionalCap = n(signal.maxLeverageNotional) > 0
+      ? n(signal.maxLeverageNotional)
+      : configuredNotionalCap;
+    const notionalCap = Math.min(configuredNotionalCap, productNotionalCap);
+    const maxQtyByNotional = Math.floor(notionalCap / notionalPerContract);
+    let qty = Math.min(riskQty, maxQtyByNotional);
+    let minimumContractFallback = false;
+
+    const marginPerContract = notionalPerContract / maxLeverage;
+
+    // On Testnet only, permit a single-contract sizing test when the risk
+    // budget rounds down to zero, the product/notional cap supports one full
+    // contract, and the known free margin can cover the estimated margin.
+    if (qty < 1 && testnet && maxQtyByNotional >= 1) {
+      if (available > 0 && marginPerContract <= available) {
+        qty = 1;
+        minimumContractFallback = true;
+      }
+    }
+
+    if (qty < 1) {
+      logSizing(0, 'risk budget, product notional cap, or available margin does not permit one contract', {
+        riskQty,
+        maxQtyByNotional,
+        marginPerContract,
+        minimumContractFallback
+      });
+      return null;
+    }
+
+    const notional = qty * notionalPerContract;
     const risk = qty * riskPerContract;
-    const marginEstimate = notional / Math.max(1, n(settings.max_leverage || 3));
-    if (n(account.available) > 0 && marginEstimate > n(account.available)) return null;
-    return { qty, notional, risk, marginEstimate };
+    const marginEstimate = notional / maxLeverage;
+
+    // In Testnet mode, missing/zero available-margin data must not be treated
+    // as proof that a position is affordable.
+    if (
+      (testnet && (!(available > 0) || marginEstimate > available)) ||
+      (!testnet && available > 0 && marginEstimate > available)
+    ) {
+      logSizing(0, 'estimated margin exceeds available margin or available margin is unavailable', {
+        qty,
+        notional,
+        risk,
+        marginEstimate,
+        available,
+        minimumContractFallback
+      });
+      return null;
+    }
+
+    logSizing(qty, minimumContractFallback ? 'Testnet one-contract minimum sizing fallback' : null, {
+      riskQty,
+      maxQtyByNotional,
+      notional,
+      risk,
+      marginEstimate,
+      minimumContractFallback
+    });
+
+    return {
+      qty,
+      notional,
+      risk,
+      marginEstimate,
+      riskBudget,
+      riskPerContract,
+      notionalPerContract,
+      minimumContractFallback
+    };
   }
 
   async accountSnapshot(settings = {}) {
@@ -2454,6 +2573,20 @@ export class DeltaEngine {
       try {
         const order = await this.executeSignal(signal, strategy, gate.size.qty, entryCid);
         const orderId = String(order?.id ?? order?.order_id ?? entryCid);
+
+        // Keep missing unfilled_size unknown (null), rather than falsely treating it as zero.
+        const unfilledRaw = order?.unfilled_size;
+        const unfilledText = unfilledRaw === undefined || unfilledRaw === null
+          ? ''
+          : String(unfilledRaw).trim();
+        const unfilledSize = unfilledText === ''
+          ? null
+          : Number.isFinite(Number(unfilledText))
+            ? Number(unfilledText)
+            : null;
+        const apiState = String(order?.state ?? 'UNKNOWN');
+        const orderType = String(order?.order_type ?? 'market_order');
+
         try {
           await db.upsert('dd_orders', {
             id: entryCid,
@@ -2462,31 +2595,59 @@ export class DeltaEngine {
             side: signal.side === 'BUY' ? 'buy' : 'sell',
             order_type: 'delta_testnet_order',
             size: gate.size.qty,
-            unfilled_size: n(order?.unfilled_size),
-            state: order?.state || 'open',
+            unfilled_size: unfilledSize,
+            state: apiState,
             client_order_id: entryCid,
             role: 'ENTRY',
             strategy,
             execution_id: entryCid,
             raw: {
               source: 'delta_testnet',
+              environment: 'testnet',
+              requested_order_type: orderType,
               entry_price: signal.price,
               stop_price: signal.sl,
               tp_price: signal.tp,
               testnet_order_id: order?.id ?? null,
+              exchange_state: order?.state ?? null,
+              unfilled_size: unfilledSize,
+              average_fill_price: order?.average_fill_price ?? null,
               accepted: true
             }
           }, 'client_order_id');
         } catch (persistError) {
-          await this.log('ERROR', 'Delta Testnet order accepted but order ledger persistence failed; no blind retry', {
-            symbol: signal.symbol, strategy, clientOrderId: entryCid,
+          await this.log('ERROR', '[Executor] Delta Testnet API accepted the order but order-ledger persistence failed; no blind retry', {
+            environment: 'testnet',
+            endpoint: 'POST /v2/orders',
+            symbol: signal.symbol,
+            strategy,
+            side: signal.side,
+            qty: gate.size.qty,
+            clientOrderId: entryCid,
+            orderId,
             error: String(persistError?.message || persistError)
           });
         }
-        await this.log('INFO', 'Delta Testnet bracket entry accepted', {
-          symbol: signal.symbol, strategy, side: signal.side, qty: gate.size.qty,
-          entry: signal.price, sl: signal.sl, tp: signal.tp,
-          clientOrderId: entryCid, orderId
+
+        await this.log('INFO', '[Executor] Delta Testnet API order acknowledged; exchange fill confirmation pending', {
+          environment: 'testnet',
+          endpoint: 'POST /v2/orders',
+          symbol: signal.symbol,
+          strategy,
+          side: signal.side,
+          qty: gate.size.qty,
+          orderType,
+          entry: signal.price,
+          sl: signal.sl,
+          tp: signal.tp,
+          clientOrderId: entryCid,
+          orderId,
+          apiState,
+          unfilledSize,
+          unfilledSizeStatus: unfilledSize === null ? 'unknown' : unfilledSize,
+          averageFillPrice: order?.average_fill_price ?? null,
+          restAcknowledgementOnly: true,
+          fillConfirmationSource: 'Delta private WebSocket / position reconciliation'
         });
         return true;
       } catch (error) {

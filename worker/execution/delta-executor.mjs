@@ -136,6 +136,26 @@ export function createDeltaExecutor({
     return assertDeltaTestnetConfiguration(env);
   }
 
+  async function logExecutor(level, message, details = {}) {
+    const serialized = JSON.stringify(details);
+    const line = serialized ? message + ' ' + serialized : message;
+
+    if (level === 'ERROR') console.error(line);
+    else if (level === 'WARN') console.warn(line);
+    else console.info(line);
+
+    try {
+      if (typeof database.log === 'function') {
+        await database.log(level, message, details);
+      }
+    } catch (error) {
+      console.warn(
+        '[Executor] Could not persist executor log:',
+        String(error?.message || error)
+      );
+    }
+  }
+
   async function request(method, path, params = {}, body = null) {
     const credentials = assertConfigured();
     const query = encodeQuery(params);
@@ -346,9 +366,21 @@ export function createDeltaExecutor({
     return normalized;
   }
 
-  async function submitOrder(product, body, { strategy = 'MOMENTUM', role = 'ENTRY', reserve = true } = {}) {
+  async function submitOrder(
+    product,
+    body,
+    {
+      strategy = 'MOMENTUM',
+      role = 'ENTRY',
+      reserve = true,
+      referenceEntryPrice = null
+    } = {}
+  ) {
     const clientOrderId = stringOrEmpty(body?.client_order_id);
-    const normalizedSymbol = stringOrEmpty(product?.symbol || body?.product_symbol).toUpperCase();
+    const normalizedSymbol = stringOrEmpty(
+      product?.symbol || body?.product_symbol
+    ).toUpperCase();
+
     const reservation = {
       id: clientOrderId,
       product_id: product.id,
@@ -363,49 +395,114 @@ export function createDeltaExecutor({
       execution_id: clientOrderId,
       raw: {
         source: 'delta_testnet',
+        environment: 'testnet',
         reservation: true,
-        entry_price: body.limit_price ?? null,
+        entry_price: body.limit_price ?? referenceEntryPrice ?? null,
+        exchange_order_type: body.order_type ?? null,
         stop_price: body.bracket_stop_loss_price ?? null,
         tp_price: body.bracket_take_profit_price ?? null,
+        bracket_stop_trigger_method: body.bracket_stop_trigger_method ?? null,
         reduce_only: body.reduce_only === true
       }
     };
+
     if (reserve) {
       // Persist a PENDING reservation before the network call; ambiguous timeouts stay blocked.
       await database.upsert('dd_orders', reservation, 'client_order_id');
     }
+
+    const requestDetails = {
+      environment: 'testnet',
+      method: 'POST',
+      endpoint: '/v2/orders',
+      url: DELTA_TESTNET_REST_BASE + '/v2/orders',
+      symbol: normalizedSymbol,
+      side: stringOrEmpty(body?.side).toUpperCase(),
+      qty: body.size,
+      orderType: body.order_type ?? null,
+      productId: product.id,
+      clientOrderId,
+      referenceEntryPrice: body.limit_price ?? referenceEntryPrice ?? null,
+      stopLossPrice: body.bracket_stop_loss_price ?? null,
+      takeProfitPrice: body.bracket_take_profit_price ?? null,
+      bracketStopTriggerMethod: body.bracket_stop_trigger_method ?? null,
+      reduceOnly: body.reduce_only === true
+    };
+
+    await logExecutor(
+      'INFO',
+      '[Executor] Placing order on Delta Testnet API',
+      requestDetails
+    );
+
     try {
+      // The signed request() call below sends the actual order to Testnet.
       const response = await request('POST', '/v2/orders', {}, body);
       const order = response.result ?? response;
-      if (!order || typeof order !== 'object' || !(order.id || order.client_order_id || order.state)) {
+
+      if (
+        !order ||
+        typeof order !== 'object' ||
+        !(order.id || order.client_order_id || order.state)
+      ) {
         throw new Error('Delta Testnet did not return a valid order acknowledgement');
       }
+
+      const unfilledSize = numberOrNull(order?.unfilled_size);
+      const apiState = stringOrEmpty(order?.state || 'UNKNOWN').toUpperCase();
+      const testnetOrderId = order.id ?? null;
+
       if (reserve) {
         await database.update(
           'dd_orders',
           'client_order_id=eq.' + encodeURIComponent(clientOrderId),
           {
-            state: stringOrEmpty(order.state || 'open').toUpperCase(),
+            state: apiState,
+            unfilled_size: unfilledSize,
             updated_at: new Date(now()).toISOString(),
             raw: {
               ...reservation.raw,
               reservation: false,
               accepted: true,
-              testnet_order_id: order.id ?? null,
-              exchange_state: order.state || null
+              testnet_order_id: testnetOrderId,
+              exchange_state: order.state ?? null,
+              unfilled_size: unfilledSize,
+              average_fill_price: order.average_fill_price ?? null
             }
           }
-        ).catch(error => database.log('ERROR', 'Delta Testnet order accepted but reservation update failed; reservation is retained', {
-          symbol: normalizedSymbol,
-          clientOrderId,
-          error: String(error?.message || error)
-        }));
+        ).catch(error => database.log(
+          'ERROR',
+          'Delta Testnet order accepted but reservation update failed; reservation is retained',
+          {
+            symbol: normalizedSymbol,
+            clientOrderId,
+            error: String(error?.message || error)
+          }
+        ));
       }
+
+      await logExecutor(
+        'INFO',
+        '[Executor] Delta Testnet API acknowledged order; REST acknowledgement is not fill confirmation',
+        {
+          ...requestDetails,
+          orderId: testnetOrderId,
+          apiState,
+          unfilledSize,
+          unfilledSizeStatus: unfilledSize === null ? 'unknown' : unfilledSize,
+          averageFillPrice: order.average_fill_price ?? null,
+          fillConfirmedByPrivateWebSocket: false,
+          note: 'Confirm fill and open position from private WebSocket or exchange reconciliation'
+        }
+      );
+
       return order;
     } catch (error) {
+      const status = Number(error?.status);
+      const knownRejected = Number.isInteger(status) &&
+        status >= 400 && status < 500 && status !== 408 && status !== 429;
+
       if (reserve) {
-        const status = Number(error?.status);
-        const knownRejected = Number.isInteger(status) && status >= 400 && status < 500 && status !== 408 && status !== 429;
         await database.update(
           'dd_orders',
           'client_order_id=eq.' + encodeURIComponent(clientOrderId),
@@ -423,6 +520,20 @@ export function createDeltaExecutor({
           }
         ).catch(() => {});
       }
+
+      await logExecutor(
+        'ERROR',
+        '[Executor] Delta Testnet API order request failed',
+        {
+          ...requestDetails,
+          httpStatus: Number.isInteger(status) ? status : null,
+          errorCode: String(error?.code || 'delta_testnet_request_failed'),
+          reason: String(error?.message || error),
+          reservationState: knownRejected ? 'FAILED' : 'UNKNOWN',
+          doNotBlindlyRetry: !knownRejected
+        }
+      );
+
       throw error;
     }
   }
@@ -476,14 +587,35 @@ export function createDeltaExecutor({
         product_id: product.id,
         size: quantity,
         side: direction.toLowerCase(),
-        order_type: 'limit_order',
-        limit_price: String(entry),
+        order_type: 'market_order',
         client_order_id: buildClientOrderId(options?.clientOrderId, prefix, normalizedSymbol),
         bracket_stop_loss_price: String(stop),
         bracket_take_profit_price: String(target),
         bracket_stop_trigger_method: 'mark_price'
       };
-      return submitOrder(product, body, { strategy, role: 'ENTRY' });
+
+      await logExecutor(
+        'INFO',
+        '[Executor] Preparing Testnet market bracket order',
+        {
+          environment: 'testnet',
+          symbol: normalizedSymbol,
+          side: direction,
+          qty: quantity,
+          orderType: body.order_type,
+          referenceEntryPrice: entry,
+          stopLossPrice: stop,
+          takeProfitPrice: target,
+          bracketStopTriggerMethod: body.bracket_stop_trigger_method,
+          clientOrderId: body.client_order_id
+        }
+      );
+
+      return submitOrder(product, body, {
+        strategy,
+        role: 'ENTRY',
+        referenceEntryPrice: entry
+      });
     });
   }
 
