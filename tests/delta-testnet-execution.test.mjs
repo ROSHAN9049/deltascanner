@@ -43,7 +43,7 @@ function fakeRuntime({
     async select(table, query) {
       if (table === 'dd_settings') return [{ id: 1, emergency_stop: emergencyStop }];
       if (table === 'dd_delta_positions') {
-        const symbolMatch = query.match(/symbol=eq\\.([^&]+)/);
+        const symbolMatch = query.match(/symbol=eq\.([^&]+)/);
         if (symbolMatch) {
           const symbol = decodeURIComponent(symbolMatch[1]);
           return persistedPositions.filter(row => row.status === 'OPEN' && row.symbol === symbol).map(row => ({ ...row }));
@@ -63,7 +63,7 @@ function fakeRuntime({
     async update(table, query, patch) {
       updates.push({ table, query, patch: { ...patch } });
       if (table === 'dd_delta_positions') {
-        const idMatch = query.match(/id=eq\\.([^&]+)/);
+        const idMatch = query.match(/id=eq\.([^&]+)/);
         const row = persistedPositions.find(item => String(item.id) === decodeURIComponent(idMatch?.[1] || ''));
         if (row) Object.assign(row, patch);
       }
