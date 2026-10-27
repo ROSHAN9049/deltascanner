@@ -572,7 +572,27 @@ export function createDeltaExecutor({
       const target = numberOrNull(tpPrice);
       if (!['BUY', 'SELL'].includes(direction)) throw new Error('side must be BUY or SELL');
       if (!Number.isSafeInteger(quantity) || quantity <= 0) throw new Error('qty must be a positive whole number of contracts');
-      if (!(entry > 0 && stop > 0 && target > 0)) throw new Error('entry, SL and TP prices must be positive');
+      if (!(Number.isFinite(entry) && entry > 0)) {
+        await logExecutor('ERROR', '[Executor] Blocked bracket order: invalid entry price', {
+          environment: 'testnet', symbol: normalizedSymbol, entryPrice: entryPrice ?? null,
+          executionBlocked: true
+        });
+        throw new Error('Invalid entry price (must be finite and > 0)');
+      }
+      if (!(Number.isFinite(stop) && stop > 0)) {
+        await logExecutor('ERROR', '[Executor] Blocked bracket order: invalid SL price', {
+          environment: 'testnet', symbol: normalizedSymbol, stopLossPrice: slPrice ?? null,
+          executionBlocked: true
+        });
+        throw new Error('Invalid SL price (must be finite and > 0)');
+      }
+      if (!(Number.isFinite(target) && target > 0)) {
+        await logExecutor('ERROR', '[Executor] Blocked bracket order: invalid TP price', {
+          environment: 'testnet', symbol: normalizedSymbol, takeProfitPrice: tpPrice ?? null,
+          executionBlocked: true
+        });
+        throw new Error('Invalid TP price (must be finite and > 0)');
+      }
       if (direction === 'BUY' && !(stop < entry && target > entry)) {
         throw new Error('BUY bracket prices must satisfy SL < entry < TP');
       }
