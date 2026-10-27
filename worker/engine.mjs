@@ -1271,7 +1271,7 @@ export class DeltaEngine {
     const contractValue = n(signal?.contractValue);
     const price = n(signal?.price);
     const stopPrice = n(signal?.sl);
-    const stopDistance = Math.abs(price - stopPrice);
+    const stopDistance = stopPrice > 0 ? Math.abs(price - stopPrice) : 0;
     const riskPct = n(settings?.risk_pct || 1);
     const riskBudget = equity * riskPct / 100;
     const maxLeverage = Math.max(1, n(settings?.max_leverage || 3));
@@ -1296,11 +1296,35 @@ export class DeltaEngine {
       }));
     };
 
+    const stage = String(signal?.stage || '').toUpperCase();
+    if (stage !== 'CONFIRMED') {
+      logSizing(0, `signal stage ${stage || 'UNKNOWN'} is not CONFIRMED`, {
+        stage,
+        ready: signal?.ready === true
+      });
+      return null;
+    }
+    if (signal?.ready !== true) {
+      logSizing(0, 'signal ready flag is not true', { stage, ready: false });
+      return null;
+    }
+    if (!(Number.isFinite(Number(signal?.sl)) && Number(signal.sl) > 0)) {
+      logSizing(0, `Invalid SL price (${signal?.sl === undefined || signal?.sl === null ? 'missing' : String(signal.sl)})`, {
+        invalidStopPrice: signal?.sl ?? null
+      });
+      return null;
+    }
+    if (!(Number.isFinite(Number(signal?.tp)) && Number(signal.tp) > 0)) {
+      logSizing(0, `Invalid TP price (${signal?.tp === undefined || signal?.tp === null ? 'missing' : String(signal.tp)})`, {
+        invalidTakeProfitPrice: signal?.tp ?? null
+      });
+      return null;
+    }
     if (
       !(equity > 0) ||
       !(contractValue > 0) ||
-      !(price > 0) ||
-      !(stopDistance > 0) ||
+      !(Number.isFinite(price) && price > 0) ||
+      !(Number.isFinite(stopDistance) && stopDistance > 0) ||
       !(riskBudget > 0)
     ) {
       logSizing(0, 'invalid equity, contract value, entry price, stop distance, or risk budget');
@@ -1491,9 +1515,25 @@ export class DeltaEngine {
       else size = { qty, notional, risk, marginEstimate: notional };
       if (signal.executionLocked) reasons.push('Option execution route locked');
     } else if (signal.side) {
-      size = this.positionSizing(signal, account, settings);
-      if (!size) reasons.push('Margin / minimum contract size');
-      if (n(signal.feeRiskRatio) > n(signal.costGateRatio)) reasons.push('Fee + spread exceeds 1R cost budget');
+      const stage = String(signal?.stage || '').toUpperCase();
+      const confirmedReady = stage === 'CONFIRMED' && signal?.ready === true;
+      const stop = Number(signal?.sl);
+      const target = Number(signal?.tp);
+
+      if (stage !== 'CONFIRMED') reasons.push(`Signal stage ${stage || 'UNKNOWN'} is not CONFIRMED`);
+      if (signal?.ready !== true) reasons.push('Signal ready flag is not true');
+
+      if (!confirmedReady) {
+        size = null;
+      } else if (!(Number.isFinite(stop) && stop > 0)) {
+        reasons.push('Invalid SL price (must be finite and > 0)');
+      } else if (!(Number.isFinite(target) && target > 0)) {
+        reasons.push('Invalid TP price (must be finite and > 0)');
+      } else {
+        size = this.positionSizing(signal, account, settings);
+        if (!size) reasons.push('Margin / minimum contract size');
+        if (n(signal.feeRiskRatio) > n(signal.costGateRatio)) reasons.push('Fee + spread exceeds 1R cost budget');
+      }
     }
 
     // Tradetron route readiness is enforced above so a technical CONFIRMED
@@ -2314,10 +2354,14 @@ export class DeltaEngine {
       this.recordAtrDiagnostics(mom);
       this.recordAtrDiagnostics(scalp);
       for (const s of [mom, scalp]) {
-        const size = this.positionSizing(s, account, settings);
+        const sizingCandidate = String(s?.stage || '').toUpperCase() === 'CONFIRMED' && s?.ready === true;
+        const size = sizingCandidate ? this.positionSizing(s, account, settings) : null;
         const gate = await this.riskGate(s, s === mom ? 'MOMENTUM' : 'SCALPING', account, settings, openPositions, trades);
         const strategyName = s === mom ? 'MOMENTUM' : 'SCALPING';
-        const insufficientCapital = s.stage === 'CONFIRMED' && (!size || n(size.qty) < 1);
+        const validEntryBrackets =
+          Number.isFinite(Number(s?.sl)) && Number(s.sl) > 0 &&
+          Number.isFinite(Number(s?.tp)) && Number(s.tp) > 0;
+        const insufficientCapital = sizingCandidate && validEntryBrackets && (!size || n(size.qty) < 1);
         if (insufficientCapital) {
           const capitalReason = 'Risk budget insufficient for 1 contract';
           s.stage = 'SKIPPED_INSUFFICIENT_CAPITAL';
@@ -2539,7 +2583,31 @@ export class DeltaEngine {
       if (CONFIG.deltaExecutionMode === 'testnet') return false;
       return this.openOptionTrade(item, signal, account, settings, openPositions, trades);
     }
-    if (signal.stage !== 'CONFIRMED' || signal.score < n(settings.score_min || 80)) return false;
+    if (
+      String(signal?.stage || '').toUpperCase() !== 'CONFIRMED' ||
+      signal?.ready !== true ||
+      signal.score < n(settings.score_min || 80)
+    ) return false;
+
+    const entryPrice = Number(signal?.price);
+    const stopPrice = Number(signal?.sl);
+    const takeProfitPrice = Number(signal?.tp);
+    if (
+      !(Number.isFinite(entryPrice) && entryPrice > 0) ||
+      !(Number.isFinite(stopPrice) && stopPrice > 0) ||
+      !(Number.isFinite(takeProfitPrice) && takeProfitPrice > 0)
+    ) {
+      await this.log('WARN', '[Executor] Entry blocked: entry, SL and TP must be finite positive prices', {
+        symbol: signal?.symbol ?? null,
+        stage: signal?.stage ?? null,
+        ready: signal?.ready === true,
+        entryPrice: signal?.price ?? null,
+        stopLossPrice: signal?.sl ?? null,
+        takeProfitPrice: signal?.tp ?? null,
+        executionBlocked: true
+      }).catch(() => {});
+      return false;
+    }
     if (
       CONFIG.deltaExecutionMode === 'testnet' &&
       ['MOMENTUM', 'SCALPING'].includes(strategy) &&
