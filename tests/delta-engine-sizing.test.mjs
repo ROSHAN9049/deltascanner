@@ -74,7 +74,7 @@ function withNotionalMultiplier(value, callback) {
   }
 }
 
-test('position sizing caps each entry at 15% of available margin', () => {
+test('position sizing caps each entry at 10% of available margin for the liquidation buffer', () => {
   const size = withNotionalMultiplier(2, () => engine.positionSizing(
     validSignal({ price: 100, sl: 99, contractValue: 1 }),
     { equity: 100000, available: 1000 },
@@ -82,9 +82,10 @@ test('position sizing caps each entry at 15% of available margin', () => {
   ));
 
   assert.ok(size);
-  assert.equal(size.maxQtyByMargin, 4);
-  assert.equal(size.qty, 4);
-  assert.ok(size.marginEstimate <= 150);
+  assert.equal(size.maxQtyByMargin, 3);
+  assert.equal(size.qty, 3);
+  assert.equal(size.maxMarginPerTrade, 100);
+  assert.ok(size.marginEstimate <= 100);
   assert.ok(size.marginEstimate <= 1000);
 });
 
