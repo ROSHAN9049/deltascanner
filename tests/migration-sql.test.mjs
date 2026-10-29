@@ -77,3 +77,18 @@ describe('PositionLedger migration SQL structure (text-only)', () => {
     assert.match(sql, /webhook_event_id\s+VARCHAR\(64\)\s+NOT NULL\s+UNIQUE/i);
   });
 });
+
+const deltaMigrationRunner = readFileSync(
+  fileURLToPath(new URL('../scripts/apply-all-migrations.mjs', import.meta.url)),
+  'utf8'
+);
+
+test('Delta position-close migration stays between worker lease and E-STOP safety migrations', () => {
+  const leaseIndex = deltaMigrationRunner.indexOf('20261029100000_worker_lease_ownership.sql');
+  const closeDetailsIndex = deltaMigrationRunner.indexOf('20261029110000_delta_position_close_details.sql');
+  const estopIndex = deltaMigrationRunner.indexOf('20261029120000_estop_release_challenge.sql');
+
+  assert.ok(leaseIndex >= 0, 'worker lease migration must remain registered');
+  assert.ok(closeDetailsIndex > leaseIndex, 'position close details must follow worker lease ownership');
+  assert.ok(estopIndex > closeDetailsIndex, 'E-STOP release challenge must remain after position close details');
+});
