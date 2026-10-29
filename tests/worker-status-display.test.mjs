@@ -9,8 +9,8 @@ test('cap reached blocks new signals in both cards while scanning stays on', () 
   });
   assert.equal(status.capReached, true);
   assert.equal(status.continuousValue, 'ON · BLOCKED');
-  assert.equal(status.continuousSubtitle, '⚠️ Global cap reached (20/20). New signals blocked until positions close.');
-  assert.equal(status.autoTradeSubtitle, 'Scanner enabled, but all new signals blocked by global cap (20/20).');
+  assert.equal(status.continuousSubtitle, '⚠️ Global cap reached (20/20). New entries blocked until positions close.');
+  assert.equal(status.autoTradeSubtitle, 'Scanner active, but new entries are blocked by the global position cap (20/20).');
 });
 
 test('cap below maximum keeps continuous scanning active and shows live count', () => {
@@ -20,25 +20,38 @@ test('cap below maximum keeps continuous scanning active and shows live count', 
   assert.equal(status.capReached, false);
   assert.equal(status.continuousValue, 'ON · ACTIVE');
   assert.equal(status.continuousSubtitle, 'Continuous scanning active. Global cap: 12/20.');
-  assert.equal(status.autoTradeSubtitle, 'Scanner enabled. Signals active.');
+  assert.equal(status.autoTradeSubtitle, 'Scanner active. Signals and entry checks are running.');
 });
 
 test('continuous mode off is clearly distinguished from auto trade being off', () => {
   const status = getWorkerStatusDisplay({
     autoTrade: true, continuousMode: false, currentOpenPositions: 3, maxOpenPositions: 20
   });
-  assert.equal(status.continuousValue, 'OFF');
-  assert.equal(status.continuousSubtitle, 'Continuous scanning is off. No continuous automatic routing.');
-  assert.match(status.autoTradeSubtitle, /Signals active/);
+  assert.equal(status.continuousValue, 'OFF · MANUAL');
+  assert.equal(status.continuousSubtitle, 'Continuous automatic routing is OFF; the worker continues market scanning.');
+  assert.match(status.autoTradeSubtitle, /Signals and entry checks are running/);
 });
 
-test('auto off means no automatic routing and no signals', () => {
+test('scanner disabled is distinct from Auto Trade disabled', () => {
+  const status = getWorkerStatusDisplay({
+    scannerEnabled: false,
+    autoTrade: false,
+    continuousMode: true,
+    currentOpenPositions: 0,
+    maxOpenPositions: 20
+  });
+  assert.equal(status.continuousValue, 'OFF');
+  assert.equal(status.autoTradeSubtitle, 'Scanner disabled. Market scans and signal refreshes are paused.');
+  assert.equal(status.continuousSubtitle, 'Scanner is disabled; no market scan or signal refresh occurs.');
+});
+
+test('auto off keeps the scanner active while disabling automatic entries', () => {
   const status = getWorkerStatusDisplay({
     autoTrade: false, continuousMode: true, currentOpenPositions: 12, maxOpenPositions: 20
   });
-  assert.equal(status.continuousValue, 'OFF');
-  assert.equal(status.continuousSubtitle, 'Manual mode. No automatic routing.');
-  assert.equal(status.autoTradeSubtitle, 'Scanner disabled. No signals will be sent.');
+  assert.equal(status.continuousValue, 'OFF · AUTO TRADE');
+  assert.equal(status.continuousSubtitle, 'Auto Trade is OFF; the scanner continues to scan, but automatic entries are not routed.');
+  assert.equal(status.autoTradeSubtitle, 'Scanner remains active. Auto Trade is OFF, so no automatic entries are routed.');
 });
 
 test('emergency stop overrides auto trade and cap subtitles', () => {
@@ -46,9 +59,9 @@ test('emergency stop overrides auto trade and cap subtitles', () => {
     autoTrade: true, continuousMode: true, emergencyStop: true,
     currentOpenPositions: 20, maxOpenPositions: 20
   });
-  assert.equal(status.autoTradeSubtitle, '🚨 EMERGENCY STOP ACTIVE. All signal flow halted.');
+  assert.equal(status.autoTradeSubtitle, '🚨 EMERGENCY STOP ACTIVE. New entries and automatic routing are halted; market scanning may continue.');
   assert.equal(status.continuousValue, 'ON · HALTED');
-  assert.equal(status.continuousSubtitle, '🚨 EMERGENCY STOP ACTIVE. All signal flow halted.');
+  assert.equal(status.continuousSubtitle, 'Emergency Stop is active; new entries are halted while public-market scanning may continue.');
 });
 
 test('missing or invalid cap telemetry never claims capacity is available', () => {
@@ -59,7 +72,7 @@ test('missing or invalid cap telemetry never claims capacity is available', () =
   assert.equal(status.hasCapData, false);
   assert.equal(status.capLabel, 'NO DATA');
   assert.match(status.continuousSubtitle, /cap status unavailable/i);
-  assert.match(status.autoTradeSubtitle, /status unavailable/i);
+  assert.match(status.autoTradeSubtitle, /status is unavailable/i);
 });
 
 test('health ages and lease remaining are formatted in seconds without snake-case conversion', () => {
@@ -73,7 +86,7 @@ test('health ages and lease remaining are formatted in seconds without snake-cas
 
 test('emergency-stop tooltip reflects the current state', () => {
   assert.equal(getEmergencyStopTooltip(false), 'No emergency halt active.');
-  assert.equal(getEmergencyStopTooltip(true), 'Emergency stop active; all signal flow halted.');
+  assert.equal(getEmergencyStopTooltip(true), 'Emergency Stop active; new entries and automatic routing are halted. Public-market scanning may continue.');
 });
 
 test('retention last-run age is human-readable and missing timestamps show NO DATA', () => {

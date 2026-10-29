@@ -10,6 +10,7 @@ import { buildRiskGovernorGates, buildNormalizedScoreDiagnostic } from './risk-g
 import { normalizedScoreFromView as normalizedScoreFrom, visibleScoreFrom, passesScoreFilter, normalizedScoreTooltip, showAllPreferenceKey, readShowAllPreference, writeShowAllPreference } from './normalized-score-view.js';
 import { resolveDashboardRouteContext } from './dashboard-route-state.js';
 import { summarizeRotationLedger } from './rotation-ledger-state.js';
+import { assessOptionsCacheFreshness } from './options-cache-freshness.js';
 import { formatHealthAge, formatLeaseRemaining, formatRetentionLastRun, getEmergencyStopTooltip, getGlobalPositionCapDisplay, getWorkerStatusDisplay } from './worker-status-display.js';
 
 const tabs = [
@@ -676,8 +677,27 @@ function EngineView({ engine, signals, entrySafetyBlocked = false, entrySafetyRe
 }
 
 function OptionsView({ signals, settings, optionCache = [], executionCoverage = null }) {
-  const rows = (optionCache.length ? optionCache : signals.filter(x => x.strategy === 'OPTIONS_BUY' || x.strategy === 'OPTIONS_SELL'))
+  const sourceRows = optionCache.length
+    ? optionCache
+    : signals.filter(x => x.strategy === 'OPTIONS_BUY' || x.strategy === 'OPTIONS_SELL');
+  const freshness = assessOptionsCacheFreshness(sourceRows);
+  const rows = (freshness.fresh ? [...sourceRows] : [])
     .sort((a,b) => num(b.score) - num(a.score));
+  const ageMinutes = freshness.ageMs === null ? null : Math.max(0, Math.floor(freshness.ageMs / 60000));
+  const capturedAt = freshness.newestAt
+    ? new Date(freshness.newestAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
+    : null;
+  const freshnessMessage = freshness.status === 'STALE'
+    ? 'Snapshot is ' + (ageMinutes >= 60 ? (ageMinutes / 60).toFixed(1) + ' hours old' : ageMinutes + ' minutes old') + '; cached candidates are hidden until refreshed.'
+    : freshness.status === 'UNKNOWN_TIMESTAMP'
+      ? 'Candidate timestamps are missing or invalid; cached rows are hidden because freshness cannot be verified.'
+      : freshness.status === 'FUTURE_TIMESTAMP'
+        ? 'Candidate timestamps are in the future; cached rows are hidden until the source clock is verified.'
+        : freshness.status === 'UNKNOWN_TIME'
+          ? 'Dashboard time is unavailable; cached rows are hidden until freshness can be verified.'
+          : freshness.status === 'NO_DATA'
+            ? 'No current option candidate snapshot is available.'
+            : '';
   const buys = rows.filter(x => x.strategy === 'OPTIONS_BUY');
   const sells = rows.filter(x => x.strategy === 'OPTIONS_SELL');
   const buyMinDelta = safeNum(settings.options_buy_min_delta) || 0.45;
@@ -686,26 +706,32 @@ function OptionsView({ signals, settings, optionCache = [], executionCoverage = 
   const sellMaxDelta = safeNum(settings.options_sell_max_delta) || 0.35;
   return <>
     <section className="cards">
-      <Card label="OPTIONS ENGINE" value={settings.options_enabled === false ? 'OFF' : 'ON'} sub="BTC / ETH / GOLD (XAUT) only · analysis data"/>
-      <Card label="BUY CANDIDATES" value={buys.length} sub={'Delta target ' + buyMinDelta.toFixed(2) + '–' + buyMaxDelta.toFixed(2)}/>
-      <Card label="SELL CANDIDATES" value={sells.length} sub={'Delta target ' + sellMinDelta.toFixed(2) + '–' + sellMaxDelta.toFixed(2) + ' · spread only'}/>
+      <Card label="OPTIONS DATA" value={freshness.status.replaceAll('_', ' ')} sub={capturedAt ? 'Latest candidate snapshot · ' + capturedAt : 'Timestamped analysis data required'}/>
+      <Card label="BUY CANDIDATES" value={buys.length} sub={freshness.fresh ? 'Delta target ' + buyMinDelta.toFixed(2) + '–' + buyMaxDelta.toFixed(2) : 'Hidden until a fresh snapshot is available'}/>
+      <Card label="SELL CANDIDATES" value={sells.length} sub={freshness.fresh ? 'Delta target ' + sellMinDelta.toFixed(2) + '–' + sellMaxDelta.toFixed(2) + ' · spread only' : 'Hidden until a fresh snapshot is available'}/>
       <Card label="OPTIONS ROUTE CONFIG" value={executionCoverage?.optionsRouteConfigured === true ? 'CONFIGURED' : 'NOT CONFIGURED'} sub="Route configuration does not unlock Options execution"/>
     </section>
+    {!freshness.fresh ? <div className="lockedText" role="status">
+      <b className="warn">⚠ OPTIONS SNAPSHOT {freshness.status.replaceAll('_', ' ')} — CANDIDATES HIDDEN</b>
+      <p>{freshnessMessage}</p>
+      {capturedAt ? <p>Last snapshot: {capturedAt} IST · age about {ageMinutes >= 60 ? (ageMinutes / 60).toFixed(1) + ' hours' : ageMinutes + ' minutes'}.</p> : null}
+      <p className="muted">Fresh option quotes and Greeks must be independently verified before reviewing candidates. No stale row is presented as current.</p>
+    </div> : null}
     <div className="lockedText">
       <b className="warn">⚠ OPTIONS EXECUTION LOCKED — ANALYSIS ONLY</b>
       <p>Entries remain hard-locked until spread legs, defined maximum loss, dedicated credentials, and contract mappings are independently verified. A configured route is not execution authorization.</p>
       <p className="muted">No Options entry signal should be sent from this scanner while the safety lock is active.</p>
     </div>
     <Panel title="Options BUY · Analysis Only">
-      <OptionTable rows={buys} type="BUY" deltaMin={buyMinDelta} deltaMax={buyMaxDelta} />
+      <OptionTable rows={buys} type="BUY" deltaMin={buyMinDelta} deltaMax={buyMaxDelta} emptyMessage={freshness.fresh ? 'No option BUY candidates for the latest snapshot.' : 'Stale or unverified candidates are hidden; no current BUY candidates are shown.'} />
     </Panel>
     <Panel title="Options SELL · Defined-Risk Review Only">
-      <OptionTable rows={sells} type="SELL" deltaMin={sellMinDelta} deltaMax={sellMaxDelta} />
+      <OptionTable rows={sells} type="SELL" deltaMin={sellMinDelta} deltaMax={sellMaxDelta} emptyMessage={freshness.fresh ? 'No option SELL candidates for the latest snapshot.' : 'Stale or unverified candidates are hidden; no current SELL candidates are shown.'} />
     </Panel>
   </>;
 }
 
-function OptionTable({ rows, type, deltaMin, deltaMax }) {
+function OptionTable({ rows, type, deltaMin, deltaMax, emptyMessage = 'No option candidates returned for the current market snapshot.' }) {
   const hasSellRiskColumns = type === 'SELL';
   // Never render a stale cached candidate as executable while the backend hard lock is active.
   const optionsExecutionLocked = true;
@@ -752,7 +778,7 @@ function OptionTable({ rows, type, deltaMin, deltaMax }) {
       </> : null}
       <td className={optionsExecutionLocked || statusLocked ? 'warn' : s.ready ? 'up' : 'muted'}>{optionsExecutionLocked || statusLocked ? 'LOCKED' : s.ready ? 'READY' : 'WAIT'}</td>
     </tr>;
-  })}{!rows.length ? <tr><td colSpan={columnCount}>No option candidates returned for the current market snapshot. No missing values are substituted with zero.</td></tr> : null}</tbody></table></div>;
+  })}{!rows.length ? <tr><td colSpan={columnCount}>{emptyMessage} No missing values are substituted with zero.</td></tr> : null}</tbody></table></div>;
 }
 
 function Positions({ rows = [], accountDataProtected = false }) {
@@ -864,7 +890,7 @@ function equityPoints(trades) {
 }
 function Testnet({settings,health,currentOpenPositionCount=null,accountDataProtected=false}) {
  const count=safeNum(currentOpenPositionCount);
- const status=getWorkerStatusDisplay({autoTrade:settings.auto_trade===true,continuousMode:settings.continuous_mode===true,emergencyStop:settings.emergency_stop===true,currentOpenPositions:count,maxOpenPositions:settings.max_open_positions??null});
+ const status=getWorkerStatusDisplay({scannerEnabled:settings.enabled!==false,autoTrade:settings.auto_trade===true,continuousMode:settings.continuous_mode===true,emergencyStop:settings.emergency_stop===true,currentOpenPositions:count,maxOpenPositions:settings.max_open_positions??null});
  const online=health?.workerLeaseActive===true&&health?.heartbeatFresh===true, tone=settings.emergency_stop===true?'critical':status.capReached&&settings.auto_trade===true?'warning':'';
  const ages='Tick: '+formatHealthAge(health?.tickAgeMs)+' · Heartbeat: '+formatHealthAge(health?.heartbeatAgeMs)+' · Lease: '+formatLeaseRemaining(health?.leaseRemainingMs);
  const r=health?.retention||{}, deleted=Number.isSafeInteger(Number(r.rowsDeleted))&&Number(r.rowsDeleted)>=0?Number(r.rowsDeleted):0, days=Number.isSafeInteger(Number(r.configDays))&&Number(r.configDays)>=1?Number(r.configDays):1, fail=Number.isSafeInteger(Number(r.consecutiveFailures))&&Number(r.consecutiveFailures)>=0?Number(r.consecutiveFailures):0;
