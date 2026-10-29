@@ -671,10 +671,12 @@ export class DeltaTestnetTracker {
         const grossPnl = vanilla && contractValue > 0
           ? (side === 'BUY' ? exit.price - entry.price : entry.price - exit.price) * tradeQty * contractValue
           : null;
-        // A historical row may have been marked CLOSED by a REST absence check.
-        // Fill-matched prices/fees are useful, but net P&L is only published when
-        // a private position close event supplied an authoritative realized_pnl.
-        const netPnl = realizedPnlVerified ? realizedPnl : null;
+        // Delta's reported realized P&L is not fee-adjusted. Publish net P&L
+        // only when both exchange-reported realized P&L and complete fill fees
+        // are verified; never silently treat missing commissions as zero.
+        const netPnl = realizedPnlVerified && fees !== null
+          ? realizedPnl - fees
+          : null;
         const pnlPct = netPnl !== null && entryNotional > 0 ? netPnl / entryNotional * 100 : null;
         const result = netPnl !== null
           ? netPnl > 0 ? 'WIN' : netPnl < 0 ? 'LOSS' : 'FLAT'
