@@ -673,6 +673,37 @@ export class DeltaTestnetTracker {
       }
       if (trades.length) {
         await this.database.upsertMany('dd_trades', trades, 'execution_id');
+
+        // Profit Rotation is an accounting ledger only; it never moves funds.
+        // Create events only from a fill-matched trade with verified positive
+        // exchange-reported net P&L. NULL/negative net results never become 0 or
+        // a rotation event. execution_id is the idempotent conflict key.
+        const rotationRows = trades
+          .filter(trade => numberOrNull(trade?.net_pnl) > 0 && trade?.result === 'WIN')
+          .map(trade => {
+            const profit = Number(Number(trade.net_pnl).toFixed(10));
+            const released = Number((profit * 0.9).toFixed(10));
+            const retained = Number((profit - released).toFixed(10));
+            const positionId = String(trade.execution_id || '').replace(/^delta-testnet-position:/, '');
+            return {
+              execution_id: trade.execution_id,
+              trade_id: null,
+              profit,
+              released,
+              retained,
+              rotation_id: 'delta-testnet-rotation:' + positionId,
+              created_at: trade.closed_at
+            };
+          });
+        if (rotationRows.length) {
+          await this.database.upsertMany('dd_rotation_ledger', rotationRows, 'execution_id');
+          await this.database.log('INFO', 'Profit Rotation accounting events materialized from verified profitable closes', {
+            rowsMaterialized: rotationRows.length,
+            source: 'fill-matched trade with verified exchange net realized P&L',
+            fundsMoved: false
+          }).catch(() => {});
+        }
+
         await this.database.log('INFO', 'Fill-matched Delta Testnet closed trades materialized', {
           rowsMaterialized: trades.length,
           source: 'closed position snapshot + matched REST/WebSocket fill IDs',
