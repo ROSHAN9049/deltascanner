@@ -39,15 +39,16 @@ test('worker routing is wired to the direct-only policy', () => {
 
   const executeSignalStart = engine.indexOf('async executeSignal(');
   const openTradeStart = engine.indexOf('async openTrade(', executeSignalStart);
-  const openOptionTradeStart = engine.indexOf('async openOptionTrade(', openTradeStart);
+  const manageOptionStart = engine.indexOf('async manageOptionPositionRow(', openTradeStart);
   assert.ok(executeSignalStart >= 0 && openTradeStart > executeSignalStart);
-  assert.ok(openOptionTradeStart > openTradeStart);
+  assert.ok(manageOptionStart > openTradeStart);
   const executeSignalSource = engine.slice(executeSignalStart, openTradeStart);
-  const openTradeSource = engine.slice(openTradeStart, openOptionTradeStart);
+  const openTradeSource = engine.slice(openTradeStart, manageOptionStart);
   assert.doesNotMatch(executeSignalSource, /getTradetronBridgeForSymbol|emitEntry\(/);
   assert.match(openTradeSource, /CONFIG\.deltaExecutionMode !== 'testnet'/);
   assert.match(openTradeSource, /only direct Delta Testnet execution is supported/);
   assert.match(openTradeSource, /return false;/);
+  assert.doesNotMatch(engine, /async openOptionTrade\(/);
 
   assert.doesNotMatch(index, /Tradetron signal bridge is required in SIGNAL_ONLY mode/);
   assert.match(index, /public market scan-only/);
