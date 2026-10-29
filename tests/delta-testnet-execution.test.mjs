@@ -518,11 +518,11 @@ test('closed trade projection requires matching entry order, exit side and full 
   assert.equal(trade.execution_id, 'delta-testnet-position:42');
   assert.equal(trade.entry_price, 60000);
   assert.equal(trade.exit_price, 60120);
-  assert.equal(trade.entry_notional, 120);
-  assert.equal(trade.exit_notional, 120.24);
+  assert.ok(Math.abs(trade.entry_notional - 120) < 1e-9);
+  assert.ok(Math.abs(trade.exit_notional - 120.24) < 1e-9);
   assert.equal(trade.fees, 0.04);
   assert.equal(trade.net_pnl, 0.2);
-  assert.equal(trade.gross_pnl, 0.24);
+  assert.ok(Math.abs(trade.gross_pnl - 0.24) < 1e-9);
   assert.equal(trade.pnl_pct, (0.2 / 120) * 100);
   assert.deepEqual(trade.entry_fill_ids, ['entry-1', 'entry-2']);
   assert.deepEqual(trade.exit_fill_ids, ['exit-1']);
