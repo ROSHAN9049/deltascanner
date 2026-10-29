@@ -26,9 +26,9 @@ test('releasing E-STOP opens a modal and starts a ten-second countdown', () => {
 });
 
 test('confirmation requires countdown completion and explicit verification checkbox', () => {
-  assert.match(releaseControls, /estopReleaseCountdown > 0 \|\| !estopReleaseVerified/);
+  assert.match(releaseControls, /estopReleaseCountdown > 0 \|\|\s*!estopReleaseVerified/);
   assert.match(source, /I have verified system state/);
-  assert.match(source, /disabled=\{busy \|\| estopReleaseCountdown > 0 \|\| !estopReleaseVerified\}/);
+  assert.match(source, /disabled=\{busy \|\| estopReleaseCountdown > 0 \|\| !estopReleaseVerified \|\| !estopReleaseToken\}/);
 });
 
 test('the API requires a signed server challenge, delay and explicit confirmation', () => {
