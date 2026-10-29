@@ -555,6 +555,48 @@ test('closed trade projection requires matching entry order, exit side and full 
   assert.equal(rotationBatch.values[0].created_at, closedPosition.closed_at);
 });
 
+test('closed trade projection supports partial exits when total fills match the entry quantity', async () => {
+  const closedPosition = {
+    id: 45, symbol: 'BTCUSD', status: 'CLOSED', close_source: 'private_websocket',
+    realized_pnl_verified: true, strategy: 'MOMENTUM', side: 'BUY',
+    // Position qty may reflect a remaining partial size, not the original trade size.
+    qty: '2', order_id: 'entry-partial', realized_pnl: '0.26',
+    opened_at: '2026-10-29T10:00:00.000Z', closed_at: '2026-10-29T10:30:00.000Z'
+  };
+  const fills = [
+    { id: 'entry-partial-1', symbol: 'BTCUSD', order_id: 'entry-partial', side: 'BUY', size: '2', price: '60000', commission: '0.01', created_at: '2026-10-29T10:00:01.000Z' },
+    { id: 'entry-partial-2', symbol: 'BTCUSD', order_id: 'entry-partial', side: 'BUY', size: '2', price: '60020', commission: '0.01', created_at: '2026-10-29T10:00:02.000Z' },
+    { id: 'exit-partial-1', symbol: 'BTCUSD', order_id: 'exit-partial-1', side: 'SELL', size: '2', price: '60050', commission: '0.01', created_at: '2026-10-29T10:15:00.000Z' },
+    { id: 'exit-partial-2', symbol: 'BTCUSD', order_id: 'exit-partial-2', side: 'SELL', size: '2', price: '60100', commission: '0.01', created_at: '2026-10-29T10:29:59.000Z' }
+  ];
+  const materialized = [];
+  const database = {
+    async select(table) {
+      if (table === 'dd_delta_positions') return [closedPosition];
+      if (table === 'dd_fills') return fills;
+      if (table === 'dd_market_cache') return [{ symbol: 'BTCUSD', contract_value: '0.001', notional_type: 'vanilla' }];
+      return [];
+    },
+    async upsertMany(table, values, conflict) {
+      materialized.push({ table, values, conflict });
+    },
+    async log() {}
+  };
+  const tracker = new DeltaTestnetTracker({ env: demoEnv(), database, executor: {}, WebSocketImpl: class {} });
+  tracker.stopped = false;
+
+  const result = await tracker.materializeVerifiedClosedTrades();
+
+  assert.equal(result.materialized, 1);
+  const trade = materialized.find(row => row.table === 'dd_trades').values[0];
+  assert.equal(trade.qty, 4);
+  assert.equal(trade.entry_price, 60010);
+  assert.equal(trade.exit_price, 60075);
+  assert.ok(Math.abs(trade.gross_pnl - 0.26) < 1e-9);
+  assert.equal(trade.net_pnl, 0.26);
+  assert.deepEqual(trade.exit_fill_ids, ['exit-partial-1', 'exit-partial-2']);
+});
+
 test('closed trade projection refuses missing exit fill quantity', async () => {
   const materialized = [];
   const database = {
