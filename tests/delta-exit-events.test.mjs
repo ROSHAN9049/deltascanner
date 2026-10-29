@@ -27,6 +27,8 @@ test('missing close details remain null and mark price never becomes exit price'
   assert.equal(fields.realized_pnl, null);
   assert.equal(fields.exit_reason, 'unknown');
   assert.equal(fields.close_order_id, null);
+  const entryOrderOnly = deltaCloseFields({ order_id: 'entry-order', current_price: 4050 });
+  assert.equal(entryOrderOnly.close_order_id, null);
 });
 
 test('verified close details take precedence over unverified event fields', () => {
