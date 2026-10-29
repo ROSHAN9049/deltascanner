@@ -723,15 +723,15 @@ function OptionsView({ signals, settings, optionCache = [], executionCoverage = 
       <p className="muted">No Options entry signal should be sent from this scanner while the safety lock is active.</p>
     </div>
     <Panel title="Options BUY · Analysis Only">
-      <OptionTable rows={buys} type="BUY" deltaMin={buyMinDelta} deltaMax={buyMaxDelta} />
+      <OptionTable rows={buys} type="BUY" deltaMin={buyMinDelta} deltaMax={buyMaxDelta} emptyMessage={freshness.fresh ? 'No option BUY candidates for the latest snapshot.' : 'Stale or unverified candidates are hidden; no current BUY candidates are shown.'} />
     </Panel>
     <Panel title="Options SELL · Defined-Risk Review Only">
-      <OptionTable rows={sells} type="SELL" deltaMin={sellMinDelta} deltaMax={sellMaxDelta} />
+      <OptionTable rows={sells} type="SELL" deltaMin={sellMinDelta} deltaMax={sellMaxDelta} emptyMessage={freshness.fresh ? 'No option SELL candidates for the latest snapshot.' : 'Stale or unverified candidates are hidden; no current SELL candidates are shown.'} />
     </Panel>
   </>;
 }
 
-function OptionTable({ rows, type, deltaMin, deltaMax }) {
+function OptionTable({ rows, type, deltaMin, deltaMax, emptyMessage = 'No option candidates returned for the current market snapshot.' }) {
   const hasSellRiskColumns = type === 'SELL';
   // Never render a stale cached candidate as executable while the backend hard lock is active.
   const optionsExecutionLocked = true;
@@ -778,7 +778,7 @@ function OptionTable({ rows, type, deltaMin, deltaMax }) {
       </> : null}
       <td className={optionsExecutionLocked || statusLocked ? 'warn' : s.ready ? 'up' : 'muted'}>{optionsExecutionLocked || statusLocked ? 'LOCKED' : s.ready ? 'READY' : 'WAIT'}</td>
     </tr>;
-  })}{!rows.length ? <tr><td colSpan={columnCount}>No option candidates returned for the current market snapshot. No missing values are substituted with zero.</td></tr> : null}</tbody></table></div>;
+  })}{!rows.length ? <tr><td colSpan={columnCount}>{emptyMessage} No missing values are substituted with zero.</td></tr> : null}</tbody></table></div>;
 }
 
 function Positions({ rows = [], accountDataProtected = false }) {
