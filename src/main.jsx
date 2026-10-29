@@ -349,6 +349,21 @@ function Dashboard({ market, settings, health, positions, accountDataProtected =
   const visibleSignals=selectVisibleSignalRows(market,signals,DEFAULT_VISIBLE_MARKET_LIMIT);
   const visibleCoinCount=new Set(visibleSignals.map(s=>s.symbol)).size;
   const openSymbols=selectOpenPositionSymbols(positions);
+  const dashboardReadiness = new Map(visibleSignals.map(signal => {
+    const gateRows = buildRiskGovernorGates({
+      selected: signal,
+      health,
+      positions: accountDataProtected ? null : positions,
+      routedSymbols: [],
+      routeDataVerified: false,
+      entrySafetyTrusted: null
+    });
+    const failedGates = gateRows.filter(gate => gate.result !== 'PASS');
+    return [signal.symbol + ':' + signal.strategy, {
+      ready: gateRows.length > 0 && failedGates.length === 0,
+      failedGates
+    }];
+  }));
   return <>
     <section className="cards"><Card label="DELTA TESTNET EQUITY" value={equityText} sub={equitySub}/><Card label="DELTA OPEN POSITIONS" value={positionText} sub={posSub}/><Card label="DELTA OPEN ORDERS" value={orderText} sub={orderSub}/><Card label="TODAY'S P&L (DELTA)" value={pnlText} sub={pnlSub}/></section>
     <Panel title="Last Signal · System Activity">
@@ -364,7 +379,34 @@ function Dashboard({ market, settings, health, positions, accountDataProtected =
     <section className="grid2"><RiskGovernor signals={signals} health={health} positions={accountDataProtected?null:positions} onInspect={onInspect} inspect={inspect} routedSymbols={[]} routeDataVerified={false} entrySafetyTrusted={null}/>
       <Panel title={'Signal Stages · '+visibleCoinCount+' coins · WATCH → SETUP → CONFIRMED'}><div className="marketCount">Momentum and Scalping status for the same top {visibleCoinCount} coins shown in the market table.</div>
         <div className="tablewrap"><table><thead><tr><th>COIN</th><th>ENG</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>QTY</th><th>NOTIONAL</th><th>RISK</th><th>READY</th><th>WHY BLOCKED</th></tr></thead><tbody>
-        {visibleSignals.map(s=><tr key={s.symbol+':'+s.strategy}><td className="symbol">{s.symbol}</td><td>{s.strategy==='MOMENTUM'?'MOM':'SCALP'}</td><td>{s.snapshot_missing?'WATCH · NO DATA':s.stage}</td><td className={s.side==='BUY'?'up':s.side==='SELL'?'down':'muted'}>{s.side||'—'}</td><td><b>{s.snapshot_missing?'—':safeNum(s.score)===null?'NO DATA':safeNum(s.score).toFixed(0)+'/100'}</b></td><td>{s.snapshot_missing?'—':fmtQty(s.qty_contracts)}</td><td>{s.snapshot_missing?'—':money(s.notional)}</td><td>{s.snapshot_missing?'—':money(s.risk_usd)}</td><td className={s.snapshot_missing?'muted':s.ready&&!openSymbols.has(String(s.symbol||'').toUpperCase())?'up':'down'}>{s.snapshot_missing?'—':s.ready&&!openSymbols.has(String(s.symbol||'').toUpperCase())?'YES':'NO'}</td><td className="blocker" title={Array.isArray(s.gate_results)?s.gate_results.map(gateTooltip).join('\n'):'Structured gate results are not supplied by the worker; existing block reasons shown.'}>{s.snapshot_missing?'No signal snapshot available':openSymbols.has(String(s.symbol||'').toUpperCase())?'Open Delta Testnet position detected; duplicate entry blocked':Array.isArray(s.gate_results)?blockersDisplay(s.gate_results):fmtReasons(s.blocked_reasons)}</td></tr>)}
+        {visibleSignals.map(s => {
+          const positionOpen = openSymbols.has(String(s.symbol || '').toUpperCase());
+          const governor = dashboardReadiness.get(s.symbol + ':' + s.strategy);
+          const ready = s.ready === true && governor?.ready === true && !positionOpen;
+          const governorReasons = (governor?.failedGates || []).map(gate =>
+            gate.gate + ': ' + (gate.blockReason || gate.result)
+          );
+          const existingReasons = Array.isArray(s.gate_results)
+            ? blockersDisplay(s.gate_results)
+            : fmtReasons(s.blocked_reasons);
+          const whyBlocked = s.snapshot_missing
+            ? 'No signal snapshot available'
+            : positionOpen
+              ? 'Open Delta Testnet position detected; duplicate entry blocked'
+              : [...new Set([...governorReasons, existingReasons === '—' ? '' : existingReasons].filter(Boolean))].join(' · ') || '—';
+          return <tr key={s.symbol + ':' + s.strategy}>
+            <td className="symbol">{s.symbol}</td>
+            <td>{s.strategy === 'MOMENTUM' ? 'MOM' : 'SCALP'}</td>
+            <td>{s.snapshot_missing ? 'WATCH · NO DATA' : s.stage}</td>
+            <td className={s.side === 'BUY' ? 'up' : s.side === 'SELL' ? 'down' : 'muted'}>{s.side || '—'}</td>
+            <td><b>{s.snapshot_missing ? '—' : safeNum(s.score) === null ? 'NO DATA' : safeNum(s.score).toFixed(0) + '/100'}</b></td>
+            <td>{s.snapshot_missing ? '—' : fmtQty(s.qty_contracts)}</td>
+            <td>{s.snapshot_missing ? '—' : money(s.notional)}</td>
+            <td>{s.snapshot_missing ? '—' : money(s.risk_usd)}</td>
+            <td className={s.snapshot_missing ? 'muted' : ready ? 'up' : 'down'}>{s.snapshot_missing ? '—' : ready ? 'YES' : 'NO'}</td>
+            <td className="blocker" title={governorReasons.join('\n') || (Array.isArray(s.gate_results) ? s.gate_results.map(gateTooltip).join('\n') : 'Dashboard readiness requires every Risk Governor gate to PASS.')}>{whyBlocked}</td>
+          </tr>;
+        })}
         </tbody></table></div>
       </Panel>
     </section>

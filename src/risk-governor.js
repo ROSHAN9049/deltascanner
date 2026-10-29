@@ -205,6 +205,10 @@ export function buildRiskGovernorGates({
   const confirmed = stageKnown && score !== null
     ? status(true, selected.stage === 'CONFIRMED' && score >= minimumScore)
     : status(false, false);
+  const normalizedScore = safeNum(selected.normalizedScore ?? details.normalizedScore);
+  const normalizedScoreStatus = normalizedScore === null
+    ? GATE_UNKNOWN
+    : status(true, normalizedScore >= 80);
 
   const symbol = String(selected.symbol || '').trim().toUpperCase();
   const routeSet = Array.isArray(routedSymbols)
@@ -405,6 +409,7 @@ export function buildRiskGovernorGates({
     : GATE_UNKNOWN;
 
   return [
+    gateResult({ gate: 'Normalized score >= 80', result: normalizedScoreStatus, observedValue: normalizedScore, unit: 'score', threshold: 80, thresholdUnit: 'score', blockReason: normalizedScoreStatus === GATE_BLOCK ? 'Normalized score is below 80' : normalizedScoreStatus === GATE_UNKNOWN ? 'Normalized score unavailable; readiness fails closed' : '' }),
     gateResult({ gate: 'Signal CONFIRMED', result: confirmed, observedValue: selected.stage || null, unit: 'stage', threshold: minimumScore, thresholdUnit: 'minimum score', blockReason: confirmed === GATE_BLOCK ? 'Signal stage/score does not satisfy entry criteria' : '' }),
     gateResult({ gate: 'Tradetron futures route', result: routeStatus, observedValue: symbol || null, unit: 'symbol', blockReason: routeStatus === GATE_BLOCK ? (entrySafetyTrusted === false ? 'Fresh complete Tradetron position snapshot is unavailable; new entries fail closed' : 'Symbol has no usable Tradetron route') : routeStatus === GATE_UNKNOWN ? 'Worker-confirmed route data unavailable' : '' }),
     gateResult({ gate: 'Fee + spread vs 1R', result: feeStatus, observedValue: feeRiskRatio, unit: 'R', threshold: feeRiskLimit, thresholdUnit: 'R', blockReason: feeStatus === GATE_BLOCK ? 'Fee/spread cost exceeds configured limit or is explicitly blocked' : feeStatus === GATE_UNKNOWN ? 'Cost ratio missing' : '' }),
