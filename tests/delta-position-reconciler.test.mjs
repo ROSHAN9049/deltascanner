@@ -59,6 +59,92 @@ function runtime({ openRows = [], exchangePositions = [], envMode = 'testnet', a
 
 const fixedNow = () => Date.parse('2026-10-26T00:00:00.000Z');
 
+test('reconciler refreshes mark and unrealized P&L when quantity and side match', async () => {
+  const rt = runtime({
+    openRows: [{
+      id: 1,
+      symbol: 'XAUTUSD',
+      qty: 37,
+      side: 'BUY',
+      entry_price: 3871.87,
+      current_price: 4000,
+      unrealized_pnl: -6.73
+    }],
+    exchangePositions: [{
+      symbol: 'XAUTUSD',
+      qty: 37,
+      side: 'BUY',
+      entry_price: 3871.87,
+      current_price: 4050,
+      unrealized_pnl: 6.34,
+      product_id: 181689
+    }]
+  });
+  rt.executor.getProductMetadata = async () => ({
+    symbol: 'XAUTUSD',
+    contract_value: '0.001',
+    notional_type: 'vanilla'
+  });
+
+  const reconciler = createDeltaPositionReconciler({
+    env: rt.env, database: rt.database,
+    executor: rt.executor, now: fixedNow
+  });
+
+  await reconciler.reconcile();
+
+  assert.equal(rt.rows[0].qty, 37);
+  assert.equal(rt.rows[0].side, 'BUY');
+  assert.equal(rt.rows[0].current_price, 4050);
+  assert.equal(rt.rows[0].unrealized_pnl, 6.34);
+  assert.equal(rt.updates.length, 1);
+  assert.ok(!rt.logs.some(row =>
+    row.message.includes('quantity/side mismatch')
+  ));
+  assert.ok(!rt.logs.some(row => row.data?.event === 'upl_mismatch'));
+});
+
+test('reconciler logs upl_mismatch when local vanilla P&L has opposite sign', async () => {
+  const rt = runtime({
+    openRows: [{
+      id: 1,
+      symbol: 'XAUTUSD',
+      qty: 37,
+      side: 'BUY',
+      entry_price: 3871.87,
+      current_price: 4000,
+      unrealized_pnl: -6.73
+    }],
+    exchangePositions: [{
+      symbol: 'XAUTUSD',
+      qty: 37,
+      side: 'BUY',
+      entry_price: 3871.87,
+      current_price: 4050,
+      unrealized_pnl: -6.73
+    }]
+  });
+  rt.executor.getProductMetadata = async () => ({
+    symbol: 'XAUTUSD',
+    contract_value: '0.001',
+    notional_type: 'vanilla'
+  });
+
+  const reconciler = createDeltaPositionReconciler({
+    env: rt.env, database: rt.database,
+    executor: rt.executor, now: fixedNow
+  });
+
+  await reconciler.reconcile();
+
+  const warning = rt.logs.find(row => row.data?.event === 'upl_mismatch');
+  assert.ok(warning);
+  assert.equal(warning.data.symbol, 'XAUTUSD');
+  assert.ok(warning.data.localUpl > 0);
+  assert.equal(warning.data.exchangeUpl, -6.73);
+  assert.ok(warning.data.driftPct > 5);
+});
+
 test('reconciler is Testnet-only and never calls the exchange API in disabled mode', async () => {
   const rt = runtime({ envMode: 'disabled', openRows: [{ id: 1, symbol: 'BTCUSD', qty: 1, side: 'BUY' }] });
   const reconciler = createDeltaPositionReconciler({ env: rt.env, database: rt.database, executor: rt.executor, now: fixedNow });

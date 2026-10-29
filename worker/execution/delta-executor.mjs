@@ -810,6 +810,7 @@ export function createDeltaExecutor({
     getOpenPositions,
     getOpenOrders,
     getAccountSnapshot,
+    getProductMetadata: resolveProduct,
     assertConfigured
   });
 }

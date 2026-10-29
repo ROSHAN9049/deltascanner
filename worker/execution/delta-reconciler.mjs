@@ -90,6 +90,55 @@ export function createDeltaPositionReconciler({
     }
   }
 
+  async function logUplMismatchIfNeeded(position) {
+    const entryPrice = numberOrNull(position?.entry_price);
+    const markPrice = numberOrNull(position?.current_price);
+    const exchangeUpl = numberOrNull(position?.unrealized_pnl);
+    const qty = numberOrNull(position?.qty);
+    const side = stringValue(position?.side).toUpperCase();
+
+    if (
+      entryPrice === null || markPrice === null ||
+      exchangeUpl === null || qty === null ||
+      qty <= 0 || !['BUY', 'SELL'].includes(side) ||
+      typeof executor.getProductMetadata !== 'function'
+    ) return;
+
+    let product;
+    try {
+      product = await executor.getProductMetadata(position.symbol);
+    } catch {
+      // Diagnostics must not interrupt exchange-authoritative refresh.
+      return;
+    }
+
+    if (stringValue(product?.notional_type).toLowerCase() !== 'vanilla') return;
+    const contractValue = numberOrNull(product?.contract_value);
+    if (contractValue === null || contractValue <= 0) return;
+
+    const sideSign = side === 'BUY' ? 1 : -1;
+    const localUpl = (markPrice - entryPrice) * qty * contractValue * sideSign;
+    const scale = Math.max(Math.abs(localUpl), Math.abs(exchangeUpl));
+    if (scale < 0.01) return;
+
+    const signMismatch = localUpl * exchangeUpl < 0;
+    const driftPct = Math.abs(localUpl - exchangeUpl) / scale * 100;
+    if (!signMismatch && driftPct <= 5) return;
+
+    await writeLog('WARN', '[Reconciler] Unrealized P&L mismatch against local calculation', {
+      event: 'upl_mismatch',
+      symbol: position.symbol,
+      localUpl,
+      exchangeUpl,
+      driftPct: Number(driftPct.toFixed(2)),
+      contractValue,
+      entryPrice,
+      markPrice,
+      qty,
+      side
+    });
+  }
+
   async function updateOpenRow(id, patch) {
     const query = 'id=eq.' + encodeURIComponent(String(id)) + '&status=eq.OPEN';
     if (typeof database.updateReturning === 'function') {
@@ -195,16 +244,20 @@ export function createDeltaPositionReconciler({
             id: row.id, symbol, dbQty, exchangeQty: exchangePosition.qty,
             dbSide: dbSide || null, exchangeSide: exchangePosition.side
           });
-          await updateOpenRow(row.id, {
-            qty: exchangePosition.qty,
-            side: exchangePosition.side,
-            ...(exchangePosition.current_price !== null && exchangePosition.current_price !== undefined
-              ? { current_price: exchangePosition.current_price } : {}),
-            ...(exchangePosition.unrealized_pnl !== null && exchangePosition.unrealized_pnl !== undefined
-              ? { unrealized_pnl: exchangePosition.unrealized_pnl } : {}),
-            updated_at: timestamp
-          });
         }
+
+        // Refresh exchange-authoritative fields on every successful snapshot,
+        // even when local quantity and side already match.
+        // Nulls clear stale values rather than presenting them as current.
+        await updateOpenRow(row.id, {
+          qty: exchangePosition.qty,
+          side: exchangePosition.side,
+          current_price: exchangePosition.current_price ?? null,
+          unrealized_pnl: exchangePosition.unrealized_pnl ?? null,
+          updated_at: timestamp
+        });
+
+        await logUplMismatchIfNeeded(exchangePosition);
       }
 
       // Hydrate an exchange-open position if the DB has no OPEN row for it.
