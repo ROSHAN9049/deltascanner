@@ -2591,6 +2591,18 @@ export class DeltaEngine {
   }
 
   async openTrade(item, strategy, signal, account, settings, openPositions, trades) {
+    // A disabled/unknown mode is scan-only. Do not reach either legacy
+    // bridge routing or the adapter's production-host fallback.
+    if (CONFIG.deltaExecutionMode !== 'testnet') {
+      await this.log('WARN', 'Order entry blocked: only direct Delta Testnet execution is supported; scanner remains scan-only.', {
+        executionMode: CONFIG.deltaExecutionMode,
+        symbol: signal?.symbol ?? null,
+        strategy,
+        executionLocked: true
+      }).catch(() => {});
+      return false;
+    }
+
     if (strategy === 'OPTIONS_BUY' || strategy === 'OPTIONS_SELL') {
       // Options are locked until direct Delta Testnet option execution has its
       // own verified contract sizing and exchange-side protection path.
