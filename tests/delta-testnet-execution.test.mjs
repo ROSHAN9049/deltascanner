@@ -1,3 +1,5 @@
+// NOTE: Tests not executed by AI. User runs locally with:
+//   node --test tests/delta-testnet-execution.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -382,4 +384,35 @@ test('private WebSocket fill event updates the order row and records explicit fi
   assert.ok(orderRow.raw.fill_confirmed_by_private_websocket_at);
   assert.ok(updates.some(row => row.table === 'dd_orders' && row.patch.raw?.fill_confirmed_by_private_websocket === true));
   assert.ok(logs.some(row => row.message.includes('private WebSocket confirmed order fill')));
+});
+
+
+test('E-STOP blocks entries but permits closePosition to submit a reduce-only exit', async () => {
+  const runtime = fakeRuntime({
+    emergencyStop: true,
+    positions: [{
+      product_id: 27,
+      product_symbol: 'BTCUSD',
+      size: 1,
+      entry_price: '60000',
+      mark_price: '60000',
+      unrealized_pnl: '0'
+    }]
+  });
+  const executor = createDeltaExecutor({
+    env: demoEnv(),
+    fetchImpl: runtime.fetchImpl,
+    database: runtime.database,
+    now: () => 1770000000000
+  });
+
+  const order = await executor.closePosition('BTCUSD', 1);
+  assert.equal(order.id, 123);
+  const post = runtime.httpCalls.find(call =>
+    new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST'
+  );
+  assert.ok(post);
+  assert.equal(post.body.reduce_only, true);
+  assert.equal(post.body.side, 'sell');
+  assert.ok(!runtime.logs.some(row => row.message.includes('Emergency Stop is active')));
 });
