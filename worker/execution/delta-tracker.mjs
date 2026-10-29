@@ -577,6 +577,7 @@ export class DeltaTestnetTracker {
       for (const position of closedRows) {
         const symbol = stringValue(position?.symbol).toUpperCase();
         const side = stringValue(position?.side).toUpperCase();
+        const strategy = stringValue(position?.strategy).toUpperCase();
         const orderId = stringValue(position?.order_id);
         const qty = numberOrNull(position?.qty);
         const realizedPnl = numberOrNull(position?.realized_pnl);
@@ -584,7 +585,8 @@ export class DeltaTestnetTracker {
           position?.realized_pnl_verified === true && realizedPnl !== null;
         const openedMs = Date.parse(position?.opened_at || '');
         const closedMs = Date.parse(position?.closed_at || '');
-        if (!position?.id || !symbol || !['BUY', 'SELL'].includes(side) || !orderId ||
+        if (!position?.id || !symbol || !['BUY', 'SELL'].includes(side) ||
+            !['MOMENTUM', 'SCALPING'].includes(strategy) || !orderId ||
             !(qty > 0) ||
             !Number.isFinite(openedMs) || !Number.isFinite(closedMs) || closedMs < openedMs) {
           continue;
@@ -648,8 +650,7 @@ export class DeltaTestnetTracker {
         trades.push({
           execution_id: 'delta-testnet-position:' + String(position.id),
           symbol,
-          strategy: ['MOMENTUM', 'SCALPING', 'GRID'].includes(String(position.strategy || '').toUpperCase())
-            ? String(position.strategy).toUpperCase() : 'MOMENTUM',
+          strategy,
           side,
           entry_price: entry.price,
           exit_price: exit.price,
