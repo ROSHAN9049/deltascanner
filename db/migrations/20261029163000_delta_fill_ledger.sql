@@ -2,6 +2,7 @@ BEGIN;
 
 ALTER TABLE public.dd_delta_positions
   ADD COLUMN IF NOT EXISTS close_source TEXT NULL,
+  ADD COLUMN IF NOT EXISTS entry_order_id TEXT NULL,
   ADD COLUMN IF NOT EXISTS realized_pnl_verified BOOLEAN NOT NULL DEFAULT FALSE;
 
 ALTER TABLE public.dd_fills
