@@ -491,7 +491,7 @@ test('closed trade projection requires matching entry order, exit side and full 
     opened_at: '2026-10-29T10:00:00.000Z', closed_at: '2026-10-29T10:30:00.000Z'
   };
   const fills = [
-    { id: 'entry-1', symbol: 'BTCUSD', order_id: '123', side: 'BUY', size: '1', price: '59990', commission: '0.06', created_at: '2026-10-29T10:00:01.000Z' },
+    { id: 'entry-1', symbol: 'BTCUSD', order_id: '123', side: 'BUY', size: '1', price: '59990', commission: '0.01', created_at: '2026-10-29T10:00:01.000Z' },
     { id: 'entry-2', symbol: 'BTCUSD', order_id: '123', side: 'BUY', size: '1', price: '60010', commission: '0.06', created_at: '2026-10-29T10:00:02.000Z' },
     { id: 'exit-1', symbol: 'BTCUSD', order_id: '456', side: 'SELL', size: '2', price: '60120', commission: '0.02', created_at: '2026-10-29T10:29:59.000Z' }
   ];
@@ -520,7 +520,7 @@ test('closed trade projection requires matching entry order, exit side and full 
   assert.equal(trade.exit_price, 60120);
   assert.ok(Math.abs(trade.entry_notional - 120) < 1e-9);
   assert.ok(Math.abs(trade.exit_notional - 120.24) < 1e-9);
-  assert.equal(trade.fees, 0.04);
+  assert.ok(Math.abs(trade.fees - 0.04) < 1e-9);
   assert.equal(trade.net_pnl, 0.2);
   assert.ok(Math.abs(trade.gross_pnl - 0.24) < 1e-9);
   assert.equal(trade.pnl_pct, (0.2 / 120) * 100);
