@@ -444,6 +444,9 @@ export function createDeltaExecutor({
 
   async function assertSafety(symbol, operation = 'ENTRY') {
     assertConfigured();
+    // E-STOP is an entry inhibit, not an exit inhibit. Explicit EXIT
+    // operations reduce exposure and must remain available during E-STOP.
+    if (operation === 'EXIT') return;
     const settingsRows = await database.select('dd_settings', 'id=eq.1&select=id,emergency_stop');
     if (!Array.isArray(settingsRows) || !settingsRows.length) {
       throw new Error('Emergency Stop setting is unavailable; Delta Testnet execution is blocked');
@@ -454,8 +457,6 @@ export function createDeltaExecutor({
     if (settingsRows[0].emergency_stop !== false) {
       throw new Error('Emergency Stop state is unknown; Delta Testnet execution is blocked');
     }
-    if (operation === 'EXIT') return;
-
     const normalizedSymbol = stringOrEmpty(symbol).toUpperCase();
     const dayStart = indiaDateKey(new Date(now())) + 'T00:00:00+05:30';
     const [exchangePositions, exchangeOrders, wallet, closedToday, trackedOpenRows, recordedOrders] = await Promise.all([
@@ -854,6 +855,17 @@ export function createDeltaExecutor({
       }
       if (direction === 'SELL' && !(target < entry && stop > entry)) {
         throw new Error('SELL bracket prices must satisfy TP < entry < SL');
+      }
+      const slDistancePct = Math.abs(stop - entry) / entry * 100;
+      const minSlDistancePct = Math.max(1.5, Number(process.env.DELTA_MIN_SL_DISTANCE_PCT) || 1.5);
+      if (slDistancePct + 1e-9 < minSlDistancePct) {
+        await logExecutor('WARN', '[Executor] SL distance too tight; entry blocked', {
+          environment: 'testnet', symbol: normalizedSymbol, side: direction,
+          entryPrice: entry, stopLossPrice: stop, slDistancePct: Number(slDistancePct.toFixed(4)),
+          minimumSlDistancePct: minSlDistancePct, executionBlocked: true,
+          reason: 'SL_DISTANCE_BELOW_MINIMUM'
+        });
+        throw new Error('SL distance too tight (' + slDistancePct.toFixed(2) + '%), minimum required ' + minSlDistancePct.toFixed(2) + '%');
       }
       await assertSafety(normalizedSymbol, 'ENTRY');
       const product = await resolveProduct(normalizedSymbol);
