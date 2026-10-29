@@ -362,7 +362,7 @@ function App() {
     {accountDataProtected ? <div className="danger">🔒 ACCOUNT DATA LOCKED — Enter ENGINE_SECRET in Settings to view private positions, closed trades, P&amp;L, rotation ledger, Grid state, and account-specific logs. Hidden data is not zero.</div> : null}
 
     {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} positions={positions} accountDataProtected={accountDataProtected} signals={signals} activity={state?.activity || null} deltaTestnetOpenPositionCount={state?.deltaTestnetOpenPositionCount ?? null} deltaTestnetOrders={deltaTestnetOrders} deltaTestnetOrderCount={state?.deltaTestnetOrderCount ?? null} deltaTestnetClosedTodayCount={state?.deltaTestnetClosedTodayCount ?? null} deltaTestnetClosedTodayPnl={state?.deltaTestnetClosedTodayPnl ?? null} deltaTestnetClosedTodayPnlComplete={state?.deltaTestnetClosedTodayPnlComplete === true} executionCoverage={executionCoverage} routeContext={dashboardRouteContext} onInspect={setInspect} inspect={selected} logs={logs} />}
-    {tab === 'rotation' && <Rotation ledger={rotationLedger} accountDataProtected={accountDataProtected} ledgerComplete={rotationLedgerComplete} ledgerRowCount={state?.ledgerRowCount ?? null} />}
+    {tab === 'rotation' && <Rotation ledger={rotationLedger} accountDataProtected={accountDataProtected} ledgerComplete={rotationLedgerComplete} ledgerRowCount={state?.ledgerRowCount ?? null} fillSyncState={state?.deltaTestnetFillSyncState || null} fillCount={state?.deltaTestnetFillCount ?? null} />}
     {tab === 'momentum' && <EngineView engine="MOMENTUM" signals={signals} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols} />}
     {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" strategy="MOMENTUM" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'scalping' && <EngineView engine="SCALPING" signals={signals} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols} />}
@@ -793,7 +793,7 @@ function PNL({ trades = [], settings = {}, accountDataProtected = false, tradesC
  return <><section className="cards"><Card label="REALIZED NET (DELTA)" value={!closed.length?'NO DATA':netComplete?money(net):'INCOMPLETE DATA'} sub={!closed.length?'No verified fill-matched closed-trade rows are available':!tradesComplete?'Testnet close history is incomplete':netComplete?'Sum of exchange-reported net realized P&L for fill-matched closed trades':'One or more net P&L values are missing'}/><Card label="FEES (DELTA)" value={feesComplete?money(fees):'UNAVAILABLE'} sub={feesComplete?'Sum of recorded entry and exit fill commissions':'Fees require complete entry and exit fill commissions'}/><Card label="VERIFIED FILL LEDGER" value={fillCount==null?'NO DATA':fillStateLabel} sub={fillSub}/><Card label="DELTA TESTNET EQUITY" value={settings.equity==null?'—':money(settings.equity)} sub="Latest Testnet account snapshot"/><Card label="DELTA TESTNET UNREALIZED" value={settings.unrealized_pnl==null?'—':money(settings.unrealized_pnl)} sub="Latest Testnet account snapshot"/></section>
  {!closed.length?<div className="lockedText">No verified fill-matched Delta Testnet closed-trade records are available yet. Missing exit prices, gross P&amp;L, fees, and R-multiple are not estimated or treated as zero.</div>:null}</>;
 }
-function Rotation({ ledger = [], accountDataProtected = false, ledgerComplete = false, ledgerRowCount = null }) {
+function Rotation({ ledger = [], accountDataProtected = false, ledgerComplete = false, ledgerRowCount = null, fillSyncState = null, fillCount = null }) {
   const [noticeDismissed, setNoticeDismissed] = useState(false);
   if (accountDataProtected) return <Panel title="Profit Rotation V3 Ledger · Protected"><div className="lockedText">Rotation ledger rows and amounts are private. Enter ENGINE_SECRET in Settings to view them.</div></Panel>;
   const nowDay = indiaDateKey(new Date());
@@ -822,10 +822,13 @@ function Rotation({ ledger = [], accountDataProtected = false, ledgerComplete = 
         : 'INCOMPLETE DATA';
   return <>
     {showDeliveryNotice ? <div className="rotationNotice" role="status">
-      <div><strong>⚠️ Profit Rotation requires verified closed trades.</strong> Current setup receives no authenticated fills from Delta Testnet. This ledger will remain empty until:
-        <br/>(a) Delta Testnet outbound webhooks are configured, OR
-        <br/>(b) A relay supplies verified close events.
-        <br/>Read-only API snapshots cannot generate rotation events.
+      <div><strong>⚠️ Profit Rotation needs a verified profitable close.</strong>
+        {fillSyncState?.last_error
+          ? ' Fill-history sync is degraded: ' + String(fillSyncState.last_error).slice(0, 180) + '.'
+          : fillSyncState?.last_success_at
+            ? ' Fill sync last succeeded at ' + new Date(fillSyncState.last_success_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) + ' with ' + (safeNum(fillCount) ?? 'an unknown number of') + ' fill rows. No fill-matched, exchange-net-profitable close has produced a rotation event yet.'
+            : ' No successful fill-sync status is available yet. Apply the reviewed fill-ledger migration and verify the Testnet worker sync before expecting rotation rows.'}
+        <br/>Events are created only from fill-matched closes with positive exchange-reported net P&amp;L. The ledger records a 90% / 10% accounting split; it does not transfer funds.
       </div>
       <button type="button" className="rotationNoticeDismiss" onClick={() => setNoticeDismissed(true)} aria-label="Dismiss Profit Rotation status notice">Dismiss</button>
     </div> : null}
