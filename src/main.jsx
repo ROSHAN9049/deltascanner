@@ -10,6 +10,7 @@ import { buildRiskGovernorGates, buildNormalizedScoreDiagnostic } from './risk-g
 import { normalizedScoreFromView as normalizedScoreFrom, visibleScoreFrom, passesScoreFilter, normalizedScoreTooltip, showAllPreferenceKey, readShowAllPreference, writeShowAllPreference } from './normalized-score-view.js';
 import { resolveDashboardRouteContext } from './dashboard-route-state.js';
 import { summarizeRotationLedger } from './rotation-ledger-state.js';
+import { assessOptionsCacheFreshness } from './options-cache-freshness.js';
 import { formatHealthAge, formatLeaseRemaining, formatRetentionLastRun, getEmergencyStopTooltip, getGlobalPositionCapDisplay, getWorkerStatusDisplay } from './worker-status-display.js';
 
 const tabs = [
@@ -676,8 +677,27 @@ function EngineView({ engine, signals, entrySafetyBlocked = false, entrySafetyRe
 }
 
 function OptionsView({ signals, settings, optionCache = [], executionCoverage = null }) {
-  const rows = (optionCache.length ? optionCache : signals.filter(x => x.strategy === 'OPTIONS_BUY' || x.strategy === 'OPTIONS_SELL'))
+  const sourceRows = optionCache.length
+    ? optionCache
+    : signals.filter(x => x.strategy === 'OPTIONS_BUY' || x.strategy === 'OPTIONS_SELL');
+  const freshness = assessOptionsCacheFreshness(sourceRows);
+  const rows = (freshness.fresh ? [...sourceRows] : [])
     .sort((a,b) => num(b.score) - num(a.score));
+  const ageMinutes = freshness.ageMs === null ? null : Math.max(0, Math.floor(freshness.ageMs / 60000));
+  const capturedAt = freshness.newestAt
+    ? new Date(freshness.newestAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
+    : null;
+  const freshnessMessage = freshness.status === 'STALE'
+    ? 'Snapshot is ' + (ageMinutes >= 60 ? (ageMinutes / 60).toFixed(1) + ' hours old' : ageMinutes + ' minutes old') + '; cached candidates are hidden until refreshed.'
+    : freshness.status === 'UNKNOWN_TIMESTAMP'
+      ? 'Candidate timestamps are missing or invalid; cached rows are hidden because freshness cannot be verified.'
+      : freshness.status === 'FUTURE_TIMESTAMP'
+        ? 'Candidate timestamps are in the future; cached rows are hidden until the source clock is verified.'
+        : freshness.status === 'UNKNOWN_TIME'
+          ? 'Dashboard time is unavailable; cached rows are hidden until freshness can be verified.'
+          : freshness.status === 'NO_DATA'
+            ? 'No current option candidate snapshot is available.'
+            : '';
   const buys = rows.filter(x => x.strategy === 'OPTIONS_BUY');
   const sells = rows.filter(x => x.strategy === 'OPTIONS_SELL');
   const buyMinDelta = safeNum(settings.options_buy_min_delta) || 0.45;
@@ -686,11 +706,17 @@ function OptionsView({ signals, settings, optionCache = [], executionCoverage = 
   const sellMaxDelta = safeNum(settings.options_sell_max_delta) || 0.35;
   return <>
     <section className="cards">
-      <Card label="OPTIONS ENGINE" value={settings.options_enabled === false ? 'OFF' : 'ON'} sub="BTC / ETH / GOLD (XAUT) only · analysis data"/>
-      <Card label="BUY CANDIDATES" value={buys.length} sub={'Delta target ' + buyMinDelta.toFixed(2) + '–' + buyMaxDelta.toFixed(2)}/>
-      <Card label="SELL CANDIDATES" value={sells.length} sub={'Delta target ' + sellMinDelta.toFixed(2) + '–' + sellMaxDelta.toFixed(2) + ' · spread only'}/>
+      <Card label="OPTIONS DATA" value={freshness.status.replaceAll('_', ' ')} sub={capturedAt ? 'Latest candidate snapshot · ' + capturedAt : 'Timestamped analysis data required'}/>
+      <Card label="BUY CANDIDATES" value={buys.length} sub={freshness.fresh ? 'Delta target ' + buyMinDelta.toFixed(2) + '–' + buyMaxDelta.toFixed(2) : 'Hidden until a fresh snapshot is available'}/>
+      <Card label="SELL CANDIDATES" value={sells.length} sub={freshness.fresh ? 'Delta target ' + sellMinDelta.toFixed(2) + '–' + sellMaxDelta.toFixed(2) + ' · spread only' : 'Hidden until a fresh snapshot is available'}/>
       <Card label="OPTIONS ROUTE CONFIG" value={executionCoverage?.optionsRouteConfigured === true ? 'CONFIGURED' : 'NOT CONFIGURED'} sub="Route configuration does not unlock Options execution"/>
     </section>
+    {!freshness.fresh ? <div className="lockedText" role="status">
+      <b className="warn">⚠ OPTIONS SNAPSHOT {freshness.status.replaceAll('_', ' ')} — CANDIDATES HIDDEN</b>
+      <p>{freshnessMessage}</p>
+      {capturedAt ? <p>Last snapshot: {capturedAt} IST · age about {ageMinutes >= 60 ? (ageMinutes / 60).toFixed(1) + ' hours' : ageMinutes + ' minutes'}.</p> : null}
+      <p className="muted">Fresh option quotes and Greeks must be independently verified before reviewing candidates. No stale row is presented as current.</p>
+    </div> : null}
     <div className="lockedText">
       <b className="warn">⚠ OPTIONS EXECUTION LOCKED — ANALYSIS ONLY</b>
       <p>Entries remain hard-locked until spread legs, defined maximum loss, dedicated credentials, and contract mappings are independently verified. A configured route is not execution authorization.</p>
