@@ -68,7 +68,7 @@ test('worker startup remains scan-only on private API failure and retries every 
   assert.match(index, /Private Delta Testnet API unavailable\. Continuing in SCAN-ONLY mode\./);
   const startupStart = index.indexOf('async function startupPreflight() {');
   const privateStart = index.indexOf("if (CONFIG.deltaExecutionMode === 'testnet') {", startupStart);
-  const preflightEnd = index.indexOf("return true;\\n  } catch (error) {", privateStart);
+  const preflightEnd = index.indexOf("  } catch (error) {", privateStart);
   assert.ok(startupStart >= 0 && privateStart > startupStart && preflightEnd > privateStart);
   const privatePreflight = index.slice(privateStart, preflightEnd);
   assert.doesNotMatch(privatePreflight, /process\\.exit\\(1\\)/);
