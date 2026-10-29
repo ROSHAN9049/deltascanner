@@ -75,7 +75,6 @@ export function deltaCloseFields(event = {}, details = null) {
     detail.order_id ??
     source.close_order_id ??
     source.closing_order_id ??
-    source.order_id ??
     null;
 
   return {
