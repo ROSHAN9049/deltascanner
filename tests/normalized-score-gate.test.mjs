@@ -114,13 +114,13 @@ test('openTrade rejects a null normalized score before the risk gate', async () 
   assert.equal(result.result, false);
   assert.equal(result.riskGateCalls, 0);
 });
-test('openTrade passes normalized score 80 to downstream risk controls', async () => {
+test('openTrade score 80 remains scan-only when Delta Testnet mode is not enabled', async () => {
   const result = await runOpenTrade(80);
   assert.equal(result.result, false);
-  assert.equal(result.riskGateCalls, 1);
+  assert.equal(result.riskGateCalls, 0);
 });
-test('openTrade passes normalized score 85 to downstream risk controls', async () => {
+test('openTrade score 85 remains scan-only when Delta Testnet mode is not enabled', async () => {
   const result = await runOpenTrade(85);
   assert.equal(result.result, false);
-  assert.equal(result.riskGateCalls, 1);
+  assert.equal(result.riskGateCalls, 0);
 });
