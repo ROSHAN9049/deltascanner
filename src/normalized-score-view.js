@@ -25,15 +25,15 @@ export function originalScoreFromView(signal) {
   return finiteScore(signal?.score);
 }
 
-/** Prefer normalized scores, but preserve visibility for historical rows without them. */
+/** Prefer normalized scores for display; original score remains diagnostic fallback only. */
 export function visibleScoreFrom(signal) {
   return normalizedScoreFromView(signal) ?? originalScoreFromView(signal);
 }
 
 export function passesScoreFilter(signal, showAll = false, threshold = 80) {
   if (showAll) return true;
-  const score = visibleScoreFrom(signal);
-  return score !== null && score >= threshold;
+  const normalizedScore = normalizedScoreFromView(signal);
+  return normalizedScore !== null && normalizedScore >= threshold;
 }
 
 export function normalizedScoreTooltip(signal) {
