@@ -80,6 +80,8 @@ export class DeltaTestnetTracker {
     this.authenticated = false;
     this.retryCount = 0;
     this.symbolTimers = new Map();
+    // Coalesce repeated position events into one bounded bracket metadata lookup per symbol.
+    this.bracketMetadataSyncs = new Map();
     this.authTimeoutTimer = null;
     this.lastSocketWarningAt = 0;
   }
@@ -310,6 +312,22 @@ export class DeltaTestnetTracker {
 
   async syncBracketMetadata(symbol) {
     const key = stringValue(symbol).toUpperCase();
+    if (!key || this.stopped) return false;
+    const existing = this.bracketMetadataSyncs.get(key);
+    if (existing) return existing;
+
+    const operation = this.syncBracketMetadataOnce(key);
+    this.bracketMetadataSyncs.set(key, operation);
+    try {
+      return await operation;
+    } finally {
+      if (this.bracketMetadataSyncs.get(key) === operation) {
+        this.bracketMetadataSyncs.delete(key);
+      }
+    }
+  }
+
+async syncBracketMetadataOnce(key) {
     const deadline = Date.now() + 30_000;
     let lastError = null;
     while (Date.now() <= deadline && !this.stopped) {
