@@ -1,4 +1,5 @@
 export function getWorkerStatusDisplay({
+  scannerEnabled = true,
   autoTrade = false,
   continuousMode = false,
   emergencyStop = false,
@@ -14,27 +15,31 @@ export function getWorkerStatusDisplay({
   const capReached = hasCapData && current >= maximum;
   const capLabel = hasCapData ? current + '/' + maximum : 'NO DATA';
 
-  const autoTradeSubtitle = emergencyStop
-    ? '🚨 EMERGENCY STOP ACTIVE. All signal flow halted.'
-    : !autoTrade
-      ? 'Scanner disabled. No signals will be sent.'
-      : capReached
-        ? 'Scanner enabled, but all new signals blocked by global cap (' + capLabel + ').'
-        : hasCapData
-          ? 'Scanner enabled. Signals active.'
-          : 'Scanner enabled. Global cap status unavailable.';
-
-  const continuousSubtitle = !autoTrade
-    ? 'Manual mode. No automatic routing.'
+  const autoTradeSubtitle = !scannerEnabled
+    ? 'Scanner disabled. Market scans and signal refreshes are paused.'
     : emergencyStop
-      ? '🚨 EMERGENCY STOP ACTIVE. All signal flow halted.'
-    : !continuousMode
-      ? 'Continuous scanning is off. No continuous automatic routing.'
-      : capReached
-        ? '⚠️ Global cap reached (' + capLabel + '). New signals blocked until positions close.'
-        : hasCapData
-          ? 'Continuous scanning active. Global cap: ' + capLabel + '.'
-          : 'Continuous scanning active. Global cap status unavailable.';
+      ? '🚨 EMERGENCY STOP ACTIVE. New entries and automatic routing are halted; market scanning may continue.'
+      : !autoTrade
+        ? 'Scanner remains active. Auto Trade is OFF, so no automatic entries are routed.'
+        : capReached
+          ? 'Scanner active, but new entries are blocked by the global position cap (' + capLabel + ').'
+          : hasCapData
+            ? 'Scanner active. Signals and entry checks are running.'
+            : 'Scanner active. Global position-cap status is unavailable; entries fail closed.';
+
+  const continuousSubtitle = !scannerEnabled
+    ? 'Scanner is disabled; no market scan or signal refresh occurs.'
+    : emergencyStop
+      ? 'Emergency Stop is active; new entries are halted while public-market scanning may continue.'
+      : !autoTrade
+        ? 'Auto Trade is OFF; the scanner continues to scan, but automatic entries are not routed.'
+        : !continuousMode
+          ? 'Continuous automatic routing is OFF; the worker continues market scanning.'
+          : capReached
+            ? '⚠️ Global cap reached (' + capLabel + '). New entries blocked until positions close.'
+            : hasCapData
+              ? 'Continuous scanning active. Global cap: ' + capLabel + '.'
+              : 'Continuous scanning active. Global cap status unavailable; entries fail closed.';
 
   return {
     hasCapData,
@@ -44,7 +49,7 @@ export function getWorkerStatusDisplay({
     capLabel,
     autoTradeSubtitle,
     continuousSubtitle,
-    continuousValue: !autoTrade ? 'OFF' : emergencyStop ? 'ON · HALTED' : continuousMode ? 'ON · ' + (capReached ? 'BLOCKED' : 'ACTIVE') : 'OFF'
+    continuousValue: !scannerEnabled ? 'OFF' : emergencyStop ? 'ON · HALTED' : !autoTrade ? 'OFF · AUTO TRADE' : continuousMode ? 'ON · ' + (capReached ? 'BLOCKED' : 'ACTIVE') : 'OFF · MANUAL'
   };
 }
 
@@ -63,7 +68,7 @@ export function formatLeaseRemaining(milliseconds) {
 
 export function getEmergencyStopTooltip(active = false) {
   return active
-    ? 'Emergency stop active; all signal flow halted.'
+    ? 'Emergency Stop active; new entries and automatic routing are halted. Public-market scanning may continue.'
     : 'No emergency halt active.';
 }
 
