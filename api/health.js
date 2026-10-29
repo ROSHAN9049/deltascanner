@@ -1,15 +1,15 @@
 import { CONFIG } from '../server/config.js';
 import { select } from '../server/db.js';
 import { summarizeRetentionHealth } from '../src/retention-health.js';
+import { getDeltaTestnetHealth } from '../server/delta-testnet-health.js';
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate');
   try {
-    // Health must be driven by the worker's durable heartbeat in Supabase.
-    // Do not call Delta /v2/tickers here: the dashboard already polls market data
-    // separately, and an extra exchange request can be rate-limited and create a
-    // false "worker offline" state even while the worker is healthy.
-    const [settingsRows, leaseRows, retentionLogs] = await Promise.all([
+    // Exchange health is an independent, cached probe of Delta TESTNET's public
+    // products endpoint. Lease and heartbeat fields remain separate worker-health
+    // observations so lease expiry cannot masquerade as exchange unavailability.
+    const [settingsRows, leaseRows, retentionLogs, exchangeProbe] = await Promise.all([
       select('dd_settings', 'id=eq.1&select=last_tick_at,worker_started_at,updated_at'),
       select('dd_engine_lease', 'id=eq.1&select=worker_id,expires_at,heartbeat_at'),
       select(
@@ -18,7 +18,8 @@ export default async function handler(req, res) {
       ).catch(error => {
         console.error('[health] Retention telemetry unavailable:', error.message);
         return [];
-      })
+      }),
+      getDeltaTestnetHealth()
     ]);
     const settings = settingsRows?.[0] || {};
     const lease = leaseRows?.[0] || {};
@@ -35,16 +36,21 @@ export default async function handler(req, res) {
     const tickFresh = Number.isFinite(tickAgeMs) && tickAgeMs < 180000;
     const heartbeatFresh = Number.isFinite(heartbeatAgeMs) && heartbeatAgeMs < 180000;
 
-    // The worker's durable tick is the authoritative evidence that the market
-    // loop is alive. Exchange health therefore remains fail-closed: if the
-    // worker heartbeat/tick is stale, entries are blocked.
-    const exchangeHealthy = !!(tickFresh && heartbeatFresh && workerLeaseActive);
+    // These flags intentionally report independent facts: an exchange can be
+    // reachable even while a worker lease is expired, and a live lease cannot
+    // prove the exchange API is reachable.
+    const exchangeHealthy = exchangeProbe?.healthy === true;
 
     return res.status(200).json({
       success: true,
       environment: CONFIG.environment,
       exchange: CONFIG.signalOnly ? 'Delta Exchange India · Production Market Feed' : 'Delta Exchange India Demo',
       exchangeHealthy,
+      exchangeProbeAt: exchangeProbe?.checkedAt || null,
+      exchangeProbeStatus: exchangeProbe?.status ?? null,
+      exchangeProbeSource: exchangeProbe?.source || 'delta-testnet-public-api',
+      exchangeProbeError: exchangeProbe?.healthy === true ? null : exchangeProbe?.error || 'Delta Testnet health probe unavailable',
+      exchangeProbeCached: exchangeProbe?.cached === true,
       timeDriftMs: null,
       lastTickAt: settings.last_tick_at || null,
       workerStartedAt: settings.worker_started_at || null,
@@ -65,7 +71,12 @@ export default async function handler(req, res) {
       success: false,
       environment: 'TESTNET',
       exchangeHealthy: false,
+      exchangeProbeAt: null,
+      exchangeProbeStatus: null,
+      exchangeProbeSource: 'delta-testnet-public-api',
+      exchangeProbeError: 'Health endpoint failed before a verified exchange response was available',
       tickFresh: false,
+      heartbeatFresh: false,
       workerLeaseActive: false,
       retention: summarizeRetentionHealth([], { defaultConfigDays: 1 }),
       error: e.message
