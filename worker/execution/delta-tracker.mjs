@@ -580,7 +580,7 @@ export class DeltaTestnetTracker {
     const operation = (async () => {
       const closedRows = await this.database.select(
         'dd_delta_positions',
-        'status=eq.CLOSED&closed_at=not.is.null&order=closed_at.desc&limit=1000'
+        'status=in.(CLOSED,CLOSED_EXTERNALLY)&closed_at=not.is.null&order=closed_at.desc&limit=1000'
       );
       if (!Array.isArray(closedRows) || !closedRows.length) return { materialized: 0 };
       const trades = [];
@@ -617,7 +617,7 @@ export class DeltaTestnetTracker {
           Date.parse(fill?.created_at || '') <= closedMs + 5_000
         );
         const entry = weightedFillAverage(entryFills);
-        if (!entry || Math.abs(entry.size - qty) > Math.max(1e-8, qty * 1e-8)) continue;
+        if (!entry || !(entry.size > 0)) continue;
         const exitSide = side === 'BUY' ? 'SELL' : 'BUY';
         const entryLastMs = Math.max(...entryFills.map(fill => Date.parse(fill.created_at || '')));
         const exitFills = fills.filter(fill => {
@@ -628,7 +628,10 @@ export class DeltaTestnetTracker {
             numberOrNull(fill?.size) > 0 && numberOrNull(fill?.price) > 0;
         });
         const exit = weightedFillAverage(exitFills);
-        if (!exit || Math.abs(exit.size - qty) > Math.max(1e-8, qty * 1e-8)) continue;
+        if (!exit || Math.abs(exit.size - entry.size) > Math.max(1e-8, entry.size * 1e-8)) continue;
+        // Position qty can already reflect an earlier partial reduction. Use the
+        // full fill-matched entry quantity once the aggregate exit fills match it.
+        const tradeQty = entry.size;
         const allMatchedFills = [...entryFills, ...exitFills];
         const commissionsComplete = allMatchedFills.every(fill => numberOrNull(fill?.commission) !== null);
         const fees = commissionsComplete
@@ -641,10 +644,10 @@ export class DeltaTestnetTracker {
         const product = Array.isArray(productRows) ? productRows[0] || null : null;
         const contractValue = numberOrNull(product?.contract_value);
         const vanilla = String(product?.notional_type || '').toLowerCase() === 'vanilla';
-        const entryNotional = vanilla && contractValue > 0 ? entry.price * qty * contractValue : null;
-        const exitNotional = vanilla && contractValue > 0 ? exit.price * qty * contractValue : null;
+        const entryNotional = vanilla && contractValue > 0 ? entry.price * tradeQty * contractValue : null;
+        const exitNotional = vanilla && contractValue > 0 ? exit.price * tradeQty * contractValue : null;
         const grossPnl = vanilla && contractValue > 0
-          ? (side === 'BUY' ? exit.price - entry.price : entry.price - exit.price) * qty * contractValue
+          ? (side === 'BUY' ? exit.price - entry.price : entry.price - exit.price) * tradeQty * contractValue
           : null;
         // A historical row may have been marked CLOSED by a REST absence check.
         // Fill-matched prices/fees are useful, but net P&L is only published when
@@ -664,7 +667,7 @@ export class DeltaTestnetTracker {
           side,
           entry_price: entry.price,
           exit_price: exit.price,
-          qty,
+          qty: tradeQty,
           entry_notional: entryNotional,
           exit_notional: exitNotional,
           fees,
