@@ -580,11 +580,12 @@ export class DeltaTestnetTracker {
         const orderId = stringValue(position?.order_id);
         const qty = numberOrNull(position?.qty);
         const realizedPnl = numberOrNull(position?.realized_pnl);
+        const realizedPnlVerified = position?.close_source === 'private_websocket' &&
+          position?.realized_pnl_verified === true && realizedPnl !== null;
         const openedMs = Date.parse(position?.opened_at || '');
         const closedMs = Date.parse(position?.closed_at || '');
         if (!position?.id || !symbol || !['BUY', 'SELL'].includes(side) || !orderId ||
-            position?.close_source !== 'private_websocket' || position?.realized_pnl_verified !== true ||
-            !(qty > 0) || realizedPnl === null ||
+            !(qty > 0) ||
             !Number.isFinite(openedMs) || !Number.isFinite(closedMs) || closedMs < openedMs) {
           continue;
         }
@@ -619,6 +620,32 @@ export class DeltaTestnetTracker {
         if (!exit || Math.abs(exit.size - qty) > Math.max(1e-8, qty * 1e-8)) continue;
         const allMatchedFills = [...entryFills, ...exitFills];
         const commissionsComplete = allMatchedFills.every(fill => numberOrNull(fill?.commission) !== null);
+        const fees = commissionsComplete
+          ? allMatchedFills.reduce((sum, fill) => sum + numberOrNull(fill.commission), 0)
+          : null;
+        const productRows = await this.database.select(
+          'dd_market_cache',
+          'symbol=eq.' + encodeURIComponent(symbol) + '&select=symbol,contract_value,notional_type&limit=1'
+        ).catch(() => []);
+        const product = Array.isArray(productRows) ? productRows[0] || null : null;
+        const contractValue = numberOrNull(product?.contract_value);
+        const vanilla = String(product?.notional_type || '').toLowerCase() === 'vanilla';
+        const entryNotional = vanilla && contractValue > 0 ? entry.price * qty * contractValue : null;
+        const exitNotional = vanilla && contractValue > 0 ? exit.price * qty * contractValue : null;
+        const grossPnl = vanilla && contractValue > 0
+          ? (side === 'BUY' ? exit.price - entry.price : entry.price - exit.price) * qty * contractValue
+          : null;
+        // A historical row may have been marked CLOSED by a REST absence check.
+        // Fill-matched prices/fees are useful, but net P&L is only published when
+        // a private position close event supplied an authoritative realized_pnl.
+        const netPnl = realizedPnlVerified ? realizedPnl : null;
+        const pnlPct = netPnl !== null && entryNotional > 0 ? netPnl / entryNotional * 100 : null;
+        const result = netPnl !== null
+          ? netPnl > 0 ? 'WIN' : netPnl < 0 ? 'LOSS' : 'FLAT'
+          : grossPnl !== null
+            ? grossPnl > 0 ? 'GROSS WIN · NET UNVERIFIED'
+              : grossPnl < 0 ? 'GROSS LOSS · NET UNVERIFIED' : 'GROSS FLAT · NET UNVERIFIED'
+            : 'FILL MATCHED · P&L UNKNOWN';
         trades.push({
           execution_id: 'delta-testnet-position:' + String(position.id),
           symbol,
@@ -628,19 +655,17 @@ export class DeltaTestnetTracker {
           entry_price: entry.price,
           exit_price: exit.price,
           qty,
-          entry_notional: null,
-          exit_notional: null,
-          fees: commissionsComplete
-            ? allMatchedFills.reduce((sum, fill) => sum + numberOrNull(fill.commission), 0)
-            : null,
-          // Delta documents Position.realized_pnl as net realized P&L since opened.
-          // Gross P&L and R are left unknown instead of reverse-engineered from marks.
-          gross_pnl: null,
-          net_pnl: realizedPnl,
-          pnl_pct: null,
+          entry_notional: entryNotional,
+          exit_notional: exitNotional,
+          fees,
+          // Gross P&L is calculated only for a known vanilla contract multiplier.
+          // Net P&L and result are withheld for synthetic/unverified closes.
+          gross_pnl: grossPnl,
+          net_pnl: netPnl,
+          pnl_pct: pnlPct,
           r_multiple: null,
           exit_reason: null,
-          result: realizedPnl > 0 ? 'WIN' : realizedPnl < 0 ? 'LOSS' : 'FLAT',
+          result,
           entry_fill_ids: entry.ids,
           exit_fill_ids: exit.ids,
           opened_at: position.opened_at,
@@ -649,10 +674,11 @@ export class DeltaTestnetTracker {
       }
       if (trades.length) {
         await this.database.upsertMany('dd_trades', trades, 'execution_id');
-        await this.database.log('INFO', 'Verified Delta Testnet closed trades materialized from matched fills', {
+        await this.database.log('INFO', 'Fill-matched Delta Testnet closed trades materialized', {
           rowsMaterialized: trades.length,
           source: 'closed position snapshot + matched REST/WebSocket fill IDs',
-          grossPnlEstimated: false,
+          grossPnlDerivedOnlyWithKnownMultiplier: true,
+          netPnlRequiresVerifiedPrivateClose: true,
           rMultipleEstimated: false
         }).catch(() => {});
       }
