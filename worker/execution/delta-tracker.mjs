@@ -583,6 +583,7 @@ export class DeltaTestnetTracker {
         const openedMs = Date.parse(position?.opened_at || '');
         const closedMs = Date.parse(position?.closed_at || '');
         if (!position?.id || !symbol || !['BUY', 'SELL'].includes(side) || !orderId ||
+            position?.close_source !== 'private_websocket' || position?.realized_pnl_verified !== true ||
             !(qty > 0) || realizedPnl === null ||
             !Number.isFinite(openedMs) || !Number.isFinite(closedMs) || closedMs < openedMs) {
           continue;
@@ -738,7 +739,16 @@ async syncBracketMetadataOnce(key) {
     const active = await this.findOpenRow(symbol);
     if (row.qty <= 0 || stringValue(envelope?.action || rawRow?.action).toLowerCase() === 'delete') {
       if (!active) return;
-      const patch = { status: 'CLOSED', closed_at: nowIso(), updated_at: nowIso(), unrealized_pnl: 0 };
+      const closeSource = stringValue(envelope?.source).toLowerCase() || 'private_websocket';
+      const realizedPnlVerified = closeSource === 'private_websocket' && row.realized_pnl !== null;
+      const patch = {
+        status: 'CLOSED',
+        closed_at: nowIso(),
+        updated_at: nowIso(),
+        unrealized_pnl: 0,
+        close_source: closeSource,
+        realized_pnl_verified: realizedPnlVerified
+      };
       if (row.realized_pnl !== null) patch.realized_pnl = row.realized_pnl;
       await this.database.update('dd_delta_positions', 'id=eq.' + encodeURIComponent(active.id), patch);
       void this.materializeVerifiedClosedTrades().catch(error =>
@@ -862,7 +872,10 @@ async syncBracketMetadataOnce(key) {
         if (position) await this.processPosition(position.raw || position);
         else {
           const active = await this.findOpenRow(key);
-          if (active) await this.processPosition({ symbol: key, size: 0, realized_pnl: active.realized_pnl }, { action: 'delete' });
+          if (active) await this.processPosition(
+            { symbol: key, size: 0, realized_pnl: active.realized_pnl },
+            { action: 'delete', source: 'rest_reconcile' }
+          );
         }
       } catch (error) {
         await this.database.log('WARN', 'Delta Testnet symbol REST refresh failed', {
