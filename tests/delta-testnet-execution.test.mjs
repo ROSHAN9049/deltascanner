@@ -400,6 +400,21 @@ test('Delta fill normalizer preserves IDs, commission, and microsecond exchange 
   assert.equal(Date.parse(fill.created_at), 1793289600123);
 });
 
+test('Delta fill normalizer preserves ISO microseconds beyond JavaScript millisecond precision', () => {
+  const timestamp = '2026-10-29T10:00:00.123456Z';
+  const fill = normalizeDeltaFill({
+    id: 'fill-iso-precision',
+    symbol: 'BTCUSD',
+    side: 'buy',
+    size: '1',
+    price: '60000',
+    commission: '0.01',
+    created_at: timestamp
+  });
+  assert.equal(fill.created_at, timestamp);
+  assert.equal(fill.timestamp_us, Date.parse('2026-10-29T10:00:00.123Z') * 1000 + 456);
+});
+
 test('Delta fill normalizer refuses incomplete rows instead of creating synthetic fills', () => {
   assert.equal(normalizeDeltaFill({ symbol: 'BTCUSD', side: 'BUY', size: 1, price: 60000 }), null);
   assert.equal(normalizeDeltaFill({ id: 'x', symbol: 'BTCUSD', side: 'BUY', size: 0, price: 60000 }), null);
