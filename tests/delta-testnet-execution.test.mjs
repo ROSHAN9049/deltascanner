@@ -32,7 +32,9 @@ function fakeRuntime({
   available = equity,
   markPrice = 60000,
   orderState = 'open',
-  orderAverageFillPrice = 60000
+  orderAverageFillPrice = 60000,
+  fills = [],
+  orderHistory = []
 } = {}) {
   const httpCalls = [];
   const logs = [];
@@ -92,6 +94,8 @@ function fakeRuntime({
       const rows = hasPostedOrder && positionsAfterFill !== null ? positionsAfterFill : positions;
       return response({ success: true, result: rows });
     }
+    if (parsed.pathname === '/v2/fills') return response({ success: true, result: fills, meta: {} });
+    if (parsed.pathname === '/v2/orders/history') return response({ success: true, result: orderHistory, meta: {} });
     if (parsed.pathname === '/v2/orders' && init.method === 'GET') return response({ success: true, result: [] });
     if (parsed.pathname === '/v2/wallet/balances') {
       return response({ success: true, result: [], meta: { net_equity: String(equity), available_balance: String(available) } });
@@ -254,6 +258,94 @@ test('20 already-open symbols hit the global position cap', async () => {
   assert.equal(runtime.httpCalls.some(call => call.init.method === 'POST'), false);
 });
 
+test('close-fill lookup uses epoch microseconds and reads nested position metadata', async () => {
+  const clockMs = Date.parse('2026-10-29T08:00:00.000Z');
+  const openedAt = '2026-10-29T07:00:00.000Z';
+  const runtime = fakeRuntime({
+    fills: [{
+      id: 'fill-1', product_id: 27, product_symbol: 'BTCUSD',
+      order_id: '9001', size: '2', price: '61005',
+      commission: '0.05', settling_asset_symbol: 'USD',
+      fill_type: 'normal', created_at: String((clockMs - 1000) * 1000),
+      meta_data: { new_position: { size: 0, realized_pnl: '4.5' }, order_type: 'market_order' }
+    }],
+    orderHistory: [{
+      id: 9001, product_symbol: 'BTCUSD', stop_order_type: 'stop_loss_order',
+      client_order_id: 'DDM-BTCUSD-entry', reduce_only: true, state: 'closed'
+    }]
+  });
+  const executor = createDeltaExecutor({
+    env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database,
+    now: () => clockMs
+  });
+
+  const details = await executor.getRecentCloseDetails('BTCUSD', openedAt);
+  assert.equal(details.exit_price, 61005);
+  assert.equal(details.fees, 0.05);
+  assert.equal(details.fee_currency, 'USD');
+  assert.equal(details.realized_pnl, 4.5);
+  assert.equal(details.close_order_id, '9001');
+
+  const fillCall = runtime.httpCalls.find(call => new URL(call.url).pathname === '/v2/fills');
+  const params = new URL(fillCall.url).searchParams;
+  assert.equal(Number(params.get('start_time')), Date.parse(openedAt) * 1000);
+  assert.equal(Number(params.get('end_time')), clockMs * 1000);
+  assert.equal(fillCall.init.method, 'GET');
+});
+ 
+test('WebSocket close persists confirmed close details and does not substitute mark price', async () => {
+  const position = {
+    id: 17, symbol: 'XAUTUSD', side: 'BUY', qty: 37, status: 'OPEN',
+    entry_price: 3871.87, current_price: 4050, unrealized_pnl: 6.34,
+    realized_pnl: null, strategy: 'MOMENTUM',
+    opened_at: '2026-10-28T00:00:00.000Z'
+  };
+  let closePatch = null;
+  const database = {
+    async select(table) {
+      return table === 'dd_delta_positions' ? [{ ...position }] : [];
+    },
+    async update(table, query, patch) {
+      if (table === 'dd_delta_positions') closePatch = { ...patch };
+      return [];
+    },
+    async log() {}
+  };
+  const tracker = new DeltaTestnetTracker({
+    env: demoEnv(),
+    database,
+    executor: {
+      async getRecentCloseDetails() {
+        return {
+          exit_price: 4058.5, fees: 0.02, fee_currency: 'USD',
+          realized_pnl: 6.1, close_order_id: '9002',
+          stop_order_type: 'take_profit_order',
+          client_order_id: 'DDM-XAUTUSD-entry',
+          close_order_history_found: true
+        };
+      }
+    },
+    WebSocketImpl: class {}
+  });
+  tracker.stopped = false;
+
+  await tracker.processPosition({
+    product_symbol: 'XAUTUSD', size: '0',
+    mark_price: '4050', unrealized_pnl: '6.34',
+    realized_pnl: '6.1'
+  });
+
+  assert.ok(closePatch);
+  assert.equal(closePatch.status, 'CLOSED');
+  assert.equal(closePatch.exit_price, 4058.5);
+  assert.notEqual(closePatch.exit_price, 4050);
+  assert.equal(closePatch.fees, 0.02);
+  assert.equal(closePatch.fee_currency, 'USD');
+  assert.equal(closePatch.realized_pnl, 6.1);
+  assert.equal(closePatch.exit_reason, 'take_profit_order');
+  assert.equal(closePatch.close_order_id, '9002');
+});
+
 test('WebSocket position normalizer handles signed size and strategy ids', () => {
   const short = normalizeDeltaWsPosition({ product_symbol: 'BTCUSD', size: '-2', entry_price: '60000' });
   assert.equal(short.symbol, 'BTCUSD');
@@ -261,6 +353,70 @@ test('WebSocket position normalizer handles signed size and strategy ids', () =>
   assert.equal(short.qty, 2);
   assert.equal(strategyFromClientOrderId('DDS-BTCUSD-123'), 'SCALPING');
   assert.equal(strategyFromClientOrderId('DDG-ETHUSD-123'), 'GRID');
+});
+
+test('WebSocket position update refreshes positive exchange UPL without changing its sign', async () => {
+  const position = {
+    id: 7, symbol: 'XAUTUSD', side: 'BUY', qty: 37, status: 'OPEN',
+    entry_price: 3871.87, current_price: 4000, unrealized_pnl: -6.73,
+    strategy: 'MOMENTUM', opened_at: '2026-10-28T00:00:00.000Z'
+  };
+  const updates = [];
+  const database = {
+    async select(table) { return table === 'dd_delta_positions' ? [{ ...position }] : []; },
+    async update(table, query, patch) {
+      updates.push({ table, query, patch: { ...patch } });
+      if (table === 'dd_delta_positions') Object.assign(position, patch);
+      return [];
+    },
+    async log() {}
+  };
+  const tracker = new DeltaTestnetTracker({
+    env: demoEnv(), database, executor: {}, WebSocketImpl: class {}
+  });
+  tracker.stopped = false;
+
+  await tracker.processPosition({
+    product_symbol: 'XAUTUSD', size: '37', entry_price: '3871.87',
+    mark_price: '4050', unrealized_pnl: '6.34'
+  });
+
+  assert.equal(position.current_price, 4050);
+  assert.equal(position.unrealized_pnl, 6.34);
+  assert.ok(updates.some(row => row.patch.unrealized_pnl === 6.34));
+});
+
+test('WebSocket position update clears stale mark and UPL when fields are missing', async () => {
+  const position = {
+    id: 8, symbol: 'XAUTUSD', side: 'BUY', qty: 37, status: 'OPEN',
+    entry_price: 3871.87, current_price: 4050, unrealized_pnl: -6.73,
+    strategy: 'MOMENTUM', opened_at: '2026-10-28T00:00:00.000Z'
+  };
+  let latestPatch = null;
+  const database = {
+    async select(table) { return table === 'dd_delta_positions' ? [{ ...position }] : []; },
+    async update(table, query, patch) {
+      if (table === 'dd_delta_positions') {
+        latestPatch = { ...patch };
+        Object.assign(position, patch);
+      }
+      return [];
+    },
+    async log() {}
+  };
+  const tracker = new DeltaTestnetTracker({
+    env: demoEnv(), database, executor: {}, WebSocketImpl: class {}
+  });
+  tracker.stopped = false;
+
+  await tracker.processPosition({
+    product_symbol: 'XAUTUSD', size: '37', entry_price: '3871.87'
+  });
+
+  assert.equal(latestPatch.current_price, null);
+  assert.equal(latestPatch.unrealized_pnl, null);
+  assert.equal(position.current_price, null);
+  assert.equal(position.unrealized_pnl, null);
 });
 
 test('bracket entry fails closed if the live mark has crossed the requested SL/TP bracket', async () => {
