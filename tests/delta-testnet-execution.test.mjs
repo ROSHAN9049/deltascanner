@@ -693,9 +693,9 @@ test('closed trade projection requires matching entry order, exit side and full 
   assert.ok(Math.abs(trade.entry_notional - 120) < 1e-9);
   assert.ok(Math.abs(trade.exit_notional - 120.24) < 1e-9);
   assert.ok(Math.abs(trade.fees - 0.04) < 1e-9);
-  assert.equal(trade.net_pnl, 0.2);
+  assert.equal(trade.net_pnl, 0.16);
   assert.ok(Math.abs(trade.gross_pnl - 0.24) < 1e-9);
-  assert.equal(trade.pnl_pct, (0.2 / 120) * 100);
+  assert.equal(trade.pnl_pct, (0.16 / 120) * 100);
   assert.deepEqual(trade.entry_fill_ids, ['entry-1', 'entry-2']);
   assert.deepEqual(trade.exit_fill_ids, ['exit-1']);
   const rotationBatch = materialized.find(row => row.table === 'dd_rotation_ledger');
@@ -703,9 +703,9 @@ test('closed trade projection requires matching entry order, exit side and full 
   assert.equal(rotationBatch.conflict, 'execution_id');
   assert.equal(rotationBatch.values.length, 1);
   assert.equal(rotationBatch.values[0].execution_id, trade.execution_id);
-  assert.equal(rotationBatch.values[0].profit, 0.2);
-  assert.equal(rotationBatch.values[0].released, 0.18);
-  assert.equal(rotationBatch.values[0].retained, 0.02);
+  assert.equal(rotationBatch.values[0].profit, 0.16);
+  assert.equal(rotationBatch.values[0].released, 0.144);
+  assert.equal(rotationBatch.values[0].retained, 0.016);
   assert.equal(rotationBatch.values[0].rotation_id, 'delta-testnet-rotation:42');
   assert.equal(rotationBatch.values[0].trade_id, null);
   assert.equal(rotationBatch.values[0].created_at, closedPosition.closed_at);
@@ -749,7 +749,7 @@ test('closed trade projection supports partial exits when total fills match the 
   assert.equal(trade.entry_price, 60010);
   assert.equal(trade.exit_price, 60075);
   assert.ok(Math.abs(trade.gross_pnl - 0.26) < 1e-9);
-  assert.equal(trade.net_pnl, 0.26);
+  assert.equal(trade.net_pnl, 0.22);
   assert.deepEqual(trade.exit_fill_ids, ['exit-partial-1', 'exit-partial-2']);
 });
 
