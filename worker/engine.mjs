@@ -19,6 +19,7 @@ import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from '
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
 import { buildApiDerivedTrackingPlan, strategyForDerivedTrade } from './tradetron-derived-trades.mjs';
 import { deltaExecutor } from './execution/delta-executor.mjs';
+import { assertDirectDeltaExecutionMode, getExecutionRouteBlockReason } from './execution/execution-route-policy.mjs';
 import { canExecuteDeltaTestnetOrders, checkDeltaTestnetPrivateApi, isPrivateApiConnectivityError } from './execution/testnet-private-api-health.mjs';
 import { DEFAULT_CANDLE_CACHE_SYMBOL_LIMIT, pruneCandleCacheState, resolveCandleCacheSymbolLimit, selectTopCandleSymbols } from './candle-cache-policy.mjs';
 import { formatMemoryLog, MEMORY_LOG_INTERVAL_MS, summarizeMemoryUsage } from './memory-monitor.mjs';
@@ -1482,21 +1483,17 @@ export class DeltaEngine {
         return { equity: 0, available: 0, unrealized: 0, positions: [], privateApiAvailable: false };
       }
     }
-    if (CONFIG.tradetronBridgeEnabled || !this.privateExecutionAvailable) {
-      const equity = Math.max(0, Number(CONFIG.tradetronCapitalUsd) || 5000);
-      return { equity, available: equity, unrealized: 0, positions: [] };
-    }
-    const [wallet, positions] = await Promise.all([
-      this.adapter.wallet(),
-      this.adapter.marginedPositions()
-    ]);
-    const meta = wallet && wallet.meta ? wallet.meta : {};
-    const balances = Array.isArray(wallet) ? wallet : [];
-    const equity = n(meta.net_equity) || balances.reduce((s, x) => s + n(x.balance), 0);
-    const available = balances.reduce((s, x) => s + n(x.available_balance), 0);
-    const open = Array.isArray(positions) ? positions.filter(p => Math.abs(n(p.size)) > 0) : [];
-    const unrealized = open.reduce((s, p) => s + n(p.unrealized_pnl), 0);
-    return { equity, available, unrealized, positions: open };
+    // No external bridge or production-wallet fallback exists. When direct
+    // Delta Testnet is disabled, account data is unknown and entry sizing must
+    // fail closed instead of manufacturing capital or querying a live wallet.
+    return {
+      equity: 0,
+      available: 0,
+      unrealized: 0,
+      positions: [],
+      privateApiAvailable: false,
+      executionLocked: true
+    };
   }
 
   async recentTrades() {
@@ -1518,13 +1515,7 @@ export class DeltaEngine {
 
     if (settings.emergency_stop) reasons.push('Emergency Stop');
     if (!settings.enabled || !settings.auto_trade) reasons.push('Auto OFF');
-    const routeBlock = CONFIG.deltaExecutionMode === 'testnet' ? '' : tradetronRouteBlocker({
-      signalOnly: CONFIG.signalOnly,
-      bridgeEnabled: CONFIG.tradetronBridgeEnabled,
-      strategy,
-      signal,
-      bridge: this.getTradetronBridgeForSymbol(signal.symbol)
-    });
+    const routeBlock = getExecutionRouteBlockReason(CONFIG.deltaExecutionMode);
     if (routeBlock) reasons.push(routeBlock);
     const duplicateBlocker = duplicatePositionBlocker(openPositions, signal.symbol);
     if (duplicateBlocker) reasons.push(duplicateBlocker);
@@ -2574,6 +2565,7 @@ export class DeltaEngine {
   }
 
   async executeSignal(signal, strategy, qty, clientOrderId) {
+    assertDirectDeltaExecutionMode(CONFIG.deltaExecutionMode);
     if (CONFIG.deltaExecutionMode === 'testnet') {
       if (!canExecuteDeltaTestnetOrders(CONFIG.deltaExecutionMode, this.privateExecutionAvailable)) {
         throw new Error('Delta Testnet private API unavailable; order execution is hard-locked in SCAN-ONLY mode');
@@ -2595,27 +2587,15 @@ export class DeltaEngine {
         throw error;
       }
     }
-    const bridge = this.getTradetronBridgeForSymbol(signal.symbol);
-    if (!bridge || !bridge.isConfigured()) throw new Error('Tradetron bridge route is unavailable');
-    return bridge.emitEntry({
-      symbol: signal.symbol,
-      side: signal.side,
-      qty,
-      entryPrice: signal.price,
-      sl: signal.sl,
-      tp1: signal.tp1,
-      tp: signal.tp,
-      executionId: clientOrderId,
-      strategy
-    });
+    throw new Error('Unreachable execution route: only direct Delta Testnet is permitted');
   }
 
   async openTrade(item, strategy, signal, account, settings, openPositions, trades) {
     if (strategy === 'OPTIONS_BUY' || strategy === 'OPTIONS_SELL') {
-      // Testnet option orders are intentionally locked; never fall back to a
-      // legacy external strategy bridge when direct Testnet option execution is unavailable.
-      if (CONFIG.deltaExecutionMode === 'testnet') return false;
-      return this.openOptionTrade(item, signal, account, settings, openPositions, trades);
+      // Options are locked until direct Delta Testnet option execution has its
+      // own verified contract sizing and exchange-side protection path.
+      // Never route options through a legacy external strategy bridge.
+      return false;
     }
     const normalizedScore = Number(signal?.normalizedScore);
     const normalizedScorePass =
