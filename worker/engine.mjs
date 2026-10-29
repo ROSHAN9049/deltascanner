@@ -44,9 +44,10 @@ export function correlationGroupForSymbol(symbol) {
   if (['BTC', 'ETH', 'SOL', 'BNB'].includes(s)) return 'MAJORS';
   if (['PAXG', 'XAUT'].includes(s)) return 'GOLD';
   if (['DOGE', 'SHIB', 'WIF'].includes(s)) return 'MEME';
-  if (/^(QQQX|SNDKB|TSLAX|AAPLX|AMZNX|COINX|METAX|MSFTX|NVDAX|GOOGLX|NFLXX|MSTRX)/.test(s.replace(/\s/g,''))) return 'STOCK_TOKENS';
+  // Explicitly cover stock-token roots that do not end in X, including AMDBUSD.
+  if (/^(AMDB|QQQX|SNDKB|TSLAX|AAPLX|AMZNX|COINX|METAX|MSFTX|NVDAX|GOOGLX|NFLXX|MSTRX)/.test(s.replace(/\s/g,''))) return 'STOCK_TOKENS';
   // Common equity-token suffixes: classify unknown listed equity tokens conservatively.
-  if (/^[A-Z]{2,8}X$/.test(s) || /^(QQQ|TSLA|AAPL|NVDA|SNDK|MSFT|AMZN|GOOGL|META|NFLX|MSTR)/.test(s)) return 'STOCK_TOKENS';
+  if (/^[A-Z]{2,8}X$/.test(s) || /^(AMDB|QQQ|TSLA|AAPL|NVDA|SNDK|MSFT|AMZN|GOOGL|META|NFLX|MSTR)/.test(s)) return 'STOCK_TOKENS';
   return null;
 }
 
