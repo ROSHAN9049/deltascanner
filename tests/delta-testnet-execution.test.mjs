@@ -312,6 +312,50 @@ test('closed REST order acknowledgement immediately polls and persists an OPEN p
   ));
 });
 
+
+test('concurrent bracket metadata syncs are coalesced per symbol', async () => {
+  let openOrdersCalls = 0;
+  let resolveOrders;
+  const ordersPromise = new Promise(resolve => { resolveOrders = resolve; });
+  const updates = [];
+  const logs = [];
+  const database = {
+    async select(table) {
+      if (table === 'dd_delta_positions') return [{ id: 'position-1', symbol: 'BTCUSD', status: 'OPEN' }];
+      return [];
+    },
+    async update(table, query, patch) { updates.push({ table, query, patch }); return []; },
+    async log(level, message, data) { logs.push({ level, message, data }); }
+  };
+  const tracker = new DeltaTestnetTracker({
+    env: demoEnv(),
+    database,
+    executor: {
+      async getOpenOrders() { openOrdersCalls += 1; return ordersPromise; }
+    },
+    WebSocketImpl: class {}
+  });
+  tracker.stopped = false;
+
+  const first = tracker.syncBracketMetadata('BTCUSD');
+  await Promise.resolve();
+  const second = tracker.syncBracketMetadata('BTCUSD');
+  assert.equal(openOrdersCalls, 1, 'only one open-orders request should be in flight for BTCUSD');
+
+  resolveOrders([{
+    id: 123,
+    product_symbol: 'BTCUSD',
+    bracket_stop_loss_price: '59000',
+    bracket_take_profit_price: '62000'
+  }]);
+  assert.deepEqual(await Promise.all([first, second]), [true, true]);
+  assert.equal(openOrdersCalls, 1);
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].patch.sl_price, 59000);
+  assert.equal(updates[0].patch.tp_price, 62000);
+  assert.equal(tracker.bracketMetadataSyncs.size, 0);
+});
+
 test('private WebSocket auth subscribes to all-symbol orders and positions channels', async () => {
   const sent = [];
   const socket = { send: value => sent.push(JSON.parse(value)) };
