@@ -10,7 +10,7 @@ import {
   normalizeGridRiskPerTradePct
 } from '../shared/grid-settings.js';
 
-test('Tradetron bridge Grid mode has one net position and the UI maximum is accepted', () => {
+test('Grid simulator respects the single-slot netting limit', () => {
   assert.equal(GRID_BRIDGE_MAX_POSITIONS, 1);
   assert.ok(GRID_MAX_POSITION_CHOICES.includes(GRID_BRIDGE_MAX_POSITIONS));
 });
