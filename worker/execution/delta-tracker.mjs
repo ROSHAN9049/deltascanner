@@ -8,6 +8,7 @@ import {
 } from './delta-executor.mjs';
 import { shouldEmitThrottledLog, websocketReconnectDelay, WS_ERROR_LOG_COOLDOWN_MS } from '../ws-resilience.mjs';
 import { cleanupWebSocketListeners } from '../websocket-lifecycle.mjs';
+import { deltaCloseFields } from './delta-exit-events.mjs';
 
 const stringValue = value => String(value ?? '').trim();
 const numberOrNull = value => {
@@ -375,9 +376,34 @@ async syncBracketMetadataOnce(key) {
     const active = await this.findOpenRow(symbol);
     if (row.qty <= 0 || stringValue(envelope?.action || rawRow?.action).toLowerCase() === 'delete') {
       if (!active) return;
-      const patch = { status: 'CLOSED', closed_at: nowIso(), updated_at: nowIso(), unrealized_pnl: 0 };
-      if (row.realized_pnl !== null) patch.realized_pnl = row.realized_pnl;
-      await this.database.update('dd_delta_positions', 'id=eq.' + encodeURIComponent(active.id), patch);
+      let details = null;
+      if (typeof this.executor.getRecentCloseDetails === 'function') {
+        try {
+          details = await this.executor.getRecentCloseDetails(symbol, active.opened_at);
+        } catch (error) {
+          await this.database.log(
+            'WARN',
+            '[Tracker] Close-fill lookup failed; exit details remain unverified',
+            { symbol, error: String(error?.message || error).slice(0, 200) }
+          ).catch(() => {});
+        }
+      }
+      const close = deltaCloseFields({
+        ...rawRow,
+        action: envelope?.action ?? rawRow?.action,
+        reason: envelope?.reason ?? rawRow?.reason
+      }, details);
+      const botManagedExit = [
+        'bot-exit', 'stop_loss_order', 'take_profit_order'
+      ].includes(close.exit_reason);
+      const closedAt = nowIso();
+      await this.database.update('dd_delta_positions', 'id=eq.' + encodeURIComponent(active.id), {
+        status: botManagedExit ? 'CLOSED' : 'CLOSED_EXTERNALLY',
+        closed_at: closedAt,
+        updated_at: closedAt,
+        unrealized_pnl: 0,
+        ...close
+      });
       return;
     }
     const fallbackStrategy = active?.strategy || 'MOMENTUM';
@@ -390,14 +416,16 @@ async syncBracketMetadataOnce(key) {
       strategy,
       opened_at: active?.opened_at || row.opened_at || nowIso(),
       closed_at: null,
+      // Never preserve an old mark or UPL when the latest
+      // WebSocket position payload does not contain that field.
+      current_price: row.current_price ?? null,
+      unrealized_pnl: row.unrealized_pnl ?? null,
       updated_at: nowIso()
     };
     if (row.order_id !== null) patch.order_id = String(row.order_id);
     if (row.product_id !== null) patch.product_id = row.product_id;
     if (row.client_order_id !== null) patch.client_order_id = String(row.client_order_id);
     if (row.entry_price !== null) patch.entry_price = row.entry_price;
-    if (row.current_price !== null) patch.current_price = row.current_price;
-    if (row.unrealized_pnl !== null) patch.unrealized_pnl = row.unrealized_pnl;
     if (row.realized_pnl !== null) patch.realized_pnl = row.realized_pnl;
     if (row.sl_price !== null) patch.sl_price = row.sl_price;
     if (row.tp_price !== null) patch.tp_price = row.tp_price;
