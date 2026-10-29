@@ -5,6 +5,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
   createEmergencyStopReleaseChallenge,
+  hashEmergencyStopReleaseToken,
+  matchesEmergencyStopReleaseToken,
   verifyEmergencyStopReleaseChallenge,
   ESTOP_RELEASE_DELAY_MS,
   ESTOP_RELEASE_TOKEN_TTL_MS
@@ -12,6 +14,7 @@ import {
 
 const source = await readFile(new URL('../src/main.jsx', import.meta.url), 'utf8');
 const toggleSource = await readFile(new URL('../api/engine/toggle.js', import.meta.url), 'utf8');
+const migration = await readFile(new URL('../db/migrations/20261029120000_estop_release_challenge.sql', import.meta.url), 'utf8');
 const start = source.indexOf('const estopReleaseCountdown = Math.max(');
 const end = source.indexOf('\n  const selected = useMemo', start);
 const releaseControls = source.slice(start, end);
@@ -84,6 +87,28 @@ test('server-side challenge rejects tampering and a different signing secret', (
   );
   assert.equal(wrongSecret.valid, false);
   assert.equal(wrongSecret.reason, 'signature');
+});
+
+test('release token hash is stable, non-reversible, and compared safely', () => {
+  const token = '1790000000000.' + 'a'.repeat(32) + '.' + 'b'.repeat(43);
+  const hash = hashEmergencyStopReleaseToken(token);
+  assert.match(hash, /^[a-f0-9]{64}$/);
+  assert.equal(hashEmergencyStopReleaseToken(token), hash);
+  assert.equal(matchesEmergencyStopReleaseToken(token, hash), true);
+  assert.equal(matchesEmergencyStopReleaseToken(token + 'x', hash), false);
+  assert.equal(matchesEmergencyStopReleaseToken(token, 'not-a-hash'), false);
+});
+
+test('E-STOP release is tied to its current activation and consumed by an atomic update', () => {
+  assert.match(toggleSource, /current\.emergency_stop_activated_at/);
+  assert.match(toggleSource, /current\.emergency_stop_release_token_hash/);
+  assert.match(toggleSource, /emergency_stop=eq\.true/);
+  assert.match(toggleSource, /emergency_stop_release_token_hash=eq\./);
+  assert.match(toggleSource, /already consumed or the activation changed/);
+  assert.match(toggleSource, /body\.emergencyStop === true && current\.emergency_stop !== true/);
+  assert.match(migration, /ADD COLUMN IF NOT EXISTS emergency_stop_activated_at/i);
+  assert.match(migration, /ADD COLUMN IF NOT EXISTS emergency_stop_release_token_hash/i);
+  assert.match(migration, /WHERE emergency_stop IS TRUE/i);
 });
 
 test('E-STOP release is not sent directly from the header button', () => {
