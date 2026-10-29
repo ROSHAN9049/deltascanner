@@ -10,7 +10,7 @@ test('cap reached blocks new signals in both cards while scanning stays on', () 
   assert.equal(status.capReached, true);
   assert.equal(status.continuousValue, 'ON · BLOCKED');
   assert.equal(status.continuousSubtitle, '⚠️ Global cap reached (20/20). New signals blocked until positions close.');
-  assert.equal(status.autoTradeSubtitle, 'Scanner enabled, but all new signals blocked by global cap (20/20).');
+  assert.equal(status.autoTradeSubtitle, 'Scanner active, but new entries are blocked by the global position cap (20/20).');
 });
 
 test('cap below maximum keeps continuous scanning active and shows live count', () => {
@@ -20,16 +20,29 @@ test('cap below maximum keeps continuous scanning active and shows live count', 
   assert.equal(status.capReached, false);
   assert.equal(status.continuousValue, 'ON · ACTIVE');
   assert.equal(status.continuousSubtitle, 'Continuous scanning active. Global cap: 12/20.');
-  assert.equal(status.autoTradeSubtitle, 'Scanner enabled. Signals active.');
+  assert.equal(status.autoTradeSubtitle, 'Scanner active. Signals and entry checks are running.');
 });
 
 test('continuous mode off is clearly distinguished from auto trade being off', () => {
   const status = getWorkerStatusDisplay({
     autoTrade: true, continuousMode: false, currentOpenPositions: 3, maxOpenPositions: 20
   });
-  assert.equal(status.continuousValue, 'OFF');
-  assert.equal(status.continuousSubtitle, 'Continuous scanning is off. No continuous automatic routing.');
+  assert.equal(status.continuousValue, 'OFF · MANUAL');
+  assert.equal(status.continuousSubtitle, 'Continuous automatic routing is OFF; the worker continues market scanning.');
   assert.match(status.autoTradeSubtitle, /Signals active/);
+});
+
+test('scanner disabled is distinct from Auto Trade disabled', () => {
+  const status = getWorkerStatusDisplay({
+    scannerEnabled: false,
+    autoTrade: false,
+    continuousMode: true,
+    currentOpenPositions: 0,
+    maxOpenPositions: 20
+  });
+  assert.equal(status.continuousValue, 'OFF');
+  assert.equal(status.autoTradeSubtitle, 'Scanner disabled. Market scans and signal refreshes are paused.');
+  assert.equal(status.continuousSubtitle, 'Scanner is disabled; no market scan or signal refresh occurs.');
 });
 
 test('auto off keeps the scanner active while disabling automatic entries', () => {
