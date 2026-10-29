@@ -492,7 +492,7 @@ test('closed trade projection requires matching entry order, exit side and full 
   };
   const fills = [
     { id: 'entry-1', symbol: 'BTCUSD', order_id: '123', side: 'BUY', size: '1', price: '59990', commission: '0.01', created_at: '2026-10-29T10:00:01.000Z' },
-    { id: 'entry-2', symbol: 'BTCUSD', order_id: '123', side: 'BUY', size: '1', price: '60010', commission: '0.06', created_at: '2026-10-29T10:00:02.000Z' },
+    { id: 'entry-2', symbol: 'BTCUSD', order_id: '123', side: 'BUY', size: '1', price: '60010', commission: '0.01', created_at: '2026-10-29T10:00:02.000Z' },
     { id: 'exit-1', symbol: 'BTCUSD', order_id: '456', side: 'SELL', size: '2', price: '60120', commission: '0.02', created_at: '2026-10-29T10:29:59.000Z' }
   ];
   const materialized = [];
