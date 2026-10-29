@@ -369,6 +369,7 @@ export function buildRiskGovernorGates({
 
   const duplicatePosition = Array.isArray(positions)
     ? positions.find(position =>
+        String(position?.status || '').trim().toUpperCase() === 'OPEN' &&
         String(position?.symbol || '').trim().toUpperCase() === symbol &&
         (safeNum(position?.qty ?? position?.quantity) ?? 0) !== 0
       ) || null
