@@ -311,6 +311,7 @@ export function createDeltaExecutor({
       const rows = [];
       let after = '';
       let previousAfter = '';
+      let complete = false;
       for (let page = 0; page < 10; page += 1) {
         const params = {
           product_ids: String(product.id),
@@ -327,17 +328,26 @@ export function createDeltaExecutor({
         rows.push(...response.result);
         if (targetOrderId !== null && rows.some(row =>
           String(row?.id ?? '') === String(targetOrderId)
-        )) break;
+        )) {
+          complete = true;
+          break;
+        }
         const nextAfter = stringOrEmpty(response.meta?.after);
-        if (!nextAfter || nextAfter === after || nextAfter === previousAfter ||
-            response.result.length === 0) break;
+        if (response.result.length === 0 || !nextAfter) {
+          complete = true;
+          break;
+        }
+        // Repeated cursors indicate an incomplete response; never derive
+        // aggregates from a possibly truncated order's fill history.
+        if (nextAfter === after || nextAfter === previousAfter) break;
         previousAfter = after;
         after = nextAfter;
       }
-      return rows;
+      return { rows, complete };
     }
 
-    const fills = await fetchHistory('/v2/fills');
+    const fillHistory = await fetchHistory('/v2/fills');
+    const fills = fillHistory.rows;
     const matchingFills = fills.filter(fill =>
       (!fill?.product_id || Number(fill.product_id) === product.id) &&
       (!fill?.product_symbol ||
@@ -360,7 +370,8 @@ export function createDeltaExecutor({
       price: numberOrNull(fill?.price),
       qty: numberOrNull(fill?.size)
     }));
-    const hasCompletePrices = orderId !== null &&
+    const hasCompletePrices = fillHistory.complete &&
+      orderId !== null &&
       pricedFills.length > 0 &&
       pricedFills.every(fill =>
         fill.price !== null && fill.price > 0 &&
@@ -379,8 +390,9 @@ export function createDeltaExecutor({
     const currencies = [...new Set(orderFills
       .map(fill => stringOrEmpty(fill?.settling_asset_symbol).toUpperCase())
       .filter(Boolean))];
-    const fees = orderId !== null && commissions.length > 0 &&
-      commissions.every(value => value !== null) && currencies.length <= 1
+    const fees = fillHistory.complete &&
+      orderId !== null && commissions.length > 0 &&
+      commissions.every(value => value !== null) && currencies.length === 1
       ? commissions.reduce((sum, value) => sum + value, 0)
       : null;
     const feeCurrency = currencies.length === 1 ? currencies[0] : null;
@@ -390,7 +402,7 @@ export function createDeltaExecutor({
     if (orderId !== null) {
       try {
         const history = await fetchHistory('/v2/orders/history', orderId);
-        orderHistory = history.find(row =>
+        orderHistory = history.rows.find(row =>
           String(row?.id ?? '') === String(orderId)
         ) || null;
       } catch (error) {
