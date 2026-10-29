@@ -278,6 +278,34 @@ export function createDeltaExecutor({
     return [...unique.values()];
   }
 
+  async function getFillsPage({ startTime, endTime, after = null, pageSize = 50 } = {}) {
+    const start = numberOrNull(startTime);
+    const end = numberOrNull(endTime);
+    if (!Number.isSafeInteger(start) || start <= 0 ||
+        !Number.isSafeInteger(end) || end <= start) {
+      throw new Error('Delta Testnet fills sync requires a valid microsecond time window');
+    }
+    const size = numberOrNull(pageSize);
+    if (!Number.isSafeInteger(size) || size < 1) {
+      throw new Error('Delta Testnet fills page size must be a positive integer');
+    }
+    const response = await request('GET', '/v2/fills', {
+      contract_types: 'perpetual_futures',
+      start_time: start,
+      end_time: end,
+      page_size: Math.min(50, size),
+      after: stringOrEmpty(after) || undefined
+    });
+    if (!Array.isArray(response?.result)) {
+      throw new Error('Delta Testnet fills endpoint returned an invalid result page');
+    }
+    return {
+      rows: response.result,
+      after: stringOrEmpty(response?.meta?.after) || null,
+      before: stringOrEmpty(response?.meta?.before) || null
+    };
+  }
+
   async function getWalletSnapshot() {
     return request('GET', '/v2/wallet/balances', {});
   }
@@ -821,6 +849,7 @@ export function createDeltaExecutor({
     closePosition,
     getOpenPositions,
     getOpenOrders,
+    getFillsPage,
     getAccountSnapshot,
     assertConfigured
   });
