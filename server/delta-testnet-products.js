@@ -7,7 +7,7 @@ const MAX_ERROR_LENGTH = 240;
 
 function safeError(error) {
   return String(error?.message || error || 'Delta Testnet product catalog unavailable')
-    .replace(/[\\r\\n\\t]+/g, ' ')
+    .replace(/[\r\n\t]+/g, ' ')
     .slice(0, MAX_ERROR_LENGTH);
 }
 
