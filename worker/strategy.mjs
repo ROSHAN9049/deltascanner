@@ -160,10 +160,9 @@ function populationMeanStd(values) {
 }
 
 /**
- * Calculate a display/diagnostic-only cross-sectional score against one
- * same-strategy scan universe. Higher feature values are oriented to support
- * the signal's side (SELL RSI is inverted, trend is side-aligned, and nearer
- * EMA is better). This function never changes row.score or an execution gate.
+ * Calculate a cross-sectional normalized score against one same-strategy scan
+ * universe. Higher feature values are oriented to support the signal's side.
+ * The formula is independent of row.score; callers decide how to gate on it.
  */
 export function calculateNormalizedScores(universe) {
   if (!Array.isArray(universe) || universe.length < 2) return new Map();
@@ -420,7 +419,6 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
   const emaMax = n(cfg.emaDistanceMax || 3.5);
   const spreadMax = n(cfg.spreadMaxPct || 0.35);
   const costGateRatio = n(cfg.costGateRatio || (isScalping ? 0.25 : 0.20));
-  const scoreMin = n(cfg.scoreMin || 65);
   const btcOverrideScoreMin = n(cfg.btcOverrideScoreMin || 90);
   const btcOverrideVolumeMin = n(cfg.btcOverrideVolumeMin || 1.5);
   const pullbackAllowanceAtr = n(cfg.pullbackAllowanceAtr || (isScalping ? 1.50 : 1.00));
@@ -539,9 +537,13 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
     feeRiskRatio <= costGateRatio &&
     !!price && !!riskDistance && !!sl;
 
+  const normalizedScore = Number(cfg?.normalizedScore);
+  const normalizedScorePass =
+    Number.isFinite(normalizedScore) && normalizedScore >= 80;
+
   const hardReady =
     !!side &&
-    score >= scoreMin &&
+    normalizedScorePass &&
     !!price &&
     !!riskDistance &&
     !!sl &&
@@ -560,7 +562,9 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
   if (!side) {
     blocked.push('No directional trigger');
   } else {
-    if (score < scoreMin) blocked.push('Signal score below ' + scoreMin);
+    if (!normalizedScorePass) {
+      blocked.push('Normalized score below 80 or unavailable');
+    }
     if (!rsiOk) blocked.push('RSI/VWAP');
     if (vr < volumeMin && !volumeFallback) blocked.push('Volume spike < ' + volumeMin.toFixed(2) + 'x');
     if (!antiChase) blocked.push('24h anti-chase');

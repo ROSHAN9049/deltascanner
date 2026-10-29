@@ -1507,6 +1507,15 @@ export class DeltaEngine {
     const reasons = [...(signal.blocked || [])];
     const continuous = settings.continuous_mode !== false;
 
+    if (strategy === 'MOMENTUM' || strategy === 'SCALPING') {
+      const normalizedScore = Number(signal?.normalizedScore);
+      const normalizedScorePass =
+        Number.isFinite(normalizedScore) && normalizedScore >= 80;
+      if (!normalizedScorePass) {
+        reasons.push('Normalized score below 80 or unavailable');
+      }
+    }
+
     if (settings.emergency_stop) reasons.push('Emergency Stop');
     if (!settings.enabled || !settings.auto_trade) reasons.push('Auto OFF');
     const routeBlock = CONFIG.deltaExecutionMode === 'testnet' ? '' : tradetronRouteBlocker({
@@ -2289,9 +2298,9 @@ export class DeltaEngine {
       this.candleCacheSymbols.has(String(ticker.symbol || '').toUpperCase())
     );
 
-    // Shadow pre-pass: compute normalized scores across this strategy universe.
-    // Analyse remains pure here; the existing sequential riskGate/cache loop
-    // below is preserved so normalized values cannot influence entry decisions.
+    // Shadow pre-pass computes normalized scores from unchanged feature data.
+    // The final analysis pass consumes each score for the normalized readiness
+    // gate; feature extraction in this pre-pass does not depend on stage/ready.
     const normalizationUniverses = { MOMENTUM: [], SCALPING: [] };
     for (const ticker of tickers) {
       const product = this.productMap.get(ticker.symbol);
@@ -2302,7 +2311,6 @@ export class DeltaEngine {
       const momShadow = analyse(ticker, product, c1, c5, c15, btc5, btc15, 'MOMENTUM', {
         minStopPct: n(settings.momentum_sl_min_pct || 0.95),
         rr: n(settings.momentum_rr || 2.0),
-        scoreMin: Math.max(80, n(settings.score_min || 80)),
         volumeMin: n(settings.volume_min || 0.75),
         antiChasePct: n(settings.anti_chase_pct || 15),
         rangeAtrMax: n(settings.range_atr_max || 4.0),
@@ -2315,7 +2323,6 @@ export class DeltaEngine {
       const scalpShadow = analyse(ticker, product, c1, c5, c15, btc5, btc15, 'SCALPING', {
         minStopPct: n(settings.scalping_sl_min_pct || 0.75),
         rr: n(settings.scalping_rr || 2.0),
-        scoreMin: Math.max(80, n(settings.score_min || 80)),
         volumeMin: n(settings.volume_min || 1.25),
         antiChasePct: n(settings.anti_chase_pct || 15),
         rangeAtrMax: n(settings.range_atr_max || 3.0),
@@ -2344,10 +2351,14 @@ export class DeltaEngine {
       const c1 = this.getCandles(ticker.symbol, '1m');
       const c5 = this.getCandles(ticker.symbol, '5m');
       const c15 = this.getCandles(ticker.symbol, '15m');
+      const momNormalizedScore =
+        normalizedScores.get('MOMENTUM:' + ticker.symbol) ?? null;
+      const scalpNormalizedScore =
+        normalizedScores.get('SCALPING:' + ticker.symbol) ?? null;
       const mom = analyse(ticker, p, c1, c5, c15, btc5, btc15, 'MOMENTUM', {
         minStopPct: n(settings.momentum_sl_min_pct || 0.95),
         rr: n(settings.momentum_rr || 2.0),
-        scoreMin: Math.max(80, n(settings.score_min || 80)),
+        normalizedScore: momNormalizedScore,
         volumeMin: n(settings.volume_min || 0.75),
         antiChasePct: n(settings.anti_chase_pct || 15),
         rangeAtrMax: n(settings.range_atr_max || 4.0),
@@ -2360,7 +2371,7 @@ export class DeltaEngine {
       const scalp = analyse(ticker, p, c1, c5, c15, btc5, btc15, 'SCALPING', {
         minStopPct: n(settings.scalping_sl_min_pct || 0.75),
         rr: n(settings.scalping_rr || 2.0),
-        scoreMin: Math.max(80, n(settings.score_min || 80)),
+        normalizedScore: scalpNormalizedScore,
         volumeMin: n(settings.volume_min || 1.25),
         antiChasePct: n(settings.anti_chase_pct || 15),
         rangeAtrMax: n(settings.range_atr_max || 3.0),
@@ -2370,8 +2381,8 @@ export class DeltaEngine {
         btcOverrideScoreMin: n(settings.btc_override_score_min || 90),
         btcOverrideVolumeMin: n(settings.btc_override_volume_min || 1.5)
       });
-      mom.normalizedScore = normalizedScores.get('MOMENTUM:' + mom.symbol) ?? null;
-      scalp.normalizedScore = normalizedScores.get('SCALPING:' + scalp.symbol) ?? null;
+      mom.normalizedScore = momNormalizedScore;
+      scalp.normalizedScore = scalpNormalizedScore;
       this.applyTestnetCandleFreshness(mom, '5m');
       this.applyTestnetCandleFreshness(scalp, '1m');
       this.recordAtrDiagnostics(mom);
@@ -2606,10 +2617,14 @@ export class DeltaEngine {
       if (CONFIG.deltaExecutionMode === 'testnet') return false;
       return this.openOptionTrade(item, signal, account, settings, openPositions, trades);
     }
+    const normalizedScore = Number(signal?.normalizedScore);
+    const normalizedScorePass =
+      Number.isFinite(normalizedScore) && normalizedScore >= 80;
+
     if (
       String(signal?.stage || '').toUpperCase() !== 'CONFIRMED' ||
       signal?.ready !== true ||
-      signal.score < n(settings.score_min || 80)
+      !normalizedScorePass
     ) return false;
 
     const validatedEntryPrice = Number(signal?.price);
