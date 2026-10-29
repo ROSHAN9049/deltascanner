@@ -890,7 +890,7 @@ function equityPoints(trades) {
 }
 function Testnet({settings,health,currentOpenPositionCount=null,accountDataProtected=false}) {
  const count=safeNum(currentOpenPositionCount);
- const status=getWorkerStatusDisplay({autoTrade:settings.auto_trade===true,continuousMode:settings.continuous_mode===true,emergencyStop:settings.emergency_stop===true,currentOpenPositions:count,maxOpenPositions:settings.max_open_positions??null});
+ const status=getWorkerStatusDisplay({scannerEnabled:settings.enabled!==false,autoTrade:settings.auto_trade===true,continuousMode:settings.continuous_mode===true,emergencyStop:settings.emergency_stop===true,currentOpenPositions:count,maxOpenPositions:settings.max_open_positions??null});
  const online=health?.workerLeaseActive===true&&health?.heartbeatFresh===true, tone=settings.emergency_stop===true?'critical':status.capReached&&settings.auto_trade===true?'warning':'';
  const ages='Tick: '+formatHealthAge(health?.tickAgeMs)+' · Heartbeat: '+formatHealthAge(health?.heartbeatAgeMs)+' · Lease: '+formatLeaseRemaining(health?.leaseRemainingMs);
  const r=health?.retention||{}, deleted=Number.isSafeInteger(Number(r.rowsDeleted))&&Number(r.rowsDeleted)>=0?Number(r.rowsDeleted):0, days=Number.isSafeInteger(Number(r.configDays))&&Number(r.configDays)>=1?Number(r.configDays):1, fail=Number.isSafeInteger(Number(r.consecutiveFailures))&&Number(r.consecutiveFailures)>=0?Number(r.consecutiveFailures):0;
