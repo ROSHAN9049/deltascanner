@@ -82,7 +82,12 @@ export function createDeltaTestnetHealthProbe({
           const payload = await response.json();
           const validPayload = payload !== null && typeof payload === 'object' && !Array.isArray(payload);
           const apiExplicitlyFailed = validPayload && payload.success === false;
-          const healthy = validPayload && !apiExplicitlyFailed;
+          // Match the response contract used by DeltaAdapter: successful API
+          // replies must include a result array. HTTP 200 alone is not health.
+          const validProductsResponse = validPayload &&
+            payload.success === true &&
+            Array.isArray(payload.result);
+          const healthy = validProductsResponse;
           result = {
             healthy,
             status,
