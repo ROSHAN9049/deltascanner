@@ -89,6 +89,7 @@ describe('Delta Testnet fill ledger migration SQL structure', () => {
     assert.match(deltaFillMigration, /ADD COLUMN IF NOT EXISTS client_order_id TEXT NULL/i);
     assert.match(deltaFillMigration, /ADD COLUMN IF NOT EXISTS timestamp_us BIGINT NULL/i);
     assert.match(deltaFillMigration, /ADD COLUMN IF NOT EXISTS close_source TEXT NULL/i);
+    assert.match(deltaFillMigration, /ADD COLUMN IF NOT EXISTS entry_order_id TEXT NULL/i);
     assert.match(deltaFillMigration, /ADD COLUMN IF NOT EXISTS realized_pnl_verified BOOLEAN NOT NULL DEFAULT FALSE/i);
     assert.match(deltaFillMigration, /CREATE TABLE IF NOT EXISTS public\.dd_delta_fill_sync_state/i);
     assert.match(deltaFillMigration, /ALTER COLUMN gross_pnl DROP NOT NULL/i);
