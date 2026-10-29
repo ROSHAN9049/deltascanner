@@ -8,6 +8,7 @@ import {
 } from '../worker/execution/delta-executor.mjs';
 import { DeltaTestnetTracker, normalizeDeltaWsPosition, strategyFromClientOrderId } from '../worker/execution/delta-tracker.mjs';
 import { parseDeltaExecutionMode } from '../server/config.js';
+import { assessCorrelatedEntry, correlationGroupForSymbol } from '../worker/engine.mjs';
 
 const demoEnv = () => ({
   DELTA_EXECUTION_MODE: 'testnet',
@@ -117,6 +118,18 @@ function fakeRuntime({
 
   return { httpCalls, database, fetchImpl, logs, updates, persistedPositions };
 }
+
+test('AMDBUSD is classified in the stock-token correlation group', () => {
+  assert.equal(correlationGroupForSymbol('AMDBUSD'), 'STOCK_TOKENS');
+  const decision = assessCorrelatedEntry({
+    symbol: 'AMDBUSD',
+    side: 'SELL',
+    positions: [{ symbol: 'NVDAXUSD', side: 'BUY', qty: 1 }]
+  });
+  assert.equal(decision.blocked, true);
+  assert.equal(decision.reason, 'CORRELATION_GROUP_LIMIT');
+  assert.equal(decision.conflictingSymbol, 'NVDAXUSD');
+});
 
 test('configuration accepts only disabled/testnet and explicitly rejects live', () => {
   assert.equal(parseDeltaExecutionMode(undefined), 'disabled');
@@ -407,13 +420,13 @@ test('WebSocket position update clears stale mark and UPL when fields are missin
 });
 
 test('bracket entry fails closed if the live mark has crossed the requested SL/TP bracket', async () => {
-  const runtime = fakeRuntime({ markPrice: 61000 });
+  const runtime = fakeRuntime({ markPrice: 61500 });
   const executor = createDeltaExecutor({
     env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database
   });
 
   await assert.rejects(
-    executor.placeBracketOrder('BTCUSD', 'SELL', 1, 60000, 60500, 59000, {
+    executor.placeBracketOrder('BTCUSD', 'SELL', 1, 60000, 61000, 59000, {
       strategy: 'MOMENTUM', clientOrderId: 'DDM-BTCUSD-CROSSED'
     }),
     /Live mark has moved outside the requested SL\/TP bracket/
@@ -466,6 +479,50 @@ test('closed REST order acknowledgement immediately polls and persists an OPEN p
     row.data.fillConfirmedByRest === true &&
     row.data.positionSnapshotConfirmedByRest === true
   ));
+});
+
+
+test('concurrent bracket metadata syncs are coalesced per symbol', async () => {
+  let openOrdersCalls = 0;
+  let resolveOrders;
+  const ordersPromise = new Promise(resolve => { resolveOrders = resolve; });
+  const updates = [];
+  const logs = [];
+  const database = {
+    async select(table) {
+      if (table === 'dd_delta_positions') return [{ id: 'position-1', symbol: 'BTCUSD', status: 'OPEN' }];
+      return [];
+    },
+    async update(table, query, patch) { updates.push({ table, query, patch }); return []; },
+    async log(level, message, data) { logs.push({ level, message, data }); }
+  };
+  const tracker = new DeltaTestnetTracker({
+    env: demoEnv(),
+    database,
+    executor: {
+      async getOpenOrders() { openOrdersCalls += 1; return ordersPromise; }
+    },
+    WebSocketImpl: class {}
+  });
+  tracker.stopped = false;
+
+  const first = tracker.syncBracketMetadata('BTCUSD');
+  await Promise.resolve();
+  const second = tracker.syncBracketMetadata('BTCUSD');
+  assert.equal(openOrdersCalls, 1, 'only one open-orders request should be in flight for BTCUSD');
+
+  resolveOrders([{
+    id: 123,
+    product_symbol: 'BTCUSD',
+    bracket_stop_loss_price: '59000',
+    bracket_take_profit_price: '62000'
+  }]);
+  assert.deepEqual(await Promise.all([first, second]), [true, true]);
+  assert.equal(openOrdersCalls, 1);
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].patch.sl_price, 59000);
+  assert.equal(updates[0].patch.tp_price, 62000);
+  assert.equal(tracker.bracketMetadataSyncs.size, 0);
 });
 
 test('private WebSocket auth subscribes to all-symbol orders and positions channels', async () => {
@@ -538,4 +595,55 @@ test('private WebSocket fill event updates the order row and records explicit fi
   assert.ok(orderRow.raw.fill_confirmed_by_private_websocket_at);
   assert.ok(updates.some(row => row.table === 'dd_orders' && row.patch.raw?.fill_confirmed_by_private_websocket === true));
   assert.ok(logs.some(row => row.message.includes('private WebSocket confirmed order fill')));
+});
+
+test('bracket entry rejects SL distance below the 1.5 percent minimum', async () => {
+  const runtime = fakeRuntime({ markPrice: 2317 });
+  const executor = createDeltaExecutor({
+    env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database
+  });
+  await assert.rejects(
+    executor.placeBracketOrder('ETHUSD', 'SELL', 1, 2310.75, 2332.9, 2256, {
+      strategy: 'MOMENTUM', clientOrderId: 'DDM-ETHUSD-TIGHTSL'
+    }),
+    /SL distance too tight \(0\.96%\), minimum required 1\.50%/
+  );
+  assert.equal(
+    runtime.httpCalls.some(call => new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST'),
+    false,
+    'tight-stop bracket must be blocked before submission'
+  );
+  assert.ok(runtime.logs.some(row =>
+    row.message.includes('SL distance too tight') && row.data.minimumSlDistancePct === 1.5
+  ));
+});
+
+test('E-STOP blocks entries but permits closePosition to submit a reduce-only exit', async () => {
+  const runtime = fakeRuntime({
+    emergencyStop: true,
+    positions: [{
+      product_id: 27,
+      product_symbol: 'BTCUSD',
+      size: 1,
+      entry_price: '60000',
+      mark_price: '60000',
+      unrealized_pnl: '0'
+    }]
+  });
+  const executor = createDeltaExecutor({
+    env: demoEnv(),
+    fetchImpl: runtime.fetchImpl,
+    database: runtime.database,
+    now: () => 1770000000000
+  });
+
+  const order = await executor.closePosition('BTCUSD', 1);
+  assert.equal(order.id, 123);
+  const post = runtime.httpCalls.find(call =>
+    new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST'
+  );
+  assert.ok(post);
+  assert.equal(post.body.reduce_only, true);
+  assert.equal(post.body.side, 'sell');
+  assert.ok(!runtime.logs.some(row => row.message.includes('Emergency Stop is active')));
 });
