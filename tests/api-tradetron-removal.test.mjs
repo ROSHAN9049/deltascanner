@@ -18,10 +18,17 @@ test('legacy Tradetron Vercel webhook endpoint has been removed', async () => {
   await assert.rejects(access(new URL('../api/tradetron/webhook.js', import.meta.url)));
 });
 
-test('Testnet worker does not poll the Developer API or run legacy Grid/Options bridges', async () => {
+test('worker disables Tradetron routes and keeps Grid/Options out of direct Testnet execution', async () => {
   const engine = await read('../worker/engine.mjs');
+  const config = await read('../server/config.js');
   assert.doesNotMatch(engine, /void this\.syncTradetronDeveloperApi\(\)/);
   assert.match(engine, /GRID_NOT_MIGRATED_TO_DELTA_TESTNET/);
-  assert.match(engine, /if \(CONFIG\.deltaExecutionMode === 'testnet'\) return false;/);
+  assert.doesNotMatch(engine, /async openOptionTrade\(/);
+  assert.doesNotMatch(engine, /emitOptionEntry\(|emitOptionSpread\(/);
+  assert.match(engine, /getExecutionRouteBlockReason\(CONFIG\.deltaExecutionMode\)/);
+  assert.match(config, /tradetronBridgeEnabled: false/);
+  assert.match(config, /tradetronDynamicBridgeEnabled: false/);
+  assert.match(config, /tradetronOptionsBridgeEnabled: false/);
+  assert.match(config, /tradetronDeveloperApiKey: ''/);
   assert.match(engine, /deltaExecutionMode: CONFIG\.deltaExecutionMode/);
 });
