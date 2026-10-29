@@ -280,7 +280,7 @@ export function createDeltaExecutor({
 
   function timestampMs(value) {
     if (value === undefined || value === null || value === '') return null;
-    if (typeof value === 'number' || /^\\d+(?:\\.\\d+)?$/.test(String(value).trim())) {
+    if (typeof value === 'number' || /^\d+(?:\.\d+)?$/.test(String(value).trim())) {
       const numeric = Number(value);
       if (!Number.isFinite(numeric) || numeric <= 0) return null;
       if (numeric >= 1e14) return numeric / 1000; // epoch microseconds

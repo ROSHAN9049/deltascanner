@@ -280,6 +280,59 @@ test('close-fill lookup uses epoch microseconds and reads nested position metada
   assert.equal(fillCall.init.method, 'GET');
 });
  
+test('WebSocket close persists confirmed close details and does not substitute mark price', async () => {
+  const position = {
+    id: 17, symbol: 'XAUTUSD', side: 'BUY', qty: 37, status: 'OPEN',
+    entry_price: 3871.87, current_price: 4050, unrealized_pnl: 6.34,
+    realized_pnl: null, strategy: 'MOMENTUM',
+    opened_at: '2026-10-28T00:00:00.000Z'
+  };
+  let closePatch = null;
+  const database = {
+    async select(table) {
+      return table === 'dd_delta_positions' ? [{ ...position }] : [];
+    },
+    async update(table, query, patch) {
+      if (table === 'dd_delta_positions') closePatch = { ...patch };
+      return [];
+    },
+    async log() {}
+  };
+  const tracker = new DeltaTestnetTracker({
+    env: demoEnv(),
+    database,
+    executor: {
+      async getRecentCloseDetails() {
+        return {
+          exit_price: 4058.5, fees: 0.02, fee_currency: 'USD',
+          realized_pnl: 6.1, close_order_id: '9002',
+          stop_order_type: 'take_profit_order',
+          client_order_id: 'DDM-XAUTUSD-entry',
+          close_order_history_found: true
+        };
+      }
+    },
+    WebSocketImpl: class {}
+  });
+  tracker.stopped = false;
+
+  await tracker.processPosition({
+    product_symbol: 'XAUTUSD', size: '0',
+    mark_price: '4050', unrealized_pnl: '6.34',
+    realized_pnl: '6.1'
+  });
+
+  assert.ok(closePatch);
+  assert.equal(closePatch.status, 'CLOSED');
+  assert.equal(closePatch.exit_price, 4058.5);
+  assert.notEqual(closePatch.exit_price, 4050);
+  assert.equal(closePatch.fees, 0.02);
+  assert.equal(closePatch.fee_currency, 'USD');
+  assert.equal(closePatch.realized_pnl, 6.1);
+  assert.equal(closePatch.exit_reason, 'take_profit_order');
+  assert.equal(closePatch.close_order_id, '9002');
+});
+
 test('WebSocket position normalizer handles signed size and strategy ids', () => {
   const short = normalizeDeltaWsPosition({ product_symbol: 'BTCUSD', size: '-2', entry_price: '60000' });
   assert.equal(short.symbol, 'BTCUSD');

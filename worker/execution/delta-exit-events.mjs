@@ -14,7 +14,7 @@ export function normalizeDeltaExitReason(event = {}) {
     event.order_type, event.orderType,
     event.stop_order_type, event.stopOrderType
   ].map(stringValue).filter(Boolean).map(value =>
-    value.toLowerCase().replace(/[\\s-]+/g, '_')
+    value.toLowerCase().replace(/[\s-]+/g, '_')
   );
 
   if (tokens.some(value => value.includes('liquidation'))) return 'liquidation';

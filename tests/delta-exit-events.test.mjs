@@ -4,6 +4,7 @@ import { deltaCloseFields, normalizeDeltaExitReason } from '../worker/execution/
 
 test('exit reason mapping uses documented fill/order evidence', () => {
   const cases = [
+    [{ reason: 'Stop Loss Order' }, 'stop_loss_order'],
     [{ stop_order_type: 'stop_loss_order' }, 'stop_loss_order'],
     [{ stop_order_type: 'take_profit_order' }, 'take_profit_order'],
     [{ fill_type: 'liquidation' }, 'liquidation'],
