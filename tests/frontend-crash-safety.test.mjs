@@ -16,7 +16,7 @@ test('market table no longer invokes the deleted Tradetron route helper', async 
 test('Dashboard gets executionCoverage and safely normalizes API collections', async () => {
   const source = await read('../src/main.jsx');
   assert.ok(source.includes('executionCoverage={executionCoverage}'));
-  assert.ok(source.includes('executionCoverage = null, onInspect'));
+  assert.ok(source.includes('executionCoverage = null, routeContext = null, onInspect'));
   assert.ok(source.includes("const trades = Array.isArray(state?.deltaTestnetTrades) ? state.deltaTestnetTrades : [];"));
   assert.ok(source.includes("const positions = Array.isArray(state?.deltaTestnetPositions) ? state.deltaTestnetPositions : [];"));
   assert.ok(source.includes("const rotationLedger = Array.isArray(state?.ledger) ? state.ledger : [];"));
