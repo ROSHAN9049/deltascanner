@@ -637,10 +637,14 @@ export class DeltaTestnetTracker {
         if (!entry || !(entry.size > 0)) continue;
         const exitSide = side === 'BUY' ? 'SELL' : 'BUY';
         const entryLastMs = Math.max(...entryFills.map(fill => Date.parse(fill.created_at || '')));
+        const matchedEntryOrderIds = new Set(entryFills
+          .map(fill => stringValue(fill?.order_id))
+          .filter(Boolean));
         const exitFills = fills.filter(fill => {
           const fillMs = Date.parse(fill?.created_at || '');
+          const fillOrderId = stringValue(fill?.order_id);
           return String(fill?.side || '').toUpperCase() === exitSide &&
-            String(fill?.order_id ?? '') !== orderId &&
+            (!fillOrderId || !matchedEntryOrderIds.has(fillOrderId)) &&
             Number.isFinite(fillMs) && fillMs >= entryLastMs && fillMs <= closedMs + 5_000 &&
             numberOrNull(fill?.size) > 0 && numberOrNull(fill?.price) > 0;
         });
