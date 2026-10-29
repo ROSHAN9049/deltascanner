@@ -13,6 +13,20 @@ function safeEqual(leftValue, rightValue) {
   return left.length > 0 && left.length === right.length && crypto.timingSafeEqual(left, right);
 }
 
+export function hashEmergencyStopReleaseToken(tokenValue) {
+  const token = clean(tokenValue);
+  if (!token) return '';
+  return crypto.createHash('sha256').update(token, 'utf8').digest('hex');
+}
+
+export function matchesEmergencyStopReleaseToken(tokenValue, expectedHash) {
+  const suppliedHash = hashEmergencyStopReleaseToken(tokenValue);
+  const expected = clean(expectedHash);
+  return /^[a-f0-9]{64}$/.test(suppliedHash) &&
+    /^[a-f0-9]{64}$/.test(expected) &&
+    safeEqual(suppliedHash, expected);
+}
+
 function sign(secret, issuedAt, nonce) {
   const payload = String(issuedAt) + '.' + nonce;
   return crypto.createHmac('sha256', secret)
