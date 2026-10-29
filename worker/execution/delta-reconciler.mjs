@@ -225,6 +225,12 @@ export function createDeltaPositionReconciler({
             }
           }
           const close = deltaCloseFields({}, details);
+          // A REST absence check may not find a close fill. Do not erase an
+          // exchange-reported realized P&L already captured from a position event.
+          const existingRealizedPnl = numberOrNull(row.realized_pnl);
+          if (close.realized_pnl === null && existingRealizedPnl !== null) {
+            close.realized_pnl = existingRealizedPnl;
+          }
           const botManagedExit = [
             'bot-exit', 'stop_loss_order', 'take_profit_order'
           ].includes(close.exit_reason);
