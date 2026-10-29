@@ -1,5 +1,6 @@
 import * as defaultDb from '../../server/db.js';
 import { deltaExecutor } from './delta-executor.mjs';
+import { deltaCloseFields } from './delta-exit-events.mjs';
 
 export const DELTA_POSITION_RECONCILE_INTERVAL_MS = 5 * 60 * 1000;
 const QTY_EPSILON = 1e-8;
@@ -191,7 +192,7 @@ export function createDeltaPositionReconciler({
 
       const openRows = await database.select(
         'dd_delta_positions',
-        'status=eq.OPEN&select=id,symbol,qty,side,realized_pnl&limit=1000'
+        'status=eq.OPEN&select=id,symbol,qty,side,opened_at,realized_pnl&limit=1000'
       );
       if (!Array.isArray(openRows)) {
         throw new Error('Could not read dd_delta_positions OPEN rows; DB state left unchanged');
@@ -212,19 +213,42 @@ export function createDeltaPositionReconciler({
         const exchangePosition = exchangeBySymbol.get(symbol);
         if (!exchangePosition) {
           zombiePositions += 1;
+          let details = null;
+          if (typeof executor.getRecentCloseDetails === 'function') {
+            try {
+              details = await executor.getRecentCloseDetails(symbol, row.opened_at);
+            } catch (error) {
+              await writeLog('WARN', '[Reconciler] Close-fill lookup failed; exit details remain unverified', {
+                symbol,
+                error: String(error?.message || error).slice(0, 200)
+              });
+            }
+          }
+          const close = deltaCloseFields({}, details);
+          const botManagedExit = [
+            'bot-exit', 'stop_loss_order', 'take_profit_order'
+          ].includes(close.exit_reason);
+          const closeStatus = botManagedExit ? 'CLOSED' : 'CLOSED_EXTERNALLY';
           const changed = await updateOpenRow(row.id, {
-            status: 'CLOSED_EXTERNALLY',
+            status: closeStatus,
             closed_at: timestamp,
             updated_at: timestamp,
-            unrealized_pnl: 0
+            unrealized_pnl: 0,
+            ...close
           });
-          if (changed) markedClosedExternally += 1;
-          await writeLog('WARN', '[Reconciler] Local OPEN position missing from Delta Testnet; marked CLOSED_EXTERNALLY', {
+          if (changed && closeStatus === 'CLOSED_EXTERNALLY') markedClosedExternally += 1;
+          await writeLog('WARN', '[Reconciler] Local OPEN position missing from Delta Testnet; closed from the verified exchange snapshot', {
             id: row.id,
             symbol,
             dbQty: numberOrNull(row.qty),
             closedAt: timestamp,
-            realizedPnlPreserved: row.realized_pnl ?? null
+            closeStatus,
+            exitReason: close.exit_reason,
+            exitPrice: close.exit_price,
+            fees: close.fees,
+            feeCurrency: close.fee_currency,
+            realizedPnl: close.realized_pnl,
+            closeOrderId: close.close_order_id
           });
           continue;
         }

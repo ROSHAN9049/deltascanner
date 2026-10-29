@@ -172,6 +172,40 @@ test('missing exchange positions are marked CLOSED_EXTERNALLY without fabricatin
   assert.ok(rt.logs.some(row => row.message.includes('Found 1 zombie positions. Marked 1 as CLOSED_EXTERNALLY.')));
 });
 
+test('REST reconciliation persists close-fill details only when they are verifiable', async () => {
+  const rt = runtime({
+    openRows: [{
+      id: 1, symbol: 'BTCUSD', qty: 1, side: 'BUY',
+      entry_price: 100, opened_at: '2026-10-28T00:00:00.000Z',
+      current_price: 105, unrealized_pnl: 5, realized_pnl: null
+    }],
+    exchangePositions: []
+  });
+  rt.executor.getRecentCloseDetails = async () => ({
+    exit_price: 106,
+    fees: 0.2,
+    fee_currency: 'USD',
+    realized_pnl: 6,
+    close_order_id: '9001',
+    stop_order_type: 'take_profit_order',
+    client_order_id: 'DDM-BTCUSD-entry',
+    close_order_history_found: true
+  });
+
+  const reconciler = createDeltaPositionReconciler({
+    env: rt.env, database: rt.database, executor: rt.executor, now: fixedNow
+  });
+  await reconciler.reconcile();
+
+  assert.equal(rt.rows[0].status, 'CLOSED');
+  assert.equal(rt.rows[0].exit_price, 106);
+  assert.equal(rt.rows[0].fees, 0.2);
+  assert.equal(rt.rows[0].fee_currency, 'USD');
+  assert.equal(rt.rows[0].realized_pnl, 6);
+  assert.equal(rt.rows[0].exit_reason, 'take_profit_order');
+  assert.equal(rt.rows[0].close_order_id, '9001');
+});
+
 test('quantity and side mismatches sync local DB to the exchange; missing DB rows are hydrated', async () => {
   const rt = runtime({
     openRows: [

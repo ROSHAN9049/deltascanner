@@ -31,7 +31,9 @@ function fakeRuntime({
   available = equity,
   markPrice = 60000,
   orderState = 'open',
-  orderAverageFillPrice = 60000
+  orderAverageFillPrice = 60000,
+  fills = [],
+  orderHistory = []
 } = {}) {
   const httpCalls = [];
   const logs = [];
@@ -91,6 +93,8 @@ function fakeRuntime({
       const rows = hasPostedOrder && positionsAfterFill !== null ? positionsAfterFill : positions;
       return response({ success: true, result: rows });
     }
+    if (parsed.pathname === '/v2/fills') return response({ success: true, result: fills, meta: {} });
+    if (parsed.pathname === '/v2/orders/history') return response({ success: true, result: orderHistory, meta: {} });
     if (parsed.pathname === '/v2/orders' && init.method === 'GET') return response({ success: true, result: [] });
     if (parsed.pathname === '/v2/wallet/balances') {
       return response({ success: true, result: [], meta: { net_equity: String(equity), available_balance: String(available) } });
@@ -241,6 +245,41 @@ test('20 already-open symbols hit the global position cap', async () => {
   assert.equal(runtime.httpCalls.some(call => call.init.method === 'POST'), false);
 });
 
+test('close-fill lookup uses epoch microseconds and reads nested position metadata', async () => {
+  const clockMs = Date.parse('2026-10-29T08:00:00.000Z');
+  const openedAt = '2026-10-29T07:00:00.000Z';
+  const runtime = fakeRuntime({
+    fills: [{
+      id: 'fill-1', product_id: 27, product_symbol: 'BTCUSD',
+      order_id: '9001', size: '2', price: '61005',
+      commission: '0.05', settling_asset_symbol: 'USD',
+      fill_type: 'normal', created_at: String((clockMs - 1000) * 1000),
+      meta_data: { new_position: { size: 0, realized_pnl: '4.5' }, order_type: 'market_order' }
+    }],
+    orderHistory: [{
+      id: 9001, product_symbol: 'BTCUSD', stop_order_type: 'stop_loss_order',
+      client_order_id: 'DDM-BTCUSD-entry', reduce_only: true, state: 'closed'
+    }]
+  });
+  const executor = createDeltaExecutor({
+    env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database,
+    now: () => clockMs
+  });
+
+  const details = await executor.getRecentCloseDetails('BTCUSD', openedAt);
+  assert.equal(details.exit_price, 61005);
+  assert.equal(details.fees, 0.05);
+  assert.equal(details.fee_currency, 'USD');
+  assert.equal(details.realized_pnl, 4.5);
+  assert.equal(details.close_order_id, '9001');
+
+  const fillCall = runtime.httpCalls.find(call => new URL(call.url).pathname === '/v2/fills');
+  const params = new URL(fillCall.url).searchParams;
+  assert.equal(Number(params.get('start_time')), Date.parse(openedAt) * 1000);
+  assert.equal(Number(params.get('end_time')), clockMs * 1000);
+  assert.equal(fillCall.init.method, 'GET');
+});
+ 
 test('WebSocket position normalizer handles signed size and strategy ids', () => {
   const short = normalizeDeltaWsPosition({ product_symbol: 'BTCUSD', size: '-2', entry_price: '60000' });
   assert.equal(short.symbol, 'BTCUSD');
