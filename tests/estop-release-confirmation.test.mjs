@@ -99,7 +99,7 @@ test('release token hash is stable, non-reversible, and compared safely', () => 
   assert.equal(matchesEmergencyStopReleaseToken(token, 'not-a-hash'), false);
 });
 
-test('E-STOP release is tied to its current activation and consumed by an atomic update', () => {
+test('E-STOP release is tied to its current activation and consumed by an atomic update', async () => {
   assert.match(toggleSource, /current\.emergency_stop_activated_at/);
   assert.match(toggleSource, /current\.emergency_stop_release_token_hash/);
   assert.match(toggleSource, /emergency_stop=eq\.true/);
