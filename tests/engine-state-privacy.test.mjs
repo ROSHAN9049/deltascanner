@@ -40,7 +40,9 @@ function sampleState() {
     deltaTestnetTradeRowCount: 1,
     deltaTestnetClosedTodayCount: 1,
     deltaTestnetClosedTodayPnl: 5,
-    deltaTestnetClosedTodayPnlComplete: true
+    deltaTestnetClosedTodayPnlComplete: true,
+    deltaTestnetFillSyncState: { id: 1, last_error: 'private test detail' },
+    deltaTestnetFillCount: 77
   };
 }
 
@@ -62,6 +64,8 @@ test('unauthenticated response redacts account ledgers while keeping public mark
   assert.equal(state.deltaTestnetClosedTodayCount, null);
   assert.equal(state.deltaTestnetClosedTodayPnl, null);
   assert.equal(state.deltaTestnetClosedTodayPnlComplete, false);
+  assert.equal(state.deltaTestnetFillSyncState, null);
+  assert.equal(state.deltaTestnetFillCount, null);
   assert.equal(state.signals[0].symbol, 'BTCUSD');
   assert.equal(state.signals[0].qty_contracts, null);
   assert.equal(state.signals[0].notional, null);
@@ -85,5 +89,7 @@ test('authenticated response preserves Delta Testnet ledgers and settings', () =
   assert.deepEqual(state.deltaTestnetPositions, input.deltaTestnetPositions);
   assert.deepEqual(state.deltaTestnetOrders, input.deltaTestnetOrders);
   assert.deepEqual(state.deltaTestnetTrades, input.deltaTestnetTrades);
+  assert.deepEqual(state.deltaTestnetFillSyncState, input.deltaTestnetFillSyncState);
+  assert.equal(state.deltaTestnetFillCount, input.deltaTestnetFillCount);
   assert.deepEqual(state.logs, input.logs);
 });
