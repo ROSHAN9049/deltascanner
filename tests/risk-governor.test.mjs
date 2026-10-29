@@ -333,3 +333,30 @@ test('health gate reports which required values are missing without changing BLO
   assert.equal(record.result, GATE_UNKNOWN);
   assert.match(record.blockReason, /workerLeaseActive, tickFresh, heartbeatFresh, exchangeHealthy/);
 });
+
+
+test('closed historical position rows do not block a new entry for the same symbol', () => {
+  const rows = buildRiskGovernorGates({
+    selected: { symbol: 'BTCUSD', stage: 'CONFIRMED', score: 90 },
+    positions: [
+      { symbol: 'BTCUSD', qty: 3, status: 'CLOSED' },
+      { symbol: 'BTCUSD', qty: 37, status: 'CLOSED_EXTERNALLY' }
+    ],
+    entrySafetyTrusted: true
+  });
+  assert.equal(gate(rows, 'Duplicate symbol'), GATE_PASS);
+});
+
+test('only a non-zero OPEN position blocks duplicate entries', () => {
+  const closedAndOpen = buildRiskGovernorGates({
+    selected: { symbol: 'ETHUSD', stage: 'CONFIRMED', score: 90 },
+    positions: [
+      { symbol: 'ETHUSD', qty: 6, status: 'CLOSED' },
+      { symbol: 'ETHUSD', qty: 2, status: 'OPEN' }
+    ],
+    entrySafetyTrusted: true
+  });
+  assert.equal(gate(closedAndOpen, 'Duplicate symbol'), GATE_BLOCK);
+  const duplicate = closedAndOpen.find(row => row.gate === 'Duplicate symbol');
+  assert.match(duplicate.observedValue, /qty=2/);
+});
