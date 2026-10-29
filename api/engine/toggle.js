@@ -2,7 +2,7 @@ import { CONFIG } from '../../server/config.js';
 import { hasValidEngineSecretHeader, isEngineSessionValid, isSameOriginRequest } from '../../server/engine-session.js';
 import { insert, select, updateReturning } from '../../server/db.js';
 import { buildSettingsAuditEntry } from '../../server/settings-audit.js';
-import { createEmergencyStopReleaseChallenge, verifyEmergencyStopReleaseChallenge } from '../../server/estop-release-confirmation.js';
+import { createEmergencyStopReleaseChallenge, hashEmergencyStopReleaseToken, matchesEmergencyStopReleaseToken, verifyEmergencyStopReleaseChallenge } from '../../server/estop-release-confirmation.js';
 import { GRID_MAX_POSITION_CHOICES, GRID_RISK_PER_TRADE_CHOICES, GRID_DAILY_LOSS_CHOICES, GRID_MOMENTUM_PAUSE_CHOICES } from '../../shared/grid-settings.js';
 
 export default async function handler(req, res) {
@@ -16,14 +16,35 @@ export default async function handler(req, res) {
     let body = req.body || {};
     if (typeof body === 'string') body = JSON.parse(body);
     const current = (await select('dd_settings', 'id=eq.1&select=*'))?.[0] || {};
+    let releaseTokenHash = null;
+    let releaseActivationAt = null;
 
-    // The UI countdown is only a usability safeguard. The server-signed
-    // challenge enforces the minimum delay even for direct API requests.
+    // The UI countdown is only a usability safeguard. The signed, server-stored
+    // challenge enforces delay, single-use consumption, and current activation.
     if (body.requestEmergencyStopRelease === true) {
       if (current.emergency_stop !== true) {
         return res.status(409).json({ success: false, error: 'E-STOP is not active; no release challenge is available.' });
       }
+      const activationAt = String(current.emergency_stop_activated_at || '').trim();
+      if (!activationAt) {
+        return res.status(409).json({
+          success: false,
+          error: 'E-STOP activation timestamp is unavailable. Apply the E-STOP release migration before issuing a challenge.'
+        });
+      }
       const challenge = createEmergencyStopReleaseChallenge(CONFIG.engineSecret);
+      const stored = await updateReturning(
+        'dd_settings',
+        'id=eq.1&emergency_stop=eq.true&emergency_stop_activated_at=eq.' +
+          encodeURIComponent(activationAt) + '&select=id',
+        { emergency_stop_release_token_hash: hashEmergencyStopReleaseToken(challenge.token) }
+      );
+      if (!Array.isArray(stored) || stored.length !== 1) {
+        return res.status(409).json({
+          success: false,
+          error: 'E-STOP changed while creating the release challenge. Keep it active and request a new challenge.'
+        });
+      }
       return res.status(200).json({
         success: true,
         emergencyStopReleaseToken: challenge.token,
@@ -52,12 +73,37 @@ export default async function handler(req, res) {
           ...(verification.availableAt ? { emergencyStopReleaseAvailableAt: verification.availableAt } : {})
         });
       }
+      releaseActivationAt = String(current.emergency_stop_activated_at || '').trim();
+      releaseTokenHash = hashEmergencyStopReleaseToken(body.emergencyStopReleaseToken);
+      if (!releaseActivationAt ||
+          !matchesEmergencyStopReleaseToken(body.emergencyStopReleaseToken, current.emergency_stop_release_token_hash)) {
+        return res.status(409).json({
+          success: false,
+          error: 'E-STOP release challenge is stale, already consumed, or belongs to another activation. Request a new challenge.'
+        });
+      }
+    } else if (body.emergencyStop === false &&
+               body.emergencyStopReleaseToken &&
+               current.emergency_stop !== true) {
+      return res.status(409).json({
+        success: false,
+        error: 'E-STOP is no longer active; the release challenge cannot be reused.'
+      });
     }
 
     const patch = {};
     if (body.enabled !== undefined) patch.enabled = !!body.enabled;
     if (body.autoTrade !== undefined) patch.auto_trade = !!body.autoTrade;
-    if (body.emergencyStop !== undefined) patch.emergency_stop = !!body.emergencyStop;
+    if (body.emergencyStop !== undefined) {
+      patch.emergency_stop = !!body.emergencyStop;
+      if (body.emergencyStop === true && current.emergency_stop !== true) {
+        patch.emergency_stop_activated_at = new Date().toISOString();
+        patch.emergency_stop_release_token_hash = null;
+      } else if (body.emergencyStop === false && current.emergency_stop === true) {
+        // Consumed atomically with the state transition at the bottom.
+        patch.emergency_stop_release_token_hash = null;
+      }
+    }
     if (body.continuousMode !== undefined) patch.continuous_mode = !!body.continuousMode;
     if (body.maxOpenPositions !== undefined) patch.max_open_positions = Math.max(1, Math.min(100, Math.round(Number(body.maxOpenPositions))));
     if (body.riskPct !== undefined) patch.risk_pct = Math.max(0.1, Math.min(5, Number(body.riskPct)));
@@ -204,26 +250,42 @@ export default async function handler(req, res) {
       }
     }
     if (!Object.keys(patch).length) return res.status(400).json({ success: false, error: 'No supported setting supplied' });
+    const releaseQuery = releaseTokenHash && releaseActivationAt
+      ? 'id=eq.1&emergency_stop=eq.true&emergency_stop_activated_at=eq.' +
+        encodeURIComponent(releaseActivationAt) +
+        '&emergency_stop_release_token_hash=eq.' + releaseTokenHash
+      : 'id=eq.1';
     const updatedRows = await updateReturning(
       'dd_settings',
-      'id=eq.1&select=*',
+      releaseQuery + '&select=*',
       { ...patch, updated_at: new Date().toISOString() }
     );
     if (!Array.isArray(updatedRows) || updatedRows.length === 0) {
       return res.status(409).json({
         success: false,
-        error: 'Settings were not saved: the dd_settings row with id=1 was not updated. Verify the settings row exists.'
+        error: releaseTokenHash
+          ? 'E-STOP release challenge was already consumed or the activation changed. E-STOP remains active unless this request reports success.'
+          : 'Settings were not saved: the dd_settings row with id=1 was not updated. Verify the settings row exists.'
       });
     }
+    const internalKeys = new Set([
+      'grid_state', 'emergency_stop_activated_at', 'emergency_stop_release_token_hash'
+    ]);
+    const publicPatch = Object.fromEntries(
+      Object.entries(patch).filter(([key]) => !internalKeys.has(key))
+    );
     const persisted = Object.fromEntries(
       Object.keys(patch)
-        .filter(key => key !== 'grid_state')
+        .filter(key => !internalKeys.has(key))
         .map(key => [key, updatedRows[0][key]])
+    );
+    const auditPatch = Object.fromEntries(
+      Object.entries(patch).filter(([key]) => !internalKeys.has(key))
     );
     const auditEntry = buildSettingsAuditEntry({
       actor: headerAuthorized ? 'engine-secret-header' : 'authenticated-engine-session',
       previous: current,
-      patch,
+      patch: auditPatch,
       persisted: updatedRows[0],
       at: new Date().toISOString()
     });
@@ -240,7 +302,7 @@ export default async function handler(req, res) {
     }
     return res.status(200).json({
       success: true,
-      changed: patch,
+      changed: publicPatch,
       persisted,
       previous: current,
       auditLogPersisted,
