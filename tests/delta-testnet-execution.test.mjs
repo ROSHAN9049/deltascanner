@@ -942,3 +942,43 @@ test('E-STOP blocks entries but permits closePosition to submit a reduce-only ex
   assert.equal(post.body.side, 'sell');
   assert.ok(!runtime.logs.some(row => row.message.includes('Emergency Stop is active')));
 });
+
+
+test('closed trade projection withholds net P&L when fill commissions are incomplete', async () => {
+  const closedPosition = {
+    id: 46, symbol: 'BTCUSD', status: 'CLOSED', close_source: 'private_websocket',
+    realized_pnl_verified: true, strategy: 'MOMENTUM', side: 'BUY',
+    qty: '1', order_id: 'entry-unknown-fee', entry_order_id: 'entry-unknown-fee',
+    realized_pnl: '0.1', opened_at: '2026-10-29T10:00:00.000Z',
+    closed_at: '2026-10-29T10:30:00.000Z'
+  };
+  const fills = [
+    { id: 'entry-unknown-fee', symbol: 'BTCUSD', order_id: 'entry-unknown-fee', side: 'BUY', size: '1', price: '60000', commission: '0.01', created_at: '2026-10-29T10:00:01.000Z' },
+    { id: 'exit-unknown-fee', symbol: 'BTCUSD', order_id: 'exit-unknown-fee', side: 'SELL', size: '1', price: '60100', commission: null, created_at: '2026-10-29T10:29:59.000Z' }
+  ];
+  const materialized = [];
+  const database = {
+    async select(table) {
+      if (table === 'dd_delta_positions') return [closedPosition];
+      if (table === 'dd_fills') return fills;
+      if (table === 'dd_market_cache') return [{ symbol: 'BTCUSD', contract_value: '0.001', notional_type: 'vanilla' }];
+      return [];
+    },
+    async upsertMany(table, values, conflict) { materialized.push({ table, values, conflict }); },
+    async log() {}
+  };
+  const tracker = new DeltaTestnetTracker({ env: demoEnv(), database, executor: {}, WebSocketImpl: class {} });
+  tracker.stopped = false;
+
+  const result = await tracker.materializeVerifiedClosedTrades();
+
+  assert.equal(result.materialized, 1);
+  const trade = materialized.find(row => row.table === 'dd_trades').values[0];
+  assert.equal(trade.fees, null);
+  assert.ok(Math.abs(trade.gross_pnl - 0.1) < 1e-9);
+  assert.equal(trade.net_pnl, null);
+  assert.equal(trade.pnl_pct, null);
+  assert.equal(trade.result, 'GROSS WIN · NET UNVERIFIED');
+  assert.ok(!materialized.some(row => row.table === 'dd_rotation_ledger'));
+});
+
