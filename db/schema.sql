@@ -5,6 +5,8 @@ create table if not exists public.dd_settings (
   enabled boolean not null default true,
   auto_trade boolean not null default true,
   emergency_stop boolean not null default false,
+  emergency_stop_activated_at timestamptz,
+  emergency_stop_release_token_hash text,
   continuous_mode boolean not null default true,
   max_open_positions integer not null default 20,
   risk_pct numeric not null default 1,
