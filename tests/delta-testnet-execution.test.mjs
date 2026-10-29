@@ -626,13 +626,16 @@ test('closed trade projection refuses missing exit fill quantity', async () => {
 test('historical synthetic-close rows keep fill-derived gross but withhold unverified net P&L', async () => {
   const materialized = [];
   const database = {
-    async select(table) {
-      if (table === 'dd_delta_positions') return [{
-        id: 44, symbol: 'BTCUSD', status: 'CLOSED', close_source: 'rest_reconcile',
+    async select(table, query) {
+      if (table === 'dd_delta_positions') {
+        if (!String(query).includes('status=in.(CLOSED,CLOSED_EXTERNALLY)')) return [];
+        return [{
+        id: 44, symbol: 'BTCUSD', status: 'CLOSED_EXTERNALLY', close_source: 'rest_reconcile',
         realized_pnl_verified: false, strategy: 'MOMENTUM', side: 'BUY', qty: 1,
         order_id: 'entry-3', realized_pnl: 12, opened_at: '2026-10-29T10:00:00Z',
         closed_at: '2026-10-29T10:30:00Z'
-      }];
+        }];
+      }
       if (table === 'dd_fills') return [
         { id: 'entry-3', symbol: 'BTCUSD', order_id: 'entry-3', side: 'BUY', size: 1, price: 60000, commission: 0.01, created_at: '2026-10-29T10:00:01Z' },
         { id: 'exit-3', symbol: 'BTCUSD', order_id: 'exit-3', side: 'SELL', size: 1, price: 60100, commission: 0.01, created_at: '2026-10-29T10:29:59Z' }
