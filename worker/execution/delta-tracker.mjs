@@ -588,7 +588,9 @@ export class DeltaTestnetTracker {
         const symbol = stringValue(position?.symbol).toUpperCase();
         const side = stringValue(position?.side).toUpperCase();
         const strategy = stringValue(position?.strategy).toUpperCase();
-        const orderId = stringValue(position?.order_id);
+        const explicitEntryOrderId = stringValue(position?.entry_order_id);
+        const orderId = explicitEntryOrderId || stringValue(position?.order_id);
+        const entryClientOrderId = stringValue(position?.client_order_id);
         const qty = numberOrNull(position?.qty);
         const realizedPnl = numberOrNull(position?.realized_pnl);
         const realizedPnlVerified = position?.close_source === 'private_websocket' &&
@@ -596,7 +598,7 @@ export class DeltaTestnetTracker {
         const openedMs = Date.parse(position?.opened_at || '');
         const closedMs = Date.parse(position?.closed_at || '');
         if (!position?.id || !symbol || !['BUY', 'SELL'].includes(side) ||
-            !['MOMENTUM', 'SCALPING'].includes(strategy) || !orderId ||
+            !['MOMENTUM', 'SCALPING'].includes(strategy) || !(orderId || entryClientOrderId) ||
             !(qty > 0) ||
             !Number.isFinite(openedMs) || !Number.isFinite(closedMs) || closedMs < openedMs) {
           continue;
@@ -610,12 +612,27 @@ export class DeltaTestnetTracker {
           '&order=created_at.asc&limit=1000'
         );
         if (!Array.isArray(fills) || !fills.length) continue;
-        const entryFills = fills.filter(fill =>
-          String(fill?.order_id ?? '') === orderId &&
+        const validEntryFill = fill =>
           String(fill?.side || '').toUpperCase() === side &&
           Date.parse(fill?.created_at || '') >= openedMs - 5_000 &&
-          Date.parse(fill?.created_at || '') <= closedMs + 5_000
-        );
+          Date.parse(fill?.created_at || '') <= closedMs + 5_000;
+        const entryFillsByExplicitOrderId = explicitEntryOrderId
+          ? fills.filter(fill => String(fill?.order_id ?? '') === explicitEntryOrderId && validEntryFill(fill))
+          : [];
+        const entryFillsByClientOrderId = entryClientOrderId
+          ? fills.filter(fill => String(fill?.client_order_id ?? '') === entryClientOrderId && validEntryFill(fill))
+          : [];
+        const entryFillsByLegacyOrderId = orderId
+          ? fills.filter(fill => String(fill?.order_id ?? '') === orderId && validEntryFill(fill))
+          : [];
+        // The generic order_id field can be replaced by the bracket metadata
+        // synchronizer. Prefer the dedicated entry ID, then the stable client ID,
+        // and only then use legacy order_id for old rows.
+        const entryFills = entryFillsByExplicitOrderId.length
+          ? entryFillsByExplicitOrderId
+          : entryFillsByClientOrderId.length
+            ? entryFillsByClientOrderId
+            : entryFillsByLegacyOrderId;
         const entry = weightedFillAverage(entryFills);
         if (!entry || !(entry.size > 0)) continue;
         const exitSide = side === 'BUY' ? 'SELL' : 'BUY';
@@ -841,6 +858,10 @@ async syncBracketMetadataOnce(key) {
       updated_at: nowIso()
     };
     if (row.order_id !== null) patch.order_id = String(row.order_id);
+    const entryClientOrderId = stringValue(row.client_order_id || active?.client_order_id);
+    if (row.order_id !== null && !active?.entry_order_id && /^DD[MS]-/i.test(entryClientOrderId)) {
+      patch.entry_order_id = String(row.order_id);
+    }
     if (row.product_id !== null) patch.product_id = row.product_id;
     if (row.client_order_id !== null) patch.client_order_id = String(row.client_order_id);
     if (row.entry_price !== null) patch.entry_price = row.entry_price;
@@ -914,7 +935,12 @@ async syncBracketMetadataOnce(key) {
       const active = await this.findOpenRow(symbol).catch(() => null);
       if (active) {
         const patch = { updated_at: nowIso() };
-        if (orderId !== null && orderId !== undefined) patch.order_id = String(orderId);
+        if (orderId !== null && orderId !== undefined) {
+          patch.order_id = String(orderId);
+          // Keep entry-fill identity separate: the generic order_id may later
+          // be replaced by exchange bracket/stop/target metadata.
+          patch.entry_order_id = String(orderId);
+        }
         patch.strategy = strategyFromClientOrderId(clientOrderId, active.strategy);
         if (numberOrNull(order?.bracket_stop_loss_price) !== null) patch.sl_price = numberOrNull(order.bracket_stop_loss_price);
         if (numberOrNull(order?.bracket_take_profit_price) !== null) patch.tp_price = numberOrNull(order.bracket_take_profit_price);
