@@ -172,6 +172,24 @@ test('missing exchange positions are marked CLOSED_EXTERNALLY without fabricatin
   assert.ok(rt.logs.some(row => row.message.includes('Found 1 zombie positions. Marked 1 as CLOSED_EXTERNALLY.')));
 });
 
+test('REST reconciliation preserves existing realized P&L when close-fill evidence is absent', async () => {
+  const rt = runtime({
+    openRows: [{
+      id: 1, symbol: 'BTCUSD', qty: 2, side: 'BUY',
+      realized_pnl: 1.75, unrealized_pnl: 3
+    }],
+    exchangePositions: []
+  });
+  const reconciler = createDeltaPositionReconciler({
+    env: rt.env, database: rt.database, executor: rt.executor, now: fixedNow
+  });
+
+  await reconciler.reconcile();
+
+  assert.equal(rt.rows[0].status, 'CLOSED_EXTERNALLY');
+  assert.equal(rt.rows[0].realized_pnl, 1.75);
+});
+
 test('REST reconciliation persists close-fill details only when they are verifiable', async () => {
   const rt = runtime({
     openRows: [{
