@@ -291,6 +291,9 @@ export function createDeltaExecutor({
 
   async function assertSafety(symbol, operation = 'ENTRY') {
     assertConfigured();
+    // E-STOP is an entry inhibit, not an exit inhibit. Explicit EXIT
+    // operations reduce exposure and must remain available during E-STOP.
+    if (operation === 'EXIT') return;
     const settingsRows = await database.select('dd_settings', 'id=eq.1&select=id,emergency_stop');
     if (!Array.isArray(settingsRows) || !settingsRows.length) {
       throw new Error('Emergency Stop setting is unavailable; Delta Testnet execution is blocked');
@@ -301,8 +304,6 @@ export function createDeltaExecutor({
     if (settingsRows[0].emergency_stop !== false) {
       throw new Error('Emergency Stop state is unknown; Delta Testnet execution is blocked');
     }
-    if (operation === 'EXIT') return;
-
     const normalizedSymbol = stringOrEmpty(symbol).toUpperCase();
     const dayStart = indiaDateKey(new Date(now())) + 'T00:00:00+05:30';
     const [exchangePositions, exchangeOrders, wallet, closedToday, trackedOpenRows, recordedOrders] = await Promise.all([

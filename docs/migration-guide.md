@@ -24,10 +24,11 @@ The order is hardcoded in `scripts/apply-all-migrations.mjs`. The base schema go
 | 4 | `db/migrations/20261011055500_secure_open_positions_summary_view.sql` | Hardens `dd_open_positions_summary` if that view already exists; revokes public/authenticated access. It does not create the view. | No | Yes — guarded by a view-existence check. |
 | 5 | `db/migrations/20261012080000_tradetron_developer_api_sync.sql` | `dd_tradetron_developer_snapshots` and `dd_tradetron_developer_sync_state`, plus RLS and service-role permissions. | No | Yes for table creation and initial state. |
 | 6 | `db/migrations/20261013090000_tradetron_developer_notifications_history.sql` | `dd_tradetron_developer_notifications`, `dd_tradetron_developer_notification_sync_state`, `dd_tradetron_developer_pnl_history`, and indexes; applies RLS and service-role permissions. | No | Yes for table/index creation and initial state. |
-| 7 | `db/migrations/20261016000000_postgrest_schema_refresh.sql` | Grants schema/service-role privileges and refreshes PostgREST schema/config caches. | No | Yes for grants and notifications. |
-| 8 | `db/migrations/20261024100000_delta_testnet_positions.sql` | Creates the private `dd_delta_positions` ledger and its indexes/RLS permissions. | Yes | Yes for table/index creation and grants. |
-| 9 | `db/migrations/20261026120000_delta_position_external_close.sql` | Ensures close-status columns/constraint and closed-position index support `CLOSED_EXTERNALLY`. | Yes | Yes through guarded columns/constraint/index recreation. |
-| 10 | `db/migrations/20261029100000_worker_lease_ownership.sql` | Restricts lease acquisition/renewal to the same lease ID **and** worker ID, or an expired/unowned lease. | No | Yes — uses `CREATE OR REPLACE FUNCTION`. |
+| 7 | `db/migrations/20261016000000_postgrest_schema_refresh.sql` | Grants service-role privileges and refreshes PostgREST schema/config caches. | No | Yes for grants and notifications. |
+| 8 | `db/migrations/20261024100000_delta_testnet_positions.sql` | Creates the private `dd_delta_positions` ledger and indexes/RLS permissions. | Yes | Yes for table/index creation and grants. |
+| 9 | `db/migrations/20261026120000_delta_position_external_close.sql` | Ensures closed-status columns/constraint and index support `CLOSED_EXTERNALLY`. | Yes | Yes through guarded columns/constraint/index recreation. |
+| 10 | `db/migrations/20261029100000_worker_lease_ownership.sql` | Restricts lease acquisition/renewal to the same lease ID and worker ID, or an expired/unowned lease. | No | Yes — uses `CREATE OR REPLACE FUNCTION`. |
+| 11 | `db/migrations/20261029120000_estop_release_challenge.sql` | Adds E-STOP activation timestamp and one-time release-token hash; backfills timestamps for already-active E-STOP without changing its state. | Yes | Yes — uses guarded columns and only fills missing activation timestamps. |
 
 ### Duplicate-object SQLSTATEs
 

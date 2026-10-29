@@ -82,6 +82,10 @@ function App() {
   const [marketError, setMarketError] = useState('');
   const [busy, setBusy] = useState(false);
   const [clock, setClock] = useState(Date.now());
+  const [showEstopReleaseConfirmation, setShowEstopReleaseConfirmation] = useState(false);
+  const [estopReleaseVerified, setEstopReleaseVerified] = useState(false);
+  const [estopReleaseCountdownEndsAt, setEstopReleaseCountdownEndsAt] = useState(0);
+  const [estopReleaseToken, setEstopReleaseToken] = useState('');
   const [inspect, setInspect] = useState('');
 
   const load = useCallback(async () => {
@@ -217,13 +221,90 @@ function App() {
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || 'Control failed');
+      if (patch.autoTrade !== undefined &&
+          (typeof data.persisted?.auto_trade !== 'boolean' || data.persisted.auto_trade !== patch.autoTrade)) {
+        throw new Error('Auto Trade save could not be verified against the persisted database value.');
+      }
+      if (patch.emergencyStop !== undefined &&
+          (typeof data.persisted?.emergency_stop !== 'boolean' || data.persisted.emergency_stop !== patch.emergencyStop)) {
+        throw new Error('E-STOP save could not be verified against the persisted database value.');
+      }
+      if (data.persisted && typeof data.persisted === 'object' && !Array.isArray(data.persisted)) {
+        setState(current => current && ({
+          ...current,
+          settings: { ...(current.settings || {}), ...data.persisted }
+        }));
+      }
       await load();
+      if (data.auditLogPersisted === false) {
+        setError(data.warning || 'Settings saved, but the audit log could not be persisted.');
+      }
       return true;
     } catch (e) {
       setError(e.message || 'Control failed');
       return false;
     } finally {
       setBusy(false);
+    }
+  };
+
+  const estopReleaseCountdown = Math.max(
+    0,
+    Math.ceil((estopReleaseCountdownEndsAt - clock) / 1000)
+  );
+  const requestEmergencyStopChange = async () => {
+    if (settings.emergency_stop === true) {
+      setBusy(true);
+      setError('');
+      try {
+        const response = await fetch('/api/engine/toggle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ requestEmergencyStopRelease: true })
+        });
+        const data = await response.json();
+        const availableAt = Number(data.emergencyStopReleaseAvailableAt);
+        if (!response.ok || !data.success ||
+            typeof data.emergencyStopReleaseToken !== 'string' ||
+            !data.emergencyStopReleaseToken ||
+            !Number.isFinite(availableAt)) {
+          throw new Error(data.error || 'Could not start the E-STOP release safety challenge.');
+        }
+        setEstopReleaseVerified(false);
+        setEstopReleaseToken(data.emergencyStopReleaseToken);
+        setEstopReleaseCountdownEndsAt(availableAt);
+        setShowEstopReleaseConfirmation(true);
+      } catch (e) {
+        setError(e.message || 'Could not start the E-STOP release safety challenge.');
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    void mutate({ emergencyStop: true });
+  };
+  const cancelEmergencyStopRelease = () => {
+    setShowEstopReleaseConfirmation(false);
+    setEstopReleaseVerified(false);
+    setEstopReleaseToken('');
+    setEstopReleaseCountdownEndsAt(0);
+  };
+  const confirmEmergencyStopRelease = async () => {
+    if (settings.emergency_stop !== true || estopReleaseCountdown > 0 ||
+        !estopReleaseVerified || !estopReleaseToken) return;
+    const saved = await mutate({
+      emergencyStop: false,
+      emergencyStopReleaseVerified: true,
+      emergencyStopReleaseToken: estopReleaseToken
+    });
+    if (saved) {
+      cancelEmergencyStopRelease();
+    } else {
+      // A server-side expiry/replay/validation failure requires a fresh challenge.
+      setEstopReleaseToken('');
+      setEstopReleaseVerified(false);
+      setEstopReleaseCountdownEndsAt(0);
     }
   };
 
@@ -267,7 +348,10 @@ function App() {
         <span>LOCAL {new Date(clock).toLocaleTimeString('en-IN')}</span>
         <b className="badge test">LIVE MARKET · SIGNAL ONLY</b>
         <b className="badge lock">LIVE LOCKED</b>
-        <button className="estop" disabled={busy || !state || accountDataProtected} onClick={() => mutate({ emergencyStop: !settings.emergency_stop })}>
+        <button className="action" disabled={busy || !state || accountDataProtected} onClick={() => mutate({ autoTrade: !settings.auto_trade })} aria-pressed={settings.auto_trade === true} title="Save Auto Trade to dd_settings and confirm the persisted value">
+          {settings.auto_trade === true ? 'AUTO TRADE ON' : 'AUTO TRADE OFF'}
+        </button>
+        <button className="estop" disabled={busy || !state || accountDataProtected} onClick={requestEmergencyStopChange}>
           {settings.emergency_stop ? 'RELEASE E-STOP' : 'EMERGENCY STOP'}
         </button>
       </div>
@@ -295,6 +379,28 @@ function App() {
     {tab === 'analytics' && <Analytics trades={trades} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.deltaTestnetTradeRowCount ?? null} />}
     {tab === 'settings' && <Settings settings={settings} currentOpenPositions={state?.deltaTestnetOpenPositionCount ?? null} secret={secret} setSecret={v => { secretRef.current = v; setSecret(v); }} busy={busy} mutate={mutate} onUnlock={unlockSession} onLock={lockSession} authenticated={state?.accountDataProtected === false} />}
     <footer>Delta Exchange India · public market feed · direct execution is Testnet-only when enabled · live orders hard-locked</footer>
+    {showEstopReleaseConfirmation ? <div className="confirmOverlay">
+      <div className="confirmDialog" role="dialog" aria-modal="true" aria-labelledby="estopReleaseTitle">
+        <h3 id="estopReleaseTitle">Confirm E-STOP release</h3>
+        <p>E-STOP is currently blocking new entries. Releasing it may allow new entries on a future scan cycle. Verify the exchange position state and worker health before continuing.</p>
+        <p role="status" aria-live="polite">{estopReleaseCountdown > 0
+          ? 'Safety countdown: ' + estopReleaseCountdown + ' second' + (estopReleaseCountdown === 1 ? '' : 's') + ' remaining.'
+          : 'Countdown complete. Verify system state before release.'}</p>
+        <label className="gridCheck">
+          <input
+            type="checkbox"
+            checked={estopReleaseVerified}
+            onChange={event => setEstopReleaseVerified(event.target.checked)}
+            disabled={busy}
+          />
+          I have verified system state
+        </label>
+        <div className="confirmActions">
+          <button className="action" type="button" onClick={cancelEmergencyStopRelease} disabled={busy}>Keep E-STOP Active</button>
+          <button className="estop" type="button" onClick={confirmEmergencyStopRelease} disabled={busy || estopReleaseCountdown > 0 || !estopReleaseVerified || !estopReleaseToken}>Release E-STOP</button>
+        </div>
+      </div>
+    </div> : null}
   </div>;
 }
 

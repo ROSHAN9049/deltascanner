@@ -5,6 +5,8 @@ create table if not exists public.dd_settings (
   enabled boolean not null default true,
   auto_trade boolean not null default true,
   emergency_stop boolean not null default false,
+  emergency_stop_activated_at timestamptz,
+  emergency_stop_release_token_hash text,
   continuous_mode boolean not null default true,
   max_open_positions integer not null default 20,
   risk_pct numeric not null default 1,
@@ -440,10 +442,12 @@ create index if not exists dd_engine_logs_created_idx on public.dd_engine_logs(c
 create or replace function public.acquire_dd_lease(p_lease_id text, p_worker_id text, p_ttl_seconds integer)
 returns boolean
 language sql
-as $
+as $$
   update public.dd_engine_lease
-  set lease_id = p_lease_id, worker_id = p_worker_id,
-      expires_at = now() + make_interval(secs => p_ttl_seconds), heartbeat_at = now()
+  set lease_id = p_lease_id,
+      worker_id = p_worker_id,
+      expires_at = now() + make_interval(secs => p_ttl_seconds),
+      heartbeat_at = now()
   where id = 1
     and (
       expires_at is null
@@ -451,7 +455,7 @@ as $
       or (lease_id = p_lease_id and worker_id = p_worker_id)
     )
   returning true;
-$;
+$$;
 
 create or replace function public.release_dd_lease(p_lease_id text)
 returns boolean
