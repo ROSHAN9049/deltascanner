@@ -226,3 +226,16 @@ test('health is lease-independent and schema ties renewal to lease plus worker o
   assert.match(schema, /lease_id = p_lease_id and worker_id = p_worker_id/);
   assert.match(migration, /lease_id = p_lease_id and worker_id = p_worker_id/);
 });
+
+test('migration runner explicitly includes worker lease ownership migration after base lease schema', async () => {
+  const runner = await readFile(new URL('../scripts/apply-all-migrations.mjs', import.meta.url), 'utf8');
+  const schemaIndex = runner.indexOf("'db/schema.sql'");
+  const basePositionIndex = runner.indexOf("'db/migrations/20261024100000_delta_testnet_positions.sql'");
+  const externalCloseIndex = runner.indexOf("'db/migrations/20261026120000_delta_position_external_close.sql'");
+  const leaseMigrationIndex = runner.indexOf("'db/migrations/20261029100000_worker_lease_ownership.sql'");
+
+  assert.ok(schemaIndex >= 0, 'base schema must run first');
+  assert.ok(basePositionIndex > schemaIndex, 'Delta positions table migration follows the base schema');
+  assert.ok(externalCloseIndex > basePositionIndex, 'external-close migration follows the positions table');
+  assert.ok(leaseMigrationIndex > externalCloseIndex, 'lease ownership migration must be registered after its table exists');
+});
