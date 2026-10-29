@@ -167,7 +167,9 @@ export function createDeltaPositionReconciler({
             status: 'CLOSED_EXTERNALLY',
             closed_at: timestamp,
             updated_at: timestamp,
-            unrealized_pnl: 0
+            unrealized_pnl: 0,
+            close_source: 'rest_reconcile',
+            realized_pnl_verified: false
           });
           if (changed) markedClosedExternally += 1;
           await writeLog('WARN', '[Reconciler] Local OPEN position missing from Delta Testnet; marked CLOSED_EXTERNALLY', {
