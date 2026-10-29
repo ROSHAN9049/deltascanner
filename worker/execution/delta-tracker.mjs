@@ -80,6 +80,8 @@ export class DeltaTestnetTracker {
     this.authenticated = false;
     this.retryCount = 0;
     this.symbolTimers = new Map();
+    // Coalesce repeated position events into one bounded bracket metadata lookup per symbol.
+    this.bracketMetadataSyncs = new Map();
     this.authTimeoutTimer = null;
     this.lastSocketWarningAt = 0;
   }
@@ -308,6 +310,64 @@ export class DeltaTestnetTracker {
     return Array.isArray(rows) ? rows[0] || null : null;
   }
 
+  async syncBracketMetadata(symbol) {
+    const key = stringValue(symbol).toUpperCase();
+    if (!key || this.stopped) return false;
+    const existing = this.bracketMetadataSyncs.get(key);
+    if (existing) return existing;
+
+    const operation = this.syncBracketMetadataOnce(key);
+    this.bracketMetadataSyncs.set(key, operation);
+    try {
+      return await operation;
+    } finally {
+      if (this.bracketMetadataSyncs.get(key) === operation) {
+        this.bracketMetadataSyncs.delete(key);
+      }
+    }
+  }
+
+async syncBracketMetadataOnce(key) {
+    const deadline = Date.now() + 30_000;
+    let lastError = null;
+    while (Date.now() <= deadline && !this.stopped) {
+      try {
+        const [orders, active] = await Promise.all([
+          this.executor.getOpenOrders(),
+          this.findOpenRow(key)
+        ]);
+        if (!active) return false;
+        const matching = (Array.isArray(orders) ? orders : []).filter(order =>
+          stringValue(order?.product_symbol || order?.symbol).toUpperCase() === key
+        );
+        const orderWithBracket = matching.find(order =>
+          numberOrNull(order?.bracket_stop_loss_price ?? order?.stop_loss_price ?? order?.stop_price) > 0 ||
+          numberOrNull(order?.bracket_take_profit_price ?? order?.take_profit_price ?? order?.target_price) > 0
+        );
+        const sl = numberOrNull(orderWithBracket?.bracket_stop_loss_price ?? orderWithBracket?.stop_loss_price ?? orderWithBracket?.stop_price);
+        const tp = numberOrNull(orderWithBracket?.bracket_take_profit_price ?? orderWithBracket?.take_profit_price ?? orderWithBracket?.target_price);
+        if (sl !== null && tp !== null) {
+          const patch = { updated_at: nowIso(), sl_price: sl, tp_price: tp };
+          const orderId = orderWithBracket?.id ?? orderWithBracket?.order_id;
+          if (orderId !== null && orderId !== undefined) patch.order_id = String(orderId);
+          await this.database.update('dd_delta_positions', 'id=eq.' + encodeURIComponent(active.id), patch);
+          await this.database.log('INFO', '[Tracker] Exchange bracket metadata synced to dd_delta_positions', {
+            symbol: key, slPrice: sl, tpPrice: tp, orderId: orderId ?? null
+          }).catch(() => {});
+          return true;
+        }
+      } catch (error) {
+        lastError = String(error?.message || error).slice(0, 200);
+      }
+      if (Date.now() + 1000 > deadline) break;
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    await this.database.log('WARN', '[Tracker] Exchange bracket metadata not visible within 30 seconds; position retained', {
+      symbol: key, timeoutMs: 30_000, error: lastError
+    }).catch(() => {});
+    return false;
+  }
+
   async processPosition(rawRow, envelope = {}) {
     const row = normalizeDeltaWsPosition(rawRow);
     if (!row) return;
@@ -344,14 +404,23 @@ export class DeltaTestnetTracker {
 
     if (active) {
       await this.database.update('dd_delta_positions', 'id=eq.' + encodeURIComponent(active.id), patch);
-      return;
+    } else {
+      try {
+        await this.database.insert('dd_delta_positions', patch);
+      } catch (error) {
+        const concurrent = await this.findOpenRow(symbol).catch(() => null);
+        if (!concurrent) throw error;
+        await this.database.update('dd_delta_positions', 'id=eq.' + encodeURIComponent(concurrent.id), patch);
+      }
     }
-    try {
-      await this.database.insert('dd_delta_positions', patch);
-    } catch (error) {
-      const concurrent = await this.findOpenRow(symbol).catch(() => null);
-      if (!concurrent) throw error;
-      await this.database.update('dd_delta_positions', 'id=eq.' + encodeURIComponent(concurrent.id), patch);
+    // Bracket data is often absent from the positions feed. Query the exchange
+    // orders endpoint asynchronously for up to 30 seconds after each position sync.
+    if (row.sl_price === null || row.tp_price === null || row.order_id === null) {
+      void this.syncBracketMetadata(symbol).catch(error =>
+        this.database.log('WARN', '[Tracker] Bracket metadata sync failed; position retained', {
+          symbol, error: String(error?.message || error).slice(0, 200)
+        }).catch(() => {})
+      );
     }
   }
 
