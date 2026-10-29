@@ -9,7 +9,7 @@ test('cap reached blocks new signals in both cards while scanning stays on', () 
   });
   assert.equal(status.capReached, true);
   assert.equal(status.continuousValue, 'ON · BLOCKED');
-  assert.equal(status.continuousSubtitle, '⚠️ Global cap reached (20/20). New signals blocked until positions close.');
+  assert.equal(status.continuousSubtitle, '⚠️ Global cap reached (20/20). New entries blocked until positions close.');
   assert.equal(status.autoTradeSubtitle, 'Scanner active, but new entries are blocked by the global position cap (20/20).');
 });
 
@@ -29,7 +29,7 @@ test('continuous mode off is clearly distinguished from auto trade being off', (
   });
   assert.equal(status.continuousValue, 'OFF · MANUAL');
   assert.equal(status.continuousSubtitle, 'Continuous automatic routing is OFF; the worker continues market scanning.');
-  assert.match(status.autoTradeSubtitle, /Signals active/);
+  assert.match(status.autoTradeSubtitle, /Signals and entry checks are running/);
 });
 
 test('scanner disabled is distinct from Auto Trade disabled', () => {
@@ -72,7 +72,7 @@ test('missing or invalid cap telemetry never claims capacity is available', () =
   assert.equal(status.hasCapData, false);
   assert.equal(status.capLabel, 'NO DATA');
   assert.match(status.continuousSubtitle, /cap status unavailable/i);
-  assert.match(status.autoTradeSubtitle, /status unavailable/i);
+  assert.match(status.autoTradeSubtitle, /status is unavailable/i);
 });
 
 test('health ages and lease remaining are formatted in seconds without snake-case conversion', () => {
