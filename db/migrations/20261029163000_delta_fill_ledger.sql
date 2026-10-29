@@ -20,8 +20,11 @@ CREATE INDEX IF NOT EXISTS dd_fills_order_created_idx
 -- appearing as zero while the verified fill/close reconciliation is incomplete.
 ALTER TABLE public.dd_trades
   ALTER COLUMN fees DROP NOT NULL,
+  ALTER COLUMN fees DROP DEFAULT,
   ALTER COLUMN gross_pnl DROP NOT NULL,
-  ALTER COLUMN net_pnl DROP NOT NULL;
+  ALTER COLUMN gross_pnl DROP DEFAULT,
+  ALTER COLUMN net_pnl DROP NOT NULL,
+  ALTER COLUMN net_pnl DROP DEFAULT;
 
 CREATE TABLE IF NOT EXISTS public.dd_delta_fill_sync_state (
   id BIGINT PRIMARY KEY DEFAULT 1,
