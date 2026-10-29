@@ -241,6 +241,8 @@ export class DeltaEngine {
     this.wsRateLimited = false;
     this.lastWsWarningAt = 0;
     this.running = false;
+    this.leaseEnforced = false;
+    this.activeScanPromise = null;
     this.privateExecutionAvailable = false;
     this.lastMarketCacheWrite = 0;
     this.candleWarmCursor = 0;
@@ -1551,6 +1553,10 @@ export class DeltaEngine {
     const reasons = [...(signal.blocked || [])];
     const continuous = settings.continuous_mode !== false;
 
+    if (this.leaseEnforced && (!this.running || !this.leaseManager.isHeld)) {
+      reasons.push('Trading lease not held');
+    }
+
     if (settings.emergency_stop) reasons.push('Emergency Stop');
     if (!settings.enabled || !settings.auto_trade) reasons.push('Auto OFF');
     const routeBlock = CONFIG.deltaExecutionMode === 'testnet' ? '' : tradetronRouteBlocker({
@@ -2644,6 +2650,16 @@ export class DeltaEngine {
   }
 
   async openTrade(item, strategy, signal, account, settings, openPositions, trades) {
+    if (this.leaseEnforced && (!this.running || !this.leaseManager.isHeld)) {
+      await this.log('WARN', 'Entry blocked because the worker lease is not held', {
+        symbol: signal?.symbol || null,
+        strategy,
+        workerId: CONFIG.workerId,
+        leaseHeld: this.leaseManager.isHeld,
+        workerRunning: this.running
+      }).catch(() => {});
+      return false;
+    }
     if (strategy === 'OPTIONS_BUY' || strategy === 'OPTIONS_SELL') {
       // Testnet option orders are intentionally locked; never fall back to a
       // legacy external strategy bridge when direct Testnet option execution is unavailable.
@@ -4434,62 +4450,83 @@ export class DeltaEngine {
   }
 
   async run() {
-    if (!CONFIG.signalOnly || CONFIG.directDeltaExecutionEnabled) throw new Error('Production direct execution disabled; scanner must be SIGNAL_ONLY');
-    this.running = true;
-    try {
-      await this.acquireLease();
-    } catch (error) {
-      this.running = false;
-      throw error;
+    if (!CONFIG.signalOnly || CONFIG.directDeltaExecutionEnabled) {
+      throw new Error('Production direct execution disabled; scanner must be SIGNAL_ONLY');
     }
-    this.startMemoryMonitor();
-    this.startMaintenanceTasks();
-    this.connectWs();
-    await this.log('INFO', 'Delta production SIGNAL_ONLY worker started', {
-      workerId: CONFIG.workerId,
-      leaseTtlSeconds: this.leaseManager.ttlSeconds,
-      leaseRenewalIntervalMs: this.leaseManager.renewEveryMs
-    });
-    await this.hydrateSignalDedupCache();
-    // Verify database headroom before the first scan can append a history batch.
-    if (hasMaintenanceDatabaseUrl()) await this.checkDiskHealth();
-    while (this.running) {
-      try {
-        await this.scanOnce();
-        this.consecutiveLeaseFailures = 0;
-      } catch (e) {
-        const message = String(e?.message || e);
-        if (message.includes('Trading lease is held by another worker')) {
-          this.consecutiveLeaseFailures += 1;
-          if (this.consecutiveLeaseFailures >= 3 && Date.now() - this.lastDuplicateWorkerLogAt >= 60_000) {
-            this.lastDuplicateWorkerLogAt = Date.now();
-            await this.log('ERROR', 'DUPLICATE WORKER DETECTED', {
-              workerId: CONFIG.workerId,
-              consecutiveLeaseFailures: this.consecutiveLeaseFailures,
-              leaseTtlSeconds: this.leaseManager.ttlSeconds,
-              reason: 'Another worker repeatedly owns the trading lease; this worker made no scan or entry attempt'
-            }).catch(logError => {
-              console.warn('[DeltaScanner] Could not persist duplicate-worker diagnostic; cycle remains safely skipped:', String(logError?.message || logError));
-            });
-          }
-          if (Date.now() - this.lastLeaseContentionLogAt >= 60_000) {
-            this.lastLeaseContentionLogAt = Date.now();
-            await this.log('WARN', 'Worker cycle skipped safely: trading lease is held by another worker', {
-              workerId: CONFIG.workerId,
-              consecutiveLeaseFailures: this.consecutiveLeaseFailures,
-              reason: 'Lease contention; no scan or entry attempted'
-            }).catch(logError => {
-              console.warn('[DeltaScanner] Could not persist lease-skip diagnostic; cycle remains safely skipped:', String(logError?.message || logError));
-            });
-          }
-        } else {
+    if (this.running) return;
+    this.running = true;
+    this.leaseEnforced = true;
+    try {
+      // The lease is acquired once per worker process and renewed by the
+      // manager timer; scanOnce must never acquire or release it.
+      await this.acquireLease();
+      this.startMemoryMonitor();
+      this.startMaintenanceTasks();
+      this.connectWs();
+      await this.log('INFO', 'Delta production SIGNAL_ONLY worker started', {
+        workerId: CONFIG.workerId,
+        leaseTtlSeconds: this.leaseManager.ttlSeconds,
+        leaseRenewalIntervalMs: this.leaseManager.renewEveryMs
+      });
+      await this.hydrateSignalDedupCache();
+      // Verify database headroom before the first scan can append a history batch.
+      if (hasMaintenanceDatabaseUrl()) await this.checkDiskHealth();
+
+      while (this.running) {
+        let cycle = null;
+        try {
+          cycle = this.scanOnce();
+          this.activeScanPromise = cycle;
+          await cycle;
           this.consecutiveLeaseFailures = 0;
-          await this.log('ERROR', 'Engine failed closed for cycle', {
-            error: message, code: e?.code || null, status: e?.status || null, details: e?.details || null
-          });
+        } catch (error) {
+          const message = String(error?.message || error);
+          if (message.includes('Trading lease is held by another worker')) {
+            this.consecutiveLeaseFailures += 1;
+            if (this.consecutiveLeaseFailures >= 3 && Date.now() - this.lastDuplicateWorkerLogAt >= 60_000) {
+              this.lastDuplicateWorkerLogAt = Date.now();
+              await this.log('ERROR', 'DUPLICATE WORKER DETECTED', {
+                workerId: CONFIG.workerId,
+                consecutiveLeaseFailures: this.consecutiveLeaseFailures,
+                leaseTtlSeconds: this.leaseManager.ttlSeconds,
+                reason: 'Another worker owns the trading lease; this worker made no scan or entry attempt'
+              }).catch(logError => {
+                console.warn('[DeltaScanner] Could not persist duplicate-worker diagnostic; cycle remains safely skipped:', String(logError?.message || logError));
+              });
+            }
+            if (Date.now() - this.lastLeaseContentionLogAt >= 60_000) {
+              this.lastLeaseContentionLogAt = Date.now();
+              await this.log('WARN', 'Worker cycle skipped safely: trading lease is held by another worker', {
+                workerId: CONFIG.workerId,
+                consecutiveLeaseFailures: this.consecutiveLeaseFailures,
+                reason: 'Lease contention; no scan or entry attempted'
+              }).catch(logError => {
+                console.warn('[DeltaScanner] Could not persist lease-skip diagnostic; cycle remains safely skipped:', String(logError?.message || logError));
+              });
+            }
+            this.running = false;
+          } else {
+            this.consecutiveLeaseFailures = 0;
+            await this.log('ERROR', 'Engine failed closed for cycle', {
+              error: message, code: error?.code || null, status: error?.status || null, details: error?.details || null
+            });
+            if (!this.leaseManager.isHeld) this.running = false;
+          }
+        } finally {
+          if (this.activeScanPromise === cycle) this.activeScanPromise = null;
         }
+        if (this.running) await sleep(15000);
       }
-      await sleep(15000);
+    } finally {
+      this.running = false;
+      // Graceful shutdown waits for the current scan to finish before releasing
+      // the process-wide lease, preventing a second worker from overlapping it.
+      const activeScan = this.activeScanPromise;
+      if (activeScan) {
+        try { await activeScan; } catch {}
+        if (this.activeScanPromise === activeScan) this.activeScanPromise = null;
+      }
+      await this.releaseLease();
     }
   }
 
@@ -4510,6 +4547,12 @@ export class DeltaEngine {
       try { socket.terminate?.(); } catch {}
     }
     await this.stopMaintenanceTasks();
+    // Do not relinquish the lease while scanOnce is still routing work.
+    const activeScan = this.activeScanPromise;
+    if (activeScan) {
+      try { await activeScan; } catch {}
+      if (this.activeScanPromise === activeScan) this.activeScanPromise = null;
+    }
     await this.releaseLease();
   }
 }
