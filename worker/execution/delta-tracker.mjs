@@ -594,8 +594,7 @@ export class DeltaTestnetTracker {
         const fills = await this.database.select(
           'dd_fills',
           'symbol=eq.' + encodeURIComponent(symbol) +
-          '&created_at=gte.' + encodeURIComponent(from) +
-          '&created_at=lte.' + encodeURIComponent(to) +
+          '&and=' + encodeURIComponent('(created_at.gte.' + from + ',created_at.lte.' + to + ')') +
           '&order=created_at.asc&limit=1000'
         );
         if (!Array.isArray(fills) || !fills.length) continue;
