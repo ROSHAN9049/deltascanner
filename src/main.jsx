@@ -194,7 +194,24 @@ function App() {
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || 'Control failed');
+      if (patch.autoTrade !== undefined &&
+          (typeof data.persisted?.auto_trade !== 'boolean' || data.persisted.auto_trade !== patch.autoTrade)) {
+        throw new Error('Auto Trade save could not be verified against the persisted database value.');
+      }
+      if (patch.emergencyStop !== undefined &&
+          (typeof data.persisted?.emergency_stop !== 'boolean' || data.persisted.emergency_stop !== patch.emergencyStop)) {
+        throw new Error('E-STOP save could not be verified against the persisted database value.');
+      }
+      if (data.persisted && typeof data.persisted === 'object' && !Array.isArray(data.persisted)) {
+        setState(current => current && ({
+          ...current,
+          settings: { ...(current.settings || {}), ...data.persisted }
+        }));
+      }
       await load();
+      if (data.auditLogPersisted === false) {
+        setError(data.warning || 'Settings saved, but the audit log could not be persisted.');
+      }
       return true;
     } catch (e) {
       setError(e.message || 'Control failed');
@@ -229,6 +246,9 @@ function App() {
         <span>LOCAL {new Date(clock).toLocaleTimeString('en-IN')}</span>
         <b className="badge test">LIVE MARKET · SIGNAL ONLY</b>
         <b className="badge lock">LIVE LOCKED</b>
+        <button className="action" disabled={busy || !state || accountDataProtected} onClick={() => mutate({ autoTrade: !settings.auto_trade })} aria-pressed={settings.auto_trade === true} title="Save Auto Trade to dd_settings and confirm the persisted value">
+          {settings.auto_trade === true ? 'AUTO TRADE ON' : 'AUTO TRADE OFF'}
+        </button>
         <button className="estop" disabled={busy || !state || accountDataProtected} onClick={() => mutate({ emergencyStop: !settings.emergency_stop })}>
           {settings.emergency_stop ? 'RELEASE E-STOP' : 'EMERGENCY STOP'}
         </button>

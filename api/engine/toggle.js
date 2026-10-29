@@ -1,6 +1,7 @@
 import { CONFIG } from '../../server/config.js';
 import { hasValidEngineSecretHeader, isEngineSessionValid, isSameOriginRequest } from '../../server/engine-session.js';
-import { select, updateReturning } from '../../server/db.js';
+import { insert, select, updateReturning } from '../../server/db.js';
+import { buildSettingsAuditEntry } from '../../server/settings-audit.js';
 import { GRID_MAX_POSITION_CHOICES, GRID_RISK_PER_TRADE_CHOICES, GRID_DAILY_LOSS_CHOICES, GRID_MOMENTUM_PAUSE_CHOICES } from '../../shared/grid-settings.js';
 
 export default async function handler(req, res) {
@@ -180,7 +181,32 @@ export default async function handler(req, res) {
         .filter(key => key !== 'grid_state')
         .map(key => [key, updatedRows[0][key]])
     );
-    return res.status(200).json({ success: true, changed: patch, persisted, previous: current });
+    const auditEntry = buildSettingsAuditEntry({
+      actor: headerAuthorized ? 'engine-secret-header' : 'authenticated-engine-session',
+      previous: current,
+      patch,
+      persisted: updatedRows[0],
+      at: new Date().toISOString()
+    });
+    let auditLogPersisted = true;
+    let auditWarning = null;
+    if (auditEntry) {
+      try {
+        await insert('dd_engine_logs', auditEntry);
+      } catch (auditError) {
+        auditLogPersisted = false;
+        auditWarning = 'Settings were saved, but the audit log could not be persisted.';
+        console.error('[SettingsAudit] Failed to persist settings change audit entry:', String(auditError?.message || auditError).slice(0, 240));
+      }
+    }
+    return res.status(200).json({
+      success: true,
+      changed: patch,
+      persisted,
+      previous: current,
+      auditLogPersisted,
+      ...(auditWarning ? { warning: auditWarning } : {})
+    });
   } catch (e) {
     return res.status(503).json({ success: false, error: e.message });
   }
