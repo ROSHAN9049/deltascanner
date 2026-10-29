@@ -486,7 +486,7 @@ test('REST fill sync upserts idempotently and advances checkpoint only after the
 
 test('closed trade projection requires matching entry order, exit side and full quantity', async () => {
   const closedPosition = {
-    id: 42, symbol: 'BTCUSD', status: 'CLOSED', strategy: 'MOMENTUM', side: 'BUY',
+    id: 42, symbol: 'BTCUSD', status: 'CLOSED', close_source: 'private_websocket', realized_pnl_verified: true, strategy: 'MOMENTUM', side: 'BUY',
     qty: '2', order_id: '123', entry_price: '60000', realized_pnl: '5.25',
     opened_at: '2026-10-29T10:00:00.000Z', closed_at: '2026-10-29T10:30:00.000Z'
   };
@@ -529,13 +529,40 @@ test('closed trade projection refuses missing exit fill quantity', async () => {
   const database = {
     async select(table) {
       if (table === 'dd_delta_positions') return [{
-        id: 43, symbol: 'ETHUSD', status: 'CLOSED', strategy: 'SCALPING', side: 'SELL',
+        id: 43, symbol: 'ETHUSD', status: 'CLOSED', close_source: 'private_websocket', realized_pnl_verified: true, strategy: 'SCALPING', side: 'SELL',
         qty: 3, order_id: 'entry-2', realized_pnl: 0, opened_at: '2026-10-29T10:00:00Z',
         closed_at: '2026-10-29T10:30:00Z'
       }];
       if (table === 'dd_fills') return [
         { id: 'entry-2', symbol: 'ETHUSD', order_id: 'entry-2', side: 'SELL', size: 3, price: 2500, commission: 0.2, created_at: '2026-10-29T10:00:01Z' },
         { id: 'partial-exit', symbol: 'ETHUSD', order_id: 'exit-2', side: 'BUY', size: 2, price: 2490, commission: 0.2, created_at: '2026-10-29T10:29:59Z' }
+      ];
+      return [];
+    },
+    async upsertMany(table, values) { materialized.push({ table, values }); },
+    async log() {}
+  };
+  const tracker = new DeltaTestnetTracker({ env: demoEnv(), database, executor: {}, WebSocketImpl: class {} });
+  tracker.stopped = false;
+  const result = await tracker.materializeVerifiedClosedTrades();
+  assert.equal(result.materialized, 0);
+  assert.equal(materialized.length, 0);
+});
+
+
+test('closed rows without verified private close P&L are not materialized even when fills match', async () => {
+  const materialized = [];
+  const database = {
+    async select(table) {
+      if (table === 'dd_delta_positions') return [{
+        id: 44, symbol: 'BTCUSD', status: 'CLOSED', close_source: 'rest_reconcile',
+        realized_pnl_verified: false, strategy: 'MOMENTUM', side: 'BUY', qty: 1,
+        order_id: 'entry-3', realized_pnl: 12, opened_at: '2026-10-29T10:00:00Z',
+        closed_at: '2026-10-29T10:30:00Z'
+      }];
+      if (table === 'dd_fills') return [
+        { id: 'entry-3', symbol: 'BTCUSD', order_id: 'entry-3', side: 'BUY', size: 1, price: 60000, commission: 0.1, created_at: '2026-10-29T10:00:01Z' },
+        { id: 'exit-3', symbol: 'BTCUSD', order_id: 'exit-3', side: 'SELL', size: 1, price: 60100, commission: 0.1, created_at: '2026-10-29T10:29:59Z' }
       ];
       return [];
     },
