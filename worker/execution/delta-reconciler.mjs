@@ -240,6 +240,8 @@ export function createDeltaPositionReconciler({
             closed_at: timestamp,
             updated_at: timestamp,
             unrealized_pnl: 0,
+            close_source: 'rest_reconcile',
+            realized_pnl_verified: false,
             ...close
           });
           if (changed && closeStatus === 'CLOSED_EXTERNALLY') markedClosedExternally += 1;
