@@ -559,13 +559,13 @@ test('closed trade projection supports partial exits when total fills match the 
   const closedPosition = {
     id: 45, symbol: 'BTCUSD', status: 'CLOSED', close_source: 'private_websocket',
     realized_pnl_verified: true, strategy: 'MOMENTUM', side: 'BUY',
-    // Position qty may reflect a remaining partial size, not the original trade size.
-    qty: '2', order_id: 'entry-partial', realized_pnl: '0.26',
+    // Position qty may reflect a remaining partial size, and order_id may point to a bracket exit.
+    qty: '2', order_id: 'exit-partial-2', client_order_id: 'DDM-BTCUSD-partial', realized_pnl: '0.26',
     opened_at: '2026-10-29T10:00:00.000Z', closed_at: '2026-10-29T10:30:00.000Z'
   };
   const fills = [
-    { id: 'entry-partial-1', symbol: 'BTCUSD', order_id: 'entry-partial', side: 'BUY', size: '2', price: '60000', commission: '0.01', created_at: '2026-10-29T10:00:01.000Z' },
-    { id: 'entry-partial-2', symbol: 'BTCUSD', order_id: 'entry-partial', side: 'BUY', size: '2', price: '60020', commission: '0.01', created_at: '2026-10-29T10:00:02.000Z' },
+    { id: 'entry-partial-1', symbol: 'BTCUSD', order_id: 'entry-partial', client_order_id: 'DDM-BTCUSD-partial', side: 'BUY', size: '2', price: '60000', commission: '0.01', created_at: '2026-10-29T10:00:01.000Z' },
+    { id: 'entry-partial-2', symbol: 'BTCUSD', order_id: 'entry-partial', client_order_id: 'DDM-BTCUSD-partial', side: 'BUY', size: '2', price: '60020', commission: '0.01', created_at: '2026-10-29T10:00:02.000Z' },
     { id: 'exit-partial-1', symbol: 'BTCUSD', order_id: 'exit-partial-1', side: 'SELL', size: '2', price: '60050', commission: '0.01', created_at: '2026-10-29T10:15:00.000Z' },
     { id: 'exit-partial-2', symbol: 'BTCUSD', order_id: 'exit-partial-2', side: 'SELL', size: '2', price: '60100', commission: '0.01', created_at: '2026-10-29T10:29:59.000Z' }
   ];
