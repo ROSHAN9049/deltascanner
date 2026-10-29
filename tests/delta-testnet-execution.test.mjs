@@ -512,9 +512,10 @@ test('closed trade projection requires matching entry order, exit side and full 
   tracker.stopped = false;
   const result = await tracker.materializeVerifiedClosedTrades();
   assert.equal(result.materialized, 1);
-  assert.equal(materialized.length, 1);
-  assert.equal(materialized[0].conflict, 'execution_id');
-  const trade = materialized[0].values[0];
+  assert.equal(materialized.length, 2);
+  const tradeBatch = materialized.find(row => row.table === 'dd_trades');
+  assert.equal(tradeBatch.conflict, 'execution_id');
+  const trade = tradeBatch.values[0];
   assert.equal(trade.execution_id, 'delta-testnet-position:42');
   assert.equal(trade.entry_price, 60000);
   assert.equal(trade.exit_price, 60120);
@@ -526,6 +527,17 @@ test('closed trade projection requires matching entry order, exit side and full 
   assert.equal(trade.pnl_pct, (0.2 / 120) * 100);
   assert.deepEqual(trade.entry_fill_ids, ['entry-1', 'entry-2']);
   assert.deepEqual(trade.exit_fill_ids, ['exit-1']);
+  const rotationBatch = materialized.find(row => row.table === 'dd_rotation_ledger');
+  assert.ok(rotationBatch, 'verified positive net P&L should create a rotation accounting event');
+  assert.equal(rotationBatch.conflict, 'execution_id');
+  assert.equal(rotationBatch.values.length, 1);
+  assert.equal(rotationBatch.values[0].execution_id, trade.execution_id);
+  assert.equal(rotationBatch.values[0].profit, 0.2);
+  assert.equal(rotationBatch.values[0].released, 0.18);
+  assert.equal(rotationBatch.values[0].retained, 0.02);
+  assert.equal(rotationBatch.values[0].rotation_id, 'delta-testnet-rotation:42');
+  assert.equal(rotationBatch.values[0].trade_id, null);
+  assert.equal(rotationBatch.values[0].created_at, closedPosition.closed_at);
 });
 
 test('closed trade projection refuses missing exit fill quantity', async () => {
@@ -583,6 +595,7 @@ test('historical synthetic-close rows keep fill-derived gross but withhold unver
   assert.equal(materialized[0].values[0].fees, 0.02);
   assert.equal(materialized[0].values[0].net_pnl, null);
   assert.equal(materialized[0].values[0].result, 'GROSS WIN · NET UNVERIFIED');
+  assert.equal(materialized.some(row => row.table === 'dd_rotation_ledger'), false);
 });
 
 test('private WebSocket auth subscribes to all-symbol orders, positions, and fill channels', async () => {
