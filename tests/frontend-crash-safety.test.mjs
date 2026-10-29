@@ -47,3 +47,19 @@ test('engine state API exposes the Delta execution shape; frontend has no direct
   assert.equal(source.includes('tradetronEvents'), false);
   assert.equal(source.includes('tradetronRouting'), false);
 });
+
+test('dashboard readiness consumes verified Delta Testnet route evidence and fails closed when absent', async () => {
+  const source = await read('../src/main.jsx');
+  const marketApi = await read('../api/market.js');
+  const routeState = await read('../src/dashboard-route-state.js');
+
+  assert.ok(source.includes("fetch('/api/market?type=testnet-products&t=' + Date.now()"));
+  assert.ok(source.includes("import { resolveDashboardRouteContext } from './dashboard-route-state.js';"));
+  assert.ok(source.includes('routeContext?.routeDataVerified === true'));
+  assert.ok(source.includes('routeContext?.entrySafetyTrusted === true'));
+  assert.equal(source.includes('routedSymbols={[]} routeDataVerified={false}'), false);
+  assert.ok(marketApi.includes("type === 'testnet-products'"));
+  assert.ok(marketApi.includes('getDeltaTestnetProducts'));
+  assert.ok(routeState.includes('catalogAgeMs <= TESTNET_ROUTE_CATALOG_MAX_AGE_MS'));
+  assert.ok(routeState.includes('actualOpenRowCount === currentOpenCount'));
+});
