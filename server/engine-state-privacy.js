@@ -98,6 +98,8 @@ export function protectEngineState(payload, authorized) {
     deltaTestnetTradeRowCount: null,
     deltaTestnetClosedTodayCount: null,
     deltaTestnetClosedTodayPnl: null,
-    deltaTestnetClosedTodayPnlComplete: false
+    deltaTestnetClosedTodayPnlComplete: false,
+    deltaTestnetFillSyncState: null,
+    deltaTestnetFillCount: null
   };
 }
