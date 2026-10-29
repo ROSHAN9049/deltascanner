@@ -109,7 +109,7 @@ test('a pending-reservation duplicate blocker stays BLOCK even with no open posi
 test('an open position blocks duplicate entry and exposes its quantity', () => {
   const rows = buildRiskGovernorGates({
     selected: { symbol: 'BTCUSD', stage: 'CONFIRMED', score: 90 },
-    positions: [{ symbol: 'btcusd', qty: -2 }]
+    positions: [{ symbol: 'btcusd', qty: -2, status: 'OPEN' }]
   });
   assert.equal(gate(rows, 'Duplicate symbol'), GATE_BLOCK);
   const duplicate = rows.find(row => row.gate === 'Duplicate symbol');
