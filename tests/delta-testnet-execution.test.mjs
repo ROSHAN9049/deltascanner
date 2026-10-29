@@ -6,7 +6,7 @@ import {
   DELTA_TESTNET_REST_BASE,
   DELTA_TESTNET_PRIVATE_WS_URL
 } from '../worker/execution/delta-executor.mjs';
-import { DeltaTestnetTracker, normalizeDeltaWsPosition, strategyFromClientOrderId } from '../worker/execution/delta-tracker.mjs';
+import { DeltaTestnetTracker, normalizeDeltaWsPosition, normalizeDeltaFill, strategyFromClientOrderId } from '../worker/execution/delta-tracker.mjs';
 import { parseDeltaExecutionMode } from '../server/config.js';
 import { assessCorrelatedEntry, correlationGroupForSymbol } from '../worker/engine.mjs';
 
@@ -369,7 +369,187 @@ test('concurrent bracket metadata syncs are coalesced per symbol', async () => {
   assert.equal(tracker.bracketMetadataSyncs.size, 0);
 });
 
-test('private WebSocket auth subscribes to all-symbol orders and positions channels', async () => {
+
+test('Delta fill normalizer preserves IDs, commission, and microsecond exchange timestamps', () => {
+  const fill = normalizeDeltaFill({
+    fill_id: 'fill-abc-1',
+    symbol: 'btcusd',
+    product_id: 27,
+    order_id: 12345,
+    client_order_id: 'DDM-BTCUSD-test',
+    side: 'buy',
+    size: '2',
+    price: '60000',
+    commission: '0.12',
+    role: 'taker',
+    reason: 'normal',
+    timestamp: 1793289600123456,
+    seq_no: 8
+  });
+  assert.equal(fill.id, 'fill-abc-1');
+  assert.equal(fill.symbol, 'BTCUSD');
+  assert.equal(fill.side, 'BUY');
+  assert.equal(fill.size, 2);
+  assert.equal(fill.price, 60000);
+  assert.equal(fill.commission, 0.12);
+  assert.equal(fill.order_id, '12345');
+  assert.equal(fill.client_order_id, 'DDM-BTCUSD-test');
+  assert.equal(fill.timestamp_us, 1793289600123456);
+  assert.equal(fill.sequence_no, 8);
+  assert.equal(fill.source, 'websocket');
+  assert.equal(Date.parse(fill.created_at), 1793289600123);
+});
+
+test('Delta fill normalizer refuses incomplete rows instead of creating synthetic fills', () => {
+  assert.equal(normalizeDeltaFill({ symbol: 'BTCUSD', side: 'BUY', size: 1, price: 60000 }), null);
+  assert.equal(normalizeDeltaFill({ id: 'x', symbol: 'BTCUSD', side: 'BUY', size: 0, price: 60000 }), null);
+});
+
+test('executor requests /v2/fills with signed cursor pagination and clamps page size to 50', async () => {
+  const calls = [];
+  const executor = createDeltaExecutor({
+    env: demoEnv(),
+    database: { async select() { return []; }, async log() {} },
+    fetchImpl: async (url, init) => {
+      calls.push({ url: new URL(url), init });
+      return response({
+        success: true,
+        result: [{ id: 'fill-rest-1', product_symbol: 'BTCUSD', side: 'buy', size: 1, price: '60000' }],
+        meta: { after: 'next-cursor', before: null }
+      });
+    },
+    now: () => 1770000000000
+  });
+  const page = await executor.getFillsPage({
+    startTime: 1769990000000000,
+    endTime: 1770000000000000,
+    after: 'cursor-1',
+    pageSize: 100
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url.pathname, '/v2/fills');
+  assert.equal(calls[0].url.searchParams.get('contract_types'), 'perpetual_futures');
+  assert.equal(calls[0].url.searchParams.get('page_size'), '50');
+  assert.equal(calls[0].url.searchParams.get('after'), 'cursor-1');
+  assert.equal(calls[0].url.searchParams.get('start_time'), '1769990000000000');
+  assert.equal(calls[0].url.searchParams.get('end_time'), '1770000000000000');
+  assert.match(calls[0].init.headers.signature, /^[0-9a-f]{64}$/);
+  assert.deepEqual(page.rows.map(row => row.id), ['fill-rest-1']);
+  assert.equal(page.after, 'next-cursor');
+});
+
+test('REST fill sync upserts idempotently and advances checkpoint only after the last page', async () => {
+  const batches = [];
+  let state = null;
+  const database = {
+    async select(table) {
+      if (table === 'dd_delta_fill_sync_state') return state ? [{ ...state }] : [];
+      if (table === 'dd_delta_positions') return [];
+      return [];
+    },
+    async upsert(table, row) {
+      if (table === 'dd_delta_fill_sync_state') state = { ...row };
+    },
+    async upsertMany(table, values, conflict) {
+      batches.push({ table, values: values.map(value => ({ ...value })), conflict });
+    },
+    async log() {}
+  };
+  const executor = {
+    async getFillsPage({ after }) {
+      assert.equal(after, null);
+      return {
+        rows: [{
+          id: 'fill-rest-1', product_symbol: 'BTCUSD', product_id: 27, order_id: '123',
+          side: 'buy', size: '1', price: '60000', commission: '0.1',
+          created_at: '1793289600123456', fill_type: 'normal'
+        }],
+        after: null
+      };
+    }
+  };
+  const tracker = new DeltaTestnetTracker({ env: demoEnv(), database, executor, WebSocketImpl: class {} });
+  tracker.stopped = false;
+  const result = await tracker.syncRecentFills();
+  assert.equal(result.completedWindow, true);
+  assert.equal(result.fillsUpserted, 1);
+  const fillBatch = batches.find(row => row.table === 'dd_fills');
+  assert.equal(fillBatch.conflict, 'id');
+  assert.equal(fillBatch.values[0].id, 'fill-rest-1');
+  assert.equal(fillBatch.values[0].source, 'rest');
+  assert.ok(state.last_synced_through_us > 0);
+  assert.equal(state.window_start_us, null);
+  assert.equal(state.window_end_us, null);
+  assert.equal(state.after_cursor, null);
+  assert.equal(state.rows_ingested, 1);
+});
+
+test('closed trade projection requires matching entry order, exit side and full quantity', async () => {
+  const closedPosition = {
+    id: 42, symbol: 'BTCUSD', status: 'CLOSED', strategy: 'MOMENTUM', side: 'BUY',
+    qty: '2', order_id: '123', entry_price: '60000', realized_pnl: '5.25',
+    opened_at: '2026-10-29T10:00:00.000Z', closed_at: '2026-10-29T10:30:00.000Z'
+  };
+  const fills = [
+    { id: 'entry-1', symbol: 'BTCUSD', order_id: '123', side: 'BUY', size: '1', price: '59990', commission: '0.06', created_at: '2026-10-29T10:00:01.000Z' },
+    { id: 'entry-2', symbol: 'BTCUSD', order_id: '123', side: 'BUY', size: '1', price: '60010', commission: '0.06', created_at: '2026-10-29T10:00:02.000Z' },
+    { id: 'exit-1', symbol: 'BTCUSD', order_id: '456', side: 'SELL', size: '2', price: '60005', commission: '0.12', created_at: '2026-10-29T10:29:59.000Z' }
+  ];
+  const materialized = [];
+  const database = {
+    async select(table) {
+      if (table === 'dd_delta_positions') return [closedPosition];
+      if (table === 'dd_fills') return fills;
+      return [];
+    },
+    async upsertMany(table, values, conflict) {
+      materialized.push({ table, values, conflict });
+    },
+    async log() {}
+  };
+  const tracker = new DeltaTestnetTracker({ env: demoEnv(), database, executor: {}, WebSocketImpl: class {} });
+  tracker.stopped = false;
+  const result = await tracker.materializeVerifiedClosedTrades();
+  assert.equal(result.materialized, 1);
+  assert.equal(materialized.length, 1);
+  assert.equal(materialized[0].conflict, 'execution_id');
+  const trade = materialized[0].values[0];
+  assert.equal(trade.execution_id, 'delta-testnet-position:42');
+  assert.equal(trade.entry_price, 60000);
+  assert.equal(trade.exit_price, 60005);
+  assert.equal(trade.fees, 0.24);
+  assert.equal(trade.net_pnl, 5.25);
+  assert.equal(trade.gross_pnl, null);
+  assert.deepEqual(trade.entry_fill_ids, ['entry-1', 'entry-2']);
+  assert.deepEqual(trade.exit_fill_ids, ['exit-1']);
+});
+
+test('closed trade projection refuses missing exit fill quantity', async () => {
+  const materialized = [];
+  const database = {
+    async select(table) {
+      if (table === 'dd_delta_positions') return [{
+        id: 43, symbol: 'ETHUSD', status: 'CLOSED', strategy: 'SCALPING', side: 'SELL',
+        qty: 3, order_id: 'entry-2', realized_pnl: 0, opened_at: '2026-10-29T10:00:00Z',
+        closed_at: '2026-10-29T10:30:00Z'
+      }];
+      if (table === 'dd_fills') return [
+        { id: 'entry-2', symbol: 'ETHUSD', order_id: 'entry-2', side: 'SELL', size: 3, price: 2500, commission: 0.2, created_at: '2026-10-29T10:00:01Z' },
+        { id: 'partial-exit', symbol: 'ETHUSD', order_id: 'exit-2', side: 'BUY', size: 2, price: 2490, commission: 0.2, created_at: '2026-10-29T10:29:59Z' }
+      ];
+      return [];
+    },
+    async upsertMany(table, values) { materialized.push({ table, values }); },
+    async log() {}
+  };
+  const tracker = new DeltaTestnetTracker({ env: demoEnv(), database, executor: {}, WebSocketImpl: class {} });
+  tracker.stopped = false;
+  const result = await tracker.materializeVerifiedClosedTrades();
+  assert.equal(result.materialized, 0);
+  assert.equal(materialized.length, 0);
+});
+
+test('private WebSocket auth subscribes to all-symbol orders, positions, and fill channels', async () => {
   const sent = [];
   const socket = { send: value => sent.push(JSON.parse(value)) };
   const logs = [];
@@ -394,7 +574,11 @@ test('private WebSocket auth subscribes to all-symbol orders and positions chann
     type: 'subscribe',
     payload: { channels: [{ name: 'positions', symbols: ['all'] }] }
   });
-  assert.ok(logs.some(row => row.message.includes('authenticated; orders and positions subscribed')));
+  assert.deepEqual(sent[3], {
+    type: 'subscribe',
+    payload: { channels: [{ name: 'user_trades', symbols: ['all'] }] }
+  });
+  assert.ok(logs.some(row => row.message.includes('authenticated; orders, positions and user_trades subscribed')));
 });
 
 test('private WebSocket fill event updates the order row and records explicit fill confirmation', async () => {
