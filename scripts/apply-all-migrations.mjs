@@ -17,7 +17,8 @@ const MIGRATIONS = [
   'db/migrations/20261024100000_delta_testnet_positions.sql',
   'db/migrations/20261026120000_delta_position_external_close.sql',
   'db/migrations/20261029100000_worker_lease_ownership.sql',
-  'db/migrations/20261029120000_estop_release_challenge.sql'
+  'db/migrations/20261029120000_estop_release_challenge.sql',
+  'db/migrations/20261029163000_delta_fill_ledger.sql'
 ];
 
 // These are the four "already exists" SQLSTATEs explicitly approved for skipping.
@@ -32,6 +33,7 @@ const EXPECTED_TABLES = [
   'dd_delta_positions',
   'dd_trades',
   'dd_fills',
+  'dd_delta_fill_sync_state',
   'dd_signal_cache',
   'dd_market_cache',
   'dd_option_cache',
