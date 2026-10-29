@@ -71,9 +71,9 @@ test('worker startup remains scan-only on private API failure and retries every 
   const preflightEnd = index.indexOf("  } catch (error) {", privateStart);
   assert.ok(startupStart >= 0 && privateStart > startupStart && preflightEnd > privateStart);
   const privatePreflight = index.slice(privateStart, preflightEnd);
-  assert.doesNotMatch(privatePreflight, /process\\.exit\\(1\\)/);
+  assert.doesNotMatch(privatePreflight, /process\.exit\(1\)/);
   assert.doesNotMatch(privatePreflight, /tradetronBridgeEnabled/);
-  assert.match(privatePreflight, /verifyDeltaTestnetPrivateApi\\('startup'\\)/);
+  assert.match(privatePreflight, /verifyDeltaTestnetPrivateApi\('startup'\)/);
   assert.match(privatePreflight, /public market scan-only/);
 });
 
