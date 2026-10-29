@@ -52,10 +52,20 @@ export function normalizeDeltaWsPosition(row) {
 function fillTimestamp(value) {
   if (value === null || value === undefined || value === '') return { createdAt: null, timestampUs: null };
   if (typeof value === 'string' && !/^\d+(?:\.\d+)?$/.test(value.trim())) {
-    const milliseconds = Date.parse(value);
-    return Number.isFinite(milliseconds)
-      ? { createdAt: new Date(milliseconds).toISOString(), timestampUs: Math.round(milliseconds * 1000) }
-      : { createdAt: null, timestampUs: null };
+    const original = value.trim();
+    const milliseconds = Date.parse(original);
+    if (!Number.isFinite(milliseconds)) return { createdAt: null, timestampUs: null };
+    // Date.parse preserves only milliseconds. Retain the original ISO timestamp
+    // for PostgreSQL's microsecond-capable timestamptz column, and recover the
+    // remaining microsecond digits for stable event ordering.
+    const fraction = original.match(/\.(\d+)(?=Z|[+-]\d{2}(?::?\d{2})?$)/i)?.[1] || '';
+    const microsecondRemainder = fraction.length > 3
+      ? Number(fraction.slice(3, 6).padEnd(3, '0'))
+      : 0;
+    return {
+      createdAt: original,
+      timestampUs: Math.round(milliseconds * 1000) + microsecondRemainder
+    };
   }
   const numeric = Number(value);
   if (!Number.isFinite(numeric) || numeric <= 0) return { createdAt: null, timestampUs: null };
