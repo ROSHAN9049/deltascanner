@@ -92,6 +92,9 @@ describe('Delta Testnet fill ledger migration SQL structure', () => {
     assert.match(deltaFillMigration, /ADD COLUMN IF NOT EXISTS realized_pnl_verified BOOLEAN NOT NULL DEFAULT FALSE/i);
     assert.match(deltaFillMigration, /CREATE TABLE IF NOT EXISTS public\.dd_delta_fill_sync_state/i);
     assert.match(deltaFillMigration, /ALTER COLUMN gross_pnl DROP NOT NULL/i);
+    assert.match(deltaFillMigration, /ALTER COLUMN fees DROP DEFAULT/i);
+    assert.match(deltaFillMigration, /ALTER COLUMN gross_pnl DROP DEFAULT/i);
+    assert.match(deltaFillMigration, /ALTER COLUMN net_pnl DROP DEFAULT/i);
     assert.match(deltaFillMigration, /ALTER COLUMN net_pnl DROP NOT NULL/i);
     assert.match(deltaFillMigration, /REVOKE ALL ON TABLE public\.dd_delta_fill_sync_state FROM anon, authenticated/i);
     assert.match(deltaFillMigration, /GRANT ALL ON TABLE public\.dd_delta_fill_sync_state TO service_role/i);
