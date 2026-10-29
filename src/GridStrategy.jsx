@@ -86,6 +86,8 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
   const targetLevelSet = new Set(positions.map(position => Number(position.levelIndex) + 1));
   const lockedConfig = positions.length > 0;
   const stateStatus = gridState.status || 'OFF';
+  const gridNotMigratedToDelta = gridEntrySafety?.reason === 'GRID_NOT_MIGRATED_TO_DELTA_TESTNET';
+  const visibleGridStatus = gridNotMigratedToDelta ? 'HELD · NOT MIGRATED' : stateStatus.replaceAll('_', ' ');
   const lastTrade = trades[0];
 
   if (accountDataProtected) return <Panel title="Grid Strategy · Protected"><div className="lockedText">Grid position state, simulated trades, equity and risk locks are private. Enter the configured engine key in Settings before reviewing or changing Grid configuration.</div></Panel>;
@@ -119,14 +121,14 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
 
   return <>
     <section className="cards">
-      <div className="card"><small>GRID ENGINE</small><strong>{stateStatus.replaceAll('_', ' ')}</strong><span>Dedicated BTC/ETH grid; independent from momentum/scalping.</span></div>
+      <div className="card"><small>GRID ENGINE</small><strong>{visibleGridStatus}</strong><span>Offline simulator only; Grid order lifecycle is not migrated to Delta Testnet.</span></div>
       <div className="card"><small>INSTRUMENT / LIVE PRICE</small><strong>{symbol}</strong><span>{currentPrice > 0 ? price(currentPrice) : 'Waiting for market price'} · Delta public market feed</span></div>
       <div className="card"><small>OPEN GRID POSITIONS</small><strong>{positions.length} / {GRID_BRIDGE_MAX_POSITIONS}</strong><span>{usd(openRisk === null && positions.length === 0 ? 0 : openRisk)} estimated remaining-to-grid-stop risk.</span></div>
-      <div className="card"><small>GRID PNL · LIVE OFFLINE MIRROR</small><strong className={realizedGridPnl === null ? 'muted' : realizedGridPnl >= 0 ? 'up' : 'down'}>{usd(realizedGridPnl)}</strong><span>Realized after estimated maker fees and slippage; simulator only.</span></div>
+      <div className="card"><small>SIMULATED GRID P&amp;L</small><strong className={realizedGridPnl === null ? 'muted' : realizedGridPnl >= 0 ? 'up' : 'down'}>{usd(realizedGridPnl)}</strong><span>Offline estimate after estimated fees and slippage; not exchange-reported P&amp;L.</span></div>
       <div className="card"><small>DAY PNL</small><strong className={totalDayPnl === null ? 'muted' : totalDayPnl >= 0 ? 'up' : 'down'}>{usd(totalDayPnl)}</strong><span>Realized + mark-to-market; daily stop {Number(settings.grid_daily_loss_pct || 2).toFixed(1)}%.</span></div>
-      <div className="card"><small>STRATEGY EQUITY</small><strong>{usd(currentEquity)}</strong><span>Sizing source: TRADETRON_CAPITAL_USD · Drawdown {drawdownPct === null ? 'NO DATA' : drawdownPct.toFixed(2) + '%'} · hard stop 5%.</span></div>
+      <div className="card"><small>STRATEGY EQUITY</small><strong>{usd(currentEquity)}</strong><span>Sizing basis: offline-simulator capital · Drawdown {drawdownPct === null ? 'NO DATA' : drawdownPct.toFixed(2) + '%'} · hard stop 5%.</span></div>
       <div className="card"><small>MOMENTUM FILTER</small><strong className={momentum.paused ? 'warn' : 'up'}>{momentum.paused ? 'PAUSED' : 'CLEAR'}</strong><span>{momentum.direction || 'NO DATA'} · {momentumMovePct === null ? 'NO DATA' : momentumMovePct.toFixed(2) + '%'} move · reversal {momentumRetracementPct === null ? 'NO DATA' : momentumRetracementPct.toFixed(2) + '%' }.</span></div>
-      <div className="card"><small>EXECUTION</small><strong>TRADETRON LIVE OFFLINE</strong><span>Next lower grid rung is the protective stop and next higher rung is the target. Live Offline is simulated; no exchange orders are sent.</span></div>
+      <div className="card"><small>EXECUTION</small><strong>{gridNotMigratedToDelta ? 'DELTA TESTNET LOCKED' : 'LEGACY BRIDGE MODE'}</strong><span>No direct Delta Testnet Grid orders are sent. Validate the grid lifecycle before enabling this strategy.</span></div>
     </section>
 
     <Panel title="Grid Configuration · BTCUSD / ETHUSD">
@@ -135,7 +137,7 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
         <label>Lower Price<input type="number" inputMode="decimal" min="0" step="any" placeholder="Set lower grid boundary" value={draft.gridLowerPrice} onChange={e => update('gridLowerPrice', e.target.value)} disabled={lockedConfig}/></label>
         <label>Upper Price<input type="number" inputMode="decimal" min="0" step="any" placeholder="Set upper grid boundary" value={draft.gridUpperPrice} onChange={e => update('gridUpperPrice', e.target.value)} disabled={lockedConfig}/></label>
         <label>Grid Levels<select value={draft.gridLevelsCount} onChange={e => update('gridLevelsCount', Number(e.target.value))} disabled={lockedConfig}>{[8,9,10,11,12].map(v => <option key={v} value={v}>{v} levels</option>)}</select></label>
-        <label>Max Open Positions<select value={draft.gridMaxPositions} onChange={e => update('gridMaxPositions', Number(e.target.value))} disabled={lockedConfig}><option value={GRID_BRIDGE_MAX_POSITIONS}>1 position · Tradetron safe mode</option></select></label>
+        <label>Max Open Positions<select value={draft.gridMaxPositions} onChange={e => update('gridMaxPositions', Number(e.target.value))} disabled={lockedConfig}><option value={GRID_BRIDGE_MAX_POSITIONS}>1 position · single-slot netting limit</option></select></label>
         <label>Target Risk / Trade<select value={draft.gridRiskPerTradePct} onChange={e => update('gridRiskPerTradePct', Number(e.target.value))}>{GRID_RISK_PER_TRADE_CHOICES.map(value => <option key={value} value={value}>{value.toFixed(2)}%{value === 0.3 ? ' · same as Momentum/Scalping' : ' target'}</option>)}</select></label>
         <label>Daily Loss Limit<select value={draft.gridDailyLossPct} onChange={e => update('gridDailyLossPct', Number(e.target.value))}><option value={2}>2.0%</option><option value={2.25}>2.25%</option><option value={2.5}>2.5%</option></select></label>
         <label>Momentum Pause<select value={draft.gridMomentumPausePct} onChange={e => update('gridMomentumPausePct', Number(e.target.value))}><option value={2.5}>2.5% one-way move</option><option value={2.75}>2.75% one-way move</option><option value={3}>3.0% one-way move</option></select></label>
@@ -144,12 +146,12 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
       <div className="gridButtons">
       {gridSafetyBlocked ? <div className="errorText">
         {gridSafetyReason === 'SAME_SYMBOL_OPEN_POSITION' && gridEntrySafety?.blockingSymbol
-          ? <>Grid new entries blocked: {String(gridEntrySafety.blockingSymbol).toUpperCase()} (qty {safeNum(gridEntrySafety.blockingQty) === null ? 'unknown' : safeNum(gridEntrySafety.blockingQty)}) is already open in your Tradetron account. Close it or select a different symbol.</>
-          : <>Grid new entries are blocked by Tradetron position safety ({gridSafetyReason}). A fresh, complete position snapshot is required, and an existing same-symbol position prevents a new Grid entry.</>}
+          ? <>Grid new entries blocked: {String(gridEntrySafety.blockingSymbol).toUpperCase()} (qty {safeNum(gridEntrySafety.blockingQty) === null ? 'unknown' : safeNum(gridEntrySafety.blockingQty)}) is already open in the external account snapshot. Verify the account state or choose another symbol.</>
+          : <>Grid new entries are blocked by external-account position safety ({gridSafetyReason}). A fresh, complete position snapshot is required, and an existing same-symbol position prevents a new Grid entry.</>}
         {' '}Existing Grid positions continue to follow their own exit rules.
       </div> : null}
         <button className="action" disabled={busy || !readyToStart} onClick={save}>Save Configuration</button>
-        <button className="action gridStart" disabled={busy || !readyToStart || settings.grid_enabled === true || !!gridState.pausedReason || gridSafetyBlocked} onClick={start}>Start Tradetron Live Offline</button>
+        <button className="action gridStart" disabled={busy || !readyToStart || settings.grid_enabled === true || !!gridState.pausedReason || gridSafetyBlocked || gridNotMigratedToDelta} onClick={start}>{gridNotMigratedToDelta ? 'Grid Testnet Not Migrated' : 'Start Grid (Legacy Bridge)'}</button>
         <button className="action" title="New entries stop. Existing positions continue to be managed." disabled={busy || settings.grid_enabled !== true} onClick={pause}>Pause Grid (Exit Only)</button>
         <button className="dangerBtn" title="Resets grid state. Does NOT trigger global Emergency Stop." disabled={busy || lockedConfig || !gridState.pausedReason || settings.emergency_stop === true || ['DAILY_LOSS_LIMIT','OVERALL_DRAWDOWN_STOP'].includes(gridState.pausedReason)} onClick={reset}>Reset Grid Config</button>
       </div>
@@ -195,7 +197,7 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
       {trades.length ? <div className="tablewrap"><table className="gridLevelsTable"><thead><tr><th>CLOSED</th><th>LEVEL</th><th>ENTRY</th><th>EXIT</th><th>QTY</th><th>NET PNL</th><th>REASON</th></tr></thead><tbody>{trades.slice(0,20).map(trade => <tr key={trade.id}><td>{trade.closedAt ? new Date(trade.closedAt).toLocaleString('en-IN') : '—'}</td><td>G{Number(trade.levelIndex)+1}</td><td>{price(trade.entryPrice)}</td><td>{price(trade.exitPrice)}</td><td>{safeNum(trade.qty) === null ? '—' : safeNum(trade.qty)}</td><td className={safeNum(trade.netPnl) === null ? 'muted' : safeNum(trade.netPnl) >= 0 ? 'up' : 'down'}>{usd(trade.netPnl)}</td><td>{trade.reason}</td></tr>)}</tbody></table></div> : <div className="lockedText">No completed grid trades yet.</div>}
       {lastTrade ? <div className="statusLine">Last trade: {lastTrade.reason} · net {usd(lastTrade.netPnl)} · {lastTrade.symbol}</div> : null}
     </Panel>
-    <div className="gridTestNotice">TRADETRON SIGNAL MODE: Grid entry and exit triggers use the existing Momentum/Scalping Signal Bridge and its symbol-specific entry/exit variables. Only one grid position is allowed at a time because the current bridge has one net position/exit flag per symbol. Tradetron Live Offline simulates the trade; the scanner never places direct Delta orders.</div>
+    <div className="gridTestNotice">GRID SAFETY: This is an offline/grid bridge strategy, not a direct Delta Testnet strategy. In Delta Testnet mode, new Grid entries remain blocked until the full entry, bracket protection, partial-exit and reconciliation lifecycle is migrated and verified end-to-end. Do not treat simulated P&amp;L as exchange P&amp;L.</div>
   </>;
 }
 
