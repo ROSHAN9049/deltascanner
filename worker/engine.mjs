@@ -41,6 +41,34 @@ const roundDown = (v, step) => {
 const roundTick = (v, tick) => tick > 0 ? Math.round(v / tick) * tick : v;
 export const OPTION_UNDERLYINGS = Object.freeze(['BTC', 'ETH', 'XAUT']);
 
+export function correlationGroupForSymbol(symbol) {
+  const s = String(symbol || '').toUpperCase().replace(/USD$/, '');
+  if (['BTC', 'ETH', 'SOL', 'BNB'].includes(s)) return 'MAJORS';
+  if (['PAXG', 'XAUT'].includes(s)) return 'GOLD';
+  if (['DOGE', 'SHIB', 'WIF'].includes(s)) return 'MEME';
+  // Explicitly cover stock-token roots that do not end in X, including AMDBUSD.
+  if (/^(AMDB|QQQX|SNDKB|TSLAX|AAPLX|AMZNX|COINX|METAX|MSFTX|NVDAX|GOOGLX|NFLXX|MSTRX)/.test(s.replace(/\s/g,''))) return 'STOCK_TOKENS';
+  // Common equity-token suffixes: classify unknown listed equity tokens conservatively.
+  if (/^[A-Z]{2,8}X$/.test(s) || /^(AMDB|QQQ|TSLA|AAPL|NVDA|SNDK|MSFT|AMZN|GOOGL|META|NFLX|MSTR)/.test(s)) return 'STOCK_TOKENS';
+  return null;
+}
+
+export function assessCorrelatedEntry({ symbol, side, positions = [], maxSameSide = 3, aggressive = false }) {
+  const wantedSide = String(side || '').toUpperCase();
+  const sameSideCount = positions.filter(p => String(p.side || (Number(p.size ?? p.qty) < 0 ? 'SELL' : 'BUY')).toUpperCase() === wantedSide
+    && Math.abs(Number(p.qty ?? p.size) || 0) > 0).length;
+  if (sameSideCount >= maxSameSide) return { blocked: true, reason: 'MAX_SAME_SIDE_POSITIONS', sameSideCount, group: correlationGroupForSymbol(symbol) };
+  if (aggressive) return { blocked: false, reason: null, sameSideCount, group: correlationGroupForSymbol(symbol) };
+  const group = correlationGroupForSymbol(symbol);
+  if (group) {
+    const conflict = positions.find(p => correlationGroupForSymbol(p.symbol || p.product_symbol) === group
+      && Math.abs(Number(p.qty ?? p.size) || 0) > 0);
+    if (conflict) return { blocked: true, reason: 'CORRELATION_GROUP_LIMIT', sameSideCount, group, conflictingSymbol: String(conflict.symbol || conflict.product_symbol).toUpperCase() };
+  }
+  return { blocked: false, reason: null, sameSideCount, group };
+}
+
+
 function envBoolean(name, fallback) {
   const raw = process.env[name];
   if (raw === undefined || String(raw).trim() === '') return fallback;
@@ -2710,6 +2738,22 @@ export class DeltaEngine {
         }).catch(() => {});
       }
       return false;
+    }
+    if (CONFIG.deltaExecutionMode === 'testnet' && ['MOMENTUM', 'SCALPING'].includes(strategy)) {
+      const maxSameSide = envInteger('MAX_SAME_SIDE_POSITIONS', 3, 1, 20);
+      const correlation = assessCorrelatedEntry({
+        symbol: signal.symbol, side: signal.side, positions: openPositions,
+        maxSameSide, aggressive: envBoolean('DELTA_AGGRESSIVE_CORRELATION_MODE', false)
+      });
+      if (correlation.blocked) {
+        await this.log('WARN', '[Risk] Entry blocked by same-side/correlation exposure cap', {
+          symbol: signal.symbol, side: signal.side, strategy,
+          reason: correlation.reason, sameSideCount: correlation.sameSideCount,
+          maxSameSidePositions: maxSameSide, correlationGroup: correlation.group,
+          conflictingSymbol: correlation.conflictingSymbol || null, executionBlocked: true
+        }).catch(() => {});
+        return false;
+      }
     }
     const gate = await this.riskGate(signal, strategy, account, settings, openPositions, trades);
     if (gate.reasons.length || !gate.size) return false;
