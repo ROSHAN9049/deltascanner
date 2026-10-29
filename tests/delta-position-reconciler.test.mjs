@@ -59,6 +59,92 @@ function runtime({ openRows = [], exchangePositions = [], envMode = 'testnet', a
 
 const fixedNow = () => Date.parse('2026-10-26T00:00:00.000Z');
 
+test('reconciler refreshes mark and unrealized P&L when quantity and side match', async () => {
+  const rt = runtime({
+    openRows: [{
+      id: 1,
+      symbol: 'XAUTUSD',
+      qty: 37,
+      side: 'BUY',
+      entry_price: 3871.87,
+      current_price: 4000,
+      unrealized_pnl: -6.73
+    }],
+    exchangePositions: [{
+      symbol: 'XAUTUSD',
+      qty: 37,
+      side: 'BUY',
+      entry_price: 3871.87,
+      current_price: 4050,
+      unrealized_pnl: 6.34,
+      product_id: 181689
+    }]
+  });
+  rt.executor.getProductMetadata = async () => ({
+    symbol: 'XAUTUSD',
+    contract_value: '0.001',
+    notional_type: 'vanilla'
+  });
+
+  const reconciler = createDeltaPositionReconciler({
+    env: rt.env, database: rt.database,
+    executor: rt.executor, now: fixedNow
+  });
+
+  await reconciler.reconcile();
+
+  assert.equal(rt.rows[0].qty, 37);
+  assert.equal(rt.rows[0].side, 'BUY');
+  assert.equal(rt.rows[0].current_price, 4050);
+  assert.equal(rt.rows[0].unrealized_pnl, 6.34);
+  assert.equal(rt.updates.length, 1);
+  assert.ok(!rt.logs.some(row =>
+    row.message.includes('quantity/side mismatch')
+  ));
+  assert.ok(!rt.logs.some(row => row.data?.event === 'upl_mismatch'));
+});
+
+test('reconciler logs upl_mismatch when local vanilla P&L has opposite sign', async () => {
+  const rt = runtime({
+    openRows: [{
+      id: 1,
+      symbol: 'XAUTUSD',
+      qty: 37,
+      side: 'BUY',
+      entry_price: 3871.87,
+      current_price: 4000,
+      unrealized_pnl: -6.73
+    }],
+    exchangePositions: [{
+      symbol: 'XAUTUSD',
+      qty: 37,
+      side: 'BUY',
+      entry_price: 3871.87,
+      current_price: 4050,
+      unrealized_pnl: -6.73
+    }]
+  });
+  rt.executor.getProductMetadata = async () => ({
+    symbol: 'XAUTUSD',
+    contract_value: '0.001',
+    notional_type: 'vanilla'
+  });
+
+  const reconciler = createDeltaPositionReconciler({
+    env: rt.env, database: rt.database,
+    executor: rt.executor, now: fixedNow
+  });
+
+  await reconciler.reconcile();
+
+  const warning = rt.logs.find(row => row.data?.event === 'upl_mismatch');
+  assert.ok(warning);
+  assert.equal(warning.data.symbol, 'XAUTUSD');
+  assert.ok(warning.data.localUpl > 0);
+  assert.equal(warning.data.exchangeUpl, -6.73);
+  assert.ok(warning.data.driftPct > 5);
+});
+
 test('reconciler is Testnet-only and never calls the exchange API in disabled mode', async () => {
   const rt = runtime({ envMode: 'disabled', openRows: [{ id: 1, symbol: 'BTCUSD', qty: 1, side: 'BUY' }] });
   const reconciler = createDeltaPositionReconciler({ env: rt.env, database: rt.database, executor: rt.executor, now: fixedNow });
@@ -84,6 +170,40 @@ test('missing exchange positions are marked CLOSED_EXTERNALLY without fabricatin
   assert.equal(rt.rows[0].unrealized_pnl, 0);
   assert.equal(rt.rows[0].realized_pnl, null);
   assert.ok(rt.logs.some(row => row.message.includes('Found 1 zombie positions. Marked 1 as CLOSED_EXTERNALLY.')));
+});
+
+test('REST reconciliation persists close-fill details only when they are verifiable', async () => {
+  const rt = runtime({
+    openRows: [{
+      id: 1, symbol: 'BTCUSD', qty: 1, side: 'BUY',
+      entry_price: 100, opened_at: '2026-10-28T00:00:00.000Z',
+      current_price: 105, unrealized_pnl: 5, realized_pnl: null
+    }],
+    exchangePositions: []
+  });
+  rt.executor.getRecentCloseDetails = async () => ({
+    exit_price: 106,
+    fees: 0.2,
+    fee_currency: 'USD',
+    realized_pnl: 6,
+    close_order_id: '9001',
+    stop_order_type: 'take_profit_order',
+    client_order_id: 'DDM-BTCUSD-entry',
+    close_order_history_found: true
+  });
+
+  const reconciler = createDeltaPositionReconciler({
+    env: rt.env, database: rt.database, executor: rt.executor, now: fixedNow
+  });
+  await reconciler.reconcile();
+
+  assert.equal(rt.rows[0].status, 'CLOSED');
+  assert.equal(rt.rows[0].exit_price, 106);
+  assert.equal(rt.rows[0].fees, 0.2);
+  assert.equal(rt.rows[0].fee_currency, 'USD');
+  assert.equal(rt.rows[0].realized_pnl, 6);
+  assert.equal(rt.rows[0].exit_reason, 'take_profit_order');
+  assert.equal(rt.rows[0].close_order_id, '9001');
 });
 
 test('quantity and side mismatches sync local DB to the exchange; missing DB rows are hydrated', async () => {
@@ -180,4 +300,12 @@ test('malformed REST snapshots are not treated as an empty account by the execut
     })
   });
   await assert.rejects(executor.getOpenPositions(), /malformed/);
+});
+
+test('migration runner includes nullable Delta close details migration after external close migration', async () => {
+  const runner = await readFile(new URL('../scripts/apply-all-migrations.mjs', import.meta.url), 'utf8');
+  const externalCloseIndex = runner.indexOf("'db/migrations/20261026120000_delta_position_external_close.sql'");
+  const closeDetailsIndex = runner.indexOf("'db/migrations/20261029110000_delta_position_close_details.sql'");
+  assert.ok(externalCloseIndex >= 0);
+  assert.ok(closeDetailsIndex > externalCloseIndex);
 });
