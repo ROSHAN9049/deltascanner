@@ -83,6 +83,7 @@ function App() {
   const [showEstopReleaseConfirmation, setShowEstopReleaseConfirmation] = useState(false);
   const [estopReleaseVerified, setEstopReleaseVerified] = useState(false);
   const [estopReleaseCountdownEndsAt, setEstopReleaseCountdownEndsAt] = useState(0);
+  const [estopReleaseToken, setEstopReleaseToken] = useState('');
   const [inspect, setInspect] = useState('');
 
   const load = useCallback(async () => {
@@ -228,11 +229,34 @@ function App() {
     0,
     Math.ceil((estopReleaseCountdownEndsAt - clock) / 1000)
   );
-  const requestEmergencyStopChange = () => {
+  const requestEmergencyStopChange = async () => {
     if (settings.emergency_stop === true) {
-      setEstopReleaseVerified(false);
-      setEstopReleaseCountdownEndsAt(Date.now() + 10_000);
-      setShowEstopReleaseConfirmation(true);
+      setBusy(true);
+      setError('');
+      try {
+        const response = await fetch('/api/engine/toggle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ requestEmergencyStopRelease: true })
+        });
+        const data = await response.json();
+        const availableAt = Number(data.emergencyStopReleaseAvailableAt);
+        if (!response.ok || !data.success ||
+            typeof data.emergencyStopReleaseToken !== 'string' ||
+            !data.emergencyStopReleaseToken ||
+            !Number.isFinite(availableAt)) {
+          throw new Error(data.error || 'Could not start the E-STOP release safety challenge.');
+        }
+        setEstopReleaseVerified(false);
+        setEstopReleaseToken(data.emergencyStopReleaseToken);
+        setEstopReleaseCountdownEndsAt(availableAt);
+        setShowEstopReleaseConfirmation(true);
+      } catch (e) {
+        setError(e.message || 'Could not start the E-STOP release safety challenge.');
+      } finally {
+        setBusy(false);
+      }
       return;
     }
     void mutate({ emergencyStop: true });
@@ -240,12 +264,25 @@ function App() {
   const cancelEmergencyStopRelease = () => {
     setShowEstopReleaseConfirmation(false);
     setEstopReleaseVerified(false);
+    setEstopReleaseToken('');
     setEstopReleaseCountdownEndsAt(0);
   };
   const confirmEmergencyStopRelease = async () => {
-    if (settings.emergency_stop !== true || estopReleaseCountdown > 0 || !estopReleaseVerified) return;
-    const saved = await mutate({ emergencyStop: false });
-    if (saved) cancelEmergencyStopRelease();
+    if (settings.emergency_stop !== true || estopReleaseCountdown > 0 ||
+        !estopReleaseVerified || !estopReleaseToken) return;
+    const saved = await mutate({
+      emergencyStop: false,
+      emergencyStopReleaseVerified: true,
+      emergencyStopReleaseToken: estopReleaseToken
+    });
+    if (saved) {
+      cancelEmergencyStopRelease();
+    } else {
+      // A server-side expiry/replay/validation failure requires a fresh challenge.
+      setEstopReleaseToken('');
+      setEstopReleaseVerified(false);
+      setEstopReleaseCountdownEndsAt(0);
+    }
   };
 
   const selected = useMemo(() => {
@@ -322,7 +359,7 @@ function App() {
         </label>
         <div className="confirmActions">
           <button className="action" type="button" onClick={cancelEmergencyStopRelease} disabled={busy}>Keep E-STOP Active</button>
-          <button className="estop" type="button" onClick={confirmEmergencyStopRelease} disabled={busy || estopReleaseCountdown > 0 || !estopReleaseVerified}>Release E-STOP</button>
+          <button className="estop" type="button" onClick={confirmEmergencyStopRelease} disabled={busy || estopReleaseCountdown > 0 || !estopReleaseVerified || !estopReleaseToken}>Release E-STOP</button>
         </div>
       </div>
     </div> : null}
