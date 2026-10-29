@@ -61,9 +61,9 @@ test('lease contention is logged and stops the scan loop fail-closed', async () 
   const leaseBranchEnd = run.indexOf("} else {", leaseBranchStart);
   assert.ok(leaseBranchStart >= 0 && leaseBranchEnd > leaseBranchStart, 'lease branch should be bounded');
   const leaseBranch = run.slice(leaseBranchStart, leaseBranchEnd);
-  assert.match(leaseBranch, /this\\.running = false;/,
+  assert.ok(leaseBranch.includes('this.running = false;'),
     'lease contention must stop the scan loop so no further cycle can route entries');
-  assert.doesNotMatch(leaseBranch, /\\bthrow\\b/,
+  assert.equal(leaseBranch.includes('throw'), false,
     'the lease branch must be handled without throwing out of the scan loop');
   assert.ok(run.includes("await this.releaseLease();"),
     'the worker must release its lifetime lease during shutdown');
