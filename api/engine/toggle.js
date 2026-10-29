@@ -2,6 +2,7 @@ import { CONFIG } from '../../server/config.js';
 import { hasValidEngineSecretHeader, isEngineSessionValid, isSameOriginRequest } from '../../server/engine-session.js';
 import { insert, select, updateReturning } from '../../server/db.js';
 import { buildSettingsAuditEntry } from '../../server/settings-audit.js';
+import { createEmergencyStopReleaseChallenge, verifyEmergencyStopReleaseChallenge } from '../../server/estop-release-confirmation.js';
 import { GRID_MAX_POSITION_CHOICES, GRID_RISK_PER_TRADE_CHOICES, GRID_DAILY_LOSS_CHOICES, GRID_MOMENTUM_PAUSE_CHOICES } from '../../shared/grid-settings.js';
 
 export default async function handler(req, res) {
@@ -15,6 +16,44 @@ export default async function handler(req, res) {
     let body = req.body || {};
     if (typeof body === 'string') body = JSON.parse(body);
     const current = (await select('dd_settings', 'id=eq.1&select=*'))?.[0] || {};
+
+    // The UI countdown is only a usability safeguard. The server-signed
+    // challenge enforces the minimum delay even for direct API requests.
+    if (body.requestEmergencyStopRelease === true) {
+      if (current.emergency_stop !== true) {
+        return res.status(409).json({ success: false, error: 'E-STOP is not active; no release challenge is available.' });
+      }
+      const challenge = createEmergencyStopReleaseChallenge(CONFIG.engineSecret);
+      return res.status(200).json({
+        success: true,
+        emergencyStopReleaseToken: challenge.token,
+        emergencyStopReleaseAvailableAt: challenge.availableAt,
+        emergencyStopReleaseExpiresAt: challenge.expiresAt
+      });
+    }
+
+    if (body.emergencyStop === false && current.emergency_stop === true) {
+      if (body.emergencyStopReleaseVerified !== true) {
+        return res.status(409).json({ success: false, error: 'Explicit system-state verification is required to release E-STOP.' });
+      }
+      const verification = verifyEmergencyStopReleaseChallenge(
+        body.emergencyStopReleaseToken,
+        CONFIG.engineSecret
+      );
+      if (!verification.valid) {
+        const error = verification.reason === 'countdown'
+          ? 'Server safety countdown has not completed; wait before releasing E-STOP.'
+          : verification.reason === 'expired'
+            ? 'E-STOP release challenge expired. Request a new challenge and repeat the countdown.'
+            : 'E-STOP release challenge is invalid. Request a new challenge and repeat the countdown.';
+        return res.status(409).json({
+          success: false,
+          error,
+          ...(verification.availableAt ? { emergencyStopReleaseAvailableAt: verification.availableAt } : {})
+        });
+      }
+    }
+
     const patch = {};
     if (body.enabled !== undefined) patch.enabled = !!body.enabled;
     if (body.autoTrade !== undefined) patch.auto_trade = !!body.autoTrade;
