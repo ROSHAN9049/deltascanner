@@ -62,19 +62,23 @@ export default async function handler(req, res) {
       deltaTestnetTradeRows,
       deltaTestnetTradeRowCount,
       deltaTestnetClosedTodayRows,
-      deltaTestnetClosedTodayCount
+      deltaTestnetClosedTodayCount,
+      deltaTestnetFillSyncStateRows,
+      deltaTestnetFillCount
     ] = privateDataAuthorized
       ? await Promise.all([
           select('dd_delta_positions', 'order=opened_at.desc&limit=500').catch(() => []),
           count('dd_delta_positions', 'status=eq.OPEN&select=id').catch(() => null),
           select('dd_orders', 'order_type=eq.delta_testnet_order&order=created_at.desc&limit=1000').catch(() => []),
           count('dd_orders', 'order_type=eq.delta_testnet_order&select=id').catch(() => null),
-          select('dd_delta_positions', 'status=in.(CLOSED,CLOSED_EXTERNALLY)&order=closed_at.desc&limit=200').catch(() => []),
-          count('dd_delta_positions', 'status=in.(CLOSED,CLOSED_EXTERNALLY)&select=id').catch(() => null),
+          select('dd_trades', 'order=closed_at.desc&limit=500').catch(() => []),
+          count('dd_trades', 'select=id').catch(() => null),
           select('dd_delta_positions', 'status=in.(CLOSED,CLOSED_EXTERNALLY)&closed_at=gte.' + todayStartQuery + '&order=closed_at.desc&limit=1000').catch(() => []),
-          count('dd_delta_positions', 'status=in.(CLOSED,CLOSED_EXTERNALLY)&closed_at=gte.' + todayStartQuery + '&select=id').catch(() => null)
+          count('dd_delta_positions', 'status=in.(CLOSED,CLOSED_EXTERNALLY)&closed_at=gte.' + todayStartQuery + '&select=id').catch(() => null),
+          select('dd_delta_fill_sync_state', 'id=eq.1&limit=1').catch(() => []),
+          count('dd_fills', 'select=id').catch(() => null)
         ])
-      : [[], null, [], null, [], null, [], null];
+      : [[], null, [], null, [], null, [], null, [], null];
 
     const [lastConfirmedSignalResult, signalsTodayCount] = await Promise.all([
       select(
@@ -154,6 +158,8 @@ export default async function handler(req, res) {
       deltaTestnetOrderCount: deltaTestnetOrderCount == null ? null : Number(deltaTestnetOrderCount),
       deltaTestnetTrades,
       deltaTestnetTradeRowCount: deltaTestnetTradeRowCount == null ? null : Number(deltaTestnetTradeRowCount),
+      deltaTestnetFillSyncState: Array.isArray(deltaTestnetFillSyncStateRows) ? deltaTestnetFillSyncStateRows[0] || null : null,
+      deltaTestnetFillCount: deltaTestnetFillCount == null ? null : Number(deltaTestnetFillCount),
       deltaTestnetClosedTodayCount: closedTodayCount,
       deltaTestnetClosedTodayPnl,
       deltaTestnetClosedTodayPnlComplete
