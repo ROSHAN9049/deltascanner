@@ -25,6 +25,7 @@ import { formatMemoryLog, MEMORY_LOG_INTERVAL_MS, summarizeMemoryUsage } from '.
 import { cleanupWebSocketListeners } from './websocket-lifecycle.mjs';
 import { evaluateGlobalPositionCap, routeUnlessGlobalPositionCapBlocked } from './global-position-cap.mjs';
 import { createConfirmedSignalTelegramNotifier } from './telegram-alerts.mjs';
+import { createLeaseManager, getLeaseTtlSeconds } from './lease-manager.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const n = v => Number.isFinite(+v) ? +v : 0;
@@ -162,6 +163,54 @@ export class DeltaEngine {
     ]));
     this.unsupportedBridgeWarnings = new Set();
     this.leaseId = crypto.randomUUID();
+    this.leaseManager = createLeaseManager({
+      leaseId: this.leaseId,
+      workerId: CONFIG.workerId,
+      ttlSeconds: getLeaseTtlSeconds(),
+      renewEveryMs: 15_000,
+      acquireFn: async ({ leaseId, workerId, ttlSeconds }) => {
+        const result = await db.rpc('acquire_dd_lease', {
+          p_lease_id: leaseId,
+          p_worker_id: workerId,
+          p_ttl_seconds: ttlSeconds
+        });
+        return Array.isArray(result)
+          ? result.some(value => value === true || value?.acquire_dd_lease === true)
+          : result === true;
+      },
+      renewFn: async ({ leaseId, workerId, ttlSeconds }) => {
+        const result = await db.rpc('acquire_dd_lease', {
+          p_lease_id: leaseId,
+          p_worker_id: workerId,
+          p_ttl_seconds: ttlSeconds
+        });
+        return Array.isArray(result)
+          ? result.some(value => value === true || value?.acquire_dd_lease === true)
+          : result === true;
+      },
+      releaseFn: async ({ leaseId }) => {
+        const result = await db.rpc('release_dd_lease', { p_lease_id: leaseId });
+        return Array.isArray(result)
+          ? result.some(value => value === true || value?.release_dd_lease === true)
+          : result === true;
+      },
+      onError: async error => {
+        await this.log('ERROR', 'Trading lease manager operation failed', {
+          workerId: CONFIG.workerId,
+          leaseTtlSeconds: this.leaseManager?.ttlSeconds ?? null,
+          leaseHeld: this.leaseManager?.isHeld ?? false,
+          error: String(error?.message || error).slice(0, 240)
+        });
+      },
+      onLeaseLost: async error => {
+        this.running = false;
+        await this.log('ERROR', 'Trading lease ownership lost; worker stopped its scan loop', {
+          workerId: CONFIG.workerId,
+          leaseTtlSeconds: this.leaseManager?.ttlSeconds ?? null,
+          error: String(error?.message || error).slice(0, 240)
+        });
+      }
+    });
     this.startedAt = Date.now();
     this.lastTickAt = 0;
     this.lastTickerFetch = 0;
@@ -240,29 +289,24 @@ export class DeltaEngine {
   }
 
   async acquireLease() {
-    const result = await db.rpc('acquire_dd_lease', {
-      p_lease_id: this.leaseId,
-      p_worker_id: CONFIG.workerId,
-      p_ttl_seconds: 30
+    await this.leaseManager.start();
+    await this.log('INFO', 'Trading lease acquired for worker lifetime', {
+      workerId: CONFIG.workerId,
+      leaseTtlSeconds: this.leaseManager.ttlSeconds,
+      renewalIntervalMs: this.leaseManager.renewEveryMs
     });
-    const ok = Array.isArray(result) ? result.some(x => x === true || x.acquire_dd_lease === true) : result === true;
-    if (!ok) throw new Error('Trading lease is held by another worker');
+    return true;
   }
 
   async releaseLease() {
-    try {
-      await db.rpc('release_dd_lease', { p_lease_id: this.leaseId });
-      return true;
-    } catch (error) {
-      try {
-        await this.log('WARN', 'Trading lease release failed; database TTL will expire the lease', {
-          workerId: CONFIG.workerId,
-          error: String(error?.message || error).slice(0, 240),
-          fallbackTtlSeconds: 30
-        });
-      } catch {}
-      return false;
+    const released = await this.leaseManager.release();
+    if (!released) {
+      await this.log('WARN', 'Trading lease release failed; database TTL will expire the lease', {
+        workerId: CONFIG.workerId,
+        leaseTtlSeconds: this.leaseManager.ttlSeconds
+      }).catch(() => {});
     }
+    return released;
   }
 
   async loadSettings() {
@@ -4119,8 +4163,9 @@ export class DeltaEngine {
   }
 
   async scanOnce() {
-    await this.acquireLease();
-    try {
+    if (!this.leaseManager.isHeld) {
+      throw new Error('Trading lease is not confirmed; scan and entry processing fail closed');
+    }
     await this.expireStaleSignalReservations();
     const settings = { ...{
       enabled: true, auto_trade: true, emergency_stop: false, continuous_mode: true,
@@ -4344,9 +4389,6 @@ export class DeltaEngine {
       ).length,
       gridEntrySafety: this.lastGridEntrySafety || null
     });
-    } finally {
-      await this.releaseLease();
-    }
   }
   async recordMemoryUsage(reason = 'periodic') {
     const memory = summarizeMemoryUsage(process.memoryUsage());
@@ -4394,10 +4436,20 @@ export class DeltaEngine {
   async run() {
     if (!CONFIG.signalOnly || CONFIG.directDeltaExecutionEnabled) throw new Error('Production direct execution disabled; scanner must be SIGNAL_ONLY');
     this.running = true;
+    try {
+      await this.acquireLease();
+    } catch (error) {
+      this.running = false;
+      throw error;
+    }
     this.startMemoryMonitor();
     this.startMaintenanceTasks();
     this.connectWs();
-    await this.log('INFO', 'Delta production SIGNAL_ONLY worker started', { workerId: CONFIG.workerId });
+    await this.log('INFO', 'Delta production SIGNAL_ONLY worker started', {
+      workerId: CONFIG.workerId,
+      leaseTtlSeconds: this.leaseManager.ttlSeconds,
+      leaseRenewalIntervalMs: this.leaseManager.renewEveryMs
+    });
     await this.hydrateSignalDedupCache();
     // Verify database headroom before the first scan can append a history batch.
     if (hasMaintenanceDatabaseUrl()) await this.checkDiskHealth();
@@ -4414,7 +4466,7 @@ export class DeltaEngine {
             await this.log('ERROR', 'DUPLICATE WORKER DETECTED', {
               workerId: CONFIG.workerId,
               consecutiveLeaseFailures: this.consecutiveLeaseFailures,
-              leaseTtlSeconds: 30,
+              leaseTtlSeconds: this.leaseManager.ttlSeconds,
               reason: 'Another worker repeatedly owns the trading lease; this worker made no scan or entry attempt'
             }).catch(logError => {
               console.warn('[DeltaScanner] Could not persist duplicate-worker diagnostic; cycle remains safely skipped:', String(logError?.message || logError));
