@@ -301,3 +301,11 @@ test('malformed REST snapshots are not treated as an empty account by the execut
   });
   await assert.rejects(executor.getOpenPositions(), /malformed/);
 });
+
+test('migration runner includes nullable Delta close details migration after external close migration', async () => {
+  const runner = await readFile(new URL('../scripts/apply-all-migrations.mjs', import.meta.url), 'utf8');
+  const externalCloseIndex = runner.indexOf("'db/migrations/20261026120000_delta_position_external_close.sql'");
+  const closeDetailsIndex = runner.indexOf("'db/migrations/20261029110000_delta_position_close_details.sql'");
+  assert.ok(externalCloseIndex >= 0);
+  assert.ok(closeDetailsIndex > externalCloseIndex);
+});
