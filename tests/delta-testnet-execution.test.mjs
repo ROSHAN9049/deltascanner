@@ -502,7 +502,7 @@ test('REST fill sync upserts idempotently and advances checkpoint only after the
 test('closed trade projection requires matching entry order, exit side and full quantity', async () => {
   const closedPosition = {
     id: 42, symbol: 'BTCUSD', status: 'CLOSED', close_source: 'private_websocket', realized_pnl_verified: true, strategy: 'MOMENTUM', side: 'BUY',
-    qty: '2', order_id: '123', entry_price: '60000', realized_pnl: '0.2',
+    qty: '2', entry_order_id: '123', order_id: 'bracket-stop-900', entry_price: '60000', realized_pnl: '0.2',
     opened_at: '2026-10-29T10:00:00.000Z', closed_at: '2026-10-29T10:30:00.000Z'
   };
   const fills = [
@@ -697,6 +697,7 @@ test('private WebSocket fill event updates the order row and records explicit fi
   const database = {
     async select(table) {
       if (table === 'dd_orders') return [orderRow];
+      if (table === 'dd_delta_positions') return [{ id: 'position-1', symbol: 'ETHUSD', status: 'OPEN', strategy: 'MOMENTUM' }];
       return [];
     },
     async update(table, query, patch) {
@@ -731,6 +732,7 @@ test('private WebSocket fill event updates the order row and records explicit fi
   assert.equal(orderRow.raw.fill_confirmed_by_private_websocket, true);
   assert.ok(orderRow.raw.fill_confirmed_by_private_websocket_at);
   assert.ok(updates.some(row => row.table === 'dd_orders' && row.patch.raw?.fill_confirmed_by_private_websocket === true));
+  assert.ok(updates.some(row => row.table === 'dd_delta_positions' && row.patch.entry_order_id === '2176469490'));
   assert.ok(logs.some(row => row.message.includes('private WebSocket confirmed order fill')));
 });
 
