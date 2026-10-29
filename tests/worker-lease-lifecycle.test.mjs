@@ -160,6 +160,25 @@ test('HTTP errors and explicit API failure both report exchange unhealthy', asyn
   assert.match(failedPayload.error, /success=false/);
 });
 
+
+test('malformed HTTP 200 payloads do not report exchange healthy', async () => {
+  for (const payload of [
+    {},
+    { error: 'upstream unavailable' },
+    { success: true },
+    { success: true, result: {} },
+    { success: null, result: [] }
+  ]) {
+    const probe = createDeltaTestnetHealthProbe({
+      now: () => 1_790_000_000_000,
+      async fetchImpl() { return httpResponse(200, payload); }
+    });
+    const result = await probe();
+    assert.equal(result.healthy, false, JSON.stringify(payload));
+    assert.match(result.error, /invalid health response/);
+  }
+});
+
 test('network errors, invalid JSON, and timed-out requests all fail closed', async () => {
   const networkFailure = createDeltaTestnetHealthProbe({
     async fetchImpl() { throw new Error('network unreachable'); }
