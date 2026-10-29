@@ -205,6 +205,10 @@ export function buildRiskGovernorGates({
   const confirmed = stageKnown && score !== null
     ? status(true, selected.stage === 'CONFIRMED' && score >= minimumScore)
     : status(false, false);
+  const normalizedScore = safeNum(selected.normalizedScore ?? details.normalizedScore);
+  const normalizedScoreStatus = normalizedScore === null
+    ? GATE_UNKNOWN
+    : status(true, normalizedScore >= 80);
 
   const symbol = String(selected.symbol || '').trim().toUpperCase();
   const routeSet = Array.isArray(routedSymbols)
@@ -372,7 +376,7 @@ export function buildRiskGovernorGates({
   const duplicatePositionQty = duplicatePosition
     ? safeNum(duplicatePosition.qty ?? duplicatePosition.quantity)
     : null;
-  // Only an explicit untrusted/failed Tradetron snapshot leaves an absent
+  // Only an explicit untrusted/failed Delta Testnet snapshot leaves an absent
   // symbol UNKNOWN. A healthy/unspecified API with no matching open position
   // does not manufacture an UNKNOWN result from the selected signal row.
   const positionApiFailed = entrySafetyTrusted === false;
@@ -391,11 +395,11 @@ export function buildRiskGovernorGates({
   const duplicateBlockReason = duplicateStatus === GATE_BLOCK
     ? duplicatePosition
       ? duplicatePositionQty === null
-        ? 'Open Tradetron position already uses this symbol; quantity unavailable'
-        : `Open Tradetron position already uses this symbol (qty ${duplicatePositionQty})`
+        ? 'Open DeltaScanner position already uses this symbol; quantity unavailable'
+        : `Open DeltaScanner position already uses this symbol (qty ${duplicatePositionQty})`
       : 'Worker reported an existing position or pending reservation for this symbol'
     : duplicateStatus === GATE_UNKNOWN
-      ? 'Tradetron position API failed; duplicate status unavailable'
+      ? 'Delta Testnet position API failed; duplicate status unavailable'
       : '';
 
   const qty = safeNum(selected.qty_contracts);
@@ -405,8 +409,9 @@ export function buildRiskGovernorGates({
     : GATE_UNKNOWN;
 
   return [
+    gateResult({ gate: 'Normalized score >= 80', result: normalizedScoreStatus, observedValue: normalizedScore, unit: 'score', threshold: 80, thresholdUnit: 'score', blockReason: normalizedScoreStatus === GATE_BLOCK ? 'Normalized score is below 80' : normalizedScoreStatus === GATE_UNKNOWN ? 'Normalized score unavailable; readiness fails closed' : '' }),
     gateResult({ gate: 'Signal CONFIRMED', result: confirmed, observedValue: selected.stage || null, unit: 'stage', threshold: minimumScore, thresholdUnit: 'minimum score', blockReason: confirmed === GATE_BLOCK ? 'Signal stage/score does not satisfy entry criteria' : '' }),
-    gateResult({ gate: 'Tradetron futures route', result: routeStatus, observedValue: symbol || null, unit: 'symbol', blockReason: routeStatus === GATE_BLOCK ? (entrySafetyTrusted === false ? 'Fresh complete Tradetron position snapshot is unavailable; new entries fail closed' : 'Symbol has no usable Tradetron route') : routeStatus === GATE_UNKNOWN ? 'Worker-confirmed route data unavailable' : '' }),
+    gateResult({ gate: 'Delta Testnet route', result: routeStatus, observedValue: symbol || null, unit: 'symbol', blockReason: routeStatus === GATE_BLOCK ? (entrySafetyTrusted === false ? 'Fresh complete Delta Testnet position snapshot is unavailable; new entries fail closed' : 'Symbol has no usable Delta Testnet route') : routeStatus === GATE_UNKNOWN ? 'Worker-confirmed route data unavailable' : '' }),
     gateResult({ gate: 'Fee + spread vs 1R', result: feeStatus, observedValue: feeRiskRatio, unit: 'R', threshold: feeRiskLimit, thresholdUnit: 'R', blockReason: feeStatus === GATE_BLOCK ? 'Fee/spread cost exceeds configured limit or is explicitly blocked' : feeStatus === GATE_UNKNOWN ? 'Cost ratio missing' : '' }),
     gateResult({ gate: '24h anti-chase', result: antiChaseStatus, observedValue: change24h, unit: '%', threshold: side === 'BUY' ? 15 : -15, thresholdUnit: '%', blockReason: antiChaseStatus === GATE_BLOCK ? 'Anti-chase gate blocked' : antiChaseStatus === GATE_UNKNOWN ? '24h change or side missing' : '' }),
     gateResult({ gate: `Entry candle range <= ${rangeLimit} ATR`, result: rangeStatus, observedValue: rangeAtr, unit: 'ATR', threshold: rangeLimit, thresholdUnit: 'ATR', blockReason: rangeBlockReason }),

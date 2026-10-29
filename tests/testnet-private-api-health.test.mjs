@@ -66,16 +66,22 @@ test('worker startup remains scan-only on private API failure and retries every 
   assert.match(index, /setInterval\(\(\) => \{/);
   assert.match(index, /DELTA_TESTNET_PRIVATE_API_RETRY_MS/);
   assert.match(index, /Private Delta Testnet API unavailable\. Continuing in SCAN-ONLY mode\./);
-  const privatePreflight = index.slice(
-    index.indexOf("if (CONFIG.deltaExecutionMode === 'testnet') {", index.indexOf('async function startupPreflight')),
-    index.indexOf("} else if (CONFIG.tradetronBridgeEnabled)", index.indexOf('async function startupPreflight'))
-  );
+  const startupStart = index.indexOf('async function startupPreflight() {');
+  const privateStart = index.indexOf("if (CONFIG.deltaExecutionMode === 'testnet') {", startupStart);
+  const preflightEnd = index.indexOf("  } catch (error) {", privateStart);
+  assert.ok(startupStart >= 0 && privateStart > startupStart && preflightEnd > privateStart);
+  const privatePreflight = index.slice(privateStart, preflightEnd);
   assert.doesNotMatch(privatePreflight, /process\.exit\(1\)/);
+  assert.doesNotMatch(privatePreflight, /tradetronBridgeEnabled/);
+  assert.match(privatePreflight, /verifyDeltaTestnetPrivateApi\('startup'\)/);
+  assert.match(privatePreflight, /public market scan-only/);
 });
 
 test('engine blocks Testnet entries and keeps scanning with an unavailable account snapshot', async () => {
   const engine = await readFile(new URL('../worker/engine.mjs', import.meta.url), 'utf8');
   assert.match(engine, /canExecuteDeltaTestnetOrders\(CONFIG\.deltaExecutionMode, this\.privateExecutionAvailable\)/);
-  assert.match(engine, /equity: 0, available: 0, unrealized: 0, positions: \[\], privateApiAvailable: false/);
+  assert.match(engine, /equity: 0,/);
+  assert.match(engine, /privateApiAvailable: false/);
+  assert.match(engine, /executionLocked: true/);
   assert.match(engine, /Delta Testnet entries blocked: private API is unavailable/);
 });

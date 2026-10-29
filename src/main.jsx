@@ -8,6 +8,7 @@ import { assessDeltaRange, fmtMultiplier, fmtPrice as fmtRawPrice, fmtRsi, safeN
 import { blockersDisplay, gateTooltip } from './gate-result.js';
 import { buildRiskGovernorGates, buildNormalizedScoreDiagnostic } from './risk-governor.js';
 import { normalizedScoreFromView as normalizedScoreFrom, visibleScoreFrom, passesScoreFilter, normalizedScoreTooltip, showAllPreferenceKey, readShowAllPreference, writeShowAllPreference } from './normalized-score-view.js';
+import { resolveDashboardRouteContext } from './dashboard-route-state.js';
 import { summarizeRotationLedger } from './rotation-ledger-state.js';
 import { formatHealthAge, formatLeaseRemaining, formatRetentionLastRun, getEmergencyStopTooltip, getGlobalPositionCapDisplay, getWorkerStatusDisplay } from './worker-status-display.js';
 
@@ -73,6 +74,7 @@ function App() {
   const [tab, setTab] = useState('dashboard');
   const [state, setState] = useState(null);
   const [market, setMarket] = useState([]);
+  const [testnetProducts, setTestnetProducts] = useState(null);
   const [health, setHealth] = useState(null);
   const [secret, setSecret] = useState('');
   const secretRef = useRef(secret);
@@ -107,7 +109,28 @@ function App() {
       }
     })().catch(e => setError(e.message || 'Dashboard data unavailable'));
 
-    await Promise.allSettled([marketRequest, stateRequest]);
+    // This separate catalog is fetched from Delta India TESTNET, not the
+    // production market feed. The server caches it and fails closed if
+    // pagination is incomplete or the exchange cannot be verified.
+    const routeRequest = (async () => {
+      try {
+        const response = await fetch('/api/market?type=testnet-products&t=' + Date.now(), { cache: 'no-store' });
+        const result = await response.json();
+        setTestnetProducts(response.ok && result?.success === true
+          ? result
+          : { ...(result && typeof result === 'object' ? result : {}), success: false, complete: false, result: [] });
+      } catch (e) {
+        setTestnetProducts({
+          success: false,
+          environment: 'DELTA_TESTNET',
+          complete: false,
+          result: [],
+          error: String(e?.message || 'Delta Testnet product catalog unavailable')
+        });
+      }
+    })();
+
+    await Promise.allSettled([marketRequest, stateRequest, routeRequest]);
   }, []);
   const unlockSession = async () => {
     const candidate = secretRef.current;
@@ -213,8 +236,23 @@ function App() {
   const selectedScalp = selected ? signals.find(x => x.symbol === selected.symbol && x.strategy === 'SCALPING') : null;
   const stale = !health?.tickFresh;
   const executionCoverage = state?.executionCoverage && typeof state.executionCoverage === 'object' && !Array.isArray(state.executionCoverage) ? state.executionCoverage : null;
-  const routeSafetyBlocked = false;
-  const routeSafetyReason = 'Delta Testnet position state unavailable';
+  const dashboardRouteContext = resolveDashboardRouteContext({
+    catalog: testnetProducts,
+    executionMode: executionCoverage?.deltaExecutionMode || 'unknown',
+    accountDataProtected,
+    positions: accountDataProtected ? null : positions,
+    openPositionCount: state?.deltaTestnetOpenPositionCount ?? null,
+    now: clock
+  });
+  const routeSafetyBlocked = !dashboardRouteContext.routeDataVerified ||
+    dashboardRouteContext.entrySafetyTrusted !== true;
+  const routeSafetyReason = !dashboardRouteContext.catalogFresh
+    ? 'Delta Testnet product catalog is unverified or stale'
+    : !dashboardRouteContext.testnetModeConfirmed
+      ? 'Worker execution mode is not confirmed as Testnet'
+      : dashboardRouteContext.entrySafetyTrusted !== true
+        ? 'Delta Testnet position data is locked or inconsistent'
+        : null;
   const openPositionSymbols = selectOpenPositionSymbols(positions);
 
   return <div className="terminal">
@@ -239,7 +277,7 @@ function App() {
     <nav>{tabs.map(([id,label]) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}{id === 'live' ? ' 🔒' : ''}</button>)}</nav>
     {accountDataProtected ? <div className="danger">🔒 ACCOUNT DATA LOCKED — Enter ENGINE_SECRET in Settings to view private positions, closed trades, P&amp;L, rotation ledger, Grid state, and account-specific logs. Hidden data is not zero.</div> : null}
 
-    {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} positions={positions} accountDataProtected={accountDataProtected} signals={signals} activity={state?.activity || null} deltaTestnetOpenPositionCount={state?.deltaTestnetOpenPositionCount ?? null} deltaTestnetOrders={deltaTestnetOrders} deltaTestnetOrderCount={state?.deltaTestnetOrderCount ?? null} deltaTestnetClosedTodayCount={state?.deltaTestnetClosedTodayCount ?? null} deltaTestnetClosedTodayPnl={state?.deltaTestnetClosedTodayPnl ?? null} deltaTestnetClosedTodayPnlComplete={state?.deltaTestnetClosedTodayPnlComplete === true} executionCoverage={executionCoverage} onInspect={setInspect} inspect={selected} logs={logs} />}
+    {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} positions={positions} accountDataProtected={accountDataProtected} signals={signals} activity={state?.activity || null} deltaTestnetOpenPositionCount={state?.deltaTestnetOpenPositionCount ?? null} deltaTestnetOrders={deltaTestnetOrders} deltaTestnetOrderCount={state?.deltaTestnetOrderCount ?? null} deltaTestnetClosedTodayCount={state?.deltaTestnetClosedTodayCount ?? null} deltaTestnetClosedTodayPnl={state?.deltaTestnetClosedTodayPnl ?? null} deltaTestnetClosedTodayPnlComplete={state?.deltaTestnetClosedTodayPnlComplete === true} executionCoverage={executionCoverage} routeContext={dashboardRouteContext} onInspect={setInspect} inspect={selected} logs={logs} />}
     {tab === 'rotation' && <Rotation ledger={rotationLedger} accountDataProtected={accountDataProtected} ledgerComplete={rotationLedgerComplete} ledgerRowCount={state?.ledgerRowCount ?? null} />}
     {tab === 'momentum' && <EngineView engine="MOMENTUM" signals={signals} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols} />}
     {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" strategy="MOMENTUM" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
@@ -323,7 +361,7 @@ function activityTimestamp(value) {
       })
     : '—';
 }
-function Dashboard({ market, settings, health, positions, accountDataProtected = false, signals, activity = null, deltaTestnetOpenPositionCount = null, deltaTestnetOrders = [], deltaTestnetOrderCount = null, deltaTestnetClosedTodayCount = null, deltaTestnetClosedTodayPnl = null, deltaTestnetClosedTodayPnlComplete = false, executionCoverage = null, onInspect, inspect, logs }) {
+function Dashboard({ market, settings, health, positions, accountDataProtected = false, signals, activity = null, deltaTestnetOpenPositionCount = null, deltaTestnetOrders = [], deltaTestnetOrderCount = null, deltaTestnetClosedTodayCount = null, deltaTestnetClosedTodayPnl = null, deltaTestnetClosedTodayPnlComplete = false, executionCoverage = null, routeContext = null, onInspect, inspect, logs }) {
   const deltaMode = String(executionCoverage?.deltaExecutionMode || '').trim().toLowerCase();
   const deltaModeEnabled = deltaMode === 'testnet';
   const deltaModeUnknown = !['testnet', 'disabled'].includes(deltaMode);
@@ -349,6 +387,21 @@ function Dashboard({ market, settings, health, positions, accountDataProtected =
   const visibleSignals=selectVisibleSignalRows(market,signals,DEFAULT_VISIBLE_MARKET_LIMIT);
   const visibleCoinCount=new Set(visibleSignals.map(s=>s.symbol)).size;
   const openSymbols=selectOpenPositionSymbols(positions);
+  const dashboardReadiness = new Map(visibleSignals.map(signal => {
+    const gateRows = buildRiskGovernorGates({
+      selected: signal,
+      health,
+      positions: accountDataProtected ? null : positions,
+      routedSymbols: routeContext?.routedSymbols || [],
+      routeDataVerified: routeContext?.routeDataVerified === true,
+      entrySafetyTrusted: routeContext?.entrySafetyTrusted === true
+    });
+    const failedGates = gateRows.filter(gate => gate.result !== 'PASS');
+    return [signal.symbol + ':' + signal.strategy, {
+      ready: gateRows.length > 0 && failedGates.length === 0,
+      failedGates
+    }];
+  }));
   return <>
     <section className="cards"><Card label="DELTA TESTNET EQUITY" value={equityText} sub={equitySub}/><Card label="DELTA OPEN POSITIONS" value={positionText} sub={posSub}/><Card label="DELTA OPEN ORDERS" value={orderText} sub={orderSub}/><Card label="TODAY'S P&L (DELTA)" value={pnlText} sub={pnlSub}/></section>
     <Panel title="Last Signal · System Activity">
@@ -361,10 +414,37 @@ function Dashboard({ market, settings, health, positions, accountDataProtected =
       <div className="muted">Visibility only. The signal total is the exact count of stored history observations, not every repeated scan calculation; unchanged observations may be sampled and writes can pause under database storage safeguards.</div>
     </Panel>
     <Panel title={'Full Delta Market Scanner · '+(market?.length||0)+' live perpetuals · Signal Only'}><MarketTable market={market} signals={signals} openPositionSymbols={openSymbols}/></Panel>
-    <section className="grid2"><RiskGovernor signals={signals} health={health} positions={accountDataProtected?null:positions} onInspect={onInspect} inspect={inspect} routedSymbols={[]} routeDataVerified={false} entrySafetyTrusted={null}/>
+    <section className="grid2"><RiskGovernor signals={signals} health={health} positions={accountDataProtected?null:positions} onInspect={onInspect} inspect={inspect} routedSymbols={routeContext?.routedSymbols || []} routeDataVerified={routeContext?.routeDataVerified === true} entrySafetyTrusted={routeContext?.entrySafetyTrusted === true}/>
       <Panel title={'Signal Stages · '+visibleCoinCount+' coins · WATCH → SETUP → CONFIRMED'}><div className="marketCount">Momentum and Scalping status for the same top {visibleCoinCount} coins shown in the market table.</div>
         <div className="tablewrap"><table><thead><tr><th>COIN</th><th>ENG</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>QTY</th><th>NOTIONAL</th><th>RISK</th><th>READY</th><th>WHY BLOCKED</th></tr></thead><tbody>
-        {visibleSignals.map(s=><tr key={s.symbol+':'+s.strategy}><td className="symbol">{s.symbol}</td><td>{s.strategy==='MOMENTUM'?'MOM':'SCALP'}</td><td>{s.snapshot_missing?'WATCH · NO DATA':s.stage}</td><td className={s.side==='BUY'?'up':s.side==='SELL'?'down':'muted'}>{s.side||'—'}</td><td><b>{s.snapshot_missing?'—':safeNum(s.score)===null?'NO DATA':safeNum(s.score).toFixed(0)+'/100'}</b></td><td>{s.snapshot_missing?'—':fmtQty(s.qty_contracts)}</td><td>{s.snapshot_missing?'—':money(s.notional)}</td><td>{s.snapshot_missing?'—':money(s.risk_usd)}</td><td className={s.snapshot_missing?'muted':s.ready&&!openSymbols.has(String(s.symbol||'').toUpperCase())?'up':'down'}>{s.snapshot_missing?'—':s.ready&&!openSymbols.has(String(s.symbol||'').toUpperCase())?'YES':'NO'}</td><td className="blocker" title={Array.isArray(s.gate_results)?s.gate_results.map(gateTooltip).join('\n'):'Structured gate results are not supplied by the worker; existing block reasons shown.'}>{s.snapshot_missing?'No signal snapshot available':openSymbols.has(String(s.symbol||'').toUpperCase())?'Open Delta Testnet position detected; duplicate entry blocked':Array.isArray(s.gate_results)?blockersDisplay(s.gate_results):fmtReasons(s.blocked_reasons)}</td></tr>)}
+        {visibleSignals.map(s => {
+          const positionOpen = openSymbols.has(String(s.symbol || '').toUpperCase());
+          const governor = dashboardReadiness.get(s.symbol + ':' + s.strategy);
+          const ready = s.ready === true && governor?.ready === true && !positionOpen;
+          const governorReasons = (governor?.failedGates || []).map(gate =>
+            gate.gate + ': ' + (gate.blockReason || gate.result)
+          );
+          const existingReasons = Array.isArray(s.gate_results)
+            ? blockersDisplay(s.gate_results)
+            : fmtReasons(s.blocked_reasons);
+          const whyBlocked = s.snapshot_missing
+            ? 'No signal snapshot available'
+            : positionOpen
+              ? 'Open Delta Testnet position detected; duplicate entry blocked'
+              : [...new Set([...governorReasons, existingReasons === '—' ? '' : existingReasons].filter(Boolean))].join(' · ') || '—';
+          return <tr key={s.symbol + ':' + s.strategy}>
+            <td className="symbol">{s.symbol}</td>
+            <td>{s.strategy === 'MOMENTUM' ? 'MOM' : 'SCALP'}</td>
+            <td>{s.snapshot_missing ? 'WATCH · NO DATA' : s.stage}</td>
+            <td className={s.side === 'BUY' ? 'up' : s.side === 'SELL' ? 'down' : 'muted'}>{s.side || '—'}</td>
+            <td><b>{s.snapshot_missing ? '—' : safeNum(s.score) === null ? 'NO DATA' : safeNum(s.score).toFixed(0) + '/100'}</b></td>
+            <td>{s.snapshot_missing ? '—' : fmtQty(s.qty_contracts)}</td>
+            <td>{s.snapshot_missing ? '—' : money(s.notional)}</td>
+            <td>{s.snapshot_missing ? '—' : money(s.risk_usd)}</td>
+            <td className={s.snapshot_missing ? 'muted' : ready ? 'up' : 'down'}>{s.snapshot_missing ? '—' : ready ? 'YES' : 'NO'}</td>
+            <td className="blocker" title={governorReasons.join('\n') || (Array.isArray(s.gate_results) ? s.gate_results.map(gateTooltip).join('\n') : 'Dashboard readiness requires every Risk Governor gate to PASS.')}>{whyBlocked}</td>
+          </tr>;
+        })}
         </tbody></table></div>
       </Panel>
     </section>
@@ -462,7 +542,7 @@ function EngineView({ engine, signals, entrySafetyBlocked = false, entrySafetyRe
   const rows = signals
     .filter(x => x.strategy === engine && passesScoreFilter(x, showAllSignals, 80))
     .sort((a, b) => (visibleScoreFrom(b) ?? -Infinity) - (visibleScoreFrom(a) ?? -Infinity));
-  return <Panel title={engine + ' · Closed-Candle Signal Engine'}>{entrySafetyBlocked ? <div className="danger">NEW ENTRIES BLOCKED — {entrySafetyReason || 'Delta Testnet position snapshot is not verified'}.</div> : null}<div className="marketCount">Showing {showAllSignals ? 'all signals' : 'signals with displayed score ≥80'}. Normalized score is used when available; original score is the fallback. Hover over the score to see both values.<label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', marginLeft: '12px', cursor: 'pointer' }}><input type="checkbox" checked={showAllSignals} onChange={event => setShowAllSignals(event.target.checked)} /> Show all signals</label></div><div className="tablewrap"><table><thead><tr><th>COIN</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>RSI</th><th>VOL</th><th>EMA21</th><th>ATR</th><th>SL</th><th>TP1</th><th>TP</th><th>QTY</th><th>RISK</th><th>BLOCKED / GATES</th></tr></thead><tbody>{rows.map(x => {
+  return <Panel title={engine + ' · Closed-Candle Signal Engine'}>{entrySafetyBlocked ? <div className="danger">NEW ENTRIES BLOCKED — {entrySafetyReason || 'Delta Testnet position snapshot is not verified'}.</div> : null}<div className="marketCount">Showing {showAllSignals ? 'all signals' : 'signals with normalized score ≥80'}. Rows without a normalized score are excluded unless Show all is enabled. Original score is diagnostic only; hover to compare both.<label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', marginLeft: '12px', cursor: 'pointer' }}><input type="checkbox" checked={showAllSignals} onChange={event => setShowAllSignals(event.target.checked)} /> Show all signals</label></div><div className="tablewrap"><table><thead><tr><th>COIN</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>RSI</th><th>VOL</th><th>EMA21</th><th>ATR</th><th>SL</th><th>TP1</th><th>TP</th><th>QTY</th><th>RISK</th><th>BLOCKED / GATES</th></tr></thead><tbody>{rows.map(x => {
     const hasGateResults = Array.isArray(x.gate_results);
     const positionOpen = openPositionSymbols.has(String(x.symbol || '').toUpperCase());
     const safetyReason = entrySafetyBlocked ? 'Delta Testnet entry safety blocked: ' + (entrySafetyReason || 'snapshot not verified') : positionOpen ? 'Open position detected; duplicate entry blocked' : '';

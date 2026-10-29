@@ -19,6 +19,7 @@ import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from '
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
 import { buildApiDerivedTrackingPlan, strategyForDerivedTrade } from './tradetron-derived-trades.mjs';
 import { deltaExecutor } from './execution/delta-executor.mjs';
+import { assertDirectDeltaExecutionMode, getExecutionRouteBlockReason } from './execution/execution-route-policy.mjs';
 import { canExecuteDeltaTestnetOrders, checkDeltaTestnetPrivateApi, isPrivateApiConnectivityError } from './execution/testnet-private-api-health.mjs';
 import { DEFAULT_CANDLE_CACHE_SYMBOL_LIMIT, pruneCandleCacheState, resolveCandleCacheSymbolLimit, selectTopCandleSymbols } from './candle-cache-policy.mjs';
 import { formatMemoryLog, MEMORY_LOG_INTERVAL_MS, summarizeMemoryUsage } from './memory-monitor.mjs';
@@ -1482,21 +1483,17 @@ export class DeltaEngine {
         return { equity: 0, available: 0, unrealized: 0, positions: [], privateApiAvailable: false };
       }
     }
-    if (CONFIG.tradetronBridgeEnabled || !this.privateExecutionAvailable) {
-      const equity = Math.max(0, Number(CONFIG.tradetronCapitalUsd) || 5000);
-      return { equity, available: equity, unrealized: 0, positions: [] };
-    }
-    const [wallet, positions] = await Promise.all([
-      this.adapter.wallet(),
-      this.adapter.marginedPositions()
-    ]);
-    const meta = wallet && wallet.meta ? wallet.meta : {};
-    const balances = Array.isArray(wallet) ? wallet : [];
-    const equity = n(meta.net_equity) || balances.reduce((s, x) => s + n(x.balance), 0);
-    const available = balances.reduce((s, x) => s + n(x.available_balance), 0);
-    const open = Array.isArray(positions) ? positions.filter(p => Math.abs(n(p.size)) > 0) : [];
-    const unrealized = open.reduce((s, p) => s + n(p.unrealized_pnl), 0);
-    return { equity, available, unrealized, positions: open };
+    // No external bridge or production-wallet fallback exists. When direct
+    // Delta Testnet is disabled, account data is unknown and entry sizing must
+    // fail closed instead of manufacturing capital or querying a live wallet.
+    return {
+      equity: 0,
+      available: 0,
+      unrealized: 0,
+      positions: [],
+      privateApiAvailable: false,
+      executionLocked: true
+    };
   }
 
   async recentTrades() {
@@ -1507,15 +1504,18 @@ export class DeltaEngine {
     const reasons = [...(signal.blocked || [])];
     const continuous = settings.continuous_mode !== false;
 
+    if (strategy === 'MOMENTUM' || strategy === 'SCALPING') {
+      const normalizedScore = Number(signal?.normalizedScore);
+      const normalizedScorePass =
+        Number.isFinite(normalizedScore) && normalizedScore >= 80;
+      if (!normalizedScorePass) {
+        reasons.push('Normalized score below 80 or unavailable');
+      }
+    }
+
     if (settings.emergency_stop) reasons.push('Emergency Stop');
     if (!settings.enabled || !settings.auto_trade) reasons.push('Auto OFF');
-    const routeBlock = CONFIG.deltaExecutionMode === 'testnet' ? '' : tradetronRouteBlocker({
-      signalOnly: CONFIG.signalOnly,
-      bridgeEnabled: CONFIG.tradetronBridgeEnabled,
-      strategy,
-      signal,
-      bridge: this.getTradetronBridgeForSymbol(signal.symbol)
-    });
+    const routeBlock = getExecutionRouteBlockReason(CONFIG.deltaExecutionMode);
     if (routeBlock) reasons.push(routeBlock);
     const duplicateBlocker = duplicatePositionBlocker(openPositions, signal.symbol);
     if (duplicateBlocker) reasons.push(duplicateBlocker);
@@ -2289,9 +2289,9 @@ export class DeltaEngine {
       this.candleCacheSymbols.has(String(ticker.symbol || '').toUpperCase())
     );
 
-    // Shadow pre-pass: compute normalized scores across this strategy universe.
-    // Analyse remains pure here; the existing sequential riskGate/cache loop
-    // below is preserved so normalized values cannot influence entry decisions.
+    // Shadow pre-pass computes normalized scores from unchanged feature data.
+    // The final analysis pass consumes each score for the normalized readiness
+    // gate; feature extraction in this pre-pass does not depend on stage/ready.
     const normalizationUniverses = { MOMENTUM: [], SCALPING: [] };
     for (const ticker of tickers) {
       const product = this.productMap.get(ticker.symbol);
@@ -2302,7 +2302,6 @@ export class DeltaEngine {
       const momShadow = analyse(ticker, product, c1, c5, c15, btc5, btc15, 'MOMENTUM', {
         minStopPct: n(settings.momentum_sl_min_pct || 0.95),
         rr: n(settings.momentum_rr || 2.0),
-        scoreMin: Math.max(80, n(settings.score_min || 80)),
         volumeMin: n(settings.volume_min || 0.75),
         antiChasePct: n(settings.anti_chase_pct || 15),
         rangeAtrMax: n(settings.range_atr_max || 4.0),
@@ -2315,7 +2314,6 @@ export class DeltaEngine {
       const scalpShadow = analyse(ticker, product, c1, c5, c15, btc5, btc15, 'SCALPING', {
         minStopPct: n(settings.scalping_sl_min_pct || 0.75),
         rr: n(settings.scalping_rr || 2.0),
-        scoreMin: Math.max(80, n(settings.score_min || 80)),
         volumeMin: n(settings.volume_min || 1.25),
         antiChasePct: n(settings.anti_chase_pct || 15),
         rangeAtrMax: n(settings.range_atr_max || 3.0),
@@ -2344,10 +2342,14 @@ export class DeltaEngine {
       const c1 = this.getCandles(ticker.symbol, '1m');
       const c5 = this.getCandles(ticker.symbol, '5m');
       const c15 = this.getCandles(ticker.symbol, '15m');
+      const momNormalizedScore =
+        normalizedScores.get('MOMENTUM:' + ticker.symbol) ?? null;
+      const scalpNormalizedScore =
+        normalizedScores.get('SCALPING:' + ticker.symbol) ?? null;
       const mom = analyse(ticker, p, c1, c5, c15, btc5, btc15, 'MOMENTUM', {
         minStopPct: n(settings.momentum_sl_min_pct || 0.95),
         rr: n(settings.momentum_rr || 2.0),
-        scoreMin: Math.max(80, n(settings.score_min || 80)),
+        normalizedScore: momNormalizedScore,
         volumeMin: n(settings.volume_min || 0.75),
         antiChasePct: n(settings.anti_chase_pct || 15),
         rangeAtrMax: n(settings.range_atr_max || 4.0),
@@ -2360,7 +2362,7 @@ export class DeltaEngine {
       const scalp = analyse(ticker, p, c1, c5, c15, btc5, btc15, 'SCALPING', {
         minStopPct: n(settings.scalping_sl_min_pct || 0.75),
         rr: n(settings.scalping_rr || 2.0),
-        scoreMin: Math.max(80, n(settings.score_min || 80)),
+        normalizedScore: scalpNormalizedScore,
         volumeMin: n(settings.volume_min || 1.25),
         antiChasePct: n(settings.anti_chase_pct || 15),
         rangeAtrMax: n(settings.range_atr_max || 3.0),
@@ -2370,8 +2372,8 @@ export class DeltaEngine {
         btcOverrideScoreMin: n(settings.btc_override_score_min || 90),
         btcOverrideVolumeMin: n(settings.btc_override_volume_min || 1.5)
       });
-      mom.normalizedScore = normalizedScores.get('MOMENTUM:' + mom.symbol) ?? null;
-      scalp.normalizedScore = normalizedScores.get('SCALPING:' + scalp.symbol) ?? null;
+      mom.normalizedScore = momNormalizedScore;
+      scalp.normalizedScore = scalpNormalizedScore;
       this.applyTestnetCandleFreshness(mom, '5m');
       this.applyTestnetCandleFreshness(scalp, '1m');
       this.recordAtrDiagnostics(mom);
@@ -2563,6 +2565,7 @@ export class DeltaEngine {
   }
 
   async executeSignal(signal, strategy, qty, clientOrderId) {
+    assertDirectDeltaExecutionMode(CONFIG.deltaExecutionMode);
     if (CONFIG.deltaExecutionMode === 'testnet') {
       if (!canExecuteDeltaTestnetOrders(CONFIG.deltaExecutionMode, this.privateExecutionAvailable)) {
         throw new Error('Delta Testnet private API unavailable; order execution is hard-locked in SCAN-ONLY mode');
@@ -2584,32 +2587,36 @@ export class DeltaEngine {
         throw error;
       }
     }
-    const bridge = this.getTradetronBridgeForSymbol(signal.symbol);
-    if (!bridge || !bridge.isConfigured()) throw new Error('Tradetron bridge route is unavailable');
-    return bridge.emitEntry({
-      symbol: signal.symbol,
-      side: signal.side,
-      qty,
-      entryPrice: signal.price,
-      sl: signal.sl,
-      tp1: signal.tp1,
-      tp: signal.tp,
-      executionId: clientOrderId,
-      strategy
-    });
+    throw new Error('Unreachable execution route: only direct Delta Testnet is permitted');
   }
 
   async openTrade(item, strategy, signal, account, settings, openPositions, trades) {
-    if (strategy === 'OPTIONS_BUY' || strategy === 'OPTIONS_SELL') {
-      // Testnet option orders are intentionally locked; never fall back to a
-      // legacy external strategy bridge when direct Testnet option execution is unavailable.
-      if (CONFIG.deltaExecutionMode === 'testnet') return false;
-      return this.openOptionTrade(item, signal, account, settings, openPositions, trades);
+    // A disabled/unknown mode is scan-only. Do not reach either legacy
+    // bridge routing or the adapter's production-host fallback.
+    if (CONFIG.deltaExecutionMode !== 'testnet') {
+      await this.log('WARN', 'Order entry blocked: only direct Delta Testnet execution is supported; scanner remains scan-only.', {
+        executionMode: CONFIG.deltaExecutionMode,
+        symbol: signal?.symbol ?? null,
+        strategy,
+        executionLocked: true
+      }).catch(() => {});
+      return false;
     }
+
+    if (strategy === 'OPTIONS_BUY' || strategy === 'OPTIONS_SELL') {
+      // Options are locked until direct Delta Testnet option execution has its
+      // own verified contract sizing and exchange-side protection path.
+      // Never route options through a legacy external strategy bridge.
+      return false;
+    }
+    const normalizedScore = Number(signal?.normalizedScore);
+    const normalizedScorePass =
+      Number.isFinite(normalizedScore) && normalizedScore >= 80;
+
     if (
       String(signal?.stage || '').toUpperCase() !== 'CONFIRMED' ||
       signal?.ready !== true ||
-      signal.score < n(settings.score_min || 80)
+      !normalizedScorePass
     ) return false;
 
     const validatedEntryPrice = Number(signal?.price);
@@ -2750,344 +2757,9 @@ export class DeltaEngine {
       }
     }
 
-    // When Tradetron bridge mode is enabled, Tradetron owns execution.
-    // Never fall through to direct Delta order placement, which would create
-    // duplicate execution paths.
-    if (CONFIG.tradetronBridgeEnabled) {
-      const bridge = this.getTradetronBridgeForSymbol(signal.symbol);
-      if (!bridge || !bridge.isConfigured()) {
-        const warningKey = String(signal.symbol || '').toUpperCase();
-        if (!this.unsupportedBridgeWarnings.has(warningKey)) {
-          this.unsupportedBridgeWarnings.add(warningKey);
-          const configuredSymbols = Array.isArray(CONFIG.tradetronBridgeRoutes) && CONFIG.tradetronBridgeRoutes.length
-            ? CONFIG.tradetronBridgeRoutes.flatMap(route => route.symbols)
-            : CONFIG.tradetronSupportedSymbols;
-          await this.log('WARN', 'Tradetron entry blocked: no configured bridge route or API token for symbol', {
-            symbol: warningKey,
-            strategy,
-            configuredSymbols
-          });
-        }
-        return false;
-      }
-      // One bridge execution per signal candle. This is stable across the
-      // worker's 15s scan loop, but permits a fresh signal on a later candle.
-      const signalCandle = Number(signal.signalCandleTs || signal.candleTs || 0);
-      const executionId = 'TT-' + strategy + '-' + signal.symbol + '-' + signal.side + '-' + (signalCandle > 0 ? signalCandle : Math.floor(Date.now() / 60000));
-      const prior = await this.findBridgeExecution(executionId);
-      if (prior?.state === 'DB_ERROR' || prior?.state === 'SIGNAL_SENT') return false;
-      if (prior?.state === 'PENDING') {
-        const ageMs = Date.now() - new Date(prior.updated_at || 0).getTime();
-        if (Number.isFinite(ageMs) && ageMs < 2 * 60 * 1000) return false;
-      }
-
-      // Tradetron owns positions in SIGNAL_ONLY mode. Avoid repeatedly firing
-      // the same symbol/engine while the scanner cannot read Tradetron's
-      // simulated positions back directly. The durable signal ledger provides
-      // a five-minute throttle while preserving unlimited opportunity slots.
-      if (CONFIG.signalOnly) {
-        const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-        const recent = await db.select(
-          'dd_orders',
-          'order_type=eq.tradetron_signal&symbol=eq.' + encodeURIComponent(signal.symbol) +
-          '&strategy=eq.' + encodeURIComponent(strategy) +
-          '&created_at=gte.' + encodeURIComponent(cutoff) +
-          '&select=id,state,created_at&limit=1'
-        );
-        if (recent?.length) return false;
-      }
-
-      try {
-        await db.upsert('dd_orders', {
-          id: executionId,
-          product_id: signal.productId,
-          symbol: signal.symbol,
-          side: signal.side === 'BUY' ? 'buy' : 'sell',
-          order_type: 'tradetron_signal',
-          size: gate.size.qty,
-          state: 'PENDING',
-          client_order_id: executionId,
-          role: 'ENTRY',
-          strategy,
-          execution_id: executionId,
-          raw: {
-            source: 'tradetron_bridge',
-            entry_price: signal.price,
-            stop_price: signal.sl,
-            tp_price: signal.tp
-          }
-        }, 'client_order_id');
-
-        const result = await bridge.emitEntry({
-          symbol: signal.symbol,
-          side: signal.side,
-          qty: gate.size.qty,
-          entryPrice: signal.price,
-          sl: signal.sl,
-          tp1: signal.tp1,
-          tp: signal.tp,
-          executionId,
-          strategy
-        });
-        if (!result.ok) {
-          const failureReason = classifyTradetronSignalFailure(result);
-          const failureDetail = sanitizeTradetronFailureDetail(
-            result?.reason || result?.error || result?.message || 'Tradetron bridge returned ok=false without a reason'
-          );
-          await db.update('dd_orders', 'client_order_id=eq.' + encodeURIComponent(executionId), {
-            state: 'FAILED',
-            failure_reason: failureReason,
-            failure_detail: failureDetail,
-            updated_at: iso()
-          }).catch(() => {});
-          await this.log('ERROR', 'Tradetron bridge signal failed; direct Delta entry blocked', {
-            symbol: signal.symbol, strategy, side: signal.side, executionId,
-            failureReason, failureDetail
-          });
-          return false;
-        }
-
-        await db.update('dd_orders', 'client_order_id=eq.' + encodeURIComponent(executionId), {
-          state: 'SIGNAL_SENT',
-          updated_at: iso(),
-          raw: {
-            source: 'tradetron_bridge',
-            entry_price: signal.price,
-            stop_price: signal.sl,
-            tp_price: signal.tp,
-            bridge_accepted: true,
-            bridge_response: result.response || null,
-            bridge_trigger_key: result.triggerKey || null,
-            bridge_entry_variable_key: result.entryVariableKey || null,
-            bridge_global_trigger_key: result.globalTriggerKey || result.triggerKey || null,
-            bridge_variable_keys: Array.isArray(result.payloadVariableKeys) ? result.payloadVariableKeys : [],
-            bridge_variable_count: Number(result.payloadVariableCount) || null,
-            bridge_dynamic: result.dynamic === true
-          }
-        });
-
-        await this.log('INFO', 'Tradetron production signal emitted; Delta direct entry skipped', {
-          symbol: signal.symbol, strategy, side: signal.side, qty: gate.size.qty,
-          entry: signal.price, sl: signal.sl, tp: signal.tp, executionId,
-          entryVariableKey: result.entryVariableKey || null,
-          globalTriggerKey: result.globalTriggerKey || result.triggerKey || null,
-          payloadVariableCount: Number(result.payloadVariableCount) || null,
-          payloadVariableKeys: Array.isArray(result.payloadVariableKeys) ? result.payloadVariableKeys : []
-        });
-        return true;
-      } catch (e) {
-        const failureReason = classifyTradetronSignalFailure(e);
-        const failureDetail = sanitizeTradetronFailureDetail(e?.message || e);
-        // Record diagnostics only; keep the pending-state and TTL behavior unchanged.
-        await db.update('dd_orders', 'client_order_id=eq.' + encodeURIComponent(executionId), {
-          failure_reason: failureReason,
-          failure_detail: failureDetail
-        }).catch(() => {});
-        await this.log('ERROR', 'Tradetron bridge exception; direct Delta entry blocked', {
-          symbol: signal.symbol, strategy, side: signal.side, executionId,
-          entryVariableKey: String(signal.symbol || '').trim().toUpperCase() + (signal.side === 'BUY' ? '_el' : '_es'),
-          globalTriggerKey: signal.side === 'BUY' ? 'api_buy' : 'api_sell',
-          failureReason, failureDetail
-        });
-        return false;
-      }
-    }
-
-    if (!this.privateExecutionAvailable) {
-      await this.log('WARN', 'Direct Delta execution unavailable; entry blocked while scanner remains online', {
-        symbol: signal.symbol, strategy, side: signal.side
-      });
-      return false;
-    }
-
-    const entryCid = clientId(strategy === 'MOMENTUM' ? 'DDM' : 'DDS', signal.symbol);
-    if (await this.findExistingClient(entryCid)) return false;
-
-    try { await this.adapter.setOrderLeverage(signal.productId, Math.min(3, Math.max(1, n(settings.max_leverage || 3)))); }
-    catch (e) { await this.log('WARN', 'Leverage configuration rejected; entry skipped', { symbol: signal.symbol, error: e.message }); return false; }
-
-    const entry = await this.adapter.placeOrder({
-      product_id: signal.productId,
-      size: gate.size.qty,
-      side: signal.side === 'BUY' ? 'buy' : 'sell',
-      order_type: 'market_order',
-      client_order_id: entryCid
-    });
-    const entryId = String(entry.id);
-    await db.upsert('dd_orders', {
-      id: entryId, product_id: signal.productId, symbol: signal.symbol,
-      side: signal.side === 'BUY' ? 'buy' : 'sell', order_type: 'market_order',
-      size: gate.size.qty, unfilled_size: n(entry.unfilled_size), state: entry.state,
-      client_order_id: entryCid, role: 'ENTRY', strategy, execution_id: entryCid, raw: entry
-    }, 'client_order_id');
-
-    const pos = await this.waitPosition(signal.symbol);
-    if (!pos) {
-      await this.log('ERROR', 'Entry order accepted but position not visible; no new trade state created', { symbol: signal.symbol, entryId });
-      return false;
-    }
-
-    const actualQty = Math.abs(n(pos.size));
-    const entryPrice = n(pos.entry_price) || signal.price;
-    const tick = n(signal.tickSize);
-    const sl = roundTick(signal.side === 'BUY' ? Math.min(signal.sl, entryPrice - tick) : Math.max(signal.sl, entryPrice + tick), tick);
-    const riskDistance = Math.abs(entryPrice - sl);
-    const tp1 = roundTick(signal.side === 'BUY' ? entryPrice + riskDistance : entryPrice - riskDistance, tick);
-    const requestedRisk = Math.abs(n(signal.tp) - n(signal.price));
-    const rr = riskDistance > 0 && requestedRisk > 0 ? Math.max(1, requestedRisk / Math.max(1e-12, Math.abs(n(signal.price) - n(signal.sl)))) : 2;
-    const tp = roundTick(signal.side === 'BUY' ? entryPrice + riskDistance * rr : entryPrice - riskDistance * rr, tick);
-    const executionId = entryCid;
-
-    try {
-      await this.adapter.placeBracket({
-        product_id: signal.productId,
-        stop_loss_order: { order_type: 'market_order', stop_price: String(sl) },
-        take_profit_order: { order_type: 'market_order', stop_price: String(tp) },
-        bracket_stop_trigger_method: 'mark_price'
-      });
-      const tp1Qty = Math.max(1, Math.min(actualQty, roundDown(actualQty * n(settings.tp1_pct || 33) / 100, 1)));
-      const tp1Cid = clientId('TP1', signal.symbol);
-      const tp1Order = await this.adapter.placeOrder({
-        product_id: signal.productId,
-        size: tp1Qty,
-        side: sideExit(signal.side),
-        order_type: 'market_order',
-        stop_order_type: 'take_profit_order',
-        stop_price: String(tp1),
-        stop_trigger_method: 'mark_price',
-        reduce_only: true,
-        client_order_id: tp1Cid
-      });
-      await db.upsert('dd_orders', {
-        id: String(tp1Order.id), product_id: signal.productId, symbol: signal.symbol,
-        side: sideExit(signal.side), order_type: 'market_order', stop_order_type: 'take_profit_order',
-        size: tp1Qty, unfilled_size: n(tp1Order.unfilled_size), state: tp1Order.state,
-        client_order_id: tp1Cid, role: 'TP1', strategy, execution_id: executionId, raw: tp1Order
-      }, 'client_order_id');
-
-      const openOrders = await this.adapter.openOrders();
-      const protectedOrders = (Array.isArray(openOrders) ? openOrders : []).filter(o =>
-        n(o.product_id) === n(signal.productId) &&
-        (o.stop_order_type || o.bracket_order || n(o.bracket_stop_loss_price) || n(o.bracket_take_profit_price))
-      );
-      if (!protectedOrders.length) throw new Error('Exchange-side protection not visible after bracket placement');
-
-      await db.insert('dd_positions', {
-        symbol: signal.symbol, product_id: signal.productId,
-        side: signal.side, qty: actualQty, entry_price: entryPrice, current_price: n(signal.price),
-        stop_price: sl, tp1_price: tp1, tp_price: tp, initial_qty: actualQty,
-        entry_order_id: entryId, client_order_id: entryCid, execution_id: executionId,
-        strategy, origin: 'ENGINE', protection_verified: true, tp1_order_id: String(tp1Order.id),
-        opened_at: iso()
-      });
-
-      await this.log('INFO', 'TESTNET trade opened with verified protection', {
-        symbol: signal.symbol, strategy, side: signal.side, qty: actualQty,
-        entry: entryPrice, sl, tp1, tp, risk: gate.size.risk, notional: gate.size.notional
-      });
-      return true;
-    } catch (e) {
-      await this.log('ERROR', 'Entry protection or persistence failed', {
-        symbol: signal.symbol, error: e.message, code: e.code || null, status: e.status || null, details: e.details || null
-      });
-      // The protection calls happen before local state persistence. If protection
-      // succeeded but DB persistence failed, leave the exchange-side protection
-      // intact and let reconcile recover the local state on the next cycle.
-      const hasProtectedState = await this.ensurePositionProtection({
-        symbol: signal.symbol, product_id: signal.productId, side: signal.side,
-        qty: actualQty, initial_qty: actualQty, entry_price: entryPrice,
-        stop_price: sl, tp1_price: tp1, tp_price: tp, strategy, execution_id: executionId,
-        protection_verified: false, opened_at: iso()
-      }, { size: actualQty, product_id: signal.productId, mark_price: entryPrice }, []).catch(() => false);
-      if (!hasProtectedState) {
-        await this.closePosition(signal.symbol, signal.productId, actualQty, signal.side, 'UNPROTECTED');
-      }
-      return false;
-    }
-  }
-
-  async openOptionTrade(item, signal, account, settings, openPositions, trades) {
-    // Defense in depth: never emit Options entry signals while the hard lock is active.
-    if (!isOptionsExecutionAllowed()) return false;
-    if (signal.stage !== 'CONFIRMED' || !signal.ready) return false;
-    if (!CONFIG.tradetronOptionsBridgeEnabled || !this.tradetronOptions.isConfigured()) return false;
-
-    const executionId = 'TT-OPT-' + String(signal.strategy) + '-' +
-      String(signal.symbol).replace(/[^A-Z0-9]/g, '').slice(0, 18) + '-' +
-      (Number(signal.expiryMs) || Math.floor(Date.now() / 60000));
-    const prior = await this.findBridgeExecution(executionId);
-    if (prior?.state === 'DB_ERROR' || prior?.state === 'SIGNAL_SENT') return false;
-
-    try {
-      const result = signal.strategy === 'OPTIONS_SELL'
-        ? await this.tradetronOptions.emitOptionSpread({
-            symbol: signal.symbol,
-            hedgeSymbol: signal.hedgeSymbol,
-            side: 'SELL',
-            qty: signal.qty,
-            entryPrice: signal.mark,
-            sl: signal.sl || 0,
-            tp1: signal.tp1 || 0,
-            tp: signal.tp || 0,
-            underlying: signal.underlyingAsset || signal.underlyingSymbol,
-            optionType: signal.optionType,
-            expiryMs: signal.expiryMs,
-            executionId
-          })
-        : await this.tradetronOptions.emitOptionEntry({
-            symbol: signal.symbol,
-            side: 'BUY',
-            qty: signal.qty,
-            entryPrice: signal.mark,
-            sl: signal.sl,
-            tp1: signal.tp1,
-            tp: signal.tp,
-            underlying: signal.underlyingAsset || signal.underlyingSymbol,
-            optionType: signal.optionType,
-            expiryMs: signal.expiryMs,
-            executionId
-          });
-
-      if (!result?.ok) return false;
-
-      await db.upsert('dd_orders', {
-        id: executionId,
-        product_id: n(signal.ticker?.product_id || signal.productId),
-        symbol: signal.symbol,
-        side: signal.strategy === 'OPTIONS_SELL' ? 'sell' : 'buy',
-        order_type: 'tradetron_signal',
-        size: signal.qty,
-        state: 'SIGNAL_SENT',
-        client_order_id: executionId,
-        role: 'ENTRY',
-        strategy: signal.strategy,
-        execution_id: executionId,
-        raw: {
-          source: 'tradetron_option_bridge',
-          option_type: signal.optionType,
-          underlying: signal.underlyingAsset || signal.underlyingSymbol,
-          hedge_symbol: signal.hedgeSymbol || null,
-          entry_price: signal.mark,
-          response: result.response || 'Ok'
-        }
-      }, 'client_order_id');
-
-      await this.log('INFO', 'Tradetron option signal emitted; direct Delta option execution skipped', {
-        symbol: signal.symbol,
-        strategy: signal.strategy,
-        underlying: signal.underlyingSymbol,
-        qty: signal.qty,
-        executionId
-      });
-      return true;
-    } catch (e) {
-      await this.log('WARN', 'Tradetron option signal failed', {
-        symbol: signal.symbol,
-        strategy: signal.strategy,
-        error: e.message
-      });
-      return false;
-    }
+    // The only supported futures entry route is the direct Delta Testnet
+    // branch above. No external bridge or production-wallet fallback exists.
+    return false;
   }
 
   async manageOptionPositionRow(row, exchangePosition, setting, openOrders = []) {

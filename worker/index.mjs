@@ -14,9 +14,6 @@ const githubActionsPublicScanOnly = isGithubActionsPublicScanOnly();
 
 if (!CONFIG.signalOnly || CONFIG.directDeltaExecutionEnabled) throw new Error('Scanner must run in SIGNAL_ONLY mode with direct Delta execution disabled.');
 if (!CONFIG.engineSecret) throw new Error('ENGINE_SECRET is required.');
-if (!CONFIG.tradetronBridgeEnabled && CONFIG.deltaExecutionMode !== 'testnet' && !githubActionsPublicScanOnly) {
-  throw new Error('Tradetron signal bridge is required in SIGNAL_ONLY mode unless Delta Testnet execution or explicit GitHub Actions public scan-only mode is enabled.');
-}
 if (!CONFIG.supabaseUrl || !CONFIG.supabaseAdminKey) throw new Error('SUPABASE_URL / Supabase server key is required.');
 
 const engine = new DeltaEngine();
@@ -181,34 +178,15 @@ async function startupPreflight() {
     await engine.adapter.health();
     console.log('[DeltaScanner] Delta India production public market API OK');
     if (CONFIG.deltaExecutionMode === 'testnet') {
-      // Private API failures are non-fatal to the public scanner; execution stays locked
-      // until a later wallet + positions verification succeeds.
+      // Private API failures are non-fatal to the public scanner; execution stays
+      // locked until a later wallet + positions verification succeeds.
       await verifyDeltaTestnetPrivateApi('startup');
-    } else if (CONFIG.tradetronBridgeEnabled) {
-      if (!engine.tradetron.isConfigured()) {
-        console.warn('[DeltaScanner] Tradetron bridge enabled but auth token is missing; signals are blocked');
-      } else {
-        console.log('[DeltaScanner] Tradetron signal bridge enabled; Delta direct execution HARD LOCKED');
-      }
-      engine.privateExecutionAvailable = false;
     } else if (githubActionsPublicScanOnly) {
       engine.privateExecutionAvailable = false;
-      console.log('[DeltaScanner] GitHub Actions public scan-only mode; Tradetron signal routing DISABLED; Delta direct execution HARD LOCKED');
+      console.log('[DeltaScanner] GitHub Actions public scan-only mode; all order routing DISABLED.');
     } else {
-      try {
-        await engine.adapter.wallet();
-        engine.privateExecutionAvailable = true;
-        console.log('[DeltaScanner] Delta authenticated TESTNET API OK');
-      } catch (error) {
-        const message = String(error?.message || error);
-        if (message.includes('ip_not_whitelisted_for_api_key')) {
-          engine.privateExecutionAvailable = false;
-          console.warn('[DeltaScanner] Delta private API unavailable; scanner will remain online in public-data-only fail-safe mode');
-          console.error('[DeltaScanner] Railway outbound public IP:', await getOutboundIp());
-        } else {
-          throw error;
-        }
-      }
+      engine.privateExecutionAvailable = false;
+      console.log('[DeltaScanner] DELTA_EXECUTION_MODE=disabled; public market scan-only; direct Delta Testnet entries locked, no external bridge.');
     }
     return true;
   } catch (error) {

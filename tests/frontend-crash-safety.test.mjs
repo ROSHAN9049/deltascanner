@@ -16,7 +16,7 @@ test('market table no longer invokes the deleted Tradetron route helper', async 
 test('Dashboard gets executionCoverage and safely normalizes API collections', async () => {
   const source = await read('../src/main.jsx');
   assert.ok(source.includes('executionCoverage={executionCoverage}'));
-  assert.ok(source.includes('executionCoverage = null, onInspect'));
+  assert.ok(source.includes('executionCoverage = null, routeContext = null, onInspect'));
   assert.ok(source.includes("const trades = Array.isArray(state?.deltaTestnetTrades) ? state.deltaTestnetTrades : [];"));
   assert.ok(source.includes("const positions = Array.isArray(state?.deltaTestnetPositions) ? state.deltaTestnetPositions : [];"));
   assert.ok(source.includes("const rotationLedger = Array.isArray(state?.ledger) ? state.ledger : [];"));
@@ -46,4 +46,20 @@ test('engine state API exposes the Delta execution shape; frontend has no direct
   assert.equal(source.includes('tradetronDeveloperSnapshots'), false);
   assert.equal(source.includes('tradetronEvents'), false);
   assert.equal(source.includes('tradetronRouting'), false);
+});
+
+test('dashboard readiness consumes verified Delta Testnet route evidence and fails closed when absent', async () => {
+  const source = await read('../src/main.jsx');
+  const marketApi = await read('../api/market.js');
+  const routeState = await read('../src/dashboard-route-state.js');
+
+  assert.ok(source.includes("fetch('/api/market?type=testnet-products&t=' + Date.now()"));
+  assert.ok(source.includes("import { resolveDashboardRouteContext } from './dashboard-route-state.js';"));
+  assert.ok(source.includes('routeContext?.routeDataVerified === true'));
+  assert.ok(source.includes('routeContext?.entrySafetyTrusted === true'));
+  assert.equal(source.includes('routedSymbols={[]} routeDataVerified={false}'), false);
+  assert.ok(marketApi.includes("type === 'testnet-products'"));
+  assert.ok(marketApi.includes('getDeltaTestnetProducts'));
+  assert.ok(routeState.includes('catalogAgeMs <= TESTNET_ROUTE_CATALOG_MAX_AGE_MS'));
+  assert.ok(routeState.includes('actualOpenRowCount === currentOpenCount'));
 });

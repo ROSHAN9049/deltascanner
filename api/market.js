@@ -1,4 +1,5 @@
 import { publicGet } from '../server/public.js';
+import { getDeltaTestnetProducts } from '../server/delta-testnet-products.js';
 
 const PAGE_SIZE = 100;
 const MAX_PRODUCT_PAGES = 20;
@@ -40,6 +41,10 @@ export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate');
   try {
     const type = String(req.query?.type || 'tickers');
+    if (type === 'testnet-products') {
+      const catalog = await getDeltaTestnetProducts();
+      return res.status(catalog.success ? 200 : 503).json(catalog);
+    }
     if (type === 'products') {
       const rows = await allLivePerpetualProducts();
       return res.status(200).json({

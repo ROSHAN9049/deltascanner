@@ -13,7 +13,7 @@ test('Options entry hard-lock is false independent of route configuration', () =
   assert.match(OPTIONS_EXECUTION_LOCK_REASON, /maximum loss/i);
 });
 
-test('actual engine refuses BUY and SELL Options signals without emitting bridge calls', async () => {
+test('actual engine refuses BUY and SELL Options through the only supported entry method', async () => {
   const engine = new DeltaEngine();
   let buyCalls = 0;
   let spreadCalls = 0;
@@ -30,6 +30,7 @@ test('actual engine refuses BUY and SELL Options signals without emitting bridge
   const common = {
     stage: 'CONFIRMED',
     ready: true,
+    normalizedScore: 95,
     symbol: 'C-BTC-80000-311226',
     qty: 1,
     mark: 100,
@@ -37,11 +38,13 @@ test('actual engine refuses BUY and SELL Options signals without emitting bridge
     expiryMs: Date.UTC(2026, 11, 31)
   };
 
-  const buyResult = await engine.openOptionTrade(
-    {}, { ...common, strategy: 'OPTIONS_BUY' }, {}, {}, [], []
+  assert.equal(typeof engine.openOptionTrade, 'undefined');
+
+  const buyResult = await engine.openTrade(
+    {}, 'OPTIONS_BUY', { ...common, strategy: 'OPTIONS_BUY' }, {}, {}, [], []
   );
-  const sellResult = await engine.openOptionTrade(
-    {}, { ...common, strategy: 'OPTIONS_SELL', hedgeSymbol: 'C-BTC-82000-311226' }, {}, {}, [], []
+  const sellResult = await engine.openTrade(
+    {}, 'OPTIONS_SELL', { ...common, strategy: 'OPTIONS_SELL', hedgeSymbol: 'C-BTC-82000-311226' }, {}, {}, [], []
   );
 
   assert.equal(buyResult, false);

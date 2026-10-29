@@ -1,3 +1,5 @@
+// NOTE: Tests not executed by AI. User runs locally with:
+//   node --test tests/risk-governor.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildRiskGovernorGates } from '../src/risk-governor.js';
@@ -14,7 +16,7 @@ test('missing risk observations fail closed for range and EMA gates instead of d
     routeDataVerified: false
   });
   assert.equal(gate(rows, 'Signal CONFIRMED'), GATE_PASS);
-  assert.equal(gate(rows, 'Tradetron futures route'), GATE_UNKNOWN);
+  assert.equal(gate(rows, 'Delta Testnet route'), GATE_UNKNOWN);
   assert.equal(gate(rows, 'Fee + spread vs 1R'), GATE_UNKNOWN);
   assert.equal(gate(rows, '24h anti-chase'), GATE_UNKNOWN);
   assert.equal(gate(rows, 'Entry candle range <= 4 ATR'), GATE_BLOCK);
@@ -36,7 +38,7 @@ test('route and entry are blocked when Tradetron position snapshots are untruste
     routeDataVerified: true,
     entrySafetyTrusted: false
   });
-  assert.equal(gate(rows, 'Tradetron futures route'), GATE_BLOCK);
+  assert.equal(gate(rows, 'Delta Testnet route'), GATE_BLOCK);
   assert.equal(gate(rows, 'Duplicate symbol'), GATE_UNKNOWN);
 });
 
@@ -61,7 +63,7 @@ test('observed values can pass only the gate they actually verify', () => {
     routeDataVerified: true
   });
   for (const name of [
-    'Signal CONFIRMED','Tradetron futures route','Fee + spread vs 1R','24h anti-chase',
+    'Signal CONFIRMED','Delta Testnet route','Fee + spread vs 1R','24h anti-chase',
     'Entry candle range <= 4 ATR','EMA21 distance <= 3.50 ATR','BTC regime','Spread',
     'Fresh closed candles','API / worker healthy','Duplicate symbol','Margin / min size'
   ]) assert.equal(gate(rows,name), GATE_PASS, name + ' expected PASS');

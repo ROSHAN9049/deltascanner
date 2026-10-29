@@ -1,3 +1,5 @@
+// NOTE: Tests not executed by AI. User runs locally with:
+//   node --test tests/normalized-score-view.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -11,19 +13,22 @@ import {
   writeShowAllPreference
 } from '../src/normalized-score-view.js';
 
-test('dashboard score falls back to original score when normalizedScore is missing', () => {
+test('missing normalized score retains a display fallback but fails the normal filter', () => {
   const signal = { symbol: 'BTCUSD', score: 91, details: {} };
   assert.equal(normalizedScoreFromView(signal), null);
   assert.equal(originalScoreFromView(signal), 91);
   assert.equal(visibleScoreFrom(signal), 91);
+  assert.equal(passesScoreFilter(signal), false);
   assert.equal(normalizedScoreTooltip(signal), 'Normalized: — (Original: 91.00)');
 });
 
 test('dashboard threshold is inclusive at 80 and prefers normalized score over original', () => {
   assert.equal(passesScoreFilter({ score: 65, details: { normalizedScore: 80 } }), true);
   assert.equal(passesScoreFilter({ score: 95, details: { normalizedScore: 79.99 } }), false);
-  assert.equal(passesScoreFilter({ score: 80 }), true);
+  assert.equal(passesScoreFilter({ score: 80 }), false);
   assert.equal(passesScoreFilter({ score: 79.99 }), false);
+  assert.equal(passesScoreFilter({ score: 100, details: { normalizedScore: null } }), false);
+  assert.equal(passesScoreFilter({ score: 100, details: { normalizedScore: 80 } }), true);
 });
 
 test('Show all bypasses the score filter including rows with no score', () => {
