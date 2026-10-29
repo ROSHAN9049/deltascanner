@@ -330,14 +330,16 @@ export class DeltaTestnetTracker {
       strategy,
       opened_at: active?.opened_at || row.opened_at || nowIso(),
       closed_at: null,
+      // Never preserve an old mark or UPL when the latest
+      // WebSocket position payload does not contain that field.
+      current_price: row.current_price ?? null,
+      unrealized_pnl: row.unrealized_pnl ?? null,
       updated_at: nowIso()
     };
     if (row.order_id !== null) patch.order_id = String(row.order_id);
     if (row.product_id !== null) patch.product_id = row.product_id;
     if (row.client_order_id !== null) patch.client_order_id = String(row.client_order_id);
     if (row.entry_price !== null) patch.entry_price = row.entry_price;
-    if (row.current_price !== null) patch.current_price = row.current_price;
-    if (row.unrealized_pnl !== null) patch.unrealized_pnl = row.unrealized_pnl;
     if (row.realized_pnl !== null) patch.realized_pnl = row.realized_pnl;
     if (row.sl_price !== null) patch.sl_price = row.sl_price;
     if (row.tp_price !== null) patch.tp_price = row.tp_price;

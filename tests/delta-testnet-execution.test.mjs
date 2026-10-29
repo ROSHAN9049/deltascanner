@@ -250,6 +250,70 @@ test('WebSocket position normalizer handles signed size and strategy ids', () =>
   assert.equal(strategyFromClientOrderId('DDG-ETHUSD-123'), 'GRID');
 });
 
+test('WebSocket position update refreshes positive exchange UPL without changing its sign', async () => {
+  const position = {
+    id: 7, symbol: 'XAUTUSD', side: 'BUY', qty: 37, status: 'OPEN',
+    entry_price: 3871.87, current_price: 4000, unrealized_pnl: -6.73,
+    strategy: 'MOMENTUM', opened_at: '2026-10-28T00:00:00.000Z'
+  };
+  const updates = [];
+  const database = {
+    async select(table) { return table === 'dd_delta_positions' ? [{ ...position }] : []; },
+    async update(table, query, patch) {
+      updates.push({ table, query, patch: { ...patch } });
+      if (table === 'dd_delta_positions') Object.assign(position, patch);
+      return [];
+    },
+    async log() {}
+  };
+  const tracker = new DeltaTestnetTracker({
+    env: demoEnv(), database, executor: {}, WebSocketImpl: class {}
+  });
+  tracker.stopped = false;
+
+  await tracker.processPosition({
+    product_symbol: 'XAUTUSD', size: '37', entry_price: '3871.87',
+    mark_price: '4050', unrealized_pnl: '6.34'
+  });
+
+  assert.equal(position.current_price, 4050);
+  assert.equal(position.unrealized_pnl, 6.34);
+  assert.ok(updates.some(row => row.patch.unrealized_pnl === 6.34));
+});
+
+test('WebSocket position update clears stale mark and UPL when fields are missing', async () => {
+  const position = {
+    id: 8, symbol: 'XAUTUSD', side: 'BUY', qty: 37, status: 'OPEN',
+    entry_price: 3871.87, current_price: 4050, unrealized_pnl: -6.73,
+    strategy: 'MOMENTUM', opened_at: '2026-10-28T00:00:00.000Z'
+  };
+  let latestPatch = null;
+  const database = {
+    async select(table) { return table === 'dd_delta_positions' ? [{ ...position }] : []; },
+    async update(table, query, patch) {
+      if (table === 'dd_delta_positions') {
+        latestPatch = { ...patch };
+        Object.assign(position, patch);
+      }
+      return [];
+    },
+    async log() {}
+  };
+  const tracker = new DeltaTestnetTracker({
+    env: demoEnv(), database, executor: {}, WebSocketImpl: class {}
+  });
+  tracker.stopped = false;
+
+  await tracker.processPosition({
+    product_symbol: 'XAUTUSD', size: '37', entry_price: '3871.87'
+  });
+
+  assert.equal(latestPatch.current_price, null);
+  assert.equal(latestPatch.unrealized_pnl, null);
+  assert.equal(position.current_price, null);
+  assert.equal(position.unrealized_pnl, null);
+});
+
 test('bracket entry fails closed if the live mark has crossed the requested SL/TP bracket', async () => {
   const runtime = fakeRuntime({ markPrice: 61000 });
   const executor = createDeltaExecutor({
