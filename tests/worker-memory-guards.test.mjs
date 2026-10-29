@@ -47,21 +47,24 @@ test('both public and private WebSockets detach listeners on teardown', async ()
   assert.match(tracker, /cleanupWebSocketListeners\(socket\)/);
 });
 
-test('lease contention is a non-fatal WARN and the worker retries the next cycle', async () => {
+test('lease contention is logged and stops the scan loop fail-closed', async () => {
   const engine = await read('../worker/engine.mjs');
   const runStart = engine.indexOf('  async run() {');
   const runEnd = engine.indexOf('  async stop()', runStart);
   assert.ok(runStart >= 0 && runEnd > runStart, 'worker run loop should be present');
   const run = engine.slice(runStart, runEnd);
   assert.ok(run.includes("if (message.includes('Trading lease is held by another worker'))"),
-    'lease acquisition failures must be handled as a skipped cycle');
+    'lease contention must be explicitly handled');
   assert.ok(run.includes("await this.log('WARN', 'Worker cycle skipped safely: trading lease is held by another worker'"),
     'lease skips must be visible at WARN level');
-  assert.ok(run.includes('await sleep(15000);'),
-    'lease contention must yield until the next scan cycle');
   const leaseBranchStart = run.indexOf("if (message.includes('Trading lease is held by another worker'))");
-  const leaseBranchEnd = run.indexOf("} else {\n          this.consecutiveLeaseFailures", leaseBranchStart);
+  const leaseBranchEnd = run.indexOf("} else {", leaseBranchStart);
   assert.ok(leaseBranchStart >= 0 && leaseBranchEnd > leaseBranchStart, 'lease branch should be bounded');
-  assert.doesNotMatch(run.slice(leaseBranchStart, leaseBranchEnd), /\\bthrow\\b/,
-    'the lease branch must not throw and crash the scan loop');
+  const leaseBranch = run.slice(leaseBranchStart, leaseBranchEnd);
+  assert.match(leaseBranch, /this\\.running = false;/,
+    'lease contention must stop the scan loop so no further cycle can route entries');
+  assert.doesNotMatch(leaseBranch, /\\bthrow\\b/,
+    'the lease branch must be handled without throwing out of the scan loop');
+  assert.ok(run.includes("await this.releaseLease();"),
+    'the worker must release its lifetime lease during shutdown');
 });
