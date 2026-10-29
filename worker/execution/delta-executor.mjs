@@ -278,6 +278,159 @@ export function createDeltaExecutor({
     return [...unique.values()];
   }
 
+  function timestampMs(value) {
+    if (value === undefined || value === null || value === '') return null;
+    if (typeof value === 'number' || /^\d+(?:\.\d+)?$/.test(String(value).trim())) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric) || numeric <= 0) return null;
+      if (numeric >= 1e14) return numeric / 1000; // epoch microseconds
+      if (numeric >= 1e11) return numeric;       // epoch milliseconds
+      return numeric * 1000;                     // epoch seconds
+    }
+    const parsed = Date.parse(String(value));
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function timestampMicros(value) {
+    const ms = timestampMs(value);
+    return ms === null ? null : Math.round(ms * 1000);
+  }
+
+  async function getRecentCloseDetails(symbol, openedAt = null) {
+    const normalizedSymbol = stringOrEmpty(symbol).toUpperCase();
+    const product = await resolveProduct(normalizedSymbol);
+    const clockMs = now();
+    const openedMs = timestampMs(openedAt);
+    const startMs = openedMs === null
+      ? clockMs - 24 * 60 * 60 * 1000
+      : Math.max(clockMs - 24 * 60 * 60 * 1000, Math.min(openedMs, clockMs));
+    const startTime = Math.round(startMs * 1000);
+    const endTime = Math.round(clockMs * 1000);
+
+    async function fetchHistory(path, targetOrderId = null) {
+      const rows = [];
+      let after = '';
+      let previousAfter = '';
+      let complete = false;
+      for (let page = 0; page < 10; page += 1) {
+        const params = {
+          product_ids: String(product.id),
+          contract_types: 'perpetual_futures',
+          start_time: startTime,
+          end_time: endTime,
+          page_size: 50
+        };
+        if (after) params.after = after;
+        const response = await request('GET', path, params);
+        if (!Array.isArray(response?.result)) {
+          throw new Error('Delta Testnet history response is malformed for ' + path);
+        }
+        rows.push(...response.result);
+        if (targetOrderId !== null && rows.some(row =>
+          String(row?.id ?? '') === String(targetOrderId)
+        )) {
+          complete = true;
+          break;
+        }
+        const nextAfter = stringOrEmpty(response.meta?.after);
+        if (response.result.length === 0 || !nextAfter) {
+          complete = true;
+          break;
+        }
+        // Repeated cursors indicate an incomplete response; never derive
+        // aggregates from a possibly truncated order's fill history.
+        if (nextAfter === after || nextAfter === previousAfter) break;
+        previousAfter = after;
+        after = nextAfter;
+      }
+      return { rows, complete };
+    }
+
+    const fillHistory = await fetchHistory('/v2/fills');
+    const fills = fillHistory.rows;
+    const matchingFills = fills.filter(fill =>
+      (!fill?.product_id || Number(fill.product_id) === product.id) &&
+      (!fill?.product_symbol ||
+        stringOrEmpty(fill.product_symbol).toUpperCase() === normalizedSymbol)
+    );
+    const closeFills = matchingFills.filter(fill =>
+      numberOrNull(fill?.meta_data?.new_position?.size) === 0
+    );
+    closeFills.sort((a, b) =>
+      (timestampMicros(b?.created_at) ?? 0) - (timestampMicros(a?.created_at) ?? 0)
+    );
+    const closeFill = closeFills[0];
+    if (!closeFill) return null;
+
+    const orderId = closeFill.order_id ?? null;
+    const orderFills = orderId === null ? [] : matchingFills.filter(fill =>
+      String(fill?.order_id ?? '') === String(orderId)
+    );
+    const pricedFills = orderFills.map(fill => ({
+      price: numberOrNull(fill?.price),
+      qty: numberOrNull(fill?.size)
+    }));
+    const hasCompletePrices = fillHistory.complete &&
+      orderId !== null &&
+      pricedFills.length > 0 &&
+      pricedFills.every(fill =>
+        fill.price !== null && fill.price > 0 &&
+        fill.qty !== null && Math.abs(fill.qty) > 0
+      );
+    const totalQty = pricedFills.reduce(
+      (sum, fill) => sum + Math.abs(fill.qty ?? 0), 0
+    );
+    const exitPrice = hasCompletePrices && totalQty > 0
+      ? pricedFills.reduce(
+          (sum, fill) => sum + fill.price * Math.abs(fill.qty), 0
+        ) / totalQty
+      : null;
+
+    const commissions = orderFills.map(fill => numberOrNull(fill?.commission));
+    const currencies = [...new Set(orderFills
+      .map(fill => stringOrEmpty(fill?.settling_asset_symbol).toUpperCase())
+      .filter(Boolean))];
+    const fees = fillHistory.complete &&
+      orderId !== null && commissions.length > 0 &&
+      commissions.every(value => value !== null) && currencies.length === 1
+      ? commissions.reduce((sum, value) => sum + value, 0)
+      : null;
+    const feeCurrency = currencies.length === 1 ? currencies[0] : null;
+    const realizedPnl = numberOrNull(closeFill?.meta_data?.new_position?.realized_pnl);
+
+    let orderHistory = null;
+    if (orderId !== null) {
+      try {
+        const history = await fetchHistory('/v2/orders/history', orderId);
+        orderHistory = history.rows.find(row =>
+          String(row?.id ?? '') === String(orderId)
+        ) || null;
+      } catch (error) {
+        await logExecutor('WARN', '[Executor] Close order history unavailable; reason may remain unknown', {
+          symbol: normalizedSymbol,
+          closeOrderId: String(orderId),
+          error: String(error?.message || error).slice(0, 200)
+        });
+      }
+    }
+
+    const clientOrderId = orderHistory?.client_order_id ??
+      closeFill?.client_order_id ?? null;
+    return {
+      exit_price: exitPrice,
+      fees,
+      fee_currency: feeCurrency,
+      realized_pnl: realizedPnl,
+      close_order_id: orderId === null ? null : String(orderId),
+      client_order_id: clientOrderId,
+      stop_order_type: orderHistory?.stop_order_type ?? null,
+      order_type: orderHistory?.order_type ?? closeFill?.meta_data?.order_type ?? null,
+      fill_type: closeFill?.fill_type ?? null,
+      reduce_only: orderHistory?.reduce_only ?? null,
+      close_order_history_found: Boolean(orderHistory)
+    };
+  }
+
   async function getWalletSnapshot() {
     return request('GET', '/v2/wallet/balances', {});
   }
@@ -822,6 +975,8 @@ export function createDeltaExecutor({
     getOpenPositions,
     getOpenOrders,
     getAccountSnapshot,
+    getRecentCloseDetails,
+    getProductMetadata: resolveProduct,
     assertConfigured
   });
 }
