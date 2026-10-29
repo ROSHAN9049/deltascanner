@@ -4460,6 +4460,7 @@ export class DeltaEngine {
       // The lease is acquired once per worker process and renewed by the
       // manager timer; scanOnce must never acquire or release it.
       await this.acquireLease();
+      if (!this.running) return;
       this.startMemoryMonitor();
       this.startMaintenanceTasks();
       this.connectWs();
@@ -4546,13 +4547,14 @@ export class DeltaEngine {
       try { socket.close(); } catch {}
       try { socket.terminate?.(); } catch {}
     }
-    await this.stopMaintenanceTasks();
-    // Do not relinquish the lease while scanOnce is still routing work.
+    // Do not close scan dependencies or relinquish the lease while scanOnce
+    // is still routing work.
     const activeScan = this.activeScanPromise;
     if (activeScan) {
       try { await activeScan; } catch {}
       if (this.activeScanPromise === activeScan) this.activeScanPromise = null;
     }
+    await this.stopMaintenanceTasks();
     await this.releaseLease();
   }
 }
