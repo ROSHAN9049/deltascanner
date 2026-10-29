@@ -8,6 +8,7 @@ import { assessDeltaRange, fmtMultiplier, fmtPrice as fmtRawPrice, fmtRsi, safeN
 import { blockersDisplay, gateTooltip } from './gate-result.js';
 import { buildRiskGovernorGates, buildNormalizedScoreDiagnostic } from './risk-governor.js';
 import { normalizedScoreFromView as normalizedScoreFrom, visibleScoreFrom, passesScoreFilter, normalizedScoreTooltip, showAllPreferenceKey, readShowAllPreference, writeShowAllPreference } from './normalized-score-view.js';
+import { resolveDashboardRouteContext } from './dashboard-route-state.js';
 import { summarizeRotationLedger } from './rotation-ledger-state.js';
 import { formatHealthAge, formatLeaseRemaining, formatRetentionLastRun, getEmergencyStopTooltip, getGlobalPositionCapDisplay, getWorkerStatusDisplay } from './worker-status-display.js';
 
@@ -73,6 +74,7 @@ function App() {
   const [tab, setTab] = useState('dashboard');
   const [state, setState] = useState(null);
   const [market, setMarket] = useState([]);
+  const [testnetProducts, setTestnetProducts] = useState(null);
   const [health, setHealth] = useState(null);
   const [secret, setSecret] = useState('');
   const secretRef = useRef(secret);
@@ -107,7 +109,28 @@ function App() {
       }
     })().catch(e => setError(e.message || 'Dashboard data unavailable'));
 
-    await Promise.allSettled([marketRequest, stateRequest]);
+    // This separate catalog is fetched from Delta India TESTNET, not the
+    // production market feed. The server caches it and fails closed if
+    // pagination is incomplete or the exchange cannot be verified.
+    const routeRequest = (async () => {
+      try {
+        const response = await fetch('/api/market?type=testnet-products&t=' + Date.now(), { cache: 'no-store' });
+        const result = await response.json();
+        setTestnetProducts(response.ok && result?.success === true
+          ? result
+          : { ...(result && typeof result === 'object' ? result : {}), success: false, complete: false, result: [] });
+      } catch (e) {
+        setTestnetProducts({
+          success: false,
+          environment: 'DELTA_TESTNET',
+          complete: false,
+          result: [],
+          error: String(e?.message || 'Delta Testnet product catalog unavailable')
+        });
+      }
+    })();
+
+    await Promise.allSettled([marketRequest, stateRequest, routeRequest]);
   }, []);
   const unlockSession = async () => {
     const candidate = secretRef.current;
@@ -213,8 +236,23 @@ function App() {
   const selectedScalp = selected ? signals.find(x => x.symbol === selected.symbol && x.strategy === 'SCALPING') : null;
   const stale = !health?.tickFresh;
   const executionCoverage = state?.executionCoverage && typeof state.executionCoverage === 'object' && !Array.isArray(state.executionCoverage) ? state.executionCoverage : null;
-  const routeSafetyBlocked = false;
-  const routeSafetyReason = 'Delta Testnet position state unavailable';
+  const dashboardRouteContext = resolveDashboardRouteContext({
+    catalog: testnetProducts,
+    executionMode: executionCoverage?.deltaExecutionMode || 'unknown',
+    accountDataProtected,
+    positions: accountDataProtected ? null : positions,
+    openPositionCount: state?.deltaTestnetOpenPositionCount ?? null,
+    now: clock
+  });
+  const routeSafetyBlocked = !dashboardRouteContext.routeDataVerified ||
+    dashboardRouteContext.entrySafetyTrusted !== true;
+  const routeSafetyReason = !dashboardRouteContext.catalogFresh
+    ? 'Delta Testnet product catalog is unverified or stale'
+    : !dashboardRouteContext.testnetModeConfirmed
+      ? 'Worker execution mode is not confirmed as Testnet'
+      : dashboardRouteContext.entrySafetyTrusted !== true
+        ? 'Delta Testnet position data is locked or inconsistent'
+        : null;
   const openPositionSymbols = selectOpenPositionSymbols(positions);
 
   return <div className="terminal">
@@ -239,7 +277,7 @@ function App() {
     <nav>{tabs.map(([id,label]) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}{id === 'live' ? ' 🔒' : ''}</button>)}</nav>
     {accountDataProtected ? <div className="danger">🔒 ACCOUNT DATA LOCKED — Enter ENGINE_SECRET in Settings to view private positions, closed trades, P&amp;L, rotation ledger, Grid state, and account-specific logs. Hidden data is not zero.</div> : null}
 
-    {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} positions={positions} accountDataProtected={accountDataProtected} signals={signals} activity={state?.activity || null} deltaTestnetOpenPositionCount={state?.deltaTestnetOpenPositionCount ?? null} deltaTestnetOrders={deltaTestnetOrders} deltaTestnetOrderCount={state?.deltaTestnetOrderCount ?? null} deltaTestnetClosedTodayCount={state?.deltaTestnetClosedTodayCount ?? null} deltaTestnetClosedTodayPnl={state?.deltaTestnetClosedTodayPnl ?? null} deltaTestnetClosedTodayPnlComplete={state?.deltaTestnetClosedTodayPnlComplete === true} executionCoverage={executionCoverage} onInspect={setInspect} inspect={selected} logs={logs} />}
+    {tab === 'dashboard' && <Dashboard market={market} settings={settings} health={health} positions={positions} accountDataProtected={accountDataProtected} signals={signals} activity={state?.activity || null} deltaTestnetOpenPositionCount={state?.deltaTestnetOpenPositionCount ?? null} deltaTestnetOrders={deltaTestnetOrders} deltaTestnetOrderCount={state?.deltaTestnetOrderCount ?? null} deltaTestnetClosedTodayCount={state?.deltaTestnetClosedTodayCount ?? null} deltaTestnetClosedTodayPnl={state?.deltaTestnetClosedTodayPnl ?? null} deltaTestnetClosedTodayPnlComplete={state?.deltaTestnetClosedTodayPnlComplete === true} executionCoverage={executionCoverage} routeContext={dashboardRouteContext} onInspect={setInspect} inspect={selected} logs={logs} />}
     {tab === 'rotation' && <Rotation ledger={rotationLedger} accountDataProtected={accountDataProtected} ledgerComplete={rotationLedgerComplete} ledgerRowCount={state?.ledgerRowCount ?? null} />}
     {tab === 'momentum' && <EngineView engine="MOMENTUM" signals={signals} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols} />}
     {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" strategy="MOMENTUM" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
@@ -323,7 +361,7 @@ function activityTimestamp(value) {
       })
     : '—';
 }
-function Dashboard({ market, settings, health, positions, accountDataProtected = false, signals, activity = null, deltaTestnetOpenPositionCount = null, deltaTestnetOrders = [], deltaTestnetOrderCount = null, deltaTestnetClosedTodayCount = null, deltaTestnetClosedTodayPnl = null, deltaTestnetClosedTodayPnlComplete = false, executionCoverage = null, onInspect, inspect, logs }) {
+function Dashboard({ market, settings, health, positions, accountDataProtected = false, signals, activity = null, deltaTestnetOpenPositionCount = null, deltaTestnetOrders = [], deltaTestnetOrderCount = null, deltaTestnetClosedTodayCount = null, deltaTestnetClosedTodayPnl = null, deltaTestnetClosedTodayPnlComplete = false, executionCoverage = null, routeContext = null, onInspect, inspect, logs }) {
   const deltaMode = String(executionCoverage?.deltaExecutionMode || '').trim().toLowerCase();
   const deltaModeEnabled = deltaMode === 'testnet';
   const deltaModeUnknown = !['testnet', 'disabled'].includes(deltaMode);
@@ -354,9 +392,9 @@ function Dashboard({ market, settings, health, positions, accountDataProtected =
       selected: signal,
       health,
       positions: accountDataProtected ? null : positions,
-      routedSymbols: [],
-      routeDataVerified: false,
-      entrySafetyTrusted: null
+      routedSymbols: routeContext?.routedSymbols || [],
+      routeDataVerified: routeContext?.routeDataVerified === true,
+      entrySafetyTrusted: routeContext?.entrySafetyTrusted === true
     });
     const failedGates = gateRows.filter(gate => gate.result !== 'PASS');
     return [signal.symbol + ':' + signal.strategy, {
@@ -376,7 +414,7 @@ function Dashboard({ market, settings, health, positions, accountDataProtected =
       <div className="muted">Visibility only. The signal total is the exact count of stored history observations, not every repeated scan calculation; unchanged observations may be sampled and writes can pause under database storage safeguards.</div>
     </Panel>
     <Panel title={'Full Delta Market Scanner · '+(market?.length||0)+' live perpetuals · Signal Only'}><MarketTable market={market} signals={signals} openPositionSymbols={openSymbols}/></Panel>
-    <section className="grid2"><RiskGovernor signals={signals} health={health} positions={accountDataProtected?null:positions} onInspect={onInspect} inspect={inspect} routedSymbols={[]} routeDataVerified={false} entrySafetyTrusted={null}/>
+    <section className="grid2"><RiskGovernor signals={signals} health={health} positions={accountDataProtected?null:positions} onInspect={onInspect} inspect={inspect} routedSymbols={routeContext?.routedSymbols || []} routeDataVerified={routeContext?.routeDataVerified === true} entrySafetyTrusted={routeContext?.entrySafetyTrusted === true}/>
       <Panel title={'Signal Stages · '+visibleCoinCount+' coins · WATCH → SETUP → CONFIRMED'}><div className="marketCount">Momentum and Scalping status for the same top {visibleCoinCount} coins shown in the market table.</div>
         <div className="tablewrap"><table><thead><tr><th>COIN</th><th>ENG</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>QTY</th><th>NOTIONAL</th><th>RISK</th><th>READY</th><th>WHY BLOCKED</th></tr></thead><tbody>
         {visibleSignals.map(s => {
