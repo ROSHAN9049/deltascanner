@@ -8,6 +8,7 @@ import {
 } from '../worker/execution/delta-executor.mjs';
 import { DeltaTestnetTracker, normalizeDeltaWsPosition, strategyFromClientOrderId } from '../worker/execution/delta-tracker.mjs';
 import { parseDeltaExecutionMode } from '../server/config.js';
+import { assessCorrelatedEntry, correlationGroupForSymbol } from '../worker/engine.mjs';
 
 const demoEnv = () => ({
   DELTA_EXECUTION_MODE: 'testnet',
@@ -113,6 +114,18 @@ function fakeRuntime({
 
   return { httpCalls, database, fetchImpl, logs, updates, persistedPositions };
 }
+
+test('AMDBUSD is classified in the stock-token correlation group', () => {
+  assert.equal(correlationGroupForSymbol('AMDBUSD'), 'STOCK_TOKENS');
+  const decision = assessCorrelatedEntry({
+    symbol: 'AMDBUSD',
+    side: 'SELL',
+    positions: [{ symbol: 'NVDAXUSD', side: 'BUY', qty: 1 }]
+  });
+  assert.equal(decision.blocked, true);
+  assert.equal(decision.reason, 'CORRELATION_GROUP_LIMIT');
+  assert.equal(decision.conflictingSymbol, 'NVDAXUSD');
+});
 
 test('configuration accepts only disabled/testnet and explicitly rejects live', () => {
   assert.equal(parseDeltaExecutionMode(undefined), 'disabled');
