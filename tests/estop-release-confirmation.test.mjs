@@ -109,7 +109,7 @@ test('E-STOP release is tied to its current activation and consumed by an atomic
   assert.match(migration, /ADD COLUMN IF NOT EXISTS emergency_stop_activated_at/i);
   assert.match(migration, /ADD COLUMN IF NOT EXISTS emergency_stop_release_token_hash/i);
   const migrationRunner = await readFile(new URL('../scripts/apply-all-migrations.mjs', import.meta.url), 'utf8');
-  assert.match(migrationRunner, /20261029120000_estop_release_challenge\\.sql/);
+  assert.match(migrationRunner, /20261029120000_estop_release_challenge\.sql/);
   assert.match(migration, /WHERE emergency_stop IS TRUE/i);
 });
 
