@@ -1622,16 +1622,20 @@ export class DeltaEngine {
 
     let size = null;
     if (strategy === 'OPTIONS_BUY') {
-      const qty = Math.floor(this.optionQuantity(signal, account, settings));
-      const cv = Math.max(1e-9, n(signal?.ticker?.contract_value) || 1);
-      const mark = n(signal.mark);
-      const stopPct = Math.max(1, n(settings.options_buy_stop_pct || 25));
-      const notional = qty * mark * cv;
-      const risk = qty * mark * (stopPct / 100) * cv;
-      if (qty < 1) reasons.push('Risk budget below 1 contract');
-      else if (n(account.available) > 0 && notional > n(account.available)) reasons.push('Margin / minimum contract size');
-      else size = { qty, notional, risk, marginEstimate: notional };
+      const sizing = this.optionSizing(signal, account, settings);
+      const qty = sizing.qty;
+      if (qty < 1) reasons.push(sizing.reason || 'Full-premium risk budget below one contract');
+      else size = {
+        qty,
+        notional: sizing.premiumNotional,
+        risk: sizing.totalRisk,
+        marginEstimate: sizing.premiumNotional,
+        riskModel: 'FULL_PREMIUM_PLUS_TWO_SIDE_FEES'
+      };
       if (signal.executionLocked) reasons.push('Option execution route locked');
+      if (CONFIG.deltaExecutionMode === 'testnet' && signal.ticker?.testnet_product_verified !== true) {
+        reasons.push('Option contract is not verified in the Delta Testnet product catalogue');
+      }
     } else if (signal.side) {
       const stage = String(signal?.stage || '').toUpperCase();
       const confirmedReady = stage === 'CONFIRMED' && signal?.ready === true;
