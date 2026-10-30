@@ -365,7 +365,7 @@ export function makeOptionsClientOrderId(groupId, legRole, attempt = 1) {
   }
   // Use a digest rather than the first group characters so UUID prefix
   // collisions cannot accidentally reuse another group's idempotency key.
-  const digest = createHash('sha256').update(group).digest('hex').slice(0, 14).toUpperCase();
+  const digest = createHash('sha256').update(group).digest('hex').slice(0, 12).toUpperCase();
   const id = ('DDO-' + digest + '-' + roleCode + '-' + attemptNumber.toString(36)).slice(0, 32);
   return id;
 }
