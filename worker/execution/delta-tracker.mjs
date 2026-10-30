@@ -101,6 +101,7 @@ export function normalizeDeltaFill(fill, source = 'websocket') {
     price,
     notional: numberOrNull(fill.notional),
     commission: numberOrNull(fill.commission ?? fill.fee),
+    commission_currency: stringValue(fill.settling_asset_symbol ?? fill.commission_currency ?? fill.fee_currency).toUpperCase() || null,
     role: stringValue(fill.role).toLowerCase() || null,
     fill_type: stringValue(fill.fill_type ?? fill.type).toLowerCase() || 'normal',
     client_order_id: stringValue(fill.client_order_id) || null,
@@ -655,7 +656,15 @@ export class DeltaTestnetTracker {
         // full fill-matched entry quantity once the aggregate exit fills match it.
         const tradeQty = entry.size;
         const allMatchedFills = [...entryFills, ...exitFills];
-        const commissionsComplete = allMatchedFills.every(fill => numberOrNull(fill?.commission) !== null);
+        const commissionCurrencies = [...new Set(allMatchedFills
+          .map(fill => stringValue(fill?.commission_currency ?? fill?.raw?.settling_asset_symbol).toUpperCase())
+          .filter(Boolean))];
+        // Numeric commissions from different/unknown settlement assets must
+        // never be added together or deducted from realized P&L as one fee.
+        const commissionsComplete = allMatchedFills.every(fill =>
+          numberOrNull(fill?.commission) !== null &&
+          stringValue(fill?.commission_currency ?? fill?.raw?.settling_asset_symbol) !== ''
+        ) && commissionCurrencies.length === 1;
         const fees = commissionsComplete
           ? allMatchedFills.reduce((sum, fill) => sum + numberOrNull(fill.commission), 0)
           : null;
