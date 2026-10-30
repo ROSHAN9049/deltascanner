@@ -258,33 +258,59 @@ test('20 already-open symbols hit the global position cap', async () => {
   assert.equal(runtime.httpCalls.some(call => call.init.method === 'POST'), false);
 });
 
-test('close-fill lookup uses epoch microseconds and reads nested position metadata', async () => {
+test('close-fill lookup correlates to this entry and ignores later same-symbol closes', async () => {
   const clockMs = Date.parse('2026-10-29T08:00:00.000Z');
   const openedAt = '2026-10-29T07:00:00.000Z';
   const runtime = fakeRuntime({
-    fills: [{
-      id: 'fill-1', product_id: 27, product_symbol: 'BTCUSD',
-      order_id: '9001', size: '2', price: '61005',
-      commission: '0.05', settling_asset_symbol: 'USD',
-      fill_type: 'normal', created_at: String((clockMs - 1000) * 1000),
-      meta_data: { new_position: { size: 0, realized_pnl: '4.5' }, order_type: 'market_order' }
-    }],
-    orderHistory: [{
-      id: 9001, product_symbol: 'BTCUSD', stop_order_type: 'stop_loss_order',
-      client_order_id: 'DDM-BTCUSD-entry', reduce_only: true, state: 'closed'
-    }]
+    fills: [
+      {
+        id: 'entry-fill-1', product_id: 27, product_symbol: 'BTCUSD',
+        order_id: '8001', client_order_id: 'DDM-BTCUSD-entry-001',
+        side: 'buy', size: '2', price: '60000', commission: '0.03',
+        settling_asset_symbol: 'USD', created_at: String((clockMs - 59 * 60_000) * 1000),
+        meta_data: { new_position: { size: 2, realized_pnl: '0' } }
+      },
+      {
+        id: 'target-close-fill', product_id: 27, product_symbol: 'BTCUSD',
+        order_id: '9001', side: 'sell', size: '2', price: '61005',
+        commission: '0.05', settling_asset_symbol: 'USD',
+        fill_type: 'normal', created_at: String((clockMs - 30 * 60_000) * 1000),
+        meta_data: { new_position: { size: 0, realized_pnl: '4.5' }, order_type: 'market_order' }
+      },
+      {
+        id: 'later-unrelated-close-fill', product_id: 27, product_symbol: 'BTCUSD',
+        order_id: '9002', side: 'sell', size: '1', price: '62000',
+        commission: '0.25', settling_asset_symbol: 'USD',
+        fill_type: 'normal', created_at: String((clockMs - 10 * 60_000) * 1000),
+        meta_data: { new_position: { size: 0, realized_pnl: '99' }, order_type: 'market_order' }
+      }
+    ],
+    orderHistory: [
+      {
+        id: 9001, product_symbol: 'BTCUSD', stop_order_type: 'stop_loss_order',
+        client_order_id: 'DDX-X-BTCUSD-target-close', reduce_only: true, state: 'closed'
+      },
+      {
+        id: 9002, product_symbol: 'BTCUSD', stop_order_type: null,
+        client_order_id: 'manual-later-close', reduce_only: true, state: 'closed'
+      }
+    ]
   });
   const executor = createDeltaExecutor({
     env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database,
     now: () => clockMs
   });
 
-  const details = await executor.getRecentCloseDetails('BTCUSD', openedAt);
+  const details = await executor.getRecentCloseDetails('BTCUSD', openedAt, {
+    entry_order_id: '8001',
+    client_order_id: 'DDM-BTCUSD-entry-001'
+  });
   assert.equal(details.exit_price, 61005);
   assert.equal(details.fees, 0.05);
   assert.equal(details.fee_currency, 'USD');
   assert.equal(details.realized_pnl, 4.5);
   assert.equal(details.close_order_id, '9001');
+  assert.equal(details.exit_reason, undefined); // exit reasons are normalized by deltaCloseFields
 
   const fillCall = runtime.httpCalls.find(call => new URL(call.url).pathname === '/v2/fills');
   const params = new URL(fillCall.url).searchParams;
