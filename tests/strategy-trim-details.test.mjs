@@ -108,8 +108,10 @@ test('options sell details preserve defined-risk spread, hedge fields, and Greek
     hedgeSymbol: 'C-BTC-95000-301026',
     hedgeStrike: 95000,
     hedgeDelta: 0.1,
+    hedgeAsk: 8,
     credit: 20,
     maxRiskPerSpread: 4980,
+    estimatedFeesPerSpread: 0.9,
     executionLocked: true,
     optionRouteReady: false,
     definedRiskOnly: true,
@@ -125,8 +127,10 @@ test('options sell details preserve defined-risk spread, hedge fields, and Greek
   assert.equal(trimmed.hedgeSymbol, 'C-BTC-95000-301026');
   assert.equal(trimmed.hedgeStrike, 95000);
   assert.equal(trimmed.hedgeDelta, 0.1);
+  assert.equal(trimmed.hedgeAsk, 8);
   assert.equal(trimmed.credit, 20);
   assert.equal(trimmed.maxRiskPerSpread, 4980);
+  assert.equal(trimmed.estimatedFeesPerSpread, 0.9);
   assert.equal('rsi' in trimmed, false);
   assert.equal('executionLocked' in trimmed, false);
   assert.equal('nested' in trimmed, false);
