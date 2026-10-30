@@ -136,12 +136,14 @@ const deltaOptionsMigration = readFileSync(deltaOptionsMigrationPath, 'utf8');
 const optionsMigrationRunner = readFileSync(fileURLToPath(new URL('../scripts/apply-all-migrations.mjs', import.meta.url)), 'utf8');
 
 describe('Delta Testnet Options execution ledger migration SQL structure', () => {
-  test('creates separate group and leg ledgers, not dd_delta_positions rows', () => {
+  test('creates separate group, leg and order ledgers, not dd_delta_positions rows', () => {
     assert.ok(deltaOptionsMigration.includes('BEGIN;'));
     assert.ok(deltaOptionsMigration.includes('COMMIT;'));
     assert.match(deltaOptionsMigration, /CREATE TABLE IF NOT EXISTS public\.dd_options_execution_groups/i);
     assert.match(deltaOptionsMigration, /CREATE TABLE IF NOT EXISTS public\.dd_options_execution_legs/i);
     assert.match(deltaOptionsMigration, /CREATE TABLE IF NOT EXISTS public\.dd_options_execution_orders/i);
+    assert.match(deltaOptionsMigration, /contract_value NUMERIC NOT NULL CHECK \(contract_value > 0\)/i);
+    assert.match(deltaOptionsMigration, /tick_size NUMERIC NOT NULL CHECK \(tick_size > 0\)/i);
     assert.doesNotMatch(deltaOptionsMigration, /INSERT INTO public\.dd_delta_positions/i);
   });
 
@@ -174,4 +176,18 @@ describe('Delta Testnet Options execution ledger migration SQL structure', () =>
     const optionsIndex = optionsMigrationRunner.indexOf('20261030100000_delta_options_execution_ledger.sql');
     assert.ok(fillIndex >= 0 && optionsIndex > fillIndex);
   });
+});
+
+
+test('atomic Options reservation RPC validates both legs and is service-role only', () => {
+  assert.match(deltaOptionsMigration, /CREATE OR REPLACE FUNCTION public\.reserve_dd_options_execution_group/i);
+  assert.match(deltaOptionsMigration, /REVOKE ALL ON FUNCTION public\.reserve_dd_options_execution_group\(JSONB, JSONB\) FROM PUBLIC, anon, authenticated/i);
+  assert.match(deltaOptionsMigration, /GRANT EXECUTE ON FUNCTION public\.reserve_dd_options_execution_group\(JSONB, JSONB\) TO service_role/i);
+  assert.match(deltaOptionsMigration, /v_underlying NOT IN \('BTCUSD', 'ETHUSD'\)/i);
+  assert.match(deltaOptionsMigration, /v_max_loss > v_risk_budget/i);
+  assert.match(deltaOptionsMigration, /v_net_credit <= 0/i);
+  assert.match(deltaOptionsMigration, /'PROTECTIVE_WING'/i);
+  assert.match(deltaOptionsMigration, /'SHORT_OPTION'/i);
+  assert.match(deltaOptionsMigration, /INSERT INTO public\.dd_options_execution_groups/i);
+  assert.match(deltaOptionsMigration, /INSERT INTO public\.dd_options_execution_legs/i);
 });
