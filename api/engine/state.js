@@ -2,6 +2,7 @@ import { CONFIG } from '../../server/config.js';
 import { count, select } from '../../server/db.js';
 import { findWorkerHeartbeatRow, normalizeWorkerExecutionMode, protectEngineState } from '../../server/engine-state-privacy.js';
 import { indiaDateKey } from '../../src/date-utils.js';
+import { summarizeVerifiedDeltaClosedPnl } from '../../server/delta-closed-pnl.js';
 import { createEngineSessionCookie, hasEngineAccess, isEngineSessionValid } from '../../server/engine-session.js';
 
 function normalizedScoreFromSignalRow(row) {
@@ -73,7 +74,7 @@ export default async function handler(req, res) {
           count('dd_orders', 'order_type=eq.delta_testnet_order&select=id').catch(() => null),
           select('dd_trades', 'order=closed_at.desc&limit=500').catch(() => []),
           count('dd_trades', 'select=id').catch(() => null),
-          select('dd_delta_positions', 'status=in.(CLOSED,CLOSED_EXTERNALLY)&closed_at=gte.' + todayStartQuery + '&order=closed_at.desc&limit=1000').catch(() => []),
+          select('dd_delta_positions', 'status=in.(CLOSED,CLOSED_EXTERNALLY)&closed_at=gte.' + todayStartQuery + '&select=status,realized_pnl,realized_pnl_verified&order=closed_at.desc&limit=1000').catch(() => []),
           count('dd_delta_positions', 'status=in.(CLOSED,CLOSED_EXTERNALLY)&closed_at=gte.' + todayStartQuery + '&select=id').catch(() => null),
           select('dd_delta_fill_sync_state', 'id=eq.1&limit=1').catch(() => []),
           count('dd_fills', 'select=id').catch(() => null)
@@ -114,16 +115,12 @@ export default async function handler(req, res) {
     const deltaTestnetOrders = deltaTestnetOrderRows || [];
     const deltaTestnetTrades = deltaTestnetTradeRows || [];
     const closedTodayCount = deltaTestnetClosedTodayCount == null ? null : Number(deltaTestnetClosedTodayCount);
-    const closedTodayValues = (deltaTestnetClosedTodayRows || []).map(row =>
-      row?.realized_pnl === null || row?.realized_pnl === undefined || row?.realized_pnl === ''
-        ? null : Number(row.realized_pnl)
+    const closedTodayPnl = summarizeVerifiedDeltaClosedPnl(
+      deltaTestnetClosedTodayRows,
+      closedTodayCount
     );
-    const deltaTestnetClosedTodayPnlComplete = closedTodayCount !== null &&
-      closedTodayCount === (deltaTestnetClosedTodayRows || []).length &&
-      closedTodayValues.every(value => Number.isFinite(value));
-    const deltaTestnetClosedTodayPnl = deltaTestnetClosedTodayPnlComplete
-      ? closedTodayValues.reduce((sum, value) => sum + value, 0)
-      : null;
+    const deltaTestnetClosedTodayPnlComplete = closedTodayPnl.complete;
+    const deltaTestnetClosedTodayPnl = closedTodayPnl.pnl;
     const activity = {
       lastConfirmedSignalAt: lastConfirmedSignal?.captured_at || null,
       lastConfirmedSignalAvailable: lastConfirmedSignalResult.ok,
