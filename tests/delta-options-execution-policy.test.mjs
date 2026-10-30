@@ -127,7 +127,7 @@ test('credit spread plan rejects mismatched expiry, type, multiplier, direction 
     shortTicker: short,
     protectiveTicker: invalidWings[3],
     underlyingSide: 'BUY',
-    qty: 1, maxLossUsd: 5, now: NOW
+    qty: 1, maxLossUsd: 5, netCreditUsd: 0.25, now: NOW
   }).valid, false);
 });
 
