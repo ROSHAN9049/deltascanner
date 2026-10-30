@@ -233,8 +233,8 @@ describe('Delta Testnet Options restart supervisor migration SQL structure', () 
     assert.match(optionsSupervisorMigration, /FOR UPDATE/i);
     assert.match(optionsSupervisorMigration, /SET state = 'RECONCILIATION_REQUIRED'/i);
     assert.match(optionsSupervisorMigration, /Terminal Options execution group cannot be changed/i);
-    assert.match(optionsSupervisorMigration, /REVOKE ALL ON FUNCTION public\.mark_dd_options_group_reconciliation_required\(UUID, TEXT, TEXT, JSONB\) FROM PUBLIC, anon, authenticated/i);
-    assert.match(optionsSupervisorMigration, /GRANT EXECUTE ON FUNCTION public\.mark_dd_options_group_reconciliation_required\(UUID, TEXT, TEXT, JSONB\) TO service_role/i);
+    assert.match(optionsSupervisorMigration, /REVOKE ALL ON FUNCTION public\.mark_dd_options_group_reconciliation_required\(UUID, TEXT, TEXT, JSONB\)\s+FROM PUBLIC, anon, authenticated/i);
+    assert.match(optionsSupervisorMigration, /GRANT EXECUTE ON FUNCTION public\.mark_dd_options_group_reconciliation_required\(UUID, TEXT, TEXT, JSONB\)\s+TO service_role/i);
   });
 
   test('migration runner applies the supervisor lock after the Options execution ledger', () => {
