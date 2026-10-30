@@ -104,9 +104,11 @@ test('Options Testnet product catalogue uses dedicated HMAC auth and 50-item cur
   assert.deepEqual(products.map(row => row.symbol), [
     'C-BTC-90000-311026',
     'P-BTC-85000-311026',
+    'C-XAUT-4000-311026',
     'C-ETH-3000-311026'
   ]);
   assert.ok(products.every(row => row.testnet_product_verified === true));
+  assert.equal(products.find(row => row.underlying === 'XAUT').automatedEligible, false);
   assert.equal(products[0].id, 101);
   assert.equal(calls.length, 2);
   for (const call of calls) {
@@ -124,11 +126,18 @@ test('resolveOptionProduct requires one exact cached Testnet product match', asy
     now: () => NOW,
     fetchImpl: async () => jsonResponse({
       success: true,
-      result: [{
-        id: 701, symbol: 'P-ETH-3000-311026',
-        contract_type: 'put_options', state: 'live',
-        contract_value: '0.01', tick_size: '0.0001'
-      }],
+      result: [
+        {
+          id: 701, symbol: 'P-ETH-3000-311026',
+          contract_type: 'put_options', state: 'live',
+          contract_value: '0.01', tick_size: '0.0001'
+        },
+        {
+          id: 702, symbol: 'C-XAUT-4000-311026',
+          contract_type: 'call_options', state: 'live',
+          contract_value: '0.001', tick_size: '0.0001'
+        }
+      ],
       meta: {}
     })
   });
@@ -137,15 +146,28 @@ test('resolveOptionProduct requires one exact cached Testnet product match', asy
   assert.equal(product.underlying, 'ETH');
   assert.equal(product.testnet_product_verified, true);
   await assert.rejects(executor.resolveOptionProduct('C-ETH-3000-311026'), /missing or ambiguous/);
+  await assert.rejects(executor.resolveOptionProduct('C-XAUT-4000-311026'), /read-only/);
 });
 
-test('option positions are fetched separately from Futures and malformed rows fail closed', async () => {
+test('option positions are matched to exact product IDs and XAUT remains read-only', async () => {
   const calls = [];
   const executor = createDeltaOptionsExecutor({
     env: optionsEnv(),
     now: () => NOW,
-    fetchImpl: async (url, init) => {
-      calls.push({ url, init });
+    fetchImpl: async url => {
+      const parsed = new URL(url);
+      calls.push(parsed);
+      if (parsed.pathname === '/v2/products') {
+        return jsonResponse({
+          success: true,
+          result: [{
+            id: 102, symbol: 'P-BTC-85000-311026',
+            contract_type: 'put_options', state: 'live',
+            contract_value: '0.001', tick_size: '0.0001'
+          }],
+          meta: {}
+        });
+      }
       return jsonResponse({
         success: true,
         result: [{
@@ -164,30 +186,74 @@ test('option positions are fetched separately from Futures and malformed rows fa
   assert.equal(positions[0].side, 'SELL');
   assert.equal(positions[0].qty, 2);
   assert.equal(positions[0].optionType, 'PUT');
-  const url = new URL(calls[0].url);
-  assert.equal(url.pathname, '/v2/positions/margined');
-  assert.equal(url.searchParams.get('contract_types'), 'call_options,put_options');
+  assert.equal(positions[0].automatedEligible, true);
+  assert.ok(calls.some(url => url.pathname === '/v2/positions/margined' &&
+    url.searchParams.get('contract_types') === 'call_options,put_options'));
 
   const xautMonitor = createDeltaOptionsExecutor({
     env: optionsEnv(),
     now: () => NOW,
-    fetchImpl: async () => jsonResponse({
-      success: true,
-      result: [{
-        product_symbol: 'C-XAUT-4000-311026',
-        product_id: 999,
-        size: 1
-      }]
-    })
+    fetchImpl: async url => {
+      const parsed = new URL(url);
+      if (parsed.pathname === '/v2/products') {
+        return jsonResponse({
+          success: true,
+          result: [{
+            id: 999, symbol: 'C-XAUT-4000-311026',
+            contract_type: 'call_options', state: 'live',
+            contract_value: '0.001', tick_size: '0.0001'
+          }],
+          meta: {}
+        });
+      }
+      return jsonResponse({
+        success: true,
+        result: [{
+          product_symbol: 'C-XAUT-4000-311026',
+          product_id: 999,
+          size: 1
+        }]
+      });
+    }
   });
   const xautPositions = await xautMonitor.getOpenOptionPositions();
   assert.equal(xautPositions[0].underlying, 'XAUT');
   assert.equal(xautPositions[0].automatedEligible, false);
 
+  const mismatched = createDeltaOptionsExecutor({
+    env: optionsEnv(),
+    now: () => NOW,
+    fetchImpl: async url => {
+      const parsed = new URL(url);
+      if (parsed.pathname === '/v2/products') {
+        return jsonResponse({
+          success: true,
+          result: [{
+            id: 103, symbol: 'P-BTC-85000-311026',
+            contract_type: 'put_options', state: 'live',
+            contract_value: '0.001', tick_size: '0.0001'
+          }],
+          meta: {}
+        });
+      }
+      return jsonResponse({
+        success: true,
+        result: [{
+          product_symbol: 'P-BTC-85000-311026',
+          product_id: 102,
+          size: 1
+        }]
+      });
+    }
+  });
+  await assert.rejects(mismatched.getOpenOptionPositions(), /not matched to its product catalogue/);
+
   const malformed = createDeltaOptionsExecutor({
     env: optionsEnv(),
     now: () => NOW,
-    fetchImpl: async () => jsonResponse({ success: true, result: [{ symbol: 'BTCUSD', size: 1, product_id: 1 }] })
+    fetchImpl: async url => new URL(url).pathname === '/v2/products'
+      ? jsonResponse({ success: true, result: [], meta: {} })
+      : jsonResponse({ success: true, result: [{ symbol: 'BTCUSD', size: 1, product_id: 1 }] })
   });
   await assert.rejects(malformed.getOpenOptionPositions(), /malformed/);
 });
@@ -200,6 +266,24 @@ test('open Option orders and fill pages are scoped to call_options/put_options',
     fetchImpl: async url => {
       const parsed = new URL(url);
       calls.push(parsed);
+      if (parsed.pathname === '/v2/products') {
+        return jsonResponse({
+          success: true,
+          result: [
+            {
+              id: 101, symbol: 'C-BTC-90000-311026',
+              contract_type: 'call_options', state: 'live',
+              contract_value: '0.001', tick_size: '0.0001'
+            },
+            {
+              id: 102, symbol: 'P-BTC-85000-311026',
+              contract_type: 'put_options', state: 'live',
+              contract_value: '0.001', tick_size: '0.0001'
+            }
+          ],
+          meta: {}
+        });
+      }
       if (parsed.pathname === '/v2/orders') {
         const state = parsed.searchParams.get('state');
         return jsonResponse({
@@ -207,6 +291,7 @@ test('open Option orders and fill pages are scoped to call_options/put_options',
           result: [{
             id: state === 'open' ? 10 : 11,
             symbol: state === 'open' ? 'C-BTC-90000-311026' : 'P-BTC-85000-311026',
+            product_id: state === 'open' ? 101 : 102,
             client_order_id: state === 'open' ? 'DDO-1234567890-PW-1' : 'DDO-2234567890-LP-1',
             state
           }],
@@ -215,7 +300,7 @@ test('open Option orders and fill pages are scoped to call_options/put_options',
       }
       return jsonResponse({
         success: true,
-        result: [{ id: 20, symbol: 'C-BTC-90000-311026', size: 1 }],
+        result: [{ id: 20, product_id: 101, symbol: 'C-BTC-90000-311026', size: 1 }],
         meta: { after: 'cursor' }
       });
     }
