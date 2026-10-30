@@ -1,4 +1,7 @@
-import { makeOptionsClientOrderId } from './delta-options-execution-policy.mjs';
+import {
+  makeOptionsClientOrderId,
+  getOptionsOrderClientIdRole
+} from './delta-options-execution-policy.mjs';
 
 const ROLES = new Set(['LONG_PREMIUM', 'PROTECTIVE_WING', 'SHORT_OPTION']);
 const INTENTS = new Set(['ENTRY', 'EXIT', 'UNWIND']);
@@ -14,10 +17,7 @@ const safeInteger = value => {
 };
 
 function clientIdRole(intent, role) {
-  if (intent === 'ENTRY') return role;
-  if (role === 'SHORT_OPTION') return 'CLOSE_SHORT';
-  if (role === 'LONG_PREMIUM') return 'CLOSE_LONG';
-  return 'CLOSE_WING';
+  return getOptionsOrderClientIdRole(intent, role);
 }
 
 function validateInput(input = {}) {

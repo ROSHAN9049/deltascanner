@@ -6,6 +6,7 @@ import {
 } from '../options-execution-lock.mjs';
 import {
   makeOptionsClientOrderId,
+  getOptionsOrderClientIdRole,
   validateCreditSpreadEntryPlan,
   validateLongOptionEntryPlan
 } from './delta-options-execution-policy.mjs';
@@ -306,9 +307,7 @@ export function createDeltaOptionsExecutionManager({
       throw new Error('Options order-attempt plan is invalid');
     }
 
-    const clientIdRole = action === 'ENTRY' ? role
-      : role === 'SHORT_OPTION' ? 'CLOSE_SHORT'
-        : role === 'LONG_PREMIUM' ? 'CLOSE_LONG' : 'CLOSE_WING';
+    const clientIdRole = getOptionsOrderClientIdRole(action, role);
     const clientOrderId = makeOptionsClientOrderId(group, clientIdRole, attempt);
     const args = {
       p_group_id: group,
