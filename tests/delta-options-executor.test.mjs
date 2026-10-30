@@ -228,7 +228,7 @@ test('open Option orders and fill pages are scoped to call_options/put_options',
     env: optionsEnv(),
     now: () => NOW,
     fetchImpl: async url => {
-      assert.match(new URL(url).pathname, /client_order_id\\//);
+      assert.ok(new URL(url).pathname.includes('/v2/orders/client_order_id/'));
       return jsonResponse({
         success: true,
         result: { id: 77, client_order_id: 'DDO-1234567890-PW-1', state: 'filled' }
