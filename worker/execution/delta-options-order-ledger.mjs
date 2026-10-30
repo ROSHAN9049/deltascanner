@@ -30,6 +30,20 @@ function normalizedState(state) {
   return 'UNKNOWN';
 }
 
+function orderStatePriority(state) {
+  return ({
+    RESERVED: 0,
+    UNKNOWN: 0,
+    SUBMITTED: 1,
+    OPEN: 2,
+    PARTIALLY_FILLED: 3,
+    FILLED: 4,
+    CANCELLED: 4,
+    REJECTED: 4,
+    RECONCILIATION_REQUIRED: 5
+  })[upper(state)] ?? -1;
+}
+
 function exactAttempt(row, expected) {
   return String(row?.group_id) === String(expected.group_id) &&
     String(row?.leg_id) === String(expected.leg_id) &&
@@ -289,12 +303,14 @@ export function createDeltaOptionsOrderLedger({
         : normalizedState(exchangeState);
     const currentState = upper(row.order_state);
     const currentAckQty = finite(row.acknowledged_filled_qty) ?? 0;
+    const exchangeOrderMatches = String(row.exchange_order_id || '') === exchangeOrderId;
     const isTerminalState = ['FILLED', 'CANCELLED', 'REJECTED', 'RECONCILIATION_REQUIRED'].includes(currentState);
-    const sameAcknowledgement = currentState === stateWithFillEvidence &&
+    const effectiveState = orderStatePriority(currentState) > orderStatePriority(stateWithFillEvidence)
+      ? currentState
+      : stateWithFillEvidence;
+    const sameAcknowledgement = currentState === effectiveState &&
       Math.abs(currentAckQty - ackFilledQty) <= 1e-8;
-    if (identityMatches &&
-        String(row.exchange_order_id || '') === exchangeOrderId &&
-        (isTerminalState || sameAcknowledgement)) {
+    if (identityMatches && exchangeOrderMatches && (isTerminalState || sameAcknowledgement)) {
       return { ...row, idempotent: true };
     }
 
@@ -304,7 +320,7 @@ export function createDeltaOptionsOrderLedger({
     const response = unwrapRpcResult(await database.rpc('record_dd_options_order_ack', {
       p_order_attempt_id: Number(row.id),
       p_exchange_order_id: exchangeOrderId,
-      p_order_state: stateWithFillEvidence,
+      p_order_state: effectiveState,
       p_ack_filled_qty: ackFilledQty,
       p_ack_average_fill_price: ackAverageFillPrice,
       p_raw: {
