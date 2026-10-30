@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { planDeltaOptionsLifecycle } from '../worker/execution/delta-options-lifecycle.mjs';
+import { getOptionsOrderClientIdRole, makeOptionsClientOrderId } from '../worker/execution/delta-options-execution-policy.mjs';
 
 const NOW = Date.UTC(2026, 9, 30, 10, 0, 0);
 const GROUP = {
@@ -203,4 +204,15 @@ test('durable reconciliation lock and malformed fill balances fail closed', () =
   assert.equal(locked.status, 'RECONCILIATION_REQUIRED');
   const malformed = plan({ legs: [longLeg({ exit_filled_qty: 1, filled_qty: 0 })] });
   assert.equal(malformed.status, 'RECONCILIATION_REQUIRED');
+});
+
+test('protective UNWIND and normal EXIT use different immutable client-order IDs', () => {
+  const unwindRole = getOptionsOrderClientIdRole('UNWIND', 'PROTECTIVE_WING');
+  const exitRole = getOptionsOrderClientIdRole('EXIT', 'PROTECTIVE_WING');
+  assert.equal(unwindRole, 'UNWIND_WING');
+  assert.equal(exitRole, 'CLOSE_WING');
+  assert.notEqual(
+    makeOptionsClientOrderId(GROUP.id, unwindRole, 1),
+    makeOptionsClientOrderId(GROUP.id, exitRole, 1)
+  );
 });
