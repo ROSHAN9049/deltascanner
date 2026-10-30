@@ -155,8 +155,49 @@ export function sizeDeltaGridEntry({
     stopDistancePct,
     feeRate,
     slippageRate: slipRate,
-    tickSize: tick
+    tickSize: tick,
+    riskBudget
   };
+}
+
+export function assessDeltaGridEntryFill({
+  entryPrice,
+  stopPrice,
+  targetPrice,
+  qty,
+  product = {},
+  riskBudget = null,
+  feeRate = 0.0006,
+  slippageRate = 0.0002,
+  minStopDistancePct = DELTA_TESTNET_MIN_SL_DISTANCE_PCT
+} = {}) {
+  const entry = numberOrNull(entryPrice);
+  const stop = numberOrNull(stopPrice);
+  const target = numberOrNull(targetPrice);
+  const quantity = numberOrNull(qty);
+  const contractValue = numberOrNull(product.contract_value);
+  if (!(entry > 0 && stop > 0 && stop < entry && target > entry &&
+      Number.isSafeInteger(quantity) && quantity > 0 && contractValue > 0)) {
+    return { ok: false, reason: 'GRID_FILLED_BRACKET_INVALID' };
+  }
+  const stopDistancePct = (entry - stop) / entry * 100;
+  const minimum = resolveMinimumStopDistancePct(minStopDistancePct);
+  if (stopDistancePct + 1e-9 < minimum) {
+    return { ok: false, reason: 'GRID_FILLED_STOP_BELOW_DELTA_MINIMUM', stopDistancePct, minimum };
+  }
+  const costsPerContract = entry * contractValue * 2 *
+    (Math.max(0, n(feeRate)) + Math.max(0, n(slippageRate)));
+  const riskPerContract = (entry - stop) * contractValue + costsPerContract;
+  const rewardPerContract = (target - entry) * contractValue - costsPerContract;
+  const riskUsd = riskPerContract * quantity;
+  const rewardUsd = rewardPerContract * quantity;
+  if (!(rewardPerContract >= riskPerContract)) {
+    return { ok: false, reason: 'GRID_FILLED_REWARD_RISK_BELOW_MINIMUM', riskUsd, rewardUsd, stopDistancePct };
+  }
+  if (numberOrNull(riskBudget) !== null && riskUsd > n(riskBudget) + 1e-8) {
+    return { ok: false, reason: 'GRID_FILLED_RISK_BUDGET_EXCEEDED', riskUsd, riskBudget: n(riskBudget), rewardUsd, stopDistancePct };
+  }
+  return { ok: true, riskUsd, rewardUsd, riskPerContract, rewardPerContract, rewardRiskRatio: rewardUsd / riskUsd, stopDistancePct };
 }
 
 async function saveState(database, state, timestamp) {
@@ -640,7 +681,7 @@ export async function manageDeltaTestnetGrid({
     return { state, safety };
   }
   const adjusted = sizeDeltaGridEntry({
-    candidate,
+    candidate: { ...candidate, entryPrice: mark },
     settings: { ...settings, grid_max_positions: 1 },
     account,
     product,
@@ -684,8 +725,37 @@ export async function manageDeltaTestnetGrid({
       throw new Error('Filled Grid entry has no matching open Delta Testnet position snapshot');
     }
     const entryFill = n(filledPosition.entry_price) || adjusted.entryPrice;
-    const actualRiskUsd = (entryFill - verifiedStop) *
-      n(filledPosition.qty) * (n(product.contract_value) || 1);
+    const fillAssessment = assessDeltaGridEntryFill({
+      entryPrice: entryFill,
+      stopPrice: verifiedStop,
+      targetPrice: verifiedTarget,
+      qty: filledPosition.qty,
+      product,
+      riskBudget: adjusted.riskBudget,
+      feeRate: adjusted.feeRate,
+      slippageRate: adjusted.slippageRate,
+      minStopDistancePct: adjusted.minStopDistancePct
+    });
+    if (!fillAssessment.ok) {
+      const close = await closeAndVerify(executor, symbol, filledPosition.qty);
+      if (!close.closed) {
+        throw new Error(fillAssessment.reason + '; immediate reduce-only close is not confirmed');
+      }
+      state.positions = [];
+      state.openRiskUsd = 0;
+      state.unrealizedPnl = 0;
+      state.pausedReason = 'GRID_FILLED_RISK_REJECTED';
+      state.status = 'HALTED';
+      pushEvent(state, { type: 'HALT', reason: state.pausedReason, symbol, price: mark }, at);
+      await database.log('ERROR', 'Delta Testnet Grid fill breached its pre-trade risk envelope; position closed and Grid halted', {
+        symbol, clientOrderId: executionClientId, orderId: String(orderId),
+        entry: entryFill, stop: verifiedStop, target: verifiedTarget,
+        fillAssessment, closeOrderId: close.order?.id ?? null
+      }).catch(() => {});
+      await persist();
+      return block('GRID_FILLED_RISK_REJECTED_POSITION_CLOSED');
+    }
+    const actualRiskUsd = fillAssessment.riskUsd;
     state.positions = [{
       id: executionClientId,
       bridgeExecutionId: executionClientId,
@@ -719,7 +789,7 @@ export async function manageDeltaTestnetGrid({
       symbol, side: 'BUY', qty: n(filledPosition.qty), entry: entryFill,
       stop: verifiedStop, target: verifiedTarget, orderId: String(orderId),
       clientOrderId: executionClientId, gridLevel: n(candidate.levelIndex) + 1,
-      riskUsd: state.openRiskUsd, rewardRiskRatio: adjusted.rewardRiskRatio
+      riskUsd: state.openRiskUsd, rewardRiskRatio: fillAssessment.rewardRiskRatio
     }).catch(() => {});
     await persist();
     return { state, safety };

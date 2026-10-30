@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sizeDeltaGridEntry } from '../worker/execution/delta-grid-engine.mjs';
+import { sizeDeltaGridEntry, assessDeltaGridEntryFill } from '../worker/execution/delta-grid-engine.mjs';
 
 const candidate = {
   levelIndex: 6,
@@ -53,4 +53,39 @@ test('Testnet Grid fails closed when the minimum contract exceeds remaining risk
   });
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'GRID_MINIMUM_CONTRACT_EXCEEDS_RISK_BUDGET');
+});
+
+
+test('Testnet Grid revalidates the actual market fill against its hard stop floor and risk budget', () => {
+  const accepted = assessDeltaGridEntryFill({
+    entryPrice: 100,
+    stopPrice: 98.5,
+    targetPrice: 102,
+    qty: 10,
+    product,
+    riskBudget: 200,
+    feeRate: 0.0005,
+    slippageRate: 0.0002
+  });
+  assert.equal(accepted.ok, true);
+  const stopTooClose = assessDeltaGridEntryFill({
+    entryPrice: 99,
+    stopPrice: 98.5,
+    targetPrice: 102,
+    qty: 10,
+    product,
+    riskBudget: 200
+  });
+  assert.equal(stopTooClose.ok, false);
+  assert.equal(stopTooClose.reason, 'GRID_FILLED_STOP_BELOW_DELTA_MINIMUM');
+  const riskExceeded = assessDeltaGridEntryFill({
+    entryPrice: 101,
+    stopPrice: 98.5,
+    targetPrice: 105,
+    qty: 100,
+    product,
+    riskBudget: 100
+  });
+  assert.equal(riskExceeded.ok, false);
+  assert.equal(riskExceeded.reason, 'GRID_FILLED_RISK_BUDGET_EXCEEDED');
 });
