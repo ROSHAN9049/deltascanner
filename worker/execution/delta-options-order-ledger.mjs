@@ -110,6 +110,30 @@ export function createDeltaOptionsOrderLedger({
     }
     if (typeof input.reduceOnly !== 'boolean') throw new Error('Options reduce-only intent must be explicit');
 
+    if (typeof database?.select !== 'function') throw new Error('Options order ledger reader is unavailable');
+    const legRows = await database.select(
+      'dd_options_execution_legs',
+      'id=eq.' + encodeURIComponent(String(expected.leg_id)) +
+        '&group_id=eq.' + encodeURIComponent(expected.group_id) +
+        '&select=id,group_id,leg_role,product_id,symbol,side,requested_qty&limit=2'
+    );
+    if (!Array.isArray(legRows) || legRows.length !== 1) {
+      throw new Error('Options order attempt must reference exactly one persisted leg in the same group');
+    }
+    const leg = legRows[0];
+    const expectedSide = expected.intent === 'ENTRY'
+      ? upper(leg.side)
+      : upper(leg.side) === 'BUY' ? 'SELL' : 'BUY';
+    if (upper(leg.leg_role) !== expected.leg_role ||
+        Number(leg.product_id) !== expected.product_id ||
+        upper(leg.symbol) !== expected.symbol ||
+        expected.side !== expectedSide ||
+        expected.requested_qty > Number(leg.requested_qty) ||
+        (expected.intent === 'ENTRY' && expected.reduce_only) ||
+        (expected.intent !== 'ENTRY' && !expected.reduce_only)) {
+      throw new Error('Options order attempt conflicts with its persisted leg role, product, side, quantity or reduce-only intent');
+    }
+
     const existing = await getAttempt(expected.client_order_id);
     if (existing) {
       if (!exactAttempt(existing, expected)) {
