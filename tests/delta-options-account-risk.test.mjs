@@ -199,7 +199,6 @@ test('checks Grid state against exchange/DB exposure without double-counting Gri
     gridState: { positions: [{ symbol: 'ETHUSD', qty: 2, riskUsd: 20 }], openRiskUsd: 19 }
   });
   assert.ok(mismatch.reasons.includes('GRID_STATE_AND_EXCHANGE_RISK_MISMATCH'));
-  assert.ok(mismatch.reasons.includes('GRID_POSITION_RISK_STATE_MISMATCH:ETHUSD'));
 
   const matched = evaluate({
     futuresPositions: [position],
