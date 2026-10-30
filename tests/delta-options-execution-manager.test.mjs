@@ -217,6 +217,7 @@ test('ambiguous reservation recovery requires exact persisted group and both leg
     strike: String(leg.strike),
     contract_value: String(leg.contractValue),
     tick_size: String(leg.tickSize),
+    settlement_asset: leg.settlement_asset,
     expiry_at: leg.expiry_at,
     side: leg.side,
     requested_qty: leg.qty,
