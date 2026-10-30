@@ -29,13 +29,18 @@ function createMemoryDatabase() {
       product_id: INPUT.productId,
       symbol: INPUT.symbol,
       side: INPUT.side,
-      requested_qty: INPUT.requestedQty
+      requested_qty: INPUT.requestedQty,
+      filled_qty: 0,
+      exit_filled_qty: 0,
+      order_state: 'RESERVED'
     }
   ]]);
+  const fills = new Map();
   let nextId = 1;
   return {
     rows,
     legs,
+    fills,
     async select(table, query) {
       if (table === 'dd_options_execution_legs') {
         const idMatch = query.match(/id=eq\.([^&]+)/);
@@ -59,11 +64,6 @@ function createMemoryDatabase() {
       }
       throw new Error('Unexpected query: ' + query);
     },
-    async insert(table, row) {
-      assert.equal(table, 'dd_options_execution_orders');
-      if (rows.has(row.client_order_id)) throw new Error('duplicate client_order_id');
-      rows.set(row.client_order_id, { id: nextId++, ...row });
-    },
     async updateReturning(table, query, patch) {
       assert.equal(table, 'dd_options_execution_orders');
       const clientMatch = query.match(/client_order_id=eq\.([^&]+)/);
@@ -76,6 +76,122 @@ function createMemoryDatabase() {
           (stateMatch && row.order_state !== decodeURIComponent(stateMatch[1]))) return [];
       Object.assign(row, patch);
       return [{ ...row }];
+    },
+    async rpc(name, args) {
+      if (name === 'reserve_dd_options_order_attempt') {
+        const leg = [...legs.values()].find(row =>
+          row.group_id === args.p_group_id &&
+          row.leg_role === args.p_leg_role
+        );
+        if (!leg) throw new Error('missing leg');
+        if (rows.has(args.p_client_order_id)) throw new Error('duplicate client order ID');
+        const intent = args.p_intent;
+        const side = intent === 'ENTRY'
+          ? leg.side
+          : leg.side === 'BUY' ? 'SELL' : 'BUY';
+        const qty = intent === 'ENTRY'
+          ? Number(leg.requested_qty) - Number(leg.filled_qty || 0)
+          : Number(leg.filled_qty || 0) - Number(leg.exit_filled_qty || 0);
+        if (!(qty > 0)) throw new Error('no unmatched leg quantity');
+        const id = nextId++;
+        const row = {
+          id,
+          group_id: args.p_group_id,
+          leg_id: leg.id,
+          leg_role: leg.leg_role,
+          intent,
+          attempt_no: args.p_attempt_no,
+          product_id: leg.product_id,
+          symbol: leg.symbol,
+          side,
+          requested_qty: qty,
+          filled_qty: 0,
+          limit_price: args.p_limit_price,
+          reduce_only: intent !== 'ENTRY',
+          order_state: 'RESERVED',
+          exchange_order_id: null,
+          client_order_id: args.p_client_order_id,
+          acknowledged_filled_qty: null,
+          average_fill_price: null,
+          commission: null,
+          commission_currency: null,
+          raw: { reservation: true }
+        };
+        rows.set(row.client_order_id, row);
+        return {
+          order_attempt_id: id,
+          group_id: row.group_id,
+          leg_id: row.leg_id,
+          leg_role: row.leg_role,
+          intent: row.intent,
+          attempt_no: row.attempt_no,
+          product_id: row.product_id,
+          symbol: row.symbol,
+          side: row.side,
+          qty: row.requested_qty,
+          limit_price: row.limit_price,
+          reduce_only: row.reduce_only,
+          client_order_id: row.client_order_id,
+          order_state: 'RESERVED'
+        };
+      }
+      if (name === 'record_dd_options_order_ack') {
+        const row = [...rows.values()].find(value => value.id === args.p_order_attempt_id);
+        if (!row) throw new Error('unknown attempt');
+        const inputState = String(args.p_order_state || 'UNKNOWN').toUpperCase();
+        const mismatch = args.p_ack_filled_qty > row.requested_qty ||
+          args.p_ack_filled_qty < Number(row.filled_qty || 0) ||
+          ['UNKNOWN', 'RECONCILIATION_REQUIRED'].includes(inputState);
+        row.exchange_order_id = args.p_exchange_order_id ?? row.exchange_order_id;
+        row.acknowledged_filled_qty = args.p_ack_filled_qty;
+        row.order_state = mismatch ? 'RECONCILIATION_REQUIRED' : inputState;
+        row.raw = { ...(row.raw || {}), ...(args.p_raw || {}) };
+        return { reconciliation_required: mismatch, order_attempt_id: row.id, order_state: row.order_state };
+      }
+      if (name === 'record_dd_options_execution_fill') {
+        const row = [...rows.values()].find(value => value.id === args.p_order_attempt_id);
+        if (!row) throw new Error('unknown attempt');
+        const existing = fills.get(args.p_exchange_fill_id);
+        if (existing) {
+          return existing.order_attempt_id === row.id
+            ? { duplicate: true, order_attempt_id: row.id }
+            : { collision: true, reconciliation_required: true, order_attempt_id: row.id };
+        }
+        const fill = {
+          order_attempt_id: row.id,
+          size: Number(args.p_fill_qty),
+          price: Number(args.p_fill_price),
+          commission: args.p_commission === null ? null : Number(args.p_commission),
+          commission_currency: args.p_commission_currency
+        };
+        fills.set(args.p_exchange_fill_id, fill);
+        const related = [...fills.values()].filter(value => value.order_attempt_id === row.id);
+        const totalQty = related.reduce((sum, value) => sum + value.size, 0);
+        const notional = related.reduce((sum, value) => sum + value.size * value.price, 0);
+        const currencies = [...new Set(related.map(value => value.commission_currency).filter(Boolean))];
+        const allFeesKnown = related.length > 0 &&
+          related.every(value => value.commission !== null && Boolean(value.commission_currency)) &&
+          currencies.length === 1;
+        const overfill = totalQty > Number(row.requested_qty) || currencies.length > 1;
+        row.filled_qty = totalQty;
+        row.average_fill_price = totalQty > 0 ? notional / totalQty : null;
+        row.commission = allFeesKnown
+          ? related.reduce((sum, value) => sum + value.commission, 0)
+          : null;
+        row.commission_currency = allFeesKnown ? currencies[0] : null;
+        if (overfill) row.order_state = 'RECONCILIATION_REQUIRED';
+        else if (totalQty >= Number(row.requested_qty)) row.order_state = 'FILLED';
+        else if (totalQty > 0 && !['CANCELLED', 'REJECTED', 'UNKNOWN', 'RECONCILIATION_REQUIRED'].includes(row.order_state)) {
+          row.order_state = 'PARTIALLY_FILLED';
+        }
+        return {
+          duplicate: false,
+          order_attempt_id: row.id,
+          order_filled_qty: totalQty,
+          reconciliation_required: overfill
+        };
+      }
+      throw new Error('Unexpected RPC: ' + name);
     }
   };
 }
