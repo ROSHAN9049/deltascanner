@@ -16,7 +16,7 @@ function makeLeg(overrides = {}) {
     requested_qty: 2,
     filled_qty: 1,
     exit_filled_qty: 0,
-    order_state: 'CANCELLED',
+    order_state: 'PARTIALLY_FILLED',
     ...overrides
   };
 }
@@ -36,7 +36,7 @@ function makeOrder(overrides = {}) {
     filled_qty: 1,
     limit_price: 100,
     reduce_only: false,
-    order_state: 'PARTIALLY_FILLED',
+    order_state: 'CANCELLED',
     exchange_order_id: '7001',
     client_order_id: 'DDO-ABCD12345678-LP-1',
     created_at: new Date(NOW - 60_000).toISOString(),
