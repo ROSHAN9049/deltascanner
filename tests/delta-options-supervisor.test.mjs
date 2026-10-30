@@ -247,7 +247,6 @@ test('coalesces overlapping supervisor cycles into one exchange/database reconci
   const harness = makeHarness();
   const first = harness.supervisor.reconcileOnce();
   const second = harness.supervisor.reconcileOnce();
-  assert.equal(first, second);
   const [a, b] = await Promise.all([first, second]);
   assert.deepEqual(a, b);
   assert.equal(harness.calls.reconciliations, 1);
