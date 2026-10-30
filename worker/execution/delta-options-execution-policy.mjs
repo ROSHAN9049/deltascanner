@@ -419,7 +419,8 @@ export function makeOptionsClientOrderId(groupId, legRole, attempt = 1) {
     SHORT_OPTION: 'SH',
     CLOSE_SHORT: 'CS',
     CLOSE_LONG: 'CL',
-    CLOSE_WING: 'CW'
+    CLOSE_WING: 'CW',
+    UNWIND_WING: 'UW'
   })[role];
   if (group.length < 4 || !roleCode || !attemptNumber || attemptNumber < 1) {
     throw new Error('Cannot create a unique Delta Options client order ID from the supplied group/leg/attempt');
