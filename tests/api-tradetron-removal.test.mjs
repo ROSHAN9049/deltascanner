@@ -18,7 +18,7 @@ test('legacy Tradetron Vercel webhook endpoint has been removed', async () => {
   await assert.rejects(access(new URL('../api/tradetron/webhook.js', import.meta.url)));
 });
 
-test('worker disables Tradetron routes and keeps Grid/Options out of direct Testnet execution', async () => {
+test('worker disables Tradetron routes, routes Grid to Delta Testnet, and keeps Options locked', async () => {
   const engine = await read('../worker/engine.mjs');
   const config = await read('../server/config.js');
   assert.doesNotMatch(engine, /void this\.syncTradetronDeveloperApi\(\)/);
