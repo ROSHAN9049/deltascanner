@@ -37,6 +37,7 @@ function validateInput(input = {}) {
 function matchesReservation(reservation, attempt, expected, clientOrderId) {
   return Boolean(reservation && attempt &&
     String(reservation.client_order_id) === clientOrderId &&
+    upper(reservation.order_state) === 'RESERVED' &&
     String(attempt.client_order_id) === clientOrderId &&
     String(reservation.group_id) === expected.groupId &&
     String(attempt.group_id) === expected.groupId &&
