@@ -155,13 +155,14 @@ export function createDeltaOptionsExecutor({
       const size = numberOrNull(row?.size ?? row?.signed_size ?? row?.qty ?? row?.quantity);
       const parsed = parseDeltaOptionSymbol(symbol, undefined, now());
       const productId = Number(row?.product_id ?? row?.productId);
-      if (!parsed || !['BTC', 'ETH'].includes(parsed.underlying) ||
+      if (!parsed ||
           size === null || !Number.isSafeInteger(productId) || productId <= 0) {
         throw new Error('Delta Testnet Options position row is malformed; reconciliation aborted');
       }
       return {
         symbol,
         underlying: parsed.underlying,
+        automatedEligible: ['BTC', 'ETH'].includes(parsed.underlying),
         optionType: parsed.optionType,
         strike: parsed.strike,
         expiryMs: parsed.expiryMs,
