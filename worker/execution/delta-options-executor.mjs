@@ -133,10 +133,10 @@ export function createDeltaOptionsExecutor({
     return products.map(row => ({ ...row }));
   }
 
-  async function resolveOptionProduct(symbol) {
+  async function resolveOptionProduct(symbol, { forceRefresh = false } = {}) {
     const normalized = value(symbol).toUpperCase();
     if (!normalized) throw new Error('Options product lookup requires an exact contract symbol');
-    const matches = (await getOptionProducts()).filter(row => row.symbol === normalized);
+    const matches = (await getOptionProducts({ forceRefresh })).filter(row => row.symbol === normalized);
     if (matches.length !== 1) {
       throw new Error('Exact Delta Testnet Options product is missing or ambiguous: ' + normalized);
     }
@@ -221,6 +221,13 @@ export function createDeltaOptionsExecutor({
     return order;
   }
 
+  async function getOptionWalletSnapshot() {
+    // Return the raw exchange wallet; do not infer the Options settlement
+    // currency or margin field until its India Testnet payload is verified.
+    const response = await request('GET', '/v2/wallet/balances');
+    return response?.result ?? response;
+  }
+
   async function getOptionFillsPage({ startTime, endTime, after = null, pageSize = PAGE_SIZE } = {}) {
     const start = numberOrNull(startTime);
     const end = numberOrNull(endTime);
@@ -270,7 +277,7 @@ export function createDeltaOptionsExecutor({
       throw new Error('Options order requires BUY/SELL, whole quantity, positive limit, client ID and reduceOnly');
     }
 
-    const product = await resolveOptionProduct(symbol);
+    const product = await resolveOptionProduct(symbol, { forceRefresh: true });
     const tickSize = numberOrNull(product.tick_size);
     const tickRatio = price / tickSize;
     if (!Number.isFinite(tickRatio) || Math.abs(tickRatio - Math.round(tickRatio)) > 1e-8) {
@@ -302,6 +309,7 @@ export function createDeltaOptionsExecutor({
     getOpenOptionPositions,
     getOpenOptionOrders,
     getOptionOrderByClientId,
+    getOptionWalletSnapshot,
     getOptionFillsPage,
     placeOptionOrder,
     assertConfigured: () => assertDeltaOptionsTestnetConfiguration(env)
