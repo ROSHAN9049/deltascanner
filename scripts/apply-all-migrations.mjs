@@ -38,6 +38,7 @@ const EXPECTED_TABLES = [
   'dd_delta_fill_sync_state',
   'dd_options_execution_groups',
   'dd_options_execution_legs',
+  'dd_options_execution_orders',
   'dd_signal_cache',
   'dd_market_cache',
   'dd_option_cache',
