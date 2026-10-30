@@ -259,6 +259,7 @@ export function createDeltaExecutor({
     for (const state of ['open', 'pending']) {
       let after = '';
       let previousAfter = '';
+      let completed = false;
       for (let page = 0; page < 10; page++) {
         const response = await request('GET', '/v2/orders', {
           contract_types: 'perpetual_futures',
@@ -266,12 +267,27 @@ export function createDeltaExecutor({
           page_size: 100,
           after
         });
-        const pageRows = Array.isArray(response.result) ? response.result : [];
+        if (!Array.isArray(response?.result)) {
+          throw new Error('Delta Testnet open-order snapshot is malformed; account risk must fail closed');
+        }
+        const pageRows = response.result;
         allRows.push(...pageRows);
         const nextAfter = stringOrEmpty(response.meta?.after);
-        if (!nextAfter || nextAfter === after || nextAfter === previousAfter || pageRows.length === 0) break;
+        if (!nextAfter || pageRows.length === 0) {
+          completed = true;
+          break;
+        }
+        if (nextAfter === after || nextAfter === previousAfter) {
+          throw new Error('Delta Testnet open-order pagination cursor repeated; account risk snapshot is incomplete');
+        }
+        if (page === 9) {
+          throw new Error('Delta Testnet open-order snapshot exceeded the safe pagination limit');
+        }
         previousAfter = after;
         after = nextAfter;
+      }
+      if (!completed) {
+        throw new Error('Delta Testnet open-order snapshot did not reach a confirmed final page');
       }
     }
     const unique = new Map();
