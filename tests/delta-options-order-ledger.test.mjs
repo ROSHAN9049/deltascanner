@@ -268,6 +268,22 @@ test('refuses to submit without an exact persisted attempt and records a matchin
   assert.equal(repeated.idempotent, true);
 });
 
+test('stale pending acknowledgement cannot downgrade an already open exchange order', async () => {
+  const database = createMemoryDatabase();
+  const ledger = createDeltaOptionsOrderLedger({ database, now: () => NOW });
+  await ledger.persistAttempt(INPUT);
+  await ledger.recordAcknowledgement(
+    INPUT.clientOrderId,
+    makeAck({ state: 'open', unfilled_size: 1 })
+  );
+  const stale = await ledger.recordAcknowledgement(
+    INPUT.clientOrderId,
+    makeAck({ state: 'pending', unfilled_size: 1 })
+  );
+  assert.equal(stale.order_state, 'OPEN');
+  assert.equal(stale.idempotent, true);
+});
+
 test('closed IOC acknowledgement with remaining quantity is terminal cancellation, not a live submission', async () => {
   const database = createMemoryDatabase();
   const ledger = createDeltaOptionsOrderLedger({ database, now: () => NOW });
