@@ -59,6 +59,10 @@ function makeHarness({
       calls.push('execution-gate');
       if (lockError) throw lockError;
     },
+    async assertAccountRisk(input) {
+      calls.push({ accountRisk: input });
+      return { allowed: true };
+    },
     async reserveOrderAttempt(input) {
       calls.push({ reserve: input });
       return { ...baseReservation, ...reservation };
