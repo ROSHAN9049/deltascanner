@@ -508,6 +508,51 @@ export function createDeltaOptionsSupervisor({
       };
     }
 
+    const unresolvedOrders = [];
+    const pendingOrders = [];
+    for (const row of refreshedOrders) {
+      const state = upper(row.order_state);
+      if (state === 'RECONCILIATION_REQUIRED' || state === 'UNKNOWN' || state === 'RESERVED') {
+        unresolvedOrders.push(row);
+        continue;
+      }
+      if (!['SUBMITTED', 'OPEN', 'PARTIALLY_FILLED'].includes(state)) continue;
+      const activeOnExchange = exchange.openOrders.some(raw => {
+        const normalized = normalizeExchangeOrder(raw);
+        const found = findLedgerOrder(normalized, [row]);
+        return Boolean(found &&
+          (!normalized.clientOrderId || String(row.client_order_id) === normalized.clientOrderId) &&
+          (!normalized.id || String(row.exchange_order_id || '') === normalized.id));
+      });
+      if (!activeOnExchange) unresolvedOrders.push(row);
+      else pendingOrders.push(row);
+    }
+    if (unresolvedOrders.length) {
+      const first = unresolvedOrders[0];
+      const locked = await markGroupReconciliationRequired(
+        group,
+        'OPTIONS_ORDER_TERMINALITY_UNVERIFIED',
+        'A persisted Options order is still ambiguous or does not appear in the active exchange order snapshot',
+        {
+          client_order_id: first.client_order_id || null,
+          exchange_order_id: first.exchange_order_id || null,
+          order_state: upper(first.order_state)
+        }
+      );
+      return { status: 'RECONCILIATION_REQUIRED', executionEnabled: false, group: locked };
+    }
+    if (pendingOrders.length) {
+      return {
+        status: 'ORDER_PENDING',
+        executionEnabled: false,
+        groupId: group.id,
+        pendingOrderCount: pendingOrders.length,
+        positionCount: exchange.positions.length,
+        openOrderCount: exchange.openOrders.length,
+        openQty
+      };
+    }
+
     return {
       status: upper(group.state) === 'RECONCILIATION_REQUIRED'
         ? 'RECONCILIATION_REQUIRED'
