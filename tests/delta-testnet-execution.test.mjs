@@ -303,14 +303,15 @@ test('close-fill lookup correlates to this entry and ignores later same-symbol c
 
   const details = await executor.getRecentCloseDetails('BTCUSD', openedAt, {
     entry_order_id: '8001',
-    client_order_id: 'DDM-BTCUSD-entry-001'
+    client_order_id: 'DDM-BTCUSD-entry-001',
+    side: 'BUY'
   });
   assert.equal(details.exit_price, 61005);
   assert.equal(details.fees, 0.05);
   assert.equal(details.fee_currency, 'USD');
   assert.equal(details.realized_pnl, 4.5);
   assert.equal(details.close_order_id, '9001');
-  assert.equal(details.exit_reason, undefined); // exit reasons are normalized by deltaCloseFields
+  assert.equal(details.stop_order_type, 'stop_loss_order');
 
   const fillCall = runtime.httpCalls.find(call => new URL(call.url).pathname === '/v2/fills');
   const params = new URL(fillCall.url).searchParams;
