@@ -24,7 +24,7 @@ function tickerDelta(ticker) {
   return Number.isFinite(parsed) ? Math.abs(parsed) : null;
 }
 
-function contractQuality(row, now) {
+function contractQuality(row, now, targetDelta = 0.55) {
   const parsed = parseDeltaOptionSymbol(row?.symbol, row?.underlying, now);
   const bid = tickerBid(row);
   const ask = tickerAsk(row);
@@ -36,7 +36,7 @@ function contractQuality(row, now) {
   return {
     parsed,
     spreadPct,
-    deltaDistance: delta === null ? 1 : Math.abs(delta - 0.55),
+    deltaDistance: delta === null ? 1 : Math.abs(delta - targetDelta),
     liquidityBonus: Math.log1p(oi) * 0.08 + Math.log1p(volume) * 0.04,
     expiryDistance: parsed ? Math.abs(parsed.dte - 7) : 99
   };
@@ -95,7 +95,8 @@ export function selectOptionContractsForScan({
 } = {}) {
   const asset = String(underlying || '').trim().toUpperCase();
   const spot = finitePositive(spotPrice);
-  const limit = Math.max(2, Math.min(60, Math.floor(Number(maxContracts) || 24)));
+  const requestedLimit = Math.max(2, Math.min(60, Math.floor(Number(maxContracts) || 24)));
+  const limit = requestedLimit - (requestedLimit % 2);
   const minDte = Math.max(1, Number(minDays) || 2);
   const maxDte = Math.max(minDte, Number(maxDays) || 14);
   const moneynessLimit = Math.max(1, Number(maxMoneynessPct) || 20) / 100;
@@ -129,14 +130,67 @@ export function selectOptionContractsForScan({
     });
   }
 
-  const perType = Math.ceil(limit / 2);
+  const perType = limit / 2;
+  const weights = [0.50, 0.33, 0.17]; // long delta, short-leg delta, protective-wing delta
+  const rawQuotas = weights.map(weight => perType * weight);
+  const quotas = rawQuotas.map(Math.floor);
+  let remaining = perType - quotas.reduce((sum, value) => sum + value, 0);
+  const remainderOrder = rawQuotas
+    .map((value, index) => ({ index, remainder: value - quotas[index] }))
+    .sort((a, b) => b.remainder - a.remainder);
+  for (let index = 0; index < remaining; index++) quotas[remainderOrder[index].index] += 1;
+
+  const deltaBuckets = [
+    { target: 0.55, quota: quotas[0] },
+    { target: 0.27, quota: quotas[1] },
+    { target: 0.10, quota: quotas[2] }
+  ];
   const selected = [];
   for (const type of ['CALL', 'PUT']) {
-    const ranked = byType[type].sort((a, b) => a._quality - b._quality);
-    selected.push(...ranked.slice(0, perType));
+    const sourceRows = byType[type];
+    const chosen = new Map();
+    for (const bucket of deltaBuckets) {
+      if (bucket.quota < 1) continue;
+      const ranked = sourceRows
+        .map(row => ({
+          row,
+          quality: contractQuality({ ...row, underlying: asset }, now, bucket.target)
+        }))
+        .sort((a, b) => {
+          const scoreA = a.quality.spreadPct * 3 + a.quality.deltaDistance * 10 +
+            a.quality.expiryDistance * 0.05 - a.quality.liquidityBonus;
+          const scoreB = b.quality.spreadPct * 3 + b.quality.deltaDistance * 10 +
+            b.quality.expiryDistance * 0.05 - b.quality.liquidityBonus;
+          return scoreA - scoreB;
+        });
+      let addedForBucket = 0;
+      for (const candidate of ranked) {
+        if (chosen.has(candidate.row.symbol)) continue;
+        chosen.set(candidate.row.symbol, candidate.row);
+        addedForBucket += 1;
+        if (addedForBucket >= bucket.quota) break;
+      }
+    }
+
+    // Fill any unallocated slots with the best remaining liquid contracts.
+    if (chosen.size < perType) {
+      const ranked = sourceRows
+        .map(row => ({ row, quality: contractQuality({ ...row, underlying: asset }, now, 0.55) }))
+        .sort((a, b) => {
+          const scoreA = a.quality.spreadPct * 3 + a.quality.deltaDistance * 10 +
+            a.quality.expiryDistance * 0.05 - a.quality.liquidityBonus;
+          const scoreB = b.quality.spreadPct * 3 + b.quality.deltaDistance * 10 +
+            b.quality.expiryDistance * 0.05 - b.quality.liquidityBonus;
+          return scoreA - scoreB;
+        });
+      for (const candidate of ranked) {
+        if (chosen.size >= perType) break;
+        if (!chosen.has(candidate.row.symbol)) chosen.set(candidate.row.symbol, candidate.row);
+      }
+    }
+    selected.push(...chosen.values());
   }
   return selected
-    .sort((a, b) => a._quality - b._quality)
     .slice(0, limit)
     .map(({ _quality, ...row }) => row);
 }
@@ -203,6 +257,122 @@ export function calculateLongOptionSizing({
     maxLossPerContract,
     premiumNotional: qty * premiumPerContract,
     totalRisk: qty * maxLossPerContract,
+    reason
+  };
+}
+
+
+/**
+ * Size a vertical credit spread as a defined-risk pair only. The short and
+ * protective option must use the same verified contract multiplier. Unknown
+ * commission or multiplier data blocks sizing; no naked-short fallback exists.
+ *
+ * Margin reserve intentionally uses the full strike width (before credit) plus
+ * a fee cushion. It is a conservative local reserve, not a substitute for a
+ * fresh exchange margin check before any order is sent.
+ */
+export function calculateCreditSpreadSizing({
+  equity,
+  available,
+  shortBid,
+  hedgeAsk,
+  shortStrike,
+  hedgeStrike,
+  shortContractValue,
+  hedgeContractValue,
+  shortTakerFeeRate,
+  hedgeTakerFeeRate,
+  riskPct = 0.30
+} = {}) {
+  const accountEquity = finitePositive(equity);
+  const availableBalance = finitePositive(available);
+  const shortPremium = finitePositive(shortBid);
+  const hedgePremium = finitePositive(hedgeAsk);
+  const shortStrikeValue = finitePositive(shortStrike);
+  const hedgeStrikeValue = finitePositive(hedgeStrike);
+  const shortMultiplier = finitePositive(shortContractValue);
+  const hedgeMultiplier = finitePositive(hedgeContractValue);
+  const shortFee = finiteNonNegative(shortTakerFeeRate);
+  const hedgeFee = finiteNonNegative(hedgeTakerFeeRate);
+  const pct = Number(riskPct);
+
+  const blocked = reason => ({
+    qty: 0,
+    riskBudget: accountEquity && Number.isFinite(pct) ? accountEquity * pct / 100 : 0,
+    netCreditPerContract: 0,
+    spreadWidthPerContract: 0,
+    maxIntrinsicLossPerContract: 0,
+    entryFeesPerContract: 0,
+    exitFeeReservePerContract: 0,
+    maxLossPerContract: 0,
+    marginReservePerContract: 0,
+    totalRisk: 0,
+    totalMarginReserve: 0,
+    reason
+  });
+
+  if (!accountEquity || !availableBalance || !shortPremium || !hedgePremium ||
+      !shortStrikeValue || !hedgeStrikeValue || !shortMultiplier || !hedgeMultiplier ||
+      shortFee === null || hedgeFee === null || shortFee > 0.02 || hedgeFee > 0.02 ||
+      !Number.isFinite(pct) || pct < 0.05 || pct > 0.30) {
+    return blocked('Trusted equity, available balance, both premiums, strikes, multipliers, fees or risk cap are missing/out of bounds');
+  }
+
+  const multiplierTolerance = Math.max(shortMultiplier, hedgeMultiplier) * 1e-9;
+  if (Math.abs(shortMultiplier - hedgeMultiplier) > multiplierTolerance) {
+    return blocked('Short and hedge contract multipliers do not match');
+  }
+  if (!(shortPremium > hedgePremium)) {
+    return blocked('Net credit is not positive after buying the protective option');
+  }
+
+  const strikeWidth = Math.abs(shortStrikeValue - hedgeStrikeValue);
+  if (!(strikeWidth > 0)) return blocked('Credit spread strike width must be positive');
+
+  const contractValue = shortMultiplier;
+  const netCreditPerContract = (shortPremium - hedgePremium) * contractValue;
+  const spreadWidthPerContract = strikeWidth * contractValue;
+  const maxIntrinsicLossPerContract = Math.max(0, spreadWidthPerContract - netCreditPerContract);
+  const entryFeesPerContract =
+    (shortPremium * contractValue * shortFee) +
+    (hedgePremium * contractValue * hedgeFee);
+  const maxFeeRate = Math.max(shortFee, hedgeFee);
+  const exitFeeReservePerContract =
+    2 * Math.max(spreadWidthPerContract, (shortPremium + hedgePremium) * contractValue) * maxFeeRate;
+  const maxLossPerContract =
+    maxIntrinsicLossPerContract + entryFeesPerContract + exitFeeReservePerContract;
+  const marginReservePerContract =
+    spreadWidthPerContract + entryFeesPerContract + exitFeeReservePerContract;
+
+  if (![netCreditPerContract, spreadWidthPerContract, maxIntrinsicLossPerContract,
+    entryFeesPerContract, exitFeeReservePerContract, maxLossPerContract,
+    marginReservePerContract].every(value => Number.isFinite(value) && value >= 0) ||
+      !(maxLossPerContract > 0 && marginReservePerContract > 0)) {
+    return blocked('Credit spread maximum loss or reserve could not be calculated');
+  }
+
+  const riskBudget = accountEquity * pct / 100;
+  const qtyByRisk = Math.floor(riskBudget / maxLossPerContract);
+  const qtyByAvailable = Math.floor(availableBalance / marginReservePerContract);
+  const qty = Math.max(0, Math.min(qtyByRisk, qtyByAvailable));
+  const reason = qty < 1
+    ? (qtyByAvailable < 1
+      ? 'Available balance is below one full-width credit-spread reserve'
+      : 'Defined-risk spread loss exceeds the per-trade risk budget')
+    : null;
+
+  return {
+    qty,
+    riskBudget,
+    netCreditPerContract,
+    spreadWidthPerContract,
+    maxIntrinsicLossPerContract,
+    entryFeesPerContract,
+    exitFeeReservePerContract,
+    maxLossPerContract,
+    marginReservePerContract,
+    totalRisk: qty * maxLossPerContract,
+    totalMarginReserve: qty * marginReservePerContract,
     reason
   };
 }
