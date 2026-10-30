@@ -19,7 +19,7 @@ These tables are deliberately separate from `dd_delta_positions`, whose existing
 - `DELTA_TESTNET_OPTIONS_API_SECRET`
 - the hardcoded Delta India Testnet REST host
 
-It does not fall back to Futures credentials or production keys. Its read methods are scoped to `call_options,put_options`, with a 50-row cursor page limit. Product IDs are accepted only from the exact LIVE Testnet product catalogue. The automated execution allowlist is BTC/ETH only; XAUT remains excluded until its settlement-currency wallet and margin behaviour are independently verified.
+It does not fall back to Futures credentials or production keys. Its read methods are scoped to `call_options,put_options`, with a 50-row cursor page limit. Product IDs are accepted only from the exact LIVE Testnet product catalogue. Automated execution plans are BTC/ETH only. XAUT can be monitored read-only, but cannot be selected for automated execution until its settlement-currency wallet and margin behaviour are independently verified.
 
 ## Order lifecycle design
 
@@ -30,19 +30,26 @@ It does not fall back to Futures credentials or production keys. Its read method
 - If the short leg partially fills, only the unmatched excess protective contracts are unwound. A zero short fill requires full protective-leg unwind before releasing the group.
 - SELL exit sequence: cover the short first; only after confirmed short quantity reaches zero may the protective long be sold.
 - Every retry must use a new attempt number and client order ID. Exchange order IDs and fills are reconciled, not inferred from an HTTP response alone.
-- An expiry deadline is computed 30 minutes before the symbol's exchange settlement timestamp; the eventual exit manager must reconcile exchange positions and open orders before attempting an expiry close.
+- A pure expiry-deadline policy computes 30 minutes before the symbol's exchange settlement timestamp. A scheduled exit manager is not wired yet; it must reconcile exchange positions and open orders before attempting an expiry close.
 
 ## Execution lock and release blockers
 
-`OPTIONS_EXECUTION_ALLOWED` remains source-code `false`. `placeOptionOrder()` checks this lock before validating credentials or making a network request. No Options order was sent, no Supabase migration was applied, no Testnet or LIVE configuration was changed, and no deployment was made.
+`OPTIONS_EXECUTION_ALLOWED` remains source-code `false`. `placeOptionOrder()` checks this lock before validating credentials or making a network request. The manager has a second gate: even if that constant were changed, its order-submit method still refuses requests until the order-attempt persistence and acknowledgement/fill reconciliation pipeline is implemented. No Options order was sent, no Supabase migration was applied, no Testnet or LIVE configuration was changed, and no deployment was made.
 
 Before any execution unlock, a further review and controlled Testnet validation must confirm:
 1. Dedicated Options API credentials are installed only in Hostless secrets and authenticated product/order/position/fill payloads match the current India Testnet API.
 2. Wallet collateral currency and available margin are verified for both BTC/ETH option contracts; XAUT stays blocked until separately verified.
-3. An atomic reservation/ledger manager writes the group, both leg rows and each order attempt before network submission, and recovers safely from worker restart/lost acknowledgement.
+3. The group/leg reservation path is atomic through `reserve_dd_options_execution_group`. The order-attempt table exists, but its writer, exchange acknowledgement updater, fill aggregation and restart recovery are not complete. Those must be implemented and tested before any order-submit path can be enabled.
 4. Real order fills and commissions are matched using order ID/client order ID and actual option fills; partial/unwind/exit reconciliation is proven.
 5. IOC order behaviour, tick-size rounding, reduce-only close semantics and emergency-stop interaction are verified.
 6. Cross-strategy risk limits account for existing Momentum/Scalping/Grid exposures before any Options entry is considered.
 7. Expiry exit is tested against the actual settlement schedule; if the close is not confirmed the group remains locked for reconciliation.
 
 This Phase 2 PR is infrastructure and fail-closed execution scaffolding only, not an activation request.
+
+
+## Implemented now vs intentionally not wired
+
+- Implemented: BUY/SELL plan validation, fee-aware sizing from Phase 1, exact Testnet product matching, read-only positions/open orders/fills/wallet access, one-slot atomic group+leg reservation, order client-ID generation, and pure entry/unwind/exit state policies.
+- Not wired: a worker scheduler, durable ENTRY/EXIT/UNWIND attempt writer, exchange acknowledgement updater, fill-to-ledger aggregator, restart recovery, exchange bracket/stop handling, or account-wide exposure reservation across Futures/Grid.
+- The manager's order submit method is intentionally a hard stop until those items are implemented. A successful CI run is not an execution-readiness signal.
