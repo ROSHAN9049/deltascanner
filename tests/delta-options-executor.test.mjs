@@ -369,8 +369,8 @@ test('open Option orders and fill pages are scoped to call_options/put_options',
     }
   });
   const wallet = await walletReader.getOptionWalletSnapshot();
-  assert.equal(wallet[0].asset_symbol, 'USDT');
-  assert.equal(wallet[0].available_balance, '123.45');
+  assert.equal(wallet.result[0].asset_symbol, 'USDT');
+  assert.equal(wallet.result[0].available_balance, '123.45');
 });
 
 test('Options order submission remains source-code hard-locked before any API request', async () => {
