@@ -318,7 +318,11 @@ export function analyseOption(ticker, underlying, strategy, cfg = {}) {
   const deltaMin = n(isBuy ? cfg.buyMinDelta : cfg.sellMinDelta) || (isBuy ? 0.45 : 0.20);
   const deltaMax = n(isBuy ? cfg.buyMaxDelta : cfg.sellMaxDelta) || (isBuy ? 0.65 : 0.35);
   const underlyingScoreMin = n(cfg.scoreMin || 70);
-  const underlyingOk = String(underlying?.stage || '') === 'CONFIRMED' && n(underlying?.score) >= underlyingScoreMin;
+  const underlyingConfirmed = String(underlying?.stage || '') === 'CONFIRMED' && n(underlying?.score) >= underlyingScoreMin;
+  // Do not derive an option signal from a stale or otherwise blocked underlying.
+  // In Testnet, applyTestnetCandleFreshness() clears this ready flag on stale candles.
+  const underlyingReady = underlying?.ready === true;
+  const underlyingOk = underlyingConfirmed && underlyingReady;
   const directionOk = !!underlying?.side && optionType === targetType;
   const deltaOk = greeks.delta !== null && delta >= deltaMin && delta <= deltaMax;
   const dteOk = dte >= minDte && dte <= maxDte;
@@ -334,7 +338,8 @@ export function analyseOption(ticker, underlying, strategy, cfg = {}) {
     (antiChaseOk ? 10 : 0)
   ));
   const blocked = [];
-  if (!underlyingOk) blocked.push('Underlying CONFIRMED / score < ' + underlyingScoreMin);
+  if (!underlyingConfirmed) blocked.push('Underlying CONFIRMED / score < ' + underlyingScoreMin);
+  if (!underlyingReady) blocked.push('Underlying signal is not ready (fresh-candle or risk gate failed)');
   if (!directionOk) blocked.push('Underlying direction / option type mismatch');
   if (!deltaOk) blocked.push('Delta outside target band');
   if (!dteOk) blocked.push('Expiry outside configured DTE');
@@ -356,6 +361,7 @@ export function analyseOption(ticker, underlying, strategy, cfg = {}) {
     underlyingSymbol: String(underlying?.symbol || ''),
     underlyingAsset,
     underlyingScore: n(underlying?.score), underlyingSide: String(underlying?.side || ''),
+    underlyingReady,
     underlyingChange: n(underlying?.change), sl, tp1, tp
   };
 }
