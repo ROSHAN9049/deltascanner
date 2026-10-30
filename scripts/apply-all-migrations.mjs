@@ -20,7 +20,8 @@ const MIGRATIONS = [
   'db/migrations/20261029110000_delta_position_close_details.sql',
   'db/migrations/20261029120000_estop_release_challenge.sql',
   'db/migrations/20261029163000_delta_fill_ledger.sql',
-  'db/migrations/20261030100000_delta_options_execution_ledger.sql'
+  'db/migrations/20261030100000_delta_options_execution_ledger.sql',
+  'db/migrations/20261030120000_delta_options_restart_supervisor.sql'
 ];
 
 // These are the four "already exists" SQLSTATEs explicitly approved for skipping.

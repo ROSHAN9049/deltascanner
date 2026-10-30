@@ -29,6 +29,10 @@ import { cleanupWebSocketListeners } from './websocket-lifecycle.mjs';
 import { evaluateGlobalPositionCap, routeUnlessGlobalPositionCapBlocked } from './global-position-cap.mjs';
 import { createConfirmedSignalTelegramNotifier } from './telegram-alerts.mjs';
 import { createLeaseManager, getLeaseTtlSeconds } from './lease-manager.mjs';
+import { createDeltaOptionsExecutor } from './execution/delta-options-executor.mjs';
+import { createDeltaOptionsExecutionManager } from './execution/delta-options-execution-manager.mjs';
+import { createDeltaOptionsOrderLedger } from './execution/delta-options-order-ledger.mjs';
+import { createDeltaOptionsSupervisor } from './execution/delta-options-supervisor.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const n = v => Number.isFinite(+v) ? +v : 0;
@@ -277,6 +281,18 @@ export class DeltaEngine {
     this.leaseEnforced = false;
     this.activeScanPromise = null;
     this.privateExecutionAvailable = false;
+    this.lastOptionsSupervisorRunAt = 0;
+    this.lastOptionsSupervisorLogAt = 0;
+    this.lastOptionsSupervisorStatus = 'NOT_RUN';
+    this.optionsExecutionManager = createDeltaOptionsExecutionManager({ database: db });
+    this.optionsOrderLedger = createDeltaOptionsOrderLedger({ database: db });
+    this.optionsExecutor = createDeltaOptionsExecutor();
+    this.optionsSupervisor = createDeltaOptionsSupervisor({
+      database: db,
+      manager: this.optionsExecutionManager,
+      executor: this.optionsExecutor,
+      ledger: this.optionsOrderLedger
+    });
     this.lastMarketCacheWrite = 0;
     this.candleWarmCursor = 0;
     this.candleFetchAt = new Map();
@@ -4111,9 +4127,64 @@ export class DeltaEngine {
     }
   }
 
+  async runOptionsRestartSupervisor() {
+    // The supervisor is read/reconcile-only. It must run under the same worker
+    // lease as the scanner and only against the hardcoded India Testnet client.
+    // Missing dedicated Options credentials means no private API call is made.
+    const mode = String(process.env.DELTA_EXECUTION_MODE || '').trim().toLowerCase();
+    const hasDedicatedOptionsCredentials = Boolean(
+      String(process.env.DELTA_TESTNET_OPTIONS_API_KEY || '').trim() &&
+      String(process.env.DELTA_TESTNET_OPTIONS_API_SECRET || '').trim()
+    );
+    if (mode !== 'testnet' || !hasDedicatedOptionsCredentials) return null;
+    if (!this.leaseManager?.isHeld) return null;
+
+    const now = Date.now();
+    if (now - this.lastOptionsSupervisorRunAt < 60_000) return null;
+    this.lastOptionsSupervisorRunAt = now;
+
+    const result = await this.optionsSupervisor.reconcileOnce();
+    const status = String(result?.status || 'SUPERVISOR_UNAVAILABLE').toUpperCase();
+    const previousStatus = this.lastOptionsSupervisorStatus;
+    this.lastOptionsSupervisorStatus = status;
+    if (status !== 'RECONCILED' && status !== 'NO_ACTIVE_GROUP' &&
+        (status !== previousStatus || now - this.lastOptionsSupervisorLogAt >= 300_000)) {
+      this.lastOptionsSupervisorLogAt = now;
+      await this.log(
+        status === 'SUPERVISOR_UNAVAILABLE' ? 'ERROR' : 'WARN',
+        'Delta Testnet Options restart supervisor is blocking execution',
+        {
+          status,
+          reason: result?.reason || null,
+          groupId: result?.groupId || result?.group?.group_id || null,
+          positionCount: result?.positionCount ?? null,
+          openOrderCount: result?.openOrderCount ?? null,
+          openQty: result?.openQty ?? null,
+          expiryExitDue: result?.expiryExitDue === true,
+          executionEnabled: false
+        }
+      );
+    }
+    return result;
+  }
+
   async scanOnce() {
     if (!this.leaseManager.isHeld) {
       throw new Error('Trading lease is not confirmed; scan and entry processing fail closed');
+    }
+    try {
+      await this.runOptionsRestartSupervisor();
+    } catch (error) {
+      // Options reconciliation is isolated from the Futures scan loop. The
+      // Options source-code lock remains false if this monitor is unavailable.
+      const now = Date.now();
+      if (now - this.lastOptionsSupervisorLogAt >= 300_000) {
+        this.lastOptionsSupervisorLogAt = now;
+        await this.log('ERROR', 'Delta Testnet Options restart supervisor failed closed', {
+          error: String(error?.message || error).slice(0, 240),
+          executionEnabled: false
+        });
+      }
     }
     await this.expireStaleSignalReservations();
     const settings = { ...{
