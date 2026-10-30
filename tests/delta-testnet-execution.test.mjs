@@ -266,21 +266,21 @@ test('close-fill lookup correlates to this entry and ignores later same-symbol c
       {
         id: 'entry-fill-1', product_id: 27, product_symbol: 'BTCUSD',
         order_id: '8001', client_order_id: 'DDM-BTCUSD-entry-001',
-        side: 'buy', size: '2', price: '60000', commission: '0.03',
+        side: 'buy', size: '2', price: '60000', commission: '0.03', commission_currency: 'USD',
         settling_asset_symbol: 'USD', created_at: String((clockMs - 60 * 60_000 - 1000) * 1000),
         meta_data: { new_position: { size: 2, realized_pnl: '0' } }
       },
       {
         id: 'target-close-fill', product_id: 27, product_symbol: 'BTCUSD',
         order_id: '9001', side: 'sell', size: '2', price: '61005',
-        commission: '0.05', settling_asset_symbol: 'USD',
+        commission: '0.05', commission_currency: 'USD', settling_asset_symbol: 'USD',
         fill_type: 'normal', created_at: String((clockMs - 30 * 60_000) * 1000),
         meta_data: { new_position: { size: 0, realized_pnl: '4.5' }, order_type: 'market_order' }
       },
       {
         id: 'later-unrelated-close-fill', product_id: 27, product_symbol: 'BTCUSD',
         order_id: '9002', side: 'sell', size: '1', price: '62000',
-        commission: '0.25', settling_asset_symbol: 'USD',
+        commission: '0.25', commission_currency: 'USD', settling_asset_symbol: 'USD',
         fill_type: 'normal', created_at: String((clockMs - 10 * 60_000) * 1000),
         meta_data: { new_position: { size: 0, realized_pnl: '99' }, order_type: 'market_order' }
       }
@@ -563,7 +563,7 @@ test('Delta fill normalizer preserves IDs, commission, and microsecond exchange 
     side: 'buy',
     size: '2',
     price: '60000',
-    commission: '0.12',
+    commission: '0.12', settling_asset_symbol: 'USD',
     role: 'taker',
     reason: 'normal',
     timestamp: 1793289600123456,
@@ -575,6 +575,7 @@ test('Delta fill normalizer preserves IDs, commission, and microsecond exchange 
   assert.equal(fill.size, 2);
   assert.equal(fill.price, 60000);
   assert.equal(fill.commission, 0.12);
+  assert.equal(fill.commission_currency, 'USD');
   assert.equal(fill.order_id, '12345');
   assert.equal(fill.client_order_id, 'DDM-BTCUSD-test');
   assert.equal(fill.timestamp_us, 1793289600123456);
@@ -591,7 +592,7 @@ test('Delta fill normalizer preserves ISO microseconds beyond JavaScript millise
     side: 'buy',
     size: '1',
     price: '60000',
-    commission: '0.01',
+    commission: '0.01', commission_currency: 'USD',
     created_at: timestamp
   });
   assert.equal(fill.created_at, timestamp);
@@ -659,7 +660,7 @@ test('REST fill sync upserts idempotently and advances checkpoint only after the
       return {
         rows: [{
           id: 'fill-rest-1', product_symbol: 'BTCUSD', product_id: 27, order_id: '123',
-          side: 'buy', size: '1', price: '60000', commission: '0.1',
+          side: 'buy', size: '1', price: '60000', commission: '0.1', commission_currency: 'USD',
           created_at: '1793289600123456', fill_type: 'normal'
         }],
         after: null
@@ -689,9 +690,9 @@ test('closed trade projection requires matching entry order, exit side and full 
     opened_at: '2026-10-29T10:00:00.000Z', closed_at: '2026-10-29T10:30:00.000Z'
   };
   const fills = [
-    { id: 'entry-1', symbol: 'BTCUSD', order_id: '123', side: 'BUY', size: '1', price: '59990', commission: '0.01', created_at: '2026-10-29T10:00:01.000Z' },
-    { id: 'entry-2', symbol: 'BTCUSD', order_id: '123', side: 'BUY', size: '1', price: '60010', commission: '0.01', created_at: '2026-10-29T10:00:02.000Z' },
-    { id: 'exit-1', symbol: 'BTCUSD', order_id: '456', side: 'SELL', size: '2', price: '60120', commission: '0.02', created_at: '2026-10-29T10:29:59.000Z' }
+    { id: 'entry-1', symbol: 'BTCUSD', order_id: '123', side: 'BUY', size: '1', price: '59990', commission: '0.01', commission_currency: 'USD', created_at: '2026-10-29T10:00:01.000Z' },
+    { id: 'entry-2', symbol: 'BTCUSD', order_id: '123', side: 'BUY', size: '1', price: '60010', commission: '0.01', commission_currency: 'USD', created_at: '2026-10-29T10:00:02.000Z' },
+    { id: 'exit-1', symbol: 'BTCUSD', order_id: '456', side: 'SELL', size: '2', price: '60120', commission: '0.02', commission_currency: 'USD', created_at: '2026-10-29T10:29:59.000Z' }
   ];
   const materialized = [];
   const database = {
@@ -750,10 +751,10 @@ test('closed trade projection supports partial exits when total fills match the 
     opened_at: '2026-10-29T10:00:00.000Z', closed_at: '2026-10-29T10:30:00.000Z'
   };
   const fills = [
-    { id: 'entry-partial-1', symbol: 'BTCUSD', order_id: 'entry-partial', client_order_id: 'DDM-BTCUSD-partial', side: 'BUY', size: '2', price: '60000', commission: '0.01', created_at: '2026-10-29T10:00:01.000Z' },
-    { id: 'entry-partial-2', symbol: 'BTCUSD', order_id: 'entry-partial', client_order_id: 'DDM-BTCUSD-partial', side: 'BUY', size: '2', price: '60020', commission: '0.01', created_at: '2026-10-29T10:00:02.000Z' },
-    { id: 'exit-partial-1', symbol: 'BTCUSD', order_id: 'exit-partial-1', side: 'SELL', size: '2', price: '60050', commission: '0.01', created_at: '2026-10-29T10:15:00.000Z' },
-    { id: 'exit-partial-2', symbol: 'BTCUSD', order_id: 'exit-partial-2', side: 'SELL', size: '2', price: '60100', commission: '0.01', created_at: '2026-10-29T10:29:59.000Z' }
+    { id: 'entry-partial-1', symbol: 'BTCUSD', order_id: 'entry-partial', client_order_id: 'DDM-BTCUSD-partial', side: 'BUY', size: '2', price: '60000', commission: '0.01', commission_currency: 'USD', created_at: '2026-10-29T10:00:01.000Z' },
+    { id: 'entry-partial-2', symbol: 'BTCUSD', order_id: 'entry-partial', client_order_id: 'DDM-BTCUSD-partial', side: 'BUY', size: '2', price: '60020', commission: '0.01', commission_currency: 'USD', created_at: '2026-10-29T10:00:02.000Z' },
+    { id: 'exit-partial-1', symbol: 'BTCUSD', order_id: 'exit-partial-1', side: 'SELL', size: '2', price: '60050', commission: '0.01', commission_currency: 'USD', created_at: '2026-10-29T10:15:00.000Z' },
+    { id: 'exit-partial-2', symbol: 'BTCUSD', order_id: 'exit-partial-2', side: 'SELL', size: '2', price: '60100', commission: '0.01', commission_currency: 'USD', created_at: '2026-10-29T10:29:59.000Z' }
   ];
   const materialized = [];
   const database = {
@@ -793,8 +794,8 @@ test('closed trade projection refuses missing exit fill quantity', async () => {
         closed_at: '2026-10-29T10:30:00Z'
       }];
       if (table === 'dd_fills') return [
-        { id: 'entry-2', symbol: 'ETHUSD', order_id: 'entry-2', side: 'SELL', size: 3, price: 2500, commission: 0.2, created_at: '2026-10-29T10:00:01Z' },
-        { id: 'partial-exit', symbol: 'ETHUSD', order_id: 'exit-2', side: 'BUY', size: 2, price: 2490, commission: 0.2, created_at: '2026-10-29T10:29:59Z' }
+        { id: 'entry-2', symbol: 'ETHUSD', order_id: 'entry-2', side: 'SELL', size: 3, price: 2500, commission: 0.2, commission_currency: 'USD', created_at: '2026-10-29T10:00:01Z' },
+        { id: 'partial-exit', symbol: 'ETHUSD', order_id: 'exit-2', side: 'BUY', size: 2, price: 2490, commission: 0.2, commission_currency: 'USD', created_at: '2026-10-29T10:29:59Z' }
       ];
       return [];
     },
@@ -823,8 +824,8 @@ test('historical synthetic-close rows keep fill-derived gross but withhold unver
         }];
       }
       if (table === 'dd_fills') return [
-        { id: 'entry-3', symbol: 'BTCUSD', order_id: 'entry-3', side: 'BUY', size: 1, price: 60000, commission: 0.01, created_at: '2026-10-29T10:00:01Z' },
-        { id: 'exit-3', symbol: 'BTCUSD', order_id: 'exit-3', side: 'SELL', size: 1, price: 60100, commission: 0.01, created_at: '2026-10-29T10:29:59Z' }
+        { id: 'entry-3', symbol: 'BTCUSD', order_id: 'entry-3', side: 'BUY', size: 1, price: 60000, commission: 0.01, commission_currency: 'USD', created_at: '2026-10-29T10:00:01Z' },
+        { id: 'exit-3', symbol: 'BTCUSD', order_id: 'exit-3', side: 'SELL', size: 1, price: 60100, commission: 0.01, commission_currency: 'USD', created_at: '2026-10-29T10:29:59Z' }
       ];
       if (table === 'dd_market_cache') return [{ symbol: 'BTCUSD', contract_value: '0.001', notional_type: 'vanilla' }];
       return [];
@@ -983,8 +984,8 @@ test('closed trade projection withholds net P&L when fill commissions are incomp
     closed_at: '2026-10-29T10:30:00.000Z'
   };
   const fills = [
-    { id: 'entry-unknown-fee', symbol: 'BTCUSD', order_id: 'entry-unknown-fee', side: 'BUY', size: '1', price: '60000', commission: '0.01', created_at: '2026-10-29T10:00:01.000Z' },
-    { id: 'exit-unknown-fee', symbol: 'BTCUSD', order_id: 'exit-unknown-fee', side: 'SELL', size: '1', price: '60100', commission: null, created_at: '2026-10-29T10:29:59.000Z' }
+    { id: 'entry-unknown-fee', symbol: 'BTCUSD', order_id: 'entry-unknown-fee', side: 'BUY', size: '1', price: '60000', commission: '0.01', commission_currency: 'USD', created_at: '2026-10-29T10:00:01.000Z' },
+    { id: 'exit-unknown-fee', symbol: 'BTCUSD', order_id: 'exit-unknown-fee', side: 'SELL', size: '1', price: '60100', commission: null, commission_currency: 'USD', created_at: '2026-10-29T10:29:59.000Z' }
   ];
   const materialized = [];
   const database = {
@@ -1011,6 +1012,46 @@ test('closed trade projection withholds net P&L when fill commissions are incomp
   assert.equal(trade.net_pnl, null);
   assert.equal(trade.net_pnl_verified, false);
   assert.equal(trade.pnl_pct, null);
+  assert.equal(trade.result, 'GROSS WIN · NET UNVERIFIED');
+  assert.ok(!materialized.some(row => row.table === 'dd_rotation_ledger'));
+});
+
+
+
+test('closed trade projection withholds fee-adjusted net P&L when settlement currency is unknown', async () => {
+  const closedPosition = {
+    id: 47, symbol: 'BTCUSD', status: 'CLOSED', close_source: 'private_websocket',
+    realized_pnl_verified: true, strategy: 'MOMENTUM', side: 'BUY',
+    qty: '1', entry_order_id: 'entry-currency-unknown', order_id: 'exit-currency-unknown',
+    realized_pnl: '0.1', opened_at: '2026-10-29T10:00:00.000Z',
+    closed_at: '2026-10-29T10:30:00.000Z'
+  };
+  const fills = [
+    { id: 'entry-currency-unknown', symbol: 'BTCUSD', order_id: 'entry-currency-unknown', side: 'BUY', size: '1', price: '60000', commission: '0.01', created_at: '2026-10-29T10:00:01.000Z' },
+    { id: 'exit-currency-unknown', symbol: 'BTCUSD', order_id: 'exit-currency-unknown', side: 'SELL', size: '1', price: '60100', commission: '0.01', created_at: '2026-10-29T10:29:59.000Z' }
+  ];
+  const materialized = [];
+  const database = {
+    async select(table) {
+      if (table === 'dd_delta_positions') return [closedPosition];
+      if (table === 'dd_fills') return fills;
+      if (table === 'dd_market_cache') return [{ symbol: 'BTCUSD', contract_value: '0.001', notional_type: 'vanilla' }];
+      return [];
+    },
+    async upsertMany(table, values, conflict) { materialized.push({ table, values, conflict }); },
+    async log() {}
+  };
+  const tracker = new DeltaTestnetTracker({ env: demoEnv(), database, executor: {}, WebSocketImpl: class {} });
+  tracker.stopped = false;
+
+  const result = await tracker.materializeVerifiedClosedTrades();
+
+  assert.equal(result.materialized, 1);
+  const trade = materialized.find(row => row.table === 'dd_trades').values[0];
+  assert.equal(trade.fees, null);
+  assert.equal(trade.fees_verified, false);
+  assert.equal(trade.net_pnl, null);
+  assert.equal(trade.net_pnl_verified, false);
   assert.equal(trade.result, 'GROSS WIN · NET UNVERIFIED');
   assert.ok(!materialized.some(row => row.table === 'dd_rotation_ledger'));
 });
