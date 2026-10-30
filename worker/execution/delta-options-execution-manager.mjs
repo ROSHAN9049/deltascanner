@@ -24,6 +24,65 @@ function validClientGroupId(input) {
   return value;
 }
 
+function sameNumber(left, right) {
+  return Number.isFinite(Number(left)) && Number(left) === Number(right);
+}
+
+function sameInstant(left, right) {
+  const a = Date.parse(String(left ?? ''));
+  const b = Date.parse(String(right ?? ''));
+  return Number.isFinite(a) && Number.isFinite(b) && a === b;
+}
+
+export function matchesPersistedOptionsReservation(groupRow, legRows, payload) {
+  if (!groupRow || !Array.isArray(legRows) || !payload?.group || !Array.isArray(payload.legs)) {
+    return false;
+  }
+  const group = payload.group;
+  if (String(groupRow.client_group_id ?? '') !== String(group.client_group_id) ||
+      upper(groupRow.state) !== 'RESERVED' ||
+      upper(groupRow.strategy) !== upper(group.strategy) ||
+      upper(groupRow.underlying_symbol) !== upper(group.underlying_symbol) ||
+      upper(groupRow.underlying_direction) !== upper(group.underlying_direction) ||
+      upper(groupRow.option_type) !== upper(group.option_type) ||
+      !sameInstant(groupRow.expiry_at, group.expiry_at) ||
+      !sameNumber(groupRow.requested_qty, group.requested_qty) ||
+      !sameNumber(groupRow.matched_qty ?? 0, 0) ||
+      !sameNumber(groupRow.risk_budget_usd, group.risk_budget_usd) ||
+      !sameNumber(groupRow.max_loss_usd, group.max_loss_usd) ||
+      !sameNumber(groupRow.reserved_margin_usd, group.reserved_margin_usd) ||
+      (group.net_credit_usd === null
+        ? groupRow.net_credit_usd !== null
+        : !sameNumber(groupRow.net_credit_usd, group.net_credit_usd))) {
+    return false;
+  }
+
+  if (legRows.length !== payload.legs.length) return false;
+  const persistedByRole = new Map(
+    legRows.map(row => [upper(row?.leg_role), row])
+  );
+  for (const expected of payload.legs) {
+    const row = persistedByRole.get(upper(expected.role));
+    if (!row ||
+        !sameNumber(row.product_id, expected.productId) ||
+        upper(row.symbol) !== upper(expected.symbol) ||
+        upper(row.contract_type) !== upper(expected.contractType) ||
+        upper(row.option_type) !== upper(expected.optionType) ||
+        !sameNumber(row.strike, expected.strike) ||
+        !sameNumber(row.contract_value, expected.contractValue) ||
+        !sameNumber(row.tick_size, expected.tickSize) ||
+        !sameInstant(row.expiry_at, expected.expiry_at) ||
+        upper(row.side) !== upper(expected.side) ||
+        !sameNumber(row.requested_qty, expected.qty) ||
+        !sameNumber(row.filled_qty ?? 0, 0) ||
+        upper(row.order_state) !== 'RESERVED' ||
+        String(row.client_order_id ?? '') !== String(expected.clientOrderId)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function buildOptionsReservationPayload({
   strategy,
   underlyingSide,
@@ -132,20 +191,41 @@ export function createDeltaOptionsExecutionManager({
       throw new Error('Atomic Options reservation RPC is unavailable');
     }
     const payload = preview(input);
-    const response = await database.rpc('reserve_dd_options_execution_group', {
-      p_group: payload.group,
-      p_legs: payload.legs
-    });
-    const result = Array.isArray(response) ? response[0] : response;
-    if (!result || typeof result !== 'object' || !result.group_id ||
-        result.client_group_id !== payload.group.client_group_id ||
-        result.state !== 'RESERVED' ||
-        Number(result.leg_count) !== payload.legs.length) {
-      // Never submit an exchange order when the DB reservation response is
-      // absent, malformed, or refers to a different client group.
-      throw new Error('Atomic Options group reservation could not be confirmed; no order may be submitted');
+    async function recoverAmbiguousReservation() {
+      const existing = await getGroupByClientGroupId(payload.group.client_group_id);
+      if (!existing) return null;
+      const legs = await getGroupLegs(existing.id);
+      if (!matchesPersistedOptionsReservation(existing, legs, payload)) return null;
+      return {
+        group_id: existing.id,
+        client_group_id: existing.client_group_id,
+        state: existing.state,
+        leg_count: legs.length,
+        recoveredAfterAmbiguousRpc: true,
+        payload
+      };
     }
-    return { ...result, payload };
+
+    try {
+      const response = await database.rpc('reserve_dd_options_execution_group', {
+        p_group: payload.group,
+        p_legs: payload.legs
+      });
+      const result = Array.isArray(response) ? response[0] : response;
+      if (result && typeof result === 'object' && result.group_id &&
+          result.client_group_id === payload.group.client_group_id &&
+          result.state === 'RESERVED' &&
+          Number(result.leg_count) === payload.legs.length) {
+        return { ...result, payload };
+      }
+      const recovered = await recoverAmbiguousReservation().catch(() => null);
+      if (recovered) return recovered;
+      throw new Error('Atomic Options group reservation could not be confirmed; no order may be submitted');
+    } catch (error) {
+      const recovered = await recoverAmbiguousReservation().catch(() => null);
+      if (recovered) return recovered;
+      throw error;
+    }
   }
 
   async function submitReservedOrder() {
