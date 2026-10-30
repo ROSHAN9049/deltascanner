@@ -129,3 +129,93 @@ describe('Delta Testnet fill ledger migration SQL structure', () => {
     assert.match(migrationRunner, /'dd_delta_fill_sync_state'/);
   });
 });
+
+
+const deltaOptionsMigrationPath = fileURLToPath(new URL('../db/migrations/20261030100000_delta_options_execution_ledger.sql', import.meta.url));
+const deltaOptionsMigration = readFileSync(deltaOptionsMigrationPath, 'utf8');
+const optionsMigrationRunner = readFileSync(fileURLToPath(new URL('../scripts/apply-all-migrations.mjs', import.meta.url)), 'utf8');
+
+describe('Delta Testnet Options execution ledger migration SQL structure', () => {
+  test('creates separate group, leg and order ledgers, not dd_delta_positions rows', () => {
+    assert.ok(deltaOptionsMigration.includes('BEGIN;'));
+    assert.ok(deltaOptionsMigration.includes('COMMIT;'));
+    assert.match(deltaOptionsMigration, /CREATE TABLE IF NOT EXISTS public\.dd_options_execution_groups/i);
+    assert.match(deltaOptionsMigration, /CREATE TABLE IF NOT EXISTS public\.dd_options_execution_legs/i);
+    assert.match(deltaOptionsMigration, /CREATE TABLE IF NOT EXISTS public\.dd_options_execution_orders/i);
+    assert.match(deltaOptionsMigration, /contract_value NUMERIC NOT NULL CHECK \(contract_value > 0\)/i);
+    assert.match(deltaOptionsMigration, /tick_size NUMERIC NOT NULL CHECK \(tick_size > 0\)/i);
+    assert.doesNotMatch(deltaOptionsMigration, /INSERT INTO public\.dd_delta_positions/i);
+  });
+
+  test('enforces one active Options group and unique group/leg idempotency keys', () => {
+    assert.match(deltaOptionsMigration, /dd_options_one_active_execution_slot_idx/i);
+    assert.match(deltaOptionsMigration, /WHERE state NOT IN \('CLOSED', 'REJECTED', 'FAILED'\)/i);
+    assert.match(deltaOptionsMigration, /client_group_id TEXT NOT NULL UNIQUE/i);
+    assert.match(deltaOptionsMigration, /client_order_id TEXT NOT NULL UNIQUE/i);
+    assert.match(deltaOptionsMigration, /UNIQUE \(group_id, leg_role\)/i);
+    assert.match(deltaOptionsMigration, /dd_options_active_leg_symbol_idx/i);
+  });
+
+  test('captures partial fills, exit fills, commissions and unknown order state', () => {
+    assert.match(deltaOptionsMigration, /filled_qty NUMERIC NOT NULL DEFAULT 0/i);
+    assert.match(deltaOptionsMigration, /exit_filled_qty NUMERIC NOT NULL DEFAULT 0/i);
+    assert.match(deltaOptionsMigration, /commission_currency TEXT NULL/i);
+    assert.match(deltaOptionsMigration, /exit_commission_currency TEXT NULL/i);
+    assert.match(deltaOptionsMigration, /'UNKNOWN'/i);
+    assert.match(deltaOptionsMigration, /'RECONCILIATION_REQUIRED'/i);
+  });
+
+  test('all Options tables are service-role only and migration follows Delta fill ledger', () => {
+    for (const table of ['dd_options_execution_groups', 'dd_options_execution_legs', 'dd_options_execution_orders', 'dd_options_execution_fills']) {
+      assert.match(deltaOptionsMigration, new RegExp('ALTER TABLE public\.' + table + ' ENABLE ROW LEVEL SECURITY', 'i'));
+      assert.match(deltaOptionsMigration, new RegExp('REVOKE ALL ON TABLE public\.' + table + ' FROM anon, authenticated', 'i'));
+      assert.match(deltaOptionsMigration, new RegExp('GRANT ALL ON TABLE public\.' + table + ' TO service_role', 'i'));
+      assert.match(optionsMigrationRunner, new RegExp("'" + table + "'"));
+    }
+    const fillIndex = optionsMigrationRunner.indexOf('20261029163000_delta_fill_ledger.sql');
+    const optionsIndex = optionsMigrationRunner.indexOf('20261030100000_delta_options_execution_ledger.sql');
+    assert.ok(fillIndex >= 0 && optionsIndex > fillIndex);
+  });
+});
+
+
+test('atomic Options reservation RPC validates both legs and is service-role only', () => {
+  assert.match(deltaOptionsMigration, /CREATE OR REPLACE FUNCTION public\.reserve_dd_options_execution_group/i);
+  assert.match(deltaOptionsMigration, /REVOKE ALL ON FUNCTION public\.reserve_dd_options_execution_group\(JSONB, JSONB\) FROM PUBLIC, anon, authenticated/i);
+  assert.match(deltaOptionsMigration, /GRANT EXECUTE ON FUNCTION public\.reserve_dd_options_execution_group\(JSONB, JSONB\) TO service_role/i);
+  assert.match(deltaOptionsMigration, /v_underlying NOT IN \('BTCUSD', 'ETHUSD'\)/i);
+  assert.match(deltaOptionsMigration, /v_max_loss > v_risk_budget/i);
+  assert.match(deltaOptionsMigration, /v_net_credit <= 0/i);
+  assert.match(deltaOptionsMigration, /'PROTECTIVE_WING'/i);
+  assert.match(deltaOptionsMigration, /'SHORT_OPTION'/i);
+  assert.match(deltaOptionsMigration, /INSERT INTO public\.dd_options_execution_groups/i);
+  assert.match(deltaOptionsMigration, /INSERT INTO public\.dd_options_execution_legs/i);
+  assert.match(deltaOptionsMigration, /RAISE EXCEPTION 'Credit spread requires one protective BUY and one short SELL'/i);
+  assert.match(deltaOptionsMigration, /RAISE EXCEPTION 'Credit spread protective wing must be farther out of the money'/i);
+  assert.match(deltaOptionsMigration, /v_reserved_margin <= 0/i);
+  assert.match(deltaOptionsMigration, /CREATE OR REPLACE FUNCTION public\.reserve_dd_options_order_attempt/i);
+  assert.match(deltaOptionsMigration, /CREATE OR REPLACE FUNCTION public\.record_dd_options_order_ack/i);
+  assert.match(deltaOptionsMigration, /CREATE OR REPLACE FUNCTION public\.record_dd_options_execution_fill/i);
+  assert.match(deltaOptionsMigration, /exchange_fill_id TEXT NOT NULL UNIQUE/i);
+  assert.match(deltaOptionsMigration, /acknowledged_filled_qty NUMERIC NULL/i);
+  assert.match(deltaOptionsMigration, /ON CONFLICT \(exchange_fill_id\) DO NOTHING/i);
+  assert.match(deltaOptionsMigration, /OPTIONS_FILL_ID_COLLISION/i);
+});
+
+
+test('Options fill accounting preserves unknown commissions and accepts asynchronously confirmed fills', () => {
+  assert.match(
+    deltaOptionsMigration,
+    /COUNT\(commission\) = COUNT\(\*\)[\s\S]*?COUNT\(DISTINCT commission_currency\) = 1[\s\S]*?THEN SUM\(commission\)[\s\S]*?ELSE NULL/i
+  );
+  assert.match(
+    deltaOptionsMigration,
+    /COUNT\(f\.commission\) FILTER \(WHERE o\.intent = 'ENTRY'\) =[\s\S]*?COUNT\(f\.exchange_fill_id\) FILTER \(WHERE o\.intent = 'ENTRY'\)/i
+  );
+  assert.match(
+    deltaOptionsMigration,
+    /COUNT\(f\.commission\) FILTER \(WHERE o\.intent IN \('EXIT', 'UNWIND'\)\) =[\s\S]*?COUNT\(f\.exchange_fill_id\) FILTER \(WHERE o\.intent IN \('EXIT', 'UNWIND'\)\)/i
+  );
+  assert.doesNotMatch(deltaOptionsMigration, /COALESCE\(SUM\(commission\), 0\)/i);
+  assert.doesNotMatch(deltaOptionsMigration, /v_total_qty > v_order\.acknowledged_filled_qty/i);
+});

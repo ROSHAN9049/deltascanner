@@ -7,6 +7,7 @@ const underlying = {
   side: 'BUY',
   stage: 'CONFIRMED',
   score: 95,
+  ready: true,
   change: 0
 };
 
@@ -43,4 +44,36 @@ test('a genuine zero option Delta is preserved but fails the configured band', (
   assert.equal(signal.delta, 0);
   assert.equal(signal.ready, false);
   assert.ok(signal.blocked.includes('Delta outside target band'));
+});
+
+test('option candidates fail closed when the underlying signal is not ready', () => {
+  const liquidCall = {
+    ...baseTicker,
+    greeks: { delta: 0.55 }
+  };
+  for (const override of [{ ready: false }, { ready: undefined }]) {
+    const signal = analyseOption(
+      liquidCall,
+      { ...underlying, ...override },
+      'OPTIONS_BUY',
+      config
+    );
+    assert.equal(signal.underlyingReady, false);
+    assert.equal(signal.ready, false);
+    assert.ok(signal.blocked.includes(
+      'Underlying signal is not ready (fresh-candle or risk gate failed)'
+    ));
+  }
+});
+
+test('option candidates remain eligible only when the underlying signal is ready', () => {
+  const signal = analyseOption(
+    { ...baseTicker, greeks: { delta: 0.55 } },
+    underlying,
+    'OPTIONS_BUY',
+    config
+  );
+  assert.equal(signal.underlyingReady, true);
+  assert.equal(signal.stage, 'CONFIRMED');
+  assert.equal(signal.ready, true);
 });
