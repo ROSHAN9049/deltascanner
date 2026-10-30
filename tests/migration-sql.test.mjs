@@ -244,4 +244,34 @@ describe('Delta Testnet Options restart supervisor migration SQL structure', () 
     const supervisorIndex = migrationRunner.indexOf('20261030120000_delta_options_restart_supervisor.sql');
     assert.ok(optionsIndex >= 0 && supervisorIndex > optionsIndex);
   });
+
+const optionsExpiryMigrationPath = fileURLToPath(new URL('../db/migrations/20261030140000_delta_options_expiry_exit_required.sql', import.meta.url));
+const optionsExpiryMigration = readFileSync(optionsExpiryMigrationPath, 'utf8');
+
+describe('Delta Testnet Options expiry exit migration SQL structure', () => {
+  test('adds a separate EXIT_REQUIRED state without weakening reconciliation lock', () => {
+    assert.ok(optionsExpiryMigration.includes('BEGIN;'));
+    assert.ok(optionsExpiryMigration.includes('COMMIT;'));
+    assert.match(optionsExpiryMigration, /ADD CONSTRAINT dd_options_execution_groups_state_check/i);
+    assert.match(optionsExpiryMigration, /'EXIT_REQUIRED'/);
+    assert.match(optionsExpiryMigration, /CREATE OR REPLACE FUNCTION public\\.mark_dd_options_group_expiry_exit_required/i);
+    assert.match(optionsExpiryMigration, /CREATE OR REPLACE FUNCTION public\\.close_dd_options_group_after_expiry_if_flat/i);
+    assert.match(optionsExpiryMigration, /SECURITY INVOKER/i);
+    assert.match(optionsExpiryMigration, /REVOKE ALL ON FUNCTION public\\.mark_dd_options_group_expiry_exit_required\\(UUID, TIMESTAMPTZ, INTEGER, NUMERIC, JSONB\\)\\s+FROM PUBLIC, anon, authenticated/i);
+    assert.match(optionsExpiryMigration, /GRANT EXECUTE ON FUNCTION public\\.mark_dd_options_group_expiry_exit_required\\(UUID, TIMESTAMPTZ, INTEGER, NUMERIC, JSONB\\)\\s+TO service_role/i);
+    assert.match(optionsExpiryMigration, /REVOKE ALL ON FUNCTION public\\.close_dd_options_group_after_expiry_if_flat\\(UUID, TIMESTAMPTZ, JSONB\\)\\s+FROM PUBLIC, anon, authenticated/i);
+    assert.match(optionsExpiryMigration, /GRANT EXECUTE ON FUNCTION public\\.close_dd_options_group_after_expiry_if_flat\\(UUID, TIMESTAMPTZ, JSONB\\)\\s+TO service_role/i);
+  });
+
+  test('expiry-required groups cannot enter but can reserve valid exit/unwind attempts', () => {
+    assert.match(deltaOptionsMigration, /v_group\\.state = 'EXIT_REQUIRED' AND v_intent = 'ENTRY'/i);
+    assert.match(deltaOptionsMigration, /v_group\\.state NOT IN \\('SHORT_ENTRY_PENDING', 'UNWIND_PENDING', 'EXIT_REQUIRED'\\)/i);
+  });
+
+  test('migration runner applies expiry exit state after the restart supervisor schema', () => {
+    const supervisorIndex = migrationRunner.indexOf('20261030120000_delta_options_restart_supervisor.sql');
+    const expiryIndex = migrationRunner.indexOf('20261030140000_delta_options_expiry_exit_required.sql');
+    assert.ok(supervisorIndex >= 0 && expiryIndex > supervisorIndex);
+  });
+});
 });
