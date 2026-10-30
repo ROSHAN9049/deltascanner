@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './style.css';
+import { apiUrl } from './api-url.js';
 import { indiaDateKey } from './date-utils.js';
 import GridStrategy from './GridStrategy.jsx';
 import { DEFAULT_VISIBLE_MARKET_LIMIT, selectOpenPositionSymbols, selectVisibleMarketRows, selectVisibleSignalRows } from './market-view.js';
@@ -93,7 +94,7 @@ function App() {
     const cacheBust = '?t=' + Date.now();
     // Market rendering is independent of the slower health / engine-state requests.
     const marketRequest = (async () => {
-      const response = await fetch('/api/market' + cacheBust, { cache: 'no-store' });
+      const response = await fetch(apiUrl('/api/market') + cacheBust, { cache: 'no-store' });
       const result = await response.json();
       if (!response.ok || !result.success) throw new Error(result.error || 'Market unavailable');
       setMarket(Array.isArray(result.result) ? result.result : []);
@@ -102,8 +103,8 @@ function App() {
 
     const stateRequest = (async () => {
       const responses = await Promise.all([
-        fetch('/api/health' + cacheBust, { cache: 'no-store' }).then(r => r.json()),
-        fetch('/api/engine/state' + cacheBust, { cache: 'no-store', credentials: 'same-origin' }).then(r => r.json())
+        fetch(apiUrl('/api/health') + cacheBust, { cache: 'no-store' }).then(r => r.json()),
+        fetch(apiUrl('/api/engine/state') + cacheBust, { cache: 'no-store', credentials: 'include' }).then(r => r.json())
       ]);
       setHealth(responses[0]);
       if (responses[1].success) {
@@ -119,7 +120,7 @@ function App() {
     // pagination is incomplete or the exchange cannot be verified.
     const routeRequest = (async () => {
       try {
-        const response = await fetch('/api/market?type=testnet-products&t=' + Date.now(), { cache: 'no-store' });
+        const response = await fetch(apiUrl('/api/market?type=testnet-products&t=' + Date.now()), { cache: 'no-store' });
         const result = await response.json();
         setTestnetProducts(response.ok && result?.success === true
           ? result
@@ -145,10 +146,10 @@ function App() {
     }
     setBusy(true);
     try {
-      const response = await fetch('/api/engine/session', {
+      const response = await fetch(apiUrl('/api/engine/session'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
+        credentials: 'include',
         cache: 'no-store',
         body: JSON.stringify({ secret: candidate })
       });
@@ -170,9 +171,9 @@ function App() {
   const lockSession = async () => {
     setBusy(true);
     try {
-      const response = await fetch('/api/engine/session', {
+      const response = await fetch(apiUrl('/api/engine/session'), {
         method: 'DELETE',
-        credentials: 'same-origin',
+        credentials: 'include',
         cache: 'no-store'
       });
       const data = await response.json();
@@ -214,10 +215,10 @@ function App() {
     if (!state || state.accountDataProtected === true) { setTab('settings'); setError('Unlock the private dashboard session in Settings before using controls.'); return false; }
     setBusy(true);
     try {
-      const res = await fetch('/api/engine/toggle', {
+      const res = await fetch(apiUrl('/api/engine/toggle'), {
         method: 'POST',
         headers: { 'Content-Type':'application/json' },
-        credentials: 'same-origin',
+        credentials: 'include',
         body: JSON.stringify(patch)
       });
       const data = await res.json();
@@ -258,10 +259,10 @@ function App() {
       setBusy(true);
       setError('');
       try {
-        const response = await fetch('/api/engine/toggle', {
+        const response = await fetch(apiUrl('/api/engine/toggle'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          credentials: 'same-origin',
+          credentials: 'include',
           body: JSON.stringify({ requestEmergencyStopRelease: true })
         });
         const data = await response.json();

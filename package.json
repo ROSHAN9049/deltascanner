@@ -22,7 +22,8 @@
     "diagnose:failed-signals": "node scripts/diagnose-failed-signals.mjs",
     "test:derived-trades": "node --test tests/tradetron-derived-trades.test.mjs",
     "import:tradetron-csv": "node scripts/import-tradetron-csv.mjs",
-    "score:distribution": "node scripts/score-distribution.mjs --database"
+    "score:distribution": "node scripts/score-distribution.mjs --database",
+    "start:api": "node server/hostless-api.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",
