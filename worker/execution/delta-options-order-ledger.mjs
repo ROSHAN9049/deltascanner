@@ -288,9 +288,11 @@ export function createDeltaOptionsOrderLedger({
       throw new Error('Delta Options acknowledgement did not match the durable order attempt; reconciliation required');
     }
 
-    const stateWithFillEvidence = unfilled !== null
-      ? normalizedState(exchangeState)
-      : 'UNKNOWN';
+    const stateWithFillEvidence = unfilled === null
+      ? 'UNKNOWN'
+      : exchangeState === 'closed' && ackFilledQty < Number(row.requested_qty)
+        ? 'CANCELLED'
+        : normalizedState(exchangeState);
     const ackAverageFillPrice = finite(
       ack.average_fill_price ?? ack.avg_fill_price ?? ack.average_fill_price_with_fees
     );
