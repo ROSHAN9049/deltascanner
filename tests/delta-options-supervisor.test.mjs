@@ -16,7 +16,7 @@ function makeLeg(overrides = {}) {
     requested_qty: 2,
     filled_qty: 1,
     exit_filled_qty: 0,
-    order_state: 'PARTIALLY_FILLED',
+    order_state: 'CANCELLED',
     ...overrides
   };
 }
@@ -153,6 +153,37 @@ test('reconciles a persisted position against exchange position, order and fill 
   assert.equal(result.openQty, 1);
   assert.equal(harness.calls.reconciliations, 1);
   assert.equal(harness.calls.rpc.length, 0);
+});
+
+test('keeps a correctly tracked open IOC order pending without advancing the group', async () => {
+  const openOrder = {
+    id: '7001',
+    client_order_id: 'DDO-ABCD12345678-LP-1',
+    product_id: 101,
+    product_symbol: 'C-BTC-90000-311026',
+    side: 'buy',
+    size: 2,
+    state: 'open'
+  };
+  const harness = makeHarness({
+    orders: [makeOrder({ order_state: 'OPEN' })],
+    openOrders: [openOrder]
+  });
+  const result = await harness.supervisor.reconcileOnce();
+  assert.equal(result.status, 'ORDER_PENDING');
+  assert.equal(result.executionEnabled, false);
+  assert.equal(result.pendingOrderCount, 1);
+  assert.equal(harness.calls.rpc.length, 0);
+});
+
+test('locks an active ledger order that is missing from the exchange open-order snapshot', async () => {
+  const harness = makeHarness({
+    orders: [makeOrder({ order_state: 'OPEN' })],
+    openOrders: []
+  });
+  const result = await harness.supervisor.reconcileOnce();
+  assert.equal(result.status, 'RECONCILIATION_REQUIRED');
+  assert.equal(harness.calls.rpc[0].args.p_error_code, 'OPTIONS_ORDER_TERMINALITY_UNVERIFIED');
 });
 
 test('parks the group when exchange position quantity differs from the durable fill ledger', async () => {
