@@ -46,7 +46,7 @@ BEGIN
   IF p_group_id IS NULL OR p_expiry_at IS NULL OR
      p_minutes_before_expiry IS NULL OR p_minutes_before_expiry < 5 OR
      p_minutes_before_expiry > 240 OR
-     p_open_qty IS NULL OR p_open_qty <= 0 OR
+     p_open_qty IS NULL OR p_open_qty < 0 OR
      jsonb_typeof(COALESCE(p_raw, '{}'::JSONB)) IS DISTINCT FROM 'object' THEN
     RAISE EXCEPTION 'Options expiry exit inputs are invalid';
   END IF;
@@ -74,7 +74,7 @@ BEGIN
   FROM public.dd_options_execution_legs
   WHERE group_id = p_group_id;
 
-  IF v_open_qty <= 0 OR ABS(v_open_qty - p_open_qty) > 0.00000001 THEN
+  IF ABS(v_open_qty - p_open_qty) > 0.00000001 THEN
     RAISE EXCEPTION 'Options expiry exit quantity differs from the persisted leg fill ledger';
   END IF;
 
