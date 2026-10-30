@@ -266,12 +266,6 @@ export function createDeltaOptionsOrderLedger({
       updated_at: textValue(ack.updated_at)
     };
 
-    if (identityMatches &&
-        String(row.exchange_order_id || '') === exchangeOrderId &&
-        upper(row.order_state) !== 'RECONCILIATION_REQUIRED') {
-      return { ...row, idempotent: true };
-    }
-
     if (!identityMatches) {
       await database.rpc('record_dd_options_order_ack', {
         p_order_attempt_id: Number(row.id),
@@ -293,6 +287,17 @@ export function createDeltaOptionsOrderLedger({
       : exchangeState === 'closed' && ackFilledQty < Number(row.requested_qty)
         ? 'CANCELLED'
         : normalizedState(exchangeState);
+    const currentState = upper(row.order_state);
+    const currentAckQty = finite(row.acknowledged_filled_qty) ?? 0;
+    const isTerminalState = ['FILLED', 'CANCELLED', 'REJECTED', 'RECONCILIATION_REQUIRED'].includes(currentState);
+    const sameAcknowledgement = currentState === stateWithFillEvidence &&
+      Math.abs(currentAckQty - ackFilledQty) <= 1e-8;
+    if (identityMatches &&
+        String(row.exchange_order_id || '') === exchangeOrderId &&
+        (isTerminalState || sameAcknowledgement)) {
+      return { ...row, idempotent: true };
+    }
+
     const ackAverageFillPrice = finite(
       ack.average_fill_price ?? ack.avg_fill_price ?? ack.average_fill_price_with_fees
     );
