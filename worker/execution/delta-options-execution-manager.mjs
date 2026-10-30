@@ -134,6 +134,7 @@ export function buildOptionsReservationPayload({
     strike: leg.strike,
     contractValue: leg.contractValue,
     tickSize: leg.tickSize,
+    settlement_asset: leg.settlementAsset,
     side: leg.side,
     qty: leg.qty,
     expiry_at: expiryAt,
