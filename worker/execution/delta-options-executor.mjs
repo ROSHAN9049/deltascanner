@@ -263,7 +263,7 @@ export function createDeltaOptionsExecutor({
     // Return the raw exchange wallet; do not infer the Options settlement
     // currency or margin field until its India Testnet payload is verified.
     const response = await request('GET', '/v2/wallet/balances');
-    return response?.result ?? response;
+    return response;
   }
 
   async function getOptionFillsPage({ startTime, endTime, after = null, pageSize = PAGE_SIZE } = {}) {
