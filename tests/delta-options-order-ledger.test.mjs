@@ -118,7 +118,7 @@ test('attempts must match the same persisted leg and reverse side for reduce-onl
     /conflicts with its persisted leg/
   );
   await assert.rejects(
-    ledger.persistAttempt({ ...INPUT, side: 'SELL', intent: 'EXIT', reduceOnly: true }),
+    ledger.persistAttempt({ ...INPUT, side: 'BUY', intent: 'EXIT', reduceOnly: true }),
     /conflicts with its persisted leg/
   );
   const exit = await ledger.persistAttempt({
