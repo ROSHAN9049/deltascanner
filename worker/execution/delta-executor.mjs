@@ -367,11 +367,20 @@ export function createDeltaExecutor({
     );
     const entryOrderId = stringOrEmpty(position?.entry_order_id);
     const entryClientOrderId = stringOrEmpty(position?.client_order_id);
+    const positionSide = stringOrEmpty(position?.side).toUpperCase();
+    const closeSide = positionSide === 'BUY' ? 'SELL' : positionSide === 'SELL' ? 'BUY' : null;
     const hasEntryIdentity = Boolean(entryOrderId || entryClientOrderId);
+    if (!hasEntryIdentity && !Number.isFinite(openedMs)) {
+      await logExecutor('WARN', '[Executor] Position has no open timestamp or entry identity; close details remain unverified', {
+        symbol: normalizedSymbol
+      });
+      return null;
+    }
     const matchingEntryFills = hasEntryIdentity
       ? matchingFills.filter(fill =>
-          (entryOrderId && String(fill?.order_id ?? '') === entryOrderId) ||
-          (entryClientOrderId && stringOrEmpty(fill?.client_order_id) === entryClientOrderId)
+          ((entryOrderId && String(fill?.order_id ?? '') === entryOrderId) ||
+            (entryClientOrderId && stringOrEmpty(fill?.client_order_id) === entryClientOrderId)) &&
+          (!positionSide || stringOrEmpty(fill?.side).toUpperCase() === positionSide)
         )
       : [];
     if (hasEntryIdentity && !matchingEntryFills.length) {
@@ -390,6 +399,7 @@ export function createDeltaExecutor({
       const fillMs = timestampMs(fill?.created_at);
       return numberOrNull(fill?.meta_data?.new_position?.size) === 0 &&
         Number.isFinite(fillMs) &&
+        (!closeSide || stringOrEmpty(fill?.side).toUpperCase() === closeSide) &&
         (entryLastMs === null || !Number.isFinite(entryLastMs) || fillMs >= entryLastMs);
     });
     // The current open position is closed by the first flat-position fill after
