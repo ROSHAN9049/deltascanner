@@ -10,12 +10,12 @@ assert.notEqual(end,-1);
 const settings=source.slice(start,end);
 
 test('Strategy Defaults documents the implemented Momentum RSI gate',()=>{
-  assert.match(settings,/Momentum: EMA9\/21\/50 \+ RSI BUY 45–80 \/ SELL 20–55/);
+  assert.match(settings,/Momentum: EMA9\/21\/50 \+ RSI BUY 45–80 \/ SELL 20–55 \+ adaptive volume gate \+ minimum SL distance ≥1\.50%/);
   assert.doesNotMatch(settings,/RSI 54–68 \/ 32–46/);
 });
 
 test('Strategy Defaults accurately names Scalping entry and trend timeframes',()=>{
-  assert.match(settings,/Scalping: 1m EMA entry \+ 5m\/15m trend \+ RSI \+ VWAP/);
+  assert.match(settings,/Scalping: 1m EMA entry \+ 5m\/15m trend \+ RSI \+ VWAP \+ adaptive volume gate \+ minimum SL distance ≥1\.50%/);
   assert.doesNotMatch(settings,/Scalping: 1m\/5m EMA \+ RSI \+ VWAP/);
 });
 

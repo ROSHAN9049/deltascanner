@@ -1,3 +1,4 @@
+import { resolveMinimumStopDistancePct } from '../../shared/delta-risk-policy.js';
 import crypto from 'node:crypto';
 import * as defaultDb from '../../server/db.js';
 import { indiaDateKey } from '../../src/date-utils.js';
@@ -935,7 +936,7 @@ export function createDeltaExecutor({
         throw new Error('SELL bracket prices must satisfy TP < entry < SL');
       }
       const slDistancePct = Math.abs(stop - entry) / entry * 100;
-      const minSlDistancePct = Math.max(1.5, Number(process.env.DELTA_MIN_SL_DISTANCE_PCT) || 1.5);
+      const minSlDistancePct = resolveMinimumStopDistancePct(process.env.DELTA_MIN_SL_DISTANCE_PCT);
       if (slDistancePct + 1e-9 < minSlDistancePct) {
         await logExecutor('WARN', '[Executor] SL distance too tight; entry blocked', {
           environment: 'testnet', symbol: normalizedSymbol, side: direction,
