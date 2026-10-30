@@ -134,15 +134,19 @@ export default async function handler(req, res) {
       };
     }
     const gridPositions = Array.isArray(gridState.positions) ? gridState.positions : [];
+    const testnetOpenGridPositions = CONFIG.deltaExecutionMode === 'testnet'
+      ? await select('dd_delta_positions', 'strategy=eq.GRID&status=eq.OPEN&select=id,symbol,qty&limit=10')
+      : [];
+    const effectiveGridPositionCount = Math.max(gridPositions.length, Array.isArray(testnetOpenGridPositions) ? testnetOpenGridPositions.length : 0);
     const gridRangeOrInstrumentChanged = [
       'gridSymbol', 'gridLowerPrice', 'gridUpperPrice', 'gridLevelsCount'
     ].some(key => body[key] !== undefined);
-    if (gridRangeOrInstrumentChanged && gridPositions.length > 0) {
+    if (gridRangeOrInstrumentChanged && effectiveGridPositionCount > 0) {
       return res.status(409).json({ success: false, error: 'Grid instrument/range/levels cannot change while a grid position is open.' });
     }
     if (body.gridReset === true) {
-      if (gridPositions.length > 0) {
-        return res.status(409).json({ success: false, error: 'Close all grid positions before resetting a hard stop.' });
+      if (effectiveGridPositionCount > 0) {
+        return res.status(409).json({ success: false, error: 'Close all Grid exchange positions before resetting a hard stop.' });
       }
       if (current.emergency_stop === true) {
         return res.status(409).json({ success: false, error: 'Turn off the global emergency stop before resetting the grid.' });
@@ -201,6 +205,9 @@ export default async function handler(req, res) {
       }
       if (body.gridMaxPositions !== undefined) {
         const value = Number(body.gridMaxPositions);
+        if (CONFIG.deltaExecutionMode === 'testnet' && value !== 1) {
+          return res.status(400).json({ success: false, error: 'Delta Testnet Grid supports exactly one open exchange position.' });
+        }
         if (!GRID_MAX_POSITION_CHOICES.includes(value)) {
           return res.status(400).json({ success: false, error: 'Grid max positions must be 1, 3 or 4. Tradetron bridge mode still limits the live simulation to one net position.' });
         }

@@ -87,6 +87,7 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
   const lockedConfig = positions.length > 0;
   const stateStatus = gridState.status || 'OFF';
   const gridNotMigratedToDelta = gridEntrySafety?.reason === 'GRID_NOT_MIGRATED_TO_DELTA_TESTNET';
+  const deltaTestnetGrid = gridEntrySafety?.executionMode === 'testnet' || gridState.executionMode === 'DELTA_TESTNET';
   const visibleGridStatus = gridNotMigratedToDelta ? 'HELD · NOT MIGRATED' : stateStatus.replaceAll('_', ' ');
   const lastTrade = trades[0];
 
@@ -121,14 +122,14 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
 
   return <>
     <section className="cards">
-      <div className="card"><small>GRID ENGINE</small><strong>{visibleGridStatus}</strong><span>Offline simulator only; Grid order lifecycle is not migrated to Delta Testnet.</span></div>
+      <div className="card"><small>GRID ENGINE</small><strong>{visibleGridStatus}</strong><span>{deltaTestnetGrid ? 'Direct Delta India TESTNET execution; one exchange position with verified bracket protection.' : 'Offline simulator only; not an exchange order engine.'}</span></div>
       <div className="card"><small>INSTRUMENT / LIVE PRICE</small><strong>{symbol}</strong><span>{currentPrice > 0 ? price(currentPrice) : 'Waiting for market price'} · Delta public market feed</span></div>
       <div className="card"><small>OPEN GRID POSITIONS</small><strong>{positions.length} / {GRID_BRIDGE_MAX_POSITIONS}</strong><span>{usd(openRisk === null && positions.length === 0 ? 0 : openRisk)} estimated remaining-to-grid-stop risk.</span></div>
-      <div className="card"><small>SIMULATED GRID P&amp;L</small><strong className={realizedGridPnl === null ? 'muted' : realizedGridPnl >= 0 ? 'up' : 'down'}>{usd(realizedGridPnl)}</strong><span>Offline estimate after estimated fees and slippage; not exchange-reported P&amp;L.</span></div>
+      <div className="card"><small>{deltaTestnetGrid ? 'DELTA TESTNET NET P&L' : 'SIMULATED GRID P&amp;L'}</small><strong className={realizedGridPnl === null ? 'muted' : realizedGridPnl >= 0 ? 'up' : 'down'}>{usd(realizedGridPnl)}</strong><span>{deltaTestnetGrid ? 'Only fully fill-matched trades with verified commissions; otherwise P&L is unverified.' : 'Offline estimate after estimated fees and slippage; not exchange-reported P&amp;L.'}</span></div>
       <div className="card"><small>DAY PNL</small><strong className={totalDayPnl === null ? 'muted' : totalDayPnl >= 0 ? 'up' : 'down'}>{usd(totalDayPnl)}</strong><span>Realized + mark-to-market; daily stop {Number(settings.grid_daily_loss_pct || 2).toFixed(1)}%.</span></div>
-      <div className="card"><small>STRATEGY EQUITY</small><strong>{usd(currentEquity)}</strong><span>Sizing basis: offline-simulator capital · Drawdown {drawdownPct === null ? 'NO DATA' : drawdownPct.toFixed(2) + '%'} · hard stop 5%.</span></div>
+      <div className="card"><small>STRATEGY EQUITY</small><strong>{usd(currentEquity)}</strong><span>Sizing basis: {deltaTestnetGrid ? 'Delta Testnet account equity at Grid start' : 'offline-simulator capital'} · Drawdown {drawdownPct === null ? 'NO DATA' : drawdownPct.toFixed(2) + '%'} · hard stop 5%.</span></div>
       <div className="card"><small>MOMENTUM FILTER</small><strong className={momentum.paused ? 'warn' : 'up'}>{momentum.paused ? 'PAUSED' : 'CLEAR'}</strong><span>{momentum.direction || 'NO DATA'} · {momentumMovePct === null ? 'NO DATA' : momentumMovePct.toFixed(2) + '%'} move · reversal {momentumRetracementPct === null ? 'NO DATA' : momentumRetracementPct.toFixed(2) + '%' }.</span></div>
-      <div className="card"><small>EXECUTION</small><strong>{gridNotMigratedToDelta ? 'DELTA TESTNET LOCKED' : 'LEGACY BRIDGE MODE'}</strong><span>No direct Delta Testnet Grid orders are sent. Validate the grid lifecycle before enabling this strategy.</span></div>
+      <div className="card"><small>EXECUTION</small><strong>{gridNotMigratedToDelta ? 'DELTA TESTNET LOCKED' : 'LEGACY BRIDGE MODE'}</strong><span>{deltaTestnetGrid ? 'Direct Delta Testnet market entries with exchange-attached SL/TP; LIVE remains hard-locked.' : 'Offline simulator; no exchange orders are sent.'}</span></div>
     </section>
 
     <Panel title="Grid Configuration · BTCUSD / ETHUSD">
@@ -151,16 +152,16 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
         {' '}Existing Grid positions continue to follow their own exit rules.
       </div> : null}
         <button className="action" disabled={busy || !readyToStart} onClick={save}>Save Configuration</button>
-        <button className="action gridStart" disabled={busy || !readyToStart || settings.grid_enabled === true || !!gridState.pausedReason || gridSafetyBlocked || gridNotMigratedToDelta} onClick={start}>{gridNotMigratedToDelta ? 'Grid Testnet Not Migrated' : 'Start Grid (Legacy Bridge)'}</button>
+        <button className="action gridStart" disabled={busy || !readyToStart || settings.grid_enabled === true || !!gridState.pausedReason || gridSafetyBlocked || gridNotMigratedToDelta} onClick={start}>{gridNotMigratedToDelta ? 'Grid Testnet Not Migrated' : deltaTestnetGrid ? 'Start Grid (Delta Testnet)' : 'Start Grid (Simulator)'}</button>
         <button className="action" title="New entries stop. Existing positions continue to be managed." disabled={busy || settings.grid_enabled !== true} onClick={pause}>Pause Grid (Exit Only)</button>
         <button className="dangerBtn" title="Resets grid state. Does NOT trigger global Emergency Stop." disabled={busy || lockedConfig || !gridState.pausedReason || settings.emergency_stop === true || ['DAILY_LOSS_LIMIT','OVERALL_DRAWDOWN_STOP'].includes(gridState.pausedReason)} onClick={reset}>Reset Grid Config</button>
       </div>
       {!valid ? <div className="errorText">Set a valid lower and upper price and choose 8–12 grid levels before starting. Upper must be greater than lower.</div> : null}
-      {lockedConfig ? <div className="lockedText">Grid range and instrument edits are locked while a simulated position is open. Pause entries and let positions exit or reset only after positions are closed.</div> : null}
+      {lockedConfig ? <div className="lockedText">Grid range and instrument edits are locked while a position is open. Pause entries and let the exchange bracket exit or close the position before changing configuration.</div> : null}
       {gridState.pausedReason === 'DAILY_LOSS_LIMIT' ? <div className="errorText">Daily stop reached. It cannot be reset during the same India trading day; it will clear on the next trading day after a fresh engine tick.</div> : null}
       {gridState.pausedReason === 'OVERALL_DRAWDOWN_STOP' ? <div className="errorText">The 5% overall drawdown stop is terminal for this grid run. Keep this run halted; do not reset its capital baseline to resume.</div> : null}
       <div className="lockedText">
-        <b>Risk sizing guard:</b> Current risk target: {Number(draft.gridRiskPerTradePct).toFixed(2)}% (capped at daily loss ÷ max positions). Actual per-position risk is rounded down to whole contracts. If one contract exceeds its risk budget, the entry is skipped. The 5% strategy drawdown limit and 1.2% full-range break close all simulated positions and hard-stop the grid.
+        <b>Risk sizing guard:</b> Current risk target: {Number(draft.gridRiskPerTradePct).toFixed(2)}% (capped at daily loss ÷ max positions). Actual per-position risk is rounded down to whole contracts. If one contract exceeds its risk budget, the entry is skipped. The 5% strategy drawdown limit and 1.2% full-range break close the single exchange position and hard-stop the Grid.
       </div>
     </Panel>
 
@@ -175,7 +176,7 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
           const position = positions.find(item => Number(item.levelIndex) === level.index);
           const targetFor = positions.filter(item => Number(item.levelIndex) + 1 === level.index);
           const status = position ? 'POSITION OPEN' : targetFor.length ? 'EXIT TARGET' : level.index === levels.length - 1 ? 'TOP · NO ENTRY' : (currentPrice > 0 && Math.abs(currentPrice - level.price) / level.price < 0.001 ? 'NEAR PRICE' : 'AVAILABLE');
-          return <tr key={level.index}><td>G{String(level.index + 1).padStart(2,'0')}</td><td>{price(level.price)}</td><td>{level.index < levels.length - 1 ? 'LIMIT BUY' : '—'}</td><td>{level.target > 0 ? price(level.target) : '—'}</td><td className={position ? 'warn' : targetFor.length ? 'up' : 'muted'}>{status}{position ? ' · ' + (safeNum(position.qty) === null ? 'QTY NO DATA' : safeNum(position.qty) + ' qty') : ''}</td></tr>;
+          return <tr key={level.index}><td>G{String(level.index + 1).padStart(2,'0')}</td><td>{price(level.price)}</td><td>{level.index < levels.length - 1 ? (deltaTestnetGrid ? 'MARKET BUY' : 'LIMIT BUY') : '—'}</td><td>{level.target > 0 ? price(level.target) : '—'}</td><td className={position ? 'warn' : targetFor.length ? 'up' : 'muted'}>{status}{position ? ' · ' + (safeNum(position.qty) === null ? 'QTY NO DATA' : safeNum(position.qty) + ' qty') : ''}</td></tr>;
         })}
       </tbody></table></div>
     </Panel>
