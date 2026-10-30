@@ -77,6 +77,7 @@ test('bearish credit spread plan buys higher-strike CALL protection before selli
     underlyingSide: 'SELL',
     qty: 2,
     maxLossUsd: 25,
+    netCreditUsd: 0.5,
     now: NOW
   });
   assert.equal(plan.valid, true);
@@ -97,6 +98,7 @@ test('bullish credit spread plan buys lower-strike PUT protection before selling
     underlyingSide: 'BUY',
     qty: 1,
     maxLossUsd: 12,
+    netCreditUsd: 0.25,
     now: NOW
   });
   assert.equal(plan.valid, true);
@@ -117,7 +119,7 @@ test('credit spread plan rejects mismatched expiry, type, multiplier, direction 
   for (const protectiveTicker of invalidWings) {
     const plan = validateCreditSpreadEntryPlan({
       shortTicker: short, protectiveTicker, underlyingSide: 'SELL',
-      qty: 1, maxLossUsd: 5, now: NOW
+      qty: 1, maxLossUsd: 5, netCreditUsd: 0.25, now: NOW
     });
     assert.equal(plan.valid, false);
   }
@@ -161,7 +163,9 @@ test('zero or ambiguous short fills require a protective-leg unwind or reconcili
     shortSubmitted: true,
     shortState: 'CANCELLED',
     shortFilledQty: 0,
-    protectiveFullUnwindConfirmed: true
+    protectiveFullUnwindSubmitted: true,
+    protectiveFullUnwindState: 'CANCELLED',
+    protectiveFullUnwoundQty: 2
   }).state, 'REJECTED');
   assert.equal(resolveCreditSpreadEntryProgress({
     protectiveState: 'FILLED',
@@ -190,7 +194,9 @@ test('partial short fill unwinds only excess protective quantity before opening 
     shortSubmitted: true,
     shortState: 'CANCELLED',
     shortFilledQty: 3,
-    protectiveExcessUnwound: true
+    protectiveExcessUnwindSubmitted: true,
+    protectiveExcessUnwindState: 'CANCELLED',
+    protectiveExcessUnwoundQty: 2
   });
   assert.equal(opened.state, 'OPEN');
   assert.equal(opened.matchedQty, 3);
@@ -324,4 +330,97 @@ test('XAUT option products remain excluded from automated execution plans', () =
   assert.equal(validateLongOptionEntryPlan({
     ticker: xaut, underlyingSide: 'BUY', qty: 1, maxLossUsd: 1, now: NOW
   }).valid, false);
+});
+
+
+test('credit spread validator requires a positive net credit after hedge and fees', () => {
+  const short = ticker('C-BTC-90000-311026', 'CALL', 801);
+  const wing = ticker('C-BTC-95000-311026', 'CALL', 802);
+  for (const netCreditUsd of [undefined, 0, -0.01]) {
+    const plan = validateCreditSpreadEntryPlan({
+      shortTicker: short,
+      protectiveTicker: wing,
+      underlyingSide: 'SELL',
+      qty: 1,
+      maxLossUsd: 5,
+      netCreditUsd,
+      now: NOW
+    });
+    assert.equal(plan.valid, false);
+  }
+});
+
+test('a FILLED acknowledgement with zero or mismatched entry fills requires reconciliation', () => {
+  assert.equal(resolveCreditSpreadEntryProgress({
+    protectiveState: 'FILLED',
+    protectiveFilledQty: 0
+  }).state, 'RECONCILIATION_REQUIRED');
+
+  assert.equal(resolveCreditSpreadEntryProgress({
+    protectiveState: 'FILLED',
+    protectiveFilledQty: 3,
+    shortSubmitted: true,
+    shortState: 'FILLED',
+    shortFilledQty: 2
+  }).state, 'RECONCILIATION_REQUIRED');
+});
+
+test('full and excess protective unwinds need exact, terminal exchange fill evidence', () => {
+  assert.equal(resolveCreditSpreadEntryProgress({
+    protectiveState: 'FILLED',
+    protectiveFilledQty: 3,
+    shortSubmitted: true,
+    shortState: 'CANCELLED',
+    shortFilledQty: 0,
+    protectiveFullUnwindSubmitted: true,
+    protectiveFullUnwindState: 'UNKNOWN',
+    protectiveFullUnwoundQty: 0
+  }).state, 'RECONCILIATION_REQUIRED');
+
+  const remaining = resolveCreditSpreadEntryProgress({
+    protectiveState: 'FILLED',
+    protectiveFilledQty: 3,
+    shortSubmitted: true,
+    shortState: 'CANCELLED',
+    shortFilledQty: 0,
+    protectiveFullUnwindSubmitted: true,
+    protectiveFullUnwindState: 'CANCELLED',
+    protectiveFullUnwoundQty: 2
+  });
+  assert.equal(remaining.state, 'UNWIND_PENDING');
+  assert.equal(remaining.unwindQty, 1);
+
+  const partialExcess = resolveCreditSpreadEntryProgress({
+    protectiveState: 'FILLED',
+    protectiveFilledQty: 5,
+    shortSubmitted: true,
+    shortState: 'CANCELLED',
+    shortFilledQty: 3,
+    protectiveExcessUnwindSubmitted: true,
+    protectiveExcessUnwindState: 'CANCELLED',
+    protectiveExcessUnwoundQty: 1
+  });
+  assert.equal(partialExcess.state, 'UNWIND_PENDING');
+  assert.equal(partialExcess.unwindQty, 1);
+});
+
+test('a FILLED close acknowledgement with remaining position requires reconciliation', () => {
+  assert.equal(resolveCreditSpreadExitProgress({
+    shortPositionQty: 3,
+    shortCloseSubmitted: true,
+    shortCloseState: 'FILLED',
+    shortCloseFilledQty: 2,
+    protectivePositionQty: 3
+  }).state, 'RECONCILIATION_REQUIRED');
+
+  assert.equal(resolveCreditSpreadExitProgress({
+    shortPositionQty: 2,
+    shortCloseSubmitted: true,
+    shortCloseState: 'FILLED',
+    shortCloseFilledQty: 2,
+    protectivePositionQty: 2,
+    protectiveCloseSubmitted: true,
+    protectiveCloseState: 'FILLED',
+    protectiveCloseFilledQty: 1
+  }).state, 'RECONCILIATION_REQUIRED');
 });
