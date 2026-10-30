@@ -49,9 +49,11 @@ function emptyTestnetGridState(accountEquity, timestamp) {
   state.version = 2;
   state.executionMode = 'DELTA_TESTNET';
   state.executionStartedAt = new Date(timestamp).toISOString();
-  state.strategyStartEquity = accountEquity;
+  // Do not start the Grid capital baseline while the strategy is still OFF.
+  // The first explicit enable action sets the baseline to the current account equity.
+  state.strategyStartEquity = 0;
   state.highWaterEquity = accountEquity;
-  state.dayStartEquity = accountEquity;
+  state.dayStartEquity = 0;
   state.currentEquity = accountEquity;
   state.tradeDate = indiaDateKey(new Date(timestamp));
   state.wasEnabled = false;
@@ -273,10 +275,11 @@ export async function manageDeltaTestnetGrid({
     return block('PRIVATE_API_UNAVAILABLE');
   }
 
-  if (!(n(state.strategyStartEquity) > 0)) {
+  if (!(n(state.strategyStartEquity) > 0) && settings.grid_enabled === true) {
     state.strategyStartEquity = n(account.equity);
     state.highWaterEquity = n(account.equity);
     state.dayStartEquity = n(account.equity);
+    state.currentEquity = n(account.equity);
     state.tradeDate = indiaDateKey(new Date(timestamp));
   }
   const today = indiaDateKey(new Date(timestamp));
@@ -483,8 +486,10 @@ export async function manageDeltaTestnetGrid({
       n(pnl.dayPnl) + state.unrealizedPnl <= -dailyCap;
     const drawdownBreach = state.currentEquity !== null &&
       n(state.highWaterEquity) > 0 && state.drawdownPct >= config.maxDrawdownPct;
-    const rangeBreak = mark < config.lowerPrice * (1 - config.breakoutExitPct / 100) ||
-      mark > config.upperPrice * (1 + config.breakoutExitPct / 100);
+    const rangeBreak = config.valid && (
+      mark < config.lowerPrice * (1 - config.breakoutExitPct / 100) ||
+      mark > config.upperPrice * (1 + config.breakoutExitPct / 100)
+    );
     const exitReason = settings.emergency_stop === true ? 'EMERGENCY_STOP'
       : rangeBreak ? 'GRID_RANGE_BREAK'
         : dailyBreach ? 'DAILY_LOSS_LIMIT'
@@ -535,7 +540,8 @@ export async function manageDeltaTestnetGrid({
   state.dayPnl = pnl.complete ? pnl.dayPnl : null;
   state.trades = pnl.complete ? pnl.trades : [];
   state.currentEquity = pnl.complete
-    ? n(state.strategyStartEquity) + n(pnl.realizedPnl) : null;
+    ? (n(state.strategyStartEquity) > 0 ? n(state.strategyStartEquity) + n(pnl.realizedPnl) : n(account.equity))
+    : null;
   if (state.currentEquity !== null) {
     state.highWaterEquity = Math.max(n(state.highWaterEquity), state.currentEquity);
     state.drawdownPct = state.highWaterEquity > 0

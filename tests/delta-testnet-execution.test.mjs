@@ -534,18 +534,19 @@ test('concurrent bracket metadata syncs are coalesced per symbol', async () => {
   tracker.stopped = false;
 
   const first = tracker.syncBracketMetadata('BTCUSD');
-  await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
   const second = tracker.syncBracketMetadata('BTCUSD');
-  assert.equal(openOrdersCalls, 1, 'only one open-orders request should be in flight for BTCUSD');
+  assert.equal(parentOrderCalls, 1, 'only one parent-order detail request should be in flight for BTCUSD');
 
-  resolveOrders([{
+  resolveParentOrder({
     id: 123,
     product_symbol: 'BTCUSD',
     bracket_stop_loss_price: '59000',
     bracket_take_profit_price: '62000'
-  }]);
+  });
   assert.deepEqual(await Promise.all([first, second]), [true, true]);
-  assert.equal(openOrdersCalls, 1);
+  assert.equal(parentOrderCalls, 1);
+  assert.equal(openOrdersCalls, 0);
   assert.equal(updates.length, 1);
   assert.equal(updates[0].patch.sl_price, 59000);
   assert.equal(updates[0].patch.tp_price, 62000);

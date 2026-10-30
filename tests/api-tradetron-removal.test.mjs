@@ -22,7 +22,9 @@ test('worker disables Tradetron routes and keeps Grid/Options out of direct Test
   const engine = await read('../worker/engine.mjs');
   const config = await read('../server/config.js');
   assert.doesNotMatch(engine, /void this\.syncTradetronDeveloperApi\(\)/);
-  assert.match(engine, /GRID_NOT_MIGRATED_TO_DELTA_TESTNET/);
+  assert.match(engine, /manageDeltaTestnetGrid/);
+  assert.match(engine, /CONFIG\.deltaExecutionMode === 'testnet'/);
+  assert.doesNotMatch(engine, /GRID_NOT_MIGRATED_TO_DELTA_TESTNET/);
   assert.doesNotMatch(engine, /async openOptionTrade\(/);
   assert.doesNotMatch(engine, /emitOptionEntry\(|emitOptionSpread\(/);
   assert.match(engine, /getExecutionRouteBlockReason\(CONFIG\.deltaExecutionMode\)/);
