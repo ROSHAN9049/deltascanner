@@ -161,7 +161,9 @@ function evaluateFuturesExposure(snapshot, wantedAsset, reasons) {
   const gridState = snapshot.gridState;
   const gridRows = tracked.filter(row => upper(row?.strategy) === 'GRID');
   const gridPositions = Array.isArray(gridState?.positions) ? gridState.positions : null;
-  if (!gridState || !gridPositions || gridPositions.length !== gridRows.length ||
+  if (!gridRows.length && (!gridPositions || gridPositions.length === 0)) {
+    // No live Grid exposure: an uninitialized Grid state is acceptable.
+  } else if (!gridState || !gridPositions || gridPositions.length !== gridRows.length ||
       !closeEnough(gridState.openRiskUsd, gridRisk)) {
     reasons.push('GRID_STATE_AND_EXCHANGE_RISK_MISMATCH');
   } else if (gridRows.length) {
