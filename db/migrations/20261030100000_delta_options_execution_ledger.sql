@@ -833,15 +833,26 @@ BEGIN
     CASE WHEN SUM(fill_qty) > 0
       THEN SUM(fill_qty * fill_price) / SUM(fill_qty)
       ELSE NULL END,
-    COALESCE(SUM(commission), 0),
+    CASE WHEN COUNT(*) > 0
+          AND COUNT(commission) = COUNT(*)
+          AND COUNT(DISTINCT commission_currency) = 1
+      THEN SUM(commission)
+      ELSE NULL END,
     COUNT(DISTINCT commission_currency),
-    CASE WHEN COUNT(DISTINCT commission_currency) = 1 THEN MIN(commission_currency) ELSE NULL END
+    CASE WHEN COUNT(*) > 0
+          AND COUNT(commission) = COUNT(*)
+          AND COUNT(DISTINCT commission_currency) = 1
+      THEN MIN(commission_currency)
+      ELSE NULL END
   INTO v_total_qty, v_average_price, v_total_commission, v_currency_count, v_commission_currency
   FROM public.dd_options_execution_fills
   WHERE order_attempt_id = v_order.id;
 
+  -- The exchange order acknowledgement can be observed before later fills.
+  -- Actual fills are authoritative; do not compare a newer fill total to a stale
+  -- acknowledged_filled_qty value. Only requested size and fee currency conflicts
+  -- can make this fill aggregation irreconcilable.
   IF v_total_qty > v_order.requested_qty OR
-     (v_order.acknowledged_filled_qty IS NOT NULL AND v_total_qty > v_order.acknowledged_filled_qty) OR
      v_currency_count > 1 THEN
     v_reconciliation_required := TRUE;
   END IF;
@@ -867,19 +878,45 @@ BEGIN
       THEN SUM(CASE WHEN o.intent = 'ENTRY' THEN f.fill_qty * f.fill_price ELSE 0 END) /
         SUM(CASE WHEN o.intent = 'ENTRY' THEN f.fill_qty ELSE 0 END)
       ELSE NULL END,
-    COALESCE(SUM(CASE WHEN o.intent = 'ENTRY' THEN f.commission ELSE 0 END), 0),
-    COUNT(DISTINCT CASE WHEN o.intent = 'ENTRY' THEN f.commission_currency END),
-    CASE WHEN COUNT(DISTINCT CASE WHEN o.intent = 'ENTRY' THEN f.commission_currency END) = 1
-      THEN MIN(CASE WHEN o.intent = 'ENTRY' THEN f.commission_currency END) ELSE NULL END,
+    CASE
+      WHEN COUNT(f.exchange_fill_id) FILTER (WHERE o.intent = 'ENTRY') > 0
+       AND COUNT(f.commission) FILTER (WHERE o.intent = 'ENTRY') =
+           COUNT(f.exchange_fill_id) FILTER (WHERE o.intent = 'ENTRY')
+       AND COUNT(DISTINCT f.commission_currency) FILTER (WHERE o.intent = 'ENTRY') = 1
+      THEN SUM(f.commission) FILTER (WHERE o.intent = 'ENTRY')
+      ELSE NULL
+    END,
+    COUNT(DISTINCT f.commission_currency) FILTER (WHERE o.intent = 'ENTRY'),
+    CASE
+      WHEN COUNT(f.exchange_fill_id) FILTER (WHERE o.intent = 'ENTRY') > 0
+       AND COUNT(f.commission) FILTER (WHERE o.intent = 'ENTRY') =
+           COUNT(f.exchange_fill_id) FILTER (WHERE o.intent = 'ENTRY')
+       AND COUNT(DISTINCT f.commission_currency) FILTER (WHERE o.intent = 'ENTRY') = 1
+      THEN MIN(f.commission_currency) FILTER (WHERE o.intent = 'ENTRY')
+      ELSE NULL
+    END,
     COALESCE(SUM(CASE WHEN o.intent IN ('EXIT', 'UNWIND') THEN f.fill_qty ELSE 0 END), 0),
     CASE WHEN SUM(CASE WHEN o.intent IN ('EXIT', 'UNWIND') THEN f.fill_qty ELSE 0 END) > 0
       THEN SUM(CASE WHEN o.intent IN ('EXIT', 'UNWIND') THEN f.fill_qty * f.fill_price ELSE 0 END) /
         SUM(CASE WHEN o.intent IN ('EXIT', 'UNWIND') THEN f.fill_qty ELSE 0 END)
       ELSE NULL END,
-    COALESCE(SUM(CASE WHEN o.intent IN ('EXIT', 'UNWIND') THEN f.commission ELSE 0 END), 0),
-    COUNT(DISTINCT CASE WHEN o.intent IN ('EXIT', 'UNWIND') THEN f.commission_currency END),
-    CASE WHEN COUNT(DISTINCT CASE WHEN o.intent IN ('EXIT', 'UNWIND') THEN f.commission_currency END) = 1
-      THEN MIN(CASE WHEN o.intent IN ('EXIT', 'UNWIND') THEN f.commission_currency END) ELSE NULL END
+    CASE
+      WHEN COUNT(f.exchange_fill_id) FILTER (WHERE o.intent IN ('EXIT', 'UNWIND')) > 0
+       AND COUNT(f.commission) FILTER (WHERE o.intent IN ('EXIT', 'UNWIND')) =
+           COUNT(f.exchange_fill_id) FILTER (WHERE o.intent IN ('EXIT', 'UNWIND'))
+       AND COUNT(DISTINCT f.commission_currency) FILTER (WHERE o.intent IN ('EXIT', 'UNWIND')) = 1
+      THEN SUM(f.commission) FILTER (WHERE o.intent IN ('EXIT', 'UNWIND'))
+      ELSE NULL
+    END,
+    COUNT(DISTINCT f.commission_currency) FILTER (WHERE o.intent IN ('EXIT', 'UNWIND')),
+    CASE
+      WHEN COUNT(f.exchange_fill_id) FILTER (WHERE o.intent IN ('EXIT', 'UNWIND')) > 0
+       AND COUNT(f.commission) FILTER (WHERE o.intent IN ('EXIT', 'UNWIND')) =
+           COUNT(f.exchange_fill_id) FILTER (WHERE o.intent IN ('EXIT', 'UNWIND'))
+       AND COUNT(DISTINCT f.commission_currency) FILTER (WHERE o.intent IN ('EXIT', 'UNWIND')) = 1
+      THEN MIN(f.commission_currency) FILTER (WHERE o.intent IN ('EXIT', 'UNWIND'))
+      ELSE NULL
+    END
   INTO v_leg_entry_qty, v_leg_entry_avg, v_leg_entry_commission, v_leg_entry_currency_count,
        v_leg_entry_currency, v_leg_exit_qty, v_leg_exit_avg, v_leg_exit_commission,
        v_leg_exit_currency_count, v_leg_exit_currency
