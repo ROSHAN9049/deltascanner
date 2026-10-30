@@ -142,6 +142,9 @@ export function planDeltaOptionsLifecycle({
 
   const byRole = new Map(legs.map(row => [upper(row.leg_role), row]));
   const exitDue = exitRequested === true || expiryExitDue === true;
+  if (upper(group.state) === 'EXIT_REQUIRED' && !exitDue) {
+    return { status: 'EXIT_REQUIRED', exitOnly: true, reason: 'Mandatory expiry exit is active; new entries are prohibited' };
+  }
   const attemptNoFor = (role, intent) =>
     orders.filter(row => upper(row.leg_role) === role && upper(row.intent) === intent)
       .reduce((max, row) => Math.max(max, Number(row.attempt_no) || 0), 0) + 1;
