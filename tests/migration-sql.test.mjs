@@ -201,3 +201,21 @@ test('atomic Options reservation RPC validates both legs and is service-role onl
   assert.match(deltaOptionsMigration, /ON CONFLICT \(exchange_fill_id\) DO NOTHING/i);
   assert.match(deltaOptionsMigration, /OPTIONS_FILL_ID_COLLISION/i);
 });
+
+
+test('Options fill accounting preserves unknown commissions and accepts asynchronously confirmed fills', () => {
+  assert.match(
+    deltaOptionsMigration,
+    /COUNT\(commission\) = COUNT\(\*\)[\s\S]*?COUNT\(DISTINCT commission_currency\) = 1[\s\S]*?THEN SUM\(commission\)[\s\S]*?ELSE NULL/i
+  );
+  assert.match(
+    deltaOptionsMigration,
+    /COUNT\(f\.commission\) FILTER \(WHERE o\.intent = 'ENTRY'\) =[\s\S]*?COUNT\(f\.exchange_fill_id\) FILTER \(WHERE o\.intent = 'ENTRY'\)/i
+  );
+  assert.match(
+    deltaOptionsMigration,
+    /COUNT\(f\.commission\) FILTER \(WHERE o\.intent IN \('EXIT', 'UNWIND'\)\) =[\s\S]*?COUNT\(f\.exchange_fill_id\) FILTER \(WHERE o\.intent IN \('EXIT', 'UNWIND'\)\)/i
+  );
+  assert.doesNotMatch(deltaOptionsMigration, /COALESCE\(SUM\(commission\), 0\)/i);
+  assert.doesNotMatch(deltaOptionsMigration, /v_total_qty > v_order\.acknowledged_filled_qty/i);
+});
