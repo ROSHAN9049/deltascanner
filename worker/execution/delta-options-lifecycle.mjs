@@ -226,6 +226,10 @@ export function planDeltaOptionsLifecycle({
     if (progress.state === 'SHORT_ENTRY_READY') return plan('SHORT_OPTION', 'ENTRY');
     if (progress.state !== 'OPEN') return { status: progress.state, reason: progress.reason };
   } else {
+    if (exitDue) {
+      if (protectiveQty <= 0) return { status: 'CLOSED', reason: 'No protective or short entry exposure remains to exit' };
+      return plan('PROTECTIVE_WING', 'UNWIND');
+    }
     return plan('SHORT_OPTION', 'ENTRY');
   }
 
