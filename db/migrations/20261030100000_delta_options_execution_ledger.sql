@@ -697,7 +697,7 @@ BEGIN
 
   UPDATE public.dd_options_execution_orders
   SET exchange_order_id = COALESCE(p_exchange_order_id, exchange_order_id),
-      acknowledged_filled_qty = p_ack_filled_qty,
+      acknowledged_filled_qty = GREATEST(COALESCE(acknowledged_filled_qty, 0), p_ack_filled_qty),
       acknowledged_at = NOW(),
       order_state = v_state,
       raw = COALESCE(raw, '{}'::JSONB) || COALESCE(p_raw, '{}'::JSONB) ||
