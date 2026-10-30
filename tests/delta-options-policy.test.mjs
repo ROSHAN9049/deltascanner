@@ -80,20 +80,20 @@ test('sizes long options to whole premium plus fee allowance', () => {
   const sized = calculateLongOptionSizing({
     equity: 10000,
     available: 1000,
-    ask: 100,
+    ask: 300,
     contractValue: 0.1,
     takerFeeRate: 0.001,
     riskPct: 0.30
   });
   assert.equal(sized.qty, 0);
-  assert.equal(sized.maxLossPerContract, 10.02);
+  assert.equal(sized.maxLossPerContract, 30.06);
   assert.equal(sized.reason, 'Full-premium risk budget is below one option contract');
 });
 
 test('allows one unit when full premium risk is inside 0.30% budget', () => {
   const sized = calculateLongOptionSizing({
     equity: 10000,
-    available: 1000,
+    available: 2.01,
     ask: 20,
     contractValue: 0.1,
     takerFeeRate: 0.001,
