@@ -31,7 +31,6 @@ CREATE TABLE IF NOT EXISTS public.dd_options_execution_groups (
   risk_budget_usd NUMERIC NOT NULL CHECK (risk_budget_usd >= 0),
   max_loss_usd NUMERIC NOT NULL CHECK (max_loss_usd >= 0),
   reserved_margin_usd NUMERIC NOT NULL DEFAULT 0 CHECK (reserved_margin_usd >= 0),
-  settlement_asset TEXT NOT NULL CHECK (settlement_asset = 'USD'),
   net_credit_usd NUMERIC NULL,
   last_error_code TEXT NULL,
   last_error_detail TEXT NULL,
@@ -66,7 +65,6 @@ CREATE TABLE IF NOT EXISTS public.dd_options_execution_legs (
   strike NUMERIC NOT NULL CHECK (strike > 0),
   contract_value NUMERIC NOT NULL CHECK (contract_value > 0),
   tick_size NUMERIC NOT NULL CHECK (tick_size > 0),
-  settlement_asset TEXT NOT NULL CHECK (settlement_asset = 'USD'),
   expiry_at TIMESTAMPTZ NOT NULL,
   side TEXT NOT NULL CHECK (side IN ('BUY', 'SELL')),
   requested_qty INTEGER NOT NULL CHECK (requested_qty > 0),
@@ -228,7 +226,6 @@ DECLARE
   v_risk_budget NUMERIC;
   v_max_loss NUMERIC;
   v_reserved_margin NUMERIC;
-  v_settlement_asset TEXT;
   v_net_credit NUMERIC;
   v_leg_count INTEGER;
   v_wing JSONB;
@@ -262,7 +259,6 @@ BEGIN
   v_risk_budget := NULLIF(p_group->>'risk_budget_usd', '')::NUMERIC;
   v_max_loss := NULLIF(p_group->>'max_loss_usd', '')::NUMERIC;
   v_reserved_margin := COALESCE(NULLIF(p_group->>'reserved_margin_usd', '')::NUMERIC, 0);
-  v_settlement_asset := UPPER(COALESCE(p_group->>'settlement_asset', ''));
   v_net_credit := NULLIF(p_group->>'net_credit_usd', '')::NUMERIC;
   v_leg_count := jsonb_array_length(p_legs);
 
@@ -283,7 +279,7 @@ BEGIN
      v_risk_budget IS NULL OR v_risk_budget <= 0 OR
      v_max_loss IS NULL OR v_max_loss <= 0 OR
      v_max_loss > v_risk_budget OR
-     v_reserved_margin <= 0 OR v_settlement_asset <> 'USD' THEN
+     v_reserved_margin <= 0 THEN
     RAISE EXCEPTION 'Options risk, size, margin or expiry inputs are missing/out of bounds';
   END IF;
 
@@ -358,7 +354,6 @@ BEGIN
        (v_leg_option_type = 'CALL' AND v_contract_type <> 'call_options') OR
        (v_leg_option_type = 'PUT' AND v_contract_type <> 'put_options') OR
        COALESCE(NULLIF(v_leg->>'productId', '')::INTEGER, 0) <= 0 OR
-       UPPER(COALESCE(v_leg->>'settlement_asset', '')) <> v_settlement_asset OR
        v_contract_value IS NULL OR v_contract_value <= 0 OR
        v_tick_size IS NULL OR v_tick_size <= 0 OR
        v_strike IS NULL OR v_strike <= 0 OR
@@ -384,16 +379,16 @@ BEGIN
   INSERT INTO public.dd_options_execution_groups (
     client_group_id, strategy, state, underlying_symbol, underlying_direction,
     option_type, expiry_at, requested_qty, matched_qty, risk_budget_usd,
-    max_loss_usd, reserved_margin_usd, settlement_asset, net_credit_usd, raw
+    max_loss_usd, reserved_margin_usd, net_credit_usd, raw
   ) VALUES (
     v_client_group_id, v_strategy, 'RESERVED', v_underlying, v_direction,
     v_option_type, v_expiry, v_qty, 0, v_risk_budget, v_max_loss,
-    v_reserved_margin, v_settlement_asset, v_net_credit, COALESCE(p_group->'raw', p_group)
+    v_reserved_margin, v_net_credit, COALESCE(p_group->'raw', p_group)
   ) RETURNING id INTO v_group_id;
 
   INSERT INTO public.dd_options_execution_legs (
     group_id, leg_role, product_id, symbol, contract_type, option_type,
-    strike, contract_value, tick_size, settlement_asset, expiry_at, side, requested_qty,
+    strike, contract_value, tick_size, expiry_at, side, requested_qty,
     filled_qty, order_state, client_order_id, raw
   )
   SELECT
@@ -406,7 +401,6 @@ BEGIN
     (x.element->>'strike')::NUMERIC,
     (x.element->>'contractValue')::NUMERIC,
     (x.element->>'tickSize')::NUMERIC,
-    UPPER(x.element->>'settlement_asset'),
     (x.element->>'expiry_at')::TIMESTAMPTZ,
     UPPER(x.element->>'side'),
     (x.element->>'qty')::INTEGER,
