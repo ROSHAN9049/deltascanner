@@ -12,6 +12,7 @@ import {
 import { indiaDateKey } from '../../src/date-utils.js';
 
 const n = value => Number.isFinite(Number(value)) ? Number(value) : 0;
+const DELTA_GRID_MAX_AVAILABLE_MARGIN_FRACTION = 0.25;
 const numberOrNull = value => {
   if (value === null || value === undefined || value === '') return null;
   const parsed = Number(value);
@@ -99,7 +100,9 @@ export function sizeDeltaGridEntry({
 
   const floorPct = resolveMinimumStopDistancePct(minStopDistancePct);
   const floorStop = entry * (1 - floorPct / 100);
-  const stop = roundStopLossAwayFromEntry(Math.min(nativeStop, floorStop), tick, 'BUY');
+  // Grid targets the next rung. Normalize the protective stop to the shared 1.50% floor
+  // so symmetric rung spacing does not become negative net R:R after fees and slippage.
+  const stop = roundStopLossAwayFromEntry(floorStop, tick, 'BUY');
   const target = roundPriceUp(nativeTarget, tick);
   if (!(stop > 0 && stop < entry && target > entry)) {
     return { ok: false, reason: 'GRID_TICK_ROUNDED_BRACKET_INVALID' };
@@ -135,7 +138,10 @@ export function sizeDeltaGridEntry({
   const notionalPerContract = entry * cv;
   const qtyByRisk = Math.floor(riskBudget / riskPerContract);
   const qtyByEquity = Math.floor((capital * leverage) / notionalPerContract);
-  const qtyByMargin = Math.floor((available * leverage) / notionalPerContract);
+  // Do not let a single Grid entry consume all remaining account margin, especially
+  // when Momentum/Scalping positions are already open.
+  const gridMarginBudget = available * DELTA_GRID_MAX_AVAILABLE_MARGIN_FRACTION;
+  const qtyByMargin = Math.floor((gridMarginBudget * leverage) / notionalPerContract);
   const qty = Math.max(0, Math.min(qtyByRisk, qtyByEquity, qtyByMargin, n(candidate.qty)));
   if (qty < 1) return { ok: false, reason: 'GRID_MINIMUM_CONTRACT_EXCEEDS_RISK_BUDGET' };
   const riskUsd = qty * riskPerContract;
