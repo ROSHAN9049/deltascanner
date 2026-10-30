@@ -88,7 +88,7 @@ test('blocks different wallet account identities and missing asset rows', () => 
 
   const missing = evaluate({ optionsWallet: { meta: { user_id: 77 }, result: [] } });
   assert.equal(missing.allowed, false);
-  assert.ok(missing.reasons.includes('OPTIONS_WALLET_SETTLEMENT_ASSET_WALLET_MISSING'));
+  assert.ok(missing.reasons.includes('OPTIONS_WALLET_WALLET_ROWS_UNAVAILABLE'));
 });
 
 test('blocks stale snapshots, wrong mode, and unverified settlement currency', () => {
@@ -124,7 +124,7 @@ test('counts existing Futures stop-loss risk and blocks a missing/unverified sto
   }];
   const futuresProducts = [{
     id: 10, symbol: 'BTCUSD', contract_value: 1, tick_size: 0.5,
-    settling_asset: { symbol: 'USD' }
+    settling_asset: { symbol: 'USD' }, taker_commission_rate: 0, maker_commission_rate: 0
   }];
   const snapshot = { futuresPositions, dbFuturesPositions, futuresProducts };
   const result = evaluate(snapshot);
@@ -196,7 +196,7 @@ test('checks Grid state against exchange/DB exposure without double-counting Gri
     futuresPositions: [position],
     dbFuturesPositions: [dbRow],
     futuresProducts: [product],
-    gridState: { positions: [{ symbol: 'ETHUSD', qty: 2, riskUsd: 20.08 }], openRiskUsd: 19 }
+    gridState: { positions: [{ symbol: 'ETHUSD', qty: 2, riskUsd: 20 }], openRiskUsd: 19 }
   });
   assert.ok(mismatch.reasons.includes('GRID_STATE_AND_EXCHANGE_RISK_MISMATCH'));
 
@@ -204,7 +204,7 @@ test('checks Grid state against exchange/DB exposure without double-counting Gri
     futuresPositions: [position],
     dbFuturesPositions: [dbRow],
     futuresProducts: [product],
-    gridState: { positions: [{ symbol: 'ETHUSD', qty: 2, riskUsd: 20.08 }], openRiskUsd: 20.08 }
+    gridState: { positions: [{ symbol: 'ETHUSD', qty: 2, riskUsd: 20 }], openRiskUsd: 20 }
   });
   assert.equal(matched.currentOpenRisk, 20);
   assert.equal(matched.allowed, true);
