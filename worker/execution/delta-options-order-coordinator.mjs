@@ -102,8 +102,7 @@ export function createDeltaOptionsOrderCoordinator({
 } = {}) {
   if (!manager || typeof manager.assertExecutionAllowed !== 'function' ||
       typeof manager.reserveOrderAttempt !== 'function' ||
-      typeof manager.recordOrderAcknowledgement !== 'function' ||
-      typeof manager.assertAccountRisk !== 'function') {
+      typeof manager.recordOrderAcknowledgement !== 'function') {
     throw new Error('Delta Options coordinator requires the durable execution manager');
   }
   if (!executor || typeof executor.placeOptionOrder !== 'function' ||
@@ -207,10 +206,6 @@ export function createDeltaOptionsOrderCoordinator({
     // The manager and exchange executor independently enforce the same lock.
     manager.assertExecutionAllowed();
     executor.assertConfigured();
-    if (expected.intent === 'ENTRY') {
-      await manager.assertAccountRisk({ phase: 'ORDER', groupId: expected.groupId });
-    }
-
     const reservation = await manager.reserveOrderAttempt({
       groupId: expected.groupId,
       legRole: expected.legRole,
