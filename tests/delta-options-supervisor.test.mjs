@@ -293,3 +293,29 @@ test('coalesces overlapping supervisor cycles into one exchange/database reconci
   assert.deepEqual(a, b);
   assert.equal(harness.calls.reconciliations, 1);
 });
+
+
+test('retries exact client-order lookup for a previously reconciliation-locked ambiguous attempt', async () => {
+  const order = makeOrder({
+    exchange_order_id: null,
+    order_state: 'RECONCILIATION_REQUIRED'
+  });
+  const harness = makeHarness({
+    orders: [order],
+    openOrders: [{
+      id: '7001',
+      client_order_id: 'DDO-ABCD12345678-LP-1',
+      product_id: 101,
+      product_symbol: 'C-BTC-90000-311026',
+      side: 'buy',
+      size: 2,
+      state: 'open'
+    }]
+  });
+  const result = await harness.supervisor.reconcileOnce();
+  assert.equal(harness.calls.lookups, 1);
+  assert.equal(harness.calls.reconciliations, 1);
+  assert.equal(result.status, 'ORDER_PENDING');
+  assert.equal(result.executionEnabled, false);
+  assert.equal(order.exchange_order_id, '7001');
+});
