@@ -1617,7 +1617,15 @@ export class DeltaEngine {
     // There is deliberately no scanner-side global, per-engine, or total-open-position cap.
     // Actual platform/product/margin limits are still validated, and duplicate-symbol
     // protection prevents repeated same-instrument entries while a position is open.
-    if (!signal.candlesFresh && !['OPTIONS_BUY', 'OPTIONS_SELL'].includes(strategy)) reasons.push('Fresh closed candles unavailable');
+    const optionsStrategy = strategy === 'OPTIONS_BUY' || strategy === 'OPTIONS_SELL';
+    if (optionsStrategy) {
+      const optionStage = String(signal?.stage || '').toUpperCase();
+      if (optionStage !== 'CONFIRMED') reasons.push(`Signal stage ${optionStage || 'UNKNOWN'} is not CONFIRMED`);
+      if (signal?.ready !== true) reasons.push('Signal ready flag is not true');
+      if (signal?.underlyingReady !== true) reasons.push('Underlying signal is not ready (fresh-candle or risk gate failed)');
+    } else if (!signal.candlesFresh) {
+      reasons.push('Fresh closed candles unavailable');
+    }
     if (n(account.equity) <= 0) reasons.push('Account equity unavailable');
 
     let size = null;
