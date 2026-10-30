@@ -201,7 +201,7 @@ BEGIN
     'open_qty', v_open_qty
   );
 END;
-$;
+$$;
 
 REVOKE ALL ON FUNCTION public.close_dd_options_group_after_expiry_if_flat(UUID, TIMESTAMPTZ, JSONB)
   FROM PUBLIC, anon, authenticated;
