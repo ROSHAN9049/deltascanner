@@ -178,7 +178,7 @@ CREATE OR REPLACE FUNCTION public.reserve_dd_options_execution_group(
 RETURNS JSONB
 LANGUAGE plpgsql
 SET search_path = public, pg_temp
-AS $
+AS $$
 DECLARE
   v_group_id UUID;
   v_client_group_id TEXT;
@@ -193,7 +193,6 @@ DECLARE
   v_reserved_margin NUMERIC;
   v_net_credit NUMERIC;
   v_leg_count INTEGER;
-  v_long JSONB;
   v_wing JSONB;
   v_short JSONB;
   v_leg JSONB;
@@ -210,7 +209,8 @@ DECLARE
   v_expected_expiry TIMESTAMPTZ;
   v_symbol TEXT;
 BEGIN
-  IF jsonb_typeof(p_group) <> 'object' OR jsonb_typeof(p_legs) <> 'array' THEN
+  IF jsonb_typeof(p_group) IS DISTINCT FROM 'object' OR
+     jsonb_typeof(p_legs) IS DISTINCT FROM 'array' THEN
     RAISE EXCEPTION 'Options reservation requires a group object and leg array';
   END IF;
 
@@ -254,9 +254,8 @@ BEGIN
             (v_direction = 'SELL' AND v_option_type = 'PUT')) THEN
       RAISE EXCEPTION 'Long Options strategy must be one direction-matched CALL/PUT BUY';
     END IF;
-    v_long := p_legs->0;
-    IF UPPER(COALESCE(v_long->>'role', '')) <> 'LONG_PREMIUM' OR
-       UPPER(COALESCE(v_long->>'side', '')) <> 'BUY' THEN
+    IF UPPER(COALESCE(p_legs->0->>'role', '')) <> 'LONG_PREMIUM' OR
+       UPPER(COALESCE(p_legs->0->>'side', '')) <> 'BUY' THEN
       RAISE EXCEPTION 'Long Options entry cannot contain a short leg';
     END IF;
   ELSE
@@ -280,14 +279,18 @@ BEGIN
     END IF;
     IF UPPER(COALESCE(v_wing->>'optionType', '')) <> v_option_type OR
        UPPER(COALESCE(v_short->>'optionType', '')) <> v_option_type OR
-       (v_wing->>'expiry_at')::TIMESTAMPTZ <> (v_short->>'expiry_at')::TIMESTAMPTZ OR
-       (v_wing->>'qty')::INTEGER <> v_qty OR
-       (v_short->>'qty')::INTEGER <> v_qty OR
-       (v_wing->>'contractValue')::NUMERIC <> (v_short->>'contractValue')::NUMERIC THEN
+       NULLIF(v_wing->>'expiry_at', '')::TIMESTAMPTZ IS DISTINCT FROM
+         NULLIF(v_short->>'expiry_at', '')::TIMESTAMPTZ OR
+       NULLIF(v_wing->>'qty', '')::INTEGER IS DISTINCT FROM v_qty OR
+       NULLIF(v_short->>'qty', '')::INTEGER IS DISTINCT FROM v_qty OR
+       NULLIF(v_wing->>'contractValue', '')::NUMERIC IS DISTINCT FROM
+         NULLIF(v_short->>'contractValue', '')::NUMERIC THEN
       RAISE EXCEPTION 'Credit spread legs must match type, expiry, quantity and contract multiplier';
     END IF;
-    IF (v_option_type = 'PUT' AND (v_wing->>'strike')::NUMERIC >= (v_short->>'strike')::NUMERIC) OR
-       (v_option_type = 'CALL' AND (v_wing->>'strike')::NUMERIC <= (v_short->>'strike')::NUMERIC) THEN
+    IF (v_option_type = 'PUT' AND
+        NULLIF(v_wing->>'strike', '')::NUMERIC >= NULLIF(v_short->>'strike', '')::NUMERIC) OR
+       (v_option_type = 'CALL' AND
+        NULLIF(v_wing->>'strike', '')::NUMERIC <= NULLIF(v_short->>'strike', '')::NUMERIC) THEN
       RAISE EXCEPTION 'Credit spread protective wing must be farther out of the money';
     END IF;
   END IF;
@@ -305,7 +308,9 @@ BEGIN
     v_tick_size := NULLIF(v_leg->>'tickSize', '')::NUMERIC;
     v_strike := NULLIF(v_leg->>'strike', '')::NUMERIC;
     v_symbol := UPPER(COALESCE(v_leg->>'symbol', ''));
-    v_symbol_parts := regexp_match(v_symbol, '^([CP])-(BTC|ETH)-([0-9]+)-([0-9]{6})
+    v_symbol_parts := regexp_match(v_symbol, '^([CP])-(BTC|ETH)-([0-9]+)-([0-9]{6})$');
+
+    IF v_role NOT IN ('LONG_PREMIUM', 'PROTECTIVE_WING', 'SHORT_OPTION') OR
        v_side NOT IN ('BUY', 'SELL') OR
        v_leg_qty IS DISTINCT FROM v_qty OR
        v_leg_expiry IS DISTINCT FROM v_expiry OR
@@ -314,15 +319,25 @@ BEGIN
        (v_leg_option_type = 'CALL' AND v_contract_type <> 'call_options') OR
        (v_leg_option_type = 'PUT' AND v_contract_type <> 'put_options') OR
        COALESCE(NULLIF(v_leg->>'productId', '')::INTEGER, 0) <= 0 OR
-       NULLIF(BTRIM(v_leg->>'symbol'), '') IS NULL OR
        v_contract_value IS NULL OR v_contract_value <= 0 OR
        v_tick_size IS NULL OR v_tick_size <= 0 OR
-       v_strike IS NULL OR v_strike <= 0 THEN
+       v_strike IS NULL OR v_strike <= 0 OR
+       NULLIF(BTRIM(v_leg->>'clientOrderId'), '') IS NULL OR
+       LENGTH(v_leg->>'clientOrderId') > 32 OR
+       v_symbol_parts IS NULL THEN
       RAISE EXCEPTION 'Options reservation contains an invalid contract leg';
     END IF;
-    IF v_underlying = 'BTCUSD' AND (v_leg->>'symbol') NOT LIKE '%-BTC-%' OR
-       v_underlying = 'ETHUSD' AND (v_leg->>'symbol') NOT LIKE '%-ETH-%' THEN
-      RAISE EXCEPTION 'Options leg underlying does not match the execution group';
+
+    IF v_symbol_parts[1] <> CASE WHEN v_leg_option_type = 'CALL' THEN 'C' ELSE 'P' END OR
+       v_symbol_parts[2] <> CASE WHEN v_underlying = 'BTCUSD' THEN 'BTC' ELSE 'ETH' END OR
+       v_symbol_parts[3]::NUMERIC <> v_strike THEN
+      RAISE EXCEPTION 'Options leg symbol does not match its product type, underlying or strike';
+    END IF;
+
+    v_expected_expiry :=
+      (TO_DATE(v_symbol_parts[4], 'DDMMYY')::TIMESTAMP + INTERVAL '12 hours') AT TIME ZONE 'UTC';
+    IF v_expected_expiry IS DISTINCT FROM v_expiry THEN
+      RAISE EXCEPTION 'Options leg symbol expiry does not match its verified settlement timestamp';
     END IF;
   END LOOP;
 
@@ -343,21 +358,21 @@ BEGIN
   )
   SELECT
     v_group_id,
-    UPPER(element->>'role'),
-    (element->>'productId')::INTEGER,
-    UPPER(element->>'symbol'),
-    LOWER(element->>'contractType'),
-    UPPER(element->>'optionType'),
-    (element->>'strike')::NUMERIC,
-    (element->>'contractValue')::NUMERIC,
-    (element->>'tickSize')::NUMERIC,
-    (element->>'expiry_at')::TIMESTAMPTZ,
-    UPPER(element->>'side'),
-    (element->>'qty')::INTEGER,
+    UPPER(x.element->>'role'),
+    (x.element->>'productId')::INTEGER,
+    UPPER(x.element->>'symbol'),
+    LOWER(x.element->>'contractType'),
+    UPPER(x.element->>'optionType'),
+    (x.element->>'strike')::NUMERIC,
+    (x.element->>'contractValue')::NUMERIC,
+    (x.element->>'tickSize')::NUMERIC,
+    (x.element->>'expiry_at')::TIMESTAMPTZ,
+    UPPER(x.element->>'side'),
+    (x.element->>'qty')::INTEGER,
     0,
     'RESERVED',
-    element->>'clientOrderId',
-    element
+    x.element->>'clientOrderId',
+    x.element
   FROM jsonb_array_elements(p_legs) AS x(element);
 
   RETURN jsonb_build_object(
@@ -367,7 +382,7 @@ BEGIN
     'leg_count', v_leg_count
   );
 END;
-$;
+$$;
 
 REVOKE ALL ON FUNCTION public.reserve_dd_options_execution_group(JSONB, JSONB) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.reserve_dd_options_execution_group(JSONB, JSONB) TO service_role;
