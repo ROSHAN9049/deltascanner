@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { parseDeltaOptionSymbol } from './delta-options-policy.mjs';
 
 const TERMINAL_ORDER_STATES = new Set([
@@ -32,7 +33,7 @@ function verifiedProduct(ticker, now) {
   const tickSize = finitePositive(ticker.tick_size);
   const state = String(ticker.state ?? '').toLowerCase();
 
-  if (!parsed || parsed.dte <= 0 ||
+  if (!parsed || parsed.dte <= 0 || !['BTC', 'ETH'].includes(parsed.underlying) ||
       !Number.isSafeInteger(productId) || productId <= 0 ||
       contractType !== optionContractType ||
       state !== 'live' ||
@@ -348,7 +349,7 @@ export function resolveOptionExpiryExitDeadline(expiryMs, {
 }
 
 export function makeOptionsClientOrderId(groupId, legRole, attempt = 1) {
-  const group = String(groupId || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+  const group = String(groupId || '').trim();
   const role = normalized(legRole);
   const attemptNumber = wholeQuantity(attempt);
   const roleCode = ({
@@ -362,7 +363,10 @@ export function makeOptionsClientOrderId(groupId, legRole, attempt = 1) {
   if (group.length < 4 || !roleCode || !attemptNumber || attemptNumber < 1) {
     throw new Error('Cannot create a unique Delta Options client order ID from the supplied group/leg/attempt');
   }
-  const id = ('DDO-' + group.slice(0, 10) + '-' + roleCode + '-' + attemptNumber.toString(36)).slice(0, 32);
+  // Use a digest rather than the first group characters so UUID prefix
+  // collisions cannot accidentally reuse another group's idempotency key.
+  const digest = createHash('sha256').update(group).digest('hex').slice(0, 14).toUpperCase();
+  const id = ('DDO-' + digest + '-' + roleCode + '-' + attemptNumber.toString(36)).slice(0, 32);
   return id;
 }
 
