@@ -92,7 +92,13 @@ export function isSameOriginRequest(req) {
   if (!origin || !host) return false;
   try {
     const parsed = new URL(origin);
-    return ['https:', 'http:'].includes(parsed.protocol) && parsed.host.toLowerCase() === host.toLowerCase();
+    if (!['https:', 'http:'].includes(parsed.protocol)) return false;
+    if (parsed.host.toLowerCase() === host.toLowerCase()) return true;
+    // Cross-origin Site -> App mutations are allowed only from exact origins
+    // explicitly configured on the private Hostless API App.
+    const allowedOrigins = String(process.env.APP_ALLOWED_ORIGINS || '')
+      .split(',').map(value => value.trim()).filter(Boolean);
+    return allowedOrigins.includes(parsed.origin);
   } catch {
     return false;
   }
