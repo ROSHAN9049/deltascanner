@@ -141,6 +141,31 @@ export class DeltaAdapter {
     }
     return all;
   }
+  async optionProducts() {
+    const all = [];
+    let after = '';
+    let previousAfter = '';
+    for (let page = 0; page < 20; page++) {
+      const response = await this.request(
+        'GET',
+        '/v2/products',
+        { contract_types: 'call_options,put_options', states: 'live', page_size: 100, after },
+        null,
+        false,
+        { withMeta: true }
+      );
+      const rows = Array.isArray(response?.result) ? response.result : [];
+      all.push(...rows);
+      const nextAfter = String(response?.meta?.after || '');
+      if (!nextAfter || nextAfter === previousAfter || nextAfter === after || !rows.length) break;
+      previousAfter = after;
+      after = nextAfter;
+    }
+    return all.filter(row => {
+      const contractType = String(row?.contract_type || '').toLowerCase();
+      return contractType === 'call_options' || contractType === 'put_options';
+    });
+  }
   tickers() { return this.request('GET', '/v2/tickers', { contract_types: 'perpetual_futures' }, null, false, { marketData: true }); }
   optionTickers(underlying) {
     const asset = String(underlying || '').trim().toUpperCase();
