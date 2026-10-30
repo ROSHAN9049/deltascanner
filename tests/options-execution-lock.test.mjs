@@ -52,3 +52,52 @@ test('actual engine refuses BUY and SELL Options through the only supported entr
   assert.equal(buyCalls, 0);
   assert.equal(spreadCalls, 0);
 });
+
+test('Options risk gate independently requires CONFIRMED, ready and a ready underlying', async () => {
+  const engine = new DeltaEngine();
+  const settings = {
+    enabled: true,
+    auto_trade: true,
+    emergency_stop: false,
+    continuous_mode: true
+  };
+  const account = { equity: 10000, available: 10000 };
+
+  for (const strategy of ['OPTIONS_BUY', 'OPTIONS_SELL']) {
+    const gate = await engine.riskGate({
+      symbol: 'C-BTC-80000-311226',
+      stage: 'SETUP',
+      ready: false,
+      underlyingReady: false,
+      executionLocked: true,
+      definedRiskOnly: strategy === 'OPTIONS_SELL',
+      hedgeSymbol: strategy === 'OPTIONS_SELL' ? 'C-BTC-82000-311226' : undefined,
+      ticker: {
+        symbol: 'C-BTC-80000-311226',
+        testnet_product_verified: true,
+        underlying_spot: 90000,
+        contract_value: 0.001,
+        quotes: { best_ask: 20, best_bid: 19 }
+      },
+      hedgeTicker: strategy === 'OPTIONS_SELL' ? {
+        symbol: 'C-BTC-82000-311226',
+        testnet_product_verified: true,
+        underlying_spot: 90000,
+        contract_value: 0.001,
+        quotes: { best_ask: 5, best_bid: 4 }
+      } : undefined,
+      ask: 20,
+      bid: 19,
+      hedgeAsk: 5,
+      strike: 80000,
+      hedgeStrike: 82000
+    }, strategy, account, settings, [], []);
+
+    assert.ok(gate.reasons.includes('Signal stage SETUP is not CONFIRMED'));
+    assert.ok(gate.reasons.includes('Signal ready flag is not true'));
+    assert.ok(gate.reasons.includes(
+      'Underlying signal is not ready (fresh-candle or risk gate failed)'
+    ));
+    assert.ok(gate.reasons.includes('Option execution route locked'));
+  }
+});
