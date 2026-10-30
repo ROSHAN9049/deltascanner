@@ -134,9 +134,13 @@ export default async function handler(req, res) {
       };
     }
     const gridPositions = Array.isArray(gridState.positions) ? gridState.positions : [];
-    const testnetOpenGridPositions = CONFIG.deltaExecutionMode === 'testnet'
-      ? await select('dd_delta_positions', 'strategy=eq.GRID&status=eq.OPEN&select=id,symbol,qty&limit=10')
-      : [];
+    // Grid is single-slot in the direct Delta architecture. Query the exchange-backed
+    // ledger unconditionally because the dashboard API may not carry the Hostless
+    // worker's execution-mode environment variable.
+    const testnetOpenGridPositions = await select(
+      'dd_delta_positions',
+      'strategy=eq.GRID&status=eq.OPEN&select=id,symbol,qty&limit=10'
+    );
     const effectiveGridPositionCount = Math.max(gridPositions.length, Array.isArray(testnetOpenGridPositions) ? testnetOpenGridPositions.length : 0);
     const gridRangeOrInstrumentChanged = [
       'gridSymbol', 'gridLowerPrice', 'gridUpperPrice', 'gridLevelsCount'
@@ -205,8 +209,8 @@ export default async function handler(req, res) {
       }
       if (body.gridMaxPositions !== undefined) {
         const value = Number(body.gridMaxPositions);
-        if (CONFIG.deltaExecutionMode === 'testnet' && value !== 1) {
-          return res.status(400).json({ success: false, error: 'Delta Testnet Grid supports exactly one open exchange position.' });
+        if (value !== 1) {
+          return res.status(400).json({ success: false, error: 'Grid supports exactly one open position in the direct Delta execution architecture.' });
         }
         if (!GRID_MAX_POSITION_CHOICES.includes(value)) {
           return res.status(400).json({ success: false, error: 'Grid max positions must be 1, 3 or 4. Tradetron bridge mode still limits the live simulation to one net position.' });
