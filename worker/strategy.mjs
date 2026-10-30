@@ -65,8 +65,14 @@ const OPTIONS_SELL_DETAIL_FIELDS = Object.freeze([
   'hedgeSymbol',
   'hedgeStrike',
   'hedgeDelta',
+  'hedgeAsk',
+  'hedgeProductId',
   'credit',
-  'maxRiskPerSpread'
+  'maxRiskPerSpread',
+  'marginReservePerSpread',
+  'estimatedFeesPerSpread',
+  'definedRiskOnly',
+  'riskModel'
 ]);
 
 function trimAllowedDetails(details, allowlist, maxFields) {
