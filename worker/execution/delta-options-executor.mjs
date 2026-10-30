@@ -8,6 +8,16 @@ const PAGE_SIZE = 50;
 const PRODUCT_CACHE_TTL_MS = 60 * 1000;
 const ACTIVE_STATES = new Set(['open', 'pending']);
 
+function encodeQuery(params = {}) {
+  const parts = [];
+  for (const key of Object.keys(params).sort()) {
+    const input = params[key];
+    if (input === undefined || input === null || input === '') continue;
+    parts.push(encodeURIComponent(key) + '=' + encodeURIComponent(String(input)));
+  }
+  return parts.length ? '?' + parts.join('&') : '';
+}
+
 const value = input => String(input ?? '').trim();
 const numberOrNull = input => {
   if (input === undefined || input === null || input === '') return null;
