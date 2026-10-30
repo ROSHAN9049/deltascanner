@@ -165,13 +165,14 @@ export function createDeltaOptionsOrderLedger({
     return { ...persisted, idempotent: false };
   }
 
-  async function updateAttempt(clientOrderId, expectedExchangeOrderId, patch) {
+  async function updateAttempt(clientOrderId, expectedExchangeOrderId, patch, expectedState = null) {
     if (typeof database?.updateReturning !== 'function') {
       throw new Error('Options order ledger conditional updater is unavailable');
     }
     const id = textValue(clientOrderId);
     const query = 'client_order_id=eq.' + encodeURIComponent(id) +
-      (expectedExchangeOrderId ? '&exchange_order_id=eq.' + encodeURIComponent(String(expectedExchangeOrderId)) : '');
+      (expectedExchangeOrderId ? '&exchange_order_id=eq.' + encodeURIComponent(String(expectedExchangeOrderId)) : '') +
+      (expectedState ? '&order_state=eq.' + encodeURIComponent(expectedState) : '');
     const updated = await database.updateReturning('dd_options_execution_orders', query, {
       ...patch,
       updated_at: isoNow(now)
@@ -207,7 +208,7 @@ export function createDeltaOptionsOrderLedger({
           acknowledgement_error: 'Exchange acknowledgement did not match persisted client ID, product, side and size',
           acknowledgement_received_at: isoNow(now)
         }
-      }).catch(() => {});
+      }, 'RESERVED').catch(() => {});
       throw new Error('Delta Options acknowledgement did not match the durable order attempt; reconciliation required');
     }
 
@@ -242,13 +243,13 @@ export function createDeltaOptionsOrderLedger({
         exchange_state: exchangeState,
         acknowledgement_received_at: isoNow(now)
       }
-    });
+    }, 'RESERVED');
   }
 
   async function markSubmissionUnknown(clientOrderId, error) {
     const row = await getAttempt(clientOrderId);
     if (!row) throw new Error('Cannot mark an Options submission unknown without a persisted attempt');
-    if (!['RESERVED', 'SUBMITTED', 'OPEN', 'UNKNOWN'].includes(upper(row.order_state))) {
+    if (upper(row.order_state) !== 'RESERVED') {
       throw new Error('Options submission can only be marked unknown while its exchange outcome is ambiguous');
     }
     if (upper(row.order_state) === 'UNKNOWN') return { ...row, idempotent: true };
@@ -261,7 +262,7 @@ export function createDeltaOptionsOrderLedger({
         submission_error_at: isoNow(now),
         blind_retry_prohibited: true
       }
-    });
+    }, 'RESERVED');
   }
 
   async function reconcileFills(clientOrderId, {
