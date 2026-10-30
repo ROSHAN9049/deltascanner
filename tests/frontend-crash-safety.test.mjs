@@ -53,7 +53,7 @@ test('dashboard readiness consumes verified Delta Testnet route evidence and fai
   const marketApi = await read('../api/market.js');
   const routeState = await read('../src/dashboard-route-state.js');
 
-  assert.ok(source.includes("fetch('/api/market?type=testnet-products&t=' + Date.now()"));
+  assert.ok(source.includes("fetch(apiUrl('/api/market?type=testnet-products&t=' + Date.now())"));
   assert.ok(source.includes("import { resolveDashboardRouteContext } from './dashboard-route-state.js';"));
   assert.ok(source.includes('routeContext?.routeDataVerified === true'));
   assert.ok(source.includes('routeContext?.entrySafetyTrusted === true'));
