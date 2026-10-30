@@ -180,15 +180,13 @@ export function createDeltaOptionsSupervisor({
   ledger = createDeltaOptionsOrderLedger({ database }),
   now = () => Date.now(),
   minutesBeforeExpiry = 30,
-  maxFillPages = 20,
   fillPageSize = 50
 } = {}) {
   if (!executor) throw new Error('Delta Options supervisor requires a dedicated Testnet executor');
   if (!Number.isSafeInteger(minutesBeforeExpiry) || minutesBeforeExpiry < 5 || minutesBeforeExpiry > 240) {
     throw new Error('Options expiry exit lead time must be an integer from 5 to 240 minutes');
   }
-  if (!Number.isSafeInteger(maxFillPages) || maxFillPages < 1 || maxFillPages > 20 ||
-      !Number.isSafeInteger(fillPageSize) || fillPageSize < 1 || fillPageSize > 50) {
+  if (!Number.isSafeInteger(fillPageSize) || fillPageSize < 1 || fillPageSize > 50) {
     throw new Error('Options fill reconciliation page bounds are invalid');
   }
 
@@ -312,8 +310,22 @@ export function createDeltaOptionsSupervisor({
   }
 
   async function runOnceInternal() {
-    const exchange = await getExchangeSnapshot();
     const group = await manager.getActiveGroup();
+    let exchange;
+    try {
+      exchange = await getExchangeSnapshot();
+    } catch (error) {
+      if (group && !groupStateTerminal(group.state)) {
+        const locked = await markGroupReconciliationRequired(
+          group,
+          'OPTIONS_EXCHANGE_SNAPSHOT_UNAVAILABLE',
+          'Private Delta Testnet Options positions/orders could not be read after restart',
+          { snapshot_error: text(error?.message || error).slice(0, 240) }
+        );
+        return { status: 'RECONCILIATION_REQUIRED', executionEnabled: false, group: locked };
+      }
+      throw error;
+    }
     if (!group) {
       if (exchange.positions.length || exchange.openOrders.length) {
         return {
@@ -339,10 +351,22 @@ export function createDeltaOptionsSupervisor({
       };
     }
 
-    const [legs, orderRows] = await Promise.all([
-      manager.getGroupLegs(group.id),
-      manager.getGroupOrders(group.id)
-    ]);
+    let legs;
+    let orderRows;
+    try {
+      [legs, orderRows] = await Promise.all([
+        manager.getGroupLegs(group.id),
+        manager.getGroupOrders(group.id)
+      ]);
+    } catch (error) {
+      const locked = await markGroupReconciliationRequired(
+        group,
+        'OPTIONS_LEDGER_SNAPSHOT_UNAVAILABLE',
+        'Durable Options group legs/orders could not be read after restart',
+        { ledger_error: text(error?.message || error).slice(0, 240) }
+      );
+      return { status: 'RECONCILIATION_REQUIRED', executionEnabled: false, group: locked };
+    }
     const legCheck = summarizeLegs(legs);
     if (!legCheck.valid) {
       const locked = await markGroupReconciliationRequired(
@@ -357,7 +381,16 @@ export function createDeltaOptionsSupervisor({
       return { status: 'RECONCILIATION_REQUIRED', executionEnabled: false, group: locked };
     }
 
-    const orderRecovery = await recoverOrderAttempts(group, orderRows);
+    let orderRecovery;
+    try {
+      orderRecovery = await recoverOrderAttempts(group, orderRows);
+    } catch (error) {
+      orderRecovery = {
+        ok: false,
+        reason: 'Options order or fill reconciliation raised an error: ' + text(error?.message || error).slice(0, 200),
+        clientOrderId: null
+      };
+    }
     if (!orderRecovery.ok) {
       const locked = await markGroupReconciliationRequired(
         group,
@@ -368,8 +401,30 @@ export function createDeltaOptionsSupervisor({
       return { status: 'RECONCILIATION_REQUIRED', executionEnabled: false, group: locked, reason: orderRecovery.reason };
     }
 
-    const refreshedOrders = await manager.getGroupOrders(group.id);
-    const refreshedLegs = await manager.getGroupLegs(group.id);
+    let refreshedOrders;
+    let refreshedLegs;
+    try {
+      [refreshedOrders, refreshedLegs] = await Promise.all([
+        manager.getGroupOrders(group.id),
+        manager.getGroupLegs(group.id)
+      ]);
+    } catch (error) {
+      const locked = await markGroupReconciliationRequired(
+        group,
+        'OPTIONS_LEDGER_REFRESH_UNAVAILABLE',
+        'Updated Options order/leg snapshot could not be read after fill recovery',
+        { ledger_error: text(error?.message || error).slice(0, 240) }
+      );
+      return { status: 'RECONCILIATION_REQUIRED', executionEnabled: false, group: locked };
+    }
+    if (!Array.isArray(refreshedOrders) || !Array.isArray(refreshedLegs)) {
+      const locked = await markGroupReconciliationRequired(
+        group,
+        'OPTIONS_LEDGER_REFRESH_INVALID',
+        'Updated Options order/leg snapshot is malformed after fill recovery'
+      );
+      return { status: 'RECONCILIATION_REQUIRED', executionEnabled: false, group: locked };
+    }
     const knownOrders = new Set(refreshedOrders.map(row => String(row.client_order_id)));
     for (const exchangeOrder of exchange.openOrders) {
       const normalizedOrder = normalizeExchangeOrder(exchangeOrder);
@@ -395,7 +450,15 @@ export function createDeltaOptionsSupervisor({
       }
     }
 
-    const positions = compareExchangePositions(refreshedLegs, exchange.positions);
+    let positions;
+    try {
+      positions = compareExchangePositions(refreshedLegs, exchange.positions);
+    } catch (error) {
+      positions = {
+        matched: false,
+        reason: 'Options position comparison failed: ' + text(error?.message || error).slice(0, 200)
+      };
+    }
     if (!positions.matched) {
       const locked = await markGroupReconciliationRequired(
         group,
@@ -418,21 +481,23 @@ export function createDeltaOptionsSupervisor({
     const openQty = refreshedLegs.reduce((sum, leg) =>
       sum + Math.max(0, Number(leg.filled_qty) - Number(leg.exit_filled_qty)), 0);
     const deadline = expiryMs - minutesBeforeExpiry * 60 * 1000;
-    const exitDue = now() >= deadline && openQty > EPSILON;
-    // Resolve through the shared policy as well: a null return means the
-    // deadline has passed, exactly the state this monitor must catch.
-    if (exitDue || resolveOptionExpiryExitDeadline(expiryMs, {
-      now: now(),
-      minutesBeforeExpiry
-    }) === null && openQty > EPSILON) {
+    const deadlinePassed = now() >= deadline ||
+      resolveOptionExpiryExitDeadline(expiryMs, {
+        now: now(),
+        minutesBeforeExpiry
+      }) === null;
+    if (deadlinePassed) {
+      const hasOpenPosition = openQty > EPSILON;
       const locked = await markGroupReconciliationRequired(
         group,
-        'OPTIONS_EXPIRY_EXIT_REQUIRED',
-        'Open Options quantity reached the mandatory pre-expiry exit deadline',
+        hasOpenPosition ? 'OPTIONS_EXPIRY_EXIT_REQUIRED' : 'OPTIONS_EXPIRY_PASSED_FLAT',
+        hasOpenPosition
+          ? 'Open Options quantity reached the mandatory pre-expiry exit deadline; supervised exit is required'
+          : 'Options expiry exit deadline passed while the group was flat; new entries remain prohibited',
         { expiry_at: group.expiry_at, minutes_before_expiry: minutesBeforeExpiry, open_qty: openQty }
       );
       return {
-        status: 'EXPIRY_EXIT_REQUIRED',
+        status: hasOpenPosition ? 'EXPIRY_EXIT_REQUIRED' : 'RECONCILIATION_REQUIRED',
         executionEnabled: false,
         group: locked,
         openQty,
