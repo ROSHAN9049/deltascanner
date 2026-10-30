@@ -8,6 +8,7 @@ ALTER TABLE public.dd_delta_positions
 ALTER TABLE public.dd_fills
   ADD COLUMN IF NOT EXISTS client_order_id TEXT NULL,
   ADD COLUMN IF NOT EXISTS reason TEXT NULL,
+  ADD COLUMN IF NOT EXISTS commission_currency TEXT NULL,
   ADD COLUMN IF NOT EXISTS timestamp_us BIGINT NULL,
   ADD COLUMN IF NOT EXISTS sequence_no BIGINT NULL,
   ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'rest';
