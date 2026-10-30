@@ -480,9 +480,8 @@ export function createDeltaOptionsAccountRiskGate({
       now: now(),
       maxSnapshotAgeMs
     });
-    if (data.optionsWalletReconciliation === 'RECONCILIATION_REQUIRED' ||
-        data.optionsWalletReconciliation === 'SUPERVISOR_UNAVAILABLE' ||
-        data.optionsWalletReconciliation === 'ORPHAN_EXCHANGE_EXPOSURE') {
+    const expectedSupervisorStatus = data.activeOptionsGroup ? 'RECONCILED' : 'NO_ACTIVE_GROUP';
+    if (data.optionsWalletReconciliation !== expectedSupervisorStatus) {
       result.allowed = false;
       result.reasons = [...new Set([...result.reasons, 'OPTIONS_RESTART_RECONCILIATION_NOT_CLEAR'])];
     }
