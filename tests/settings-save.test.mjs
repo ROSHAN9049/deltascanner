@@ -20,7 +20,11 @@ function fakeFetch({ initialRows, savedRows }) {
   let rows = structuredClone(initialRows);
   return {
     fetch: async (url, options = {}) => {
-      assert.match(String(url), /^https:\/\/supabase\.test\/rest\/v1\/dd_settings\?/);
+      const requestUrl = String(url);
+      assert.match(requestUrl, /^https:\/\/supabase\.test\/rest\/v1\/(dd_settings|dd_delta_positions)\?/);
+      if (requestUrl.includes('/dd_delta_positions?')) {
+        return { ok: true, status: 200, text: async () => '[]' };
+      }
       if (options.method === 'PATCH') {
         const body = JSON.parse(options.body || '{}');
         rows = typeof savedRows === 'function' ? savedRows(rows, body) : structuredClone(savedRows);
