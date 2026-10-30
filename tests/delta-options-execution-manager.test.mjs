@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildOptionsReservationPayload,
-  createDeltaOptionsExecutionManager
+  createDeltaOptionsExecutionManager,
+  matchesPersistedOptionsReservation
 } from '../worker/execution/delta-options-execution-manager.mjs';
 import {
   OPTIONS_EXECUTION_ALLOWED,
@@ -183,4 +184,58 @@ test('group idempotency and leg readers reject duplicate or malformed ledger sna
     database: { select: async () => [{ id: '1' }, { id: '2' }] }
   });
   await assert.rejects(duplicated.getGroupByClientGroupId('client-group-123'), /invalid snapshot/);
+});
+
+
+test('ambiguous reservation recovery requires exact persisted group and both leg metadata', () => {
+  const payload = buildOptionsReservationPayload({
+    strategy: 'OPTIONS_SELL',
+    underlyingSide: 'SELL',
+    shortTicker: ticker('C-BTC-90000-311026', 'CALL', 401),
+    protectiveTicker: ticker('C-BTC-95000-311026', 'CALL', 402),
+    qty: 2,
+    riskBudgetUsd: 25,
+    maxLossUsd: 15,
+    reservedMarginUsd: 18,
+    netCreditUsd: 0.5,
+    clientGroupId: 'recover-group-12345',
+    now: NOW
+  });
+  const groupRow = {
+    id: 'db-group-1',
+    ...payload.group,
+    state: 'RESERVED',
+    matched_qty: 0
+  };
+  const legRows = payload.legs.map(leg => ({
+    leg_role: leg.role,
+    product_id: leg.productId,
+    symbol: leg.symbol,
+    contract_type: leg.contractType,
+    option_type: leg.optionType,
+    strike: String(leg.strike),
+    contract_value: String(leg.contractValue),
+    tick_size: String(leg.tickSize),
+    expiry_at: leg.expiry_at,
+    side: leg.side,
+    requested_qty: leg.qty,
+    filled_qty: '0',
+    order_state: 'RESERVED',
+    client_order_id: leg.clientOrderId
+  }));
+  assert.equal(matchesPersistedOptionsReservation(groupRow, legRows, payload), true);
+  assert.equal(matchesPersistedOptionsReservation(groupRow, legRows.slice(0, 1), payload), false);
+  assert.equal(matchesPersistedOptionsReservation(
+    { ...groupRow, state: 'OPEN' }, legRows, payload
+  ), false);
+  assert.equal(matchesPersistedOptionsReservation(
+    groupRow,
+    legRows.map((row, index) => index === 0 ? { ...row, product_id: 999 } : row),
+    payload
+  ), false);
+  assert.equal(matchesPersistedOptionsReservation(
+    groupRow,
+    legRows.map((row, index) => index === 1 ? { ...row, side: 'BUY' } : row),
+    payload
+  ), false);
 });
