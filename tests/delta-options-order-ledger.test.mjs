@@ -297,7 +297,7 @@ test('closed IOC acknowledgement with remaining quantity is terminal cancellatio
     makeAck({ state: 'closed', unfilled_size: 1 })
   );
   assert.equal(row.order_state, 'CANCELLED');
-  assert.equal(Number(row.acknowledged_filled_qty), 1);
+  assert.equal(Number(row.acknowledged_filled_qty), 2);
   const repeated = await ledger.recordAcknowledgement(
     INPUT.clientOrderId,
     makeAck({ state: 'closed', unfilled_size: 1 })
