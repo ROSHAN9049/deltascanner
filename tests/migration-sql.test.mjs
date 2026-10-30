@@ -203,6 +203,15 @@ test('atomic Options reservation RPC validates both legs and is service-role onl
 });
 
 
+test('Options reservation schema pins group and every leg to a verified USD settlement asset', () => {
+  assert.match(deltaOptionsMigration, /settlement_asset TEXT NOT NULL CHECK \(settlement_asset = 'USD'\)/i);
+  assert.match(deltaOptionsMigration, /v_settlement_asset := UPPER\(COALESCE\(p_group->>'settlement_asset', ''\)\)/i);
+  assert.match(deltaOptionsMigration, /v_settlement_asset <> 'USD'/i);
+  assert.match(deltaOptionsMigration, /UPPER\(COALESCE\(v_leg->>'settlement_asset', ''\)\) <> v_settlement_asset/i);
+  assert.match(deltaOptionsMigration, /reserved_margin_usd, settlement_asset, net_credit_usd/i);
+  assert.match(deltaOptionsMigration, /tick_size, settlement_asset, expiry_at/i);
+});
+
 test('Options fill accounting preserves unknown commissions and accepts asynchronously confirmed fills', () => {
   assert.match(
     deltaOptionsMigration,
