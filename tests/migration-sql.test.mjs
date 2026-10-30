@@ -193,9 +193,9 @@ test('atomic Options reservation RPC validates both legs and is service-role onl
   assert.match(deltaOptionsMigration, /RAISE EXCEPTION 'Credit spread requires one protective BUY and one short SELL'/i);
   assert.match(deltaOptionsMigration, /RAISE EXCEPTION 'Credit spread protective wing must be farther out of the money'/i);
   assert.match(deltaOptionsMigration, /v_reserved_margin <= 0/i);
-  assert.match(deltaOptionsMigration, /CREATE OR REPLACE FUNCTION public\\.reserve_dd_options_order_attempt/i);
-  assert.match(deltaOptionsMigration, /CREATE OR REPLACE FUNCTION public\\.record_dd_options_order_ack/i);
-  assert.match(deltaOptionsMigration, /CREATE OR REPLACE FUNCTION public\\.record_dd_options_execution_fill/i);
+  assert.match(deltaOptionsMigration, /CREATE OR REPLACE FUNCTION public\.reserve_dd_options_order_attempt/i);
+  assert.match(deltaOptionsMigration, /CREATE OR REPLACE FUNCTION public\.record_dd_options_order_ack/i);
+  assert.match(deltaOptionsMigration, /CREATE OR REPLACE FUNCTION public\.record_dd_options_execution_fill/i);
   assert.match(deltaOptionsMigration, /exchange_fill_id TEXT NOT NULL UNIQUE/i);
   assert.match(deltaOptionsMigration, /acknowledged_filled_qty NUMERIC NULL/i);
   assert.match(deltaOptionsMigration, /ON CONFLICT \\(exchange_fill_id\\) DO NOTHING/i);
