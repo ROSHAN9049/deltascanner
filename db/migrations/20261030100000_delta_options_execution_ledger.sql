@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS public.dd_options_execution_legs (
   contract_type TEXT NOT NULL CHECK (contract_type IN ('call_options', 'put_options')),
   option_type TEXT NOT NULL CHECK (option_type IN ('CALL', 'PUT')),
   strike NUMERIC NOT NULL CHECK (strike > 0),
+  contract_value NUMERIC NOT NULL CHECK (contract_value > 0),
+  tick_size NUMERIC NOT NULL CHECK (tick_size > 0),
   expiry_at TIMESTAMPTZ NOT NULL,
   side TEXT NOT NULL CHECK (side IN ('BUY', 'SELL')),
   requested_qty INTEGER NOT NULL CHECK (requested_qty > 0),
@@ -165,6 +167,208 @@ GRANT ALL ON TABLE public.dd_options_execution_legs TO service_role;
 GRANT ALL ON TABLE public.dd_options_execution_orders TO service_role;
 GRANT USAGE, SELECT, UPDATE ON SEQUENCE public.dd_options_execution_legs_id_seq TO service_role;
 GRANT USAGE, SELECT, UPDATE ON SEQUENCE public.dd_options_execution_orders_id_seq TO service_role;
+
+
+-- Atomic reservation: the active-slot unique index, group and all leg rows are
+-- committed in one database transaction before any exchange order is eligible.
+CREATE OR REPLACE FUNCTION public.reserve_dd_options_execution_group(
+  p_group JSONB,
+  p_legs JSONB
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SET search_path = public, pg_temp
+AS $
+DECLARE
+  v_group_id UUID;
+  v_client_group_id TEXT;
+  v_strategy TEXT;
+  v_underlying TEXT;
+  v_direction TEXT;
+  v_option_type TEXT;
+  v_expiry TIMESTAMPTZ;
+  v_qty INTEGER;
+  v_risk_budget NUMERIC;
+  v_max_loss NUMERIC;
+  v_reserved_margin NUMERIC;
+  v_net_credit NUMERIC;
+  v_leg_count INTEGER;
+  v_long JSONB;
+  v_wing JSONB;
+  v_short JSONB;
+  v_leg JSONB;
+  v_role TEXT;
+  v_side TEXT;
+  v_leg_qty INTEGER;
+  v_leg_expiry TIMESTAMPTZ;
+  v_contract_type TEXT;
+  v_leg_option_type TEXT;
+  v_contract_value NUMERIC;
+  v_tick_size NUMERIC;
+  v_strike NUMERIC;
+BEGIN
+  IF jsonb_typeof(p_group) <> 'object' OR jsonb_typeof(p_legs) <> 'array' THEN
+    RAISE EXCEPTION 'Options reservation requires a group object and leg array';
+  END IF;
+
+  v_client_group_id := NULLIF(BTRIM(p_group->>'client_group_id'), '');
+  v_strategy := UPPER(COALESCE(p_group->>'strategy', ''));
+  v_underlying := UPPER(COALESCE(p_group->>'underlying_symbol', ''));
+  v_direction := UPPER(COALESCE(p_group->>'underlying_direction', ''));
+  v_option_type := UPPER(COALESCE(p_group->>'option_type', ''));
+  v_expiry := NULLIF(p_group->>'expiry_at', '')::TIMESTAMPTZ;
+  v_qty := NULLIF(p_group->>'requested_qty', '')::INTEGER;
+  v_risk_budget := NULLIF(p_group->>'risk_budget_usd', '')::NUMERIC;
+  v_max_loss := NULLIF(p_group->>'max_loss_usd', '')::NUMERIC;
+  v_reserved_margin := COALESCE(NULLIF(p_group->>'reserved_margin_usd', '')::NUMERIC, 0);
+  v_net_credit := NULLIF(p_group->>'net_credit_usd', '')::NUMERIC;
+  v_leg_count := jsonb_array_length(p_legs);
+
+  IF v_client_group_id IS NULL OR LENGTH(v_client_group_id) > 80 THEN
+    RAISE EXCEPTION 'Options reservation requires a valid client group ID';
+  END IF;
+  IF v_strategy NOT IN ('OPTIONS_BUY', 'OPTIONS_SELL') THEN
+    RAISE EXCEPTION 'Unsupported Options strategy';
+  END IF;
+  IF v_underlying NOT IN ('BTCUSD', 'ETHUSD') THEN
+    RAISE EXCEPTION 'Automated Options entries are restricted to BTCUSD and ETHUSD';
+  END IF;
+  IF v_direction NOT IN ('BUY', 'SELL') OR v_option_type NOT IN ('CALL', 'PUT') THEN
+    RAISE EXCEPTION 'Options direction and type are invalid';
+  END IF;
+  IF v_expiry IS NULL OR v_expiry <= NOW() OR
+     v_qty IS NULL OR v_qty < 1 OR
+     v_risk_budget IS NULL OR v_risk_budget <= 0 OR
+     v_max_loss IS NULL OR v_max_loss <= 0 OR
+     v_max_loss > v_risk_budget OR
+     v_reserved_margin < 0 THEN
+    RAISE EXCEPTION 'Options risk, size, margin or expiry inputs are missing/out of bounds';
+  END IF;
+
+  IF v_strategy = 'OPTIONS_BUY' THEN
+    IF v_leg_count <> 1 OR
+       NOT ((v_direction = 'BUY' AND v_option_type = 'CALL') OR
+            (v_direction = 'SELL' AND v_option_type = 'PUT')) THEN
+      RAISE EXCEPTION 'Long Options strategy must be one direction-matched CALL/PUT BUY';
+    END IF;
+    v_long := p_legs->0;
+    IF UPPER(COALESCE(v_long->>'role', '')) <> 'LONG_PREMIUM' OR
+       UPPER(COALESCE(v_long->>'side', '')) <> 'BUY' THEN
+      RAISE EXCEPTION 'Long Options entry cannot contain a short leg';
+    END IF;
+  ELSE
+    IF v_leg_count <> 2 OR v_net_credit IS NULL OR v_net_credit <= 0 OR
+       NOT ((v_direction = 'BUY' AND v_option_type = 'PUT') OR
+            (v_direction = 'SELL' AND v_option_type = 'CALL')) THEN
+      RAISE EXCEPTION 'Credit spread requires positive net credit and a direction-matched same-type pair';
+    END IF;
+
+    SELECT element INTO v_wing
+    FROM jsonb_array_elements(p_legs) element
+    WHERE UPPER(COALESCE(element->>'role', '')) = 'PROTECTIVE_WING';
+    SELECT element INTO v_short
+    FROM jsonb_array_elements(p_legs) element
+    WHERE UPPER(COALESCE(element->>'role', '')) = 'SHORT_OPTION';
+
+    IF v_wing IS NULL OR v_short IS NULL OR
+       UPPER(COALESCE(v_wing->>'side', '')) <> 'BUY' OR
+       UPPER(COALESCE(v_short->>'side', '')) <> 'SELL' THEN
+      RAISE EXCEPTION 'Credit spread requires one protective BUY and one short SELL';
+    END IF;
+    IF UPPER(COALESCE(v_wing->>'optionType', '')) <> v_option_type OR
+       UPPER(COALESCE(v_short->>'optionType', '')) <> v_option_type OR
+       (v_wing->>'expiry_at')::TIMESTAMPTZ <> (v_short->>'expiry_at')::TIMESTAMPTZ OR
+       (v_wing->>'qty')::INTEGER <> v_qty OR
+       (v_short->>'qty')::INTEGER <> v_qty OR
+       (v_wing->>'contractValue')::NUMERIC <> (v_short->>'contractValue')::NUMERIC THEN
+      RAISE EXCEPTION 'Credit spread legs must match type, expiry, quantity and contract multiplier';
+    END IF;
+    IF (v_option_type = 'PUT' AND (v_wing->>'strike')::NUMERIC >= (v_short->>'strike')::NUMERIC) OR
+       (v_option_type = 'CALL' AND (v_wing->>'strike')::NUMERIC <= (v_short->>'strike')::NUMERIC) THEN
+      RAISE EXCEPTION 'Credit spread protective wing must be farther out of the money';
+    END IF;
+  END IF;
+
+  FOREACH v_leg IN ARRAY ARRAY(
+    SELECT jsonb_array_elements(p_legs)
+  )
+  LOOP
+    v_role := UPPER(COALESCE(v_leg->>'role', ''));
+    v_side := UPPER(COALESCE(v_leg->>'side', ''));
+    v_leg_qty := NULLIF(v_leg->>'qty', '')::INTEGER;
+    v_leg_expiry := NULLIF(v_leg->>'expiry_at', '')::TIMESTAMPTZ;
+    v_contract_type := LOWER(COALESCE(v_leg->>'contractType', ''));
+    v_leg_option_type := UPPER(COALESCE(v_leg->>'optionType', ''));
+    v_contract_value := NULLIF(v_leg->>'contractValue', '')::NUMERIC;
+    v_tick_size := NULLIF(v_leg->>'tickSize', '')::NUMERIC;
+    v_strike := NULLIF(v_leg->>'strike', '')::NUMERIC;
+
+    IF v_role NOT IN ('LONG_PREMIUM', 'PROTECTIVE_WING', 'SHORT_OPTION') OR
+       v_side NOT IN ('BUY', 'SELL') OR
+       v_leg_qty IS DISTINCT FROM v_qty OR
+       v_leg_expiry IS DISTINCT FROM v_expiry OR
+       v_leg_option_type IS DISTINCT FROM v_option_type OR
+       v_contract_type NOT IN ('call_options', 'put_options') OR
+       (v_leg_option_type = 'CALL' AND v_contract_type <> 'call_options') OR
+       (v_leg_option_type = 'PUT' AND v_contract_type <> 'put_options') OR
+       COALESCE(NULLIF(v_leg->>'productId', '')::INTEGER, 0) <= 0 OR
+       NULLIF(BTRIM(v_leg->>'symbol'), '') IS NULL OR
+       v_contract_value IS NULL OR v_contract_value <= 0 OR
+       v_tick_size IS NULL OR v_tick_size <= 0 OR
+       v_strike IS NULL OR v_strike <= 0 THEN
+      RAISE EXCEPTION 'Options reservation contains an invalid contract leg';
+    END IF;
+    IF v_underlying = 'BTCUSD' AND (v_leg->>'symbol') NOT LIKE '%-BTC-%' OR
+       v_underlying = 'ETHUSD' AND (v_leg->>'symbol') NOT LIKE '%-ETH-%' THEN
+      RAISE EXCEPTION 'Options leg underlying does not match the execution group';
+    END IF;
+  END LOOP;
+
+  INSERT INTO public.dd_options_execution_groups (
+    client_group_id, strategy, state, underlying_symbol, underlying_direction,
+    option_type, expiry_at, requested_qty, matched_qty, risk_budget_usd,
+    max_loss_usd, reserved_margin_usd, net_credit_usd, raw
+  ) VALUES (
+    v_client_group_id, v_strategy, 'RESERVED', v_underlying, v_direction,
+    v_option_type, v_expiry, v_qty, 0, v_risk_budget, v_max_loss,
+    v_reserved_margin, v_net_credit, COALESCE(p_group->'raw', p_group)
+  ) RETURNING id INTO v_group_id;
+
+  INSERT INTO public.dd_options_execution_legs (
+    group_id, leg_role, product_id, symbol, contract_type, option_type,
+    strike, contract_value, tick_size, expiry_at, side, requested_qty,
+    filled_qty, order_state, client_order_id, raw
+  )
+  SELECT
+    v_group_id,
+    UPPER(element->>'role'),
+    (element->>'productId')::INTEGER,
+    UPPER(element->>'symbol'),
+    LOWER(element->>'contractType'),
+    UPPER(element->>'optionType'),
+    (element->>'strike')::NUMERIC,
+    (element->>'contractValue')::NUMERIC,
+    (element->>'tickSize')::NUMERIC,
+    (element->>'expiry_at')::TIMESTAMPTZ,
+    UPPER(element->>'side'),
+    (element->>'qty')::INTEGER,
+    0,
+    'RESERVED',
+    element->>'clientOrderId',
+    element
+  FROM jsonb_array_elements(p_legs) element;
+
+  RETURN jsonb_build_object(
+    'group_id', v_group_id,
+    'client_group_id', v_client_group_id,
+    'state', 'RESERVED',
+    'leg_count', v_leg_count
+  );
+END;
+$;
+
+REVOKE ALL ON FUNCTION public.reserve_dd_options_execution_group(JSONB, JSONB) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.reserve_dd_options_execution_group(JSONB, JSONB) TO service_role;
 
 NOTIFY pgrst, 'reload schema';
 COMMIT;
