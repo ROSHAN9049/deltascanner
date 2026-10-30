@@ -192,7 +192,7 @@ export function createDeltaPositionReconciler({
 
       const openRows = await database.select(
         'dd_delta_positions',
-        'status=eq.OPEN&select=id,symbol,qty,side,opened_at,realized_pnl&limit=1000'
+        'status=eq.OPEN&select=id,symbol,qty,side,opened_at,realized_pnl,entry_order_id,client_order_id&limit=1000'
       );
       if (!Array.isArray(openRows)) {
         throw new Error('Could not read dd_delta_positions OPEN rows; DB state left unchanged');
@@ -216,7 +216,7 @@ export function createDeltaPositionReconciler({
           let details = null;
           if (typeof executor.getRecentCloseDetails === 'function') {
             try {
-              details = await executor.getRecentCloseDetails(symbol, row.opened_at);
+              details = await executor.getRecentCloseDetails(symbol, row.opened_at, row);
             } catch (error) {
               await writeLog('WARN', '[Reconciler] Close-fill lookup failed; exit details remain unverified', {
                 symbol,
