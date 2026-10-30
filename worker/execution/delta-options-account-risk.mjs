@@ -127,7 +127,6 @@ function evaluateFuturesExposure(snapshot, wantedAsset, reasons) {
       continue;
     }
 
-    if (settle !== wantedAsset) continue;
     if ((side === 'BUY' && stop >= entry) || (side === 'SELL' && stop <= entry)) {
       reasons.push('FUTURES_STOP_DIRECTION_INVALID:' + symbol);
       continue;
@@ -137,8 +136,12 @@ function evaluateFuturesExposure(snapshot, wantedAsset, reasons) {
       reasons.push('FUTURES_MAX_LOSS_UNVERIFIED:' + symbol);
       continue;
     }
-    totalRisk += risk;
     if (upper(dbRow?.strategy) === 'GRID') gridRisk += risk;
+    if (settle !== wantedAsset) {
+      reasons.push('CROSS_SETTLEMENT_EXPOSURE_NOT_NETTABLE:' + symbol + ':' + settle);
+      continue;
+    }
+    totalRisk += risk;
   }
 
   const openOrders = snapshot.futuresOrders;
@@ -401,7 +404,6 @@ export function createDeltaOptionsAccountRiskGate({
     if (upper(process.env.DELTA_EXECUTION_MODE) !== 'TESTNET') {
       throw new Error('Options account risk gate only supports Delta India Testnet');
     }
-    const capturedAt = now();
     const [
       futuresWallet, futuresPositions, futuresOrders,
       optionsWallet, optionsPositions, optionsOpenOrders,
@@ -425,6 +427,7 @@ export function createDeltaOptionsAccountRiskGate({
     if (!Array.isArray(dbFuturesPositions) || !Array.isArray(settingsRows) || settingsRows.length !== 1) {
       throw new Error('Options account risk gate could not verify the Futures/Grid database snapshot');
     }
+    const capturedAt = now();
     const activeOptionsLegs = activeOptionsGroup
       ? await manager.getGroupLegs(activeOptionsGroup.id) : [];
     const activeOptionsOrders = activeOptionsGroup
@@ -438,6 +441,10 @@ export function createDeltaOptionsAccountRiskGate({
       futuresExecutor.getProductMetadata(symbol)
     ));
 
+    let gridState = getGridState() ?? settingsRows[0]?.grid_state ?? null;
+    if (typeof gridState === 'string') {
+      try { gridState = JSON.parse(gridState); } catch { throw new Error('Grid state JSON is malformed'); }
+    }
     return {
       executionMode: 'testnet',
       capturedAt,
@@ -447,7 +454,7 @@ export function createDeltaOptionsAccountRiskGate({
       futuresOrders,
       futuresProducts,
       dbFuturesPositions,
-      gridState: getGridState() ?? settingsRows[0]?.grid_state ?? null,
+      gridState,
       optionsWalletReconciliation: reconciliation?.status ?? 'UNKNOWN',
       optionsPositions,
       optionsOpenOrders,
