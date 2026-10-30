@@ -216,11 +216,13 @@ function evaluateOptionsExposure(snapshot, wantedAsset, phase, groupId, reasons)
       reasons.push('OPTIONS_LEG_PRODUCT_OR_SETTLEMENT_UNVERIFIED');
       continue;
     }
-    expected.set(symbol, {
-      productId: numberOrNull(leg.product_id),
-      side: upper(leg.side),
-      qty: Math.max(0, qty)
-    });
+    if (qty > EPSILON) {
+      expected.set(symbol, {
+        productId: numberOrNull(leg.product_id),
+        side: upper(leg.side),
+        qty
+      });
+    }
   }
 
   const actual = mapBySymbol(positions);
