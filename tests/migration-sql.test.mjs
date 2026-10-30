@@ -219,3 +219,27 @@ test('Options fill accounting preserves unknown commissions and accepts asynchro
   assert.doesNotMatch(deltaOptionsMigration, /COALESCE\(SUM\(commission\), 0\)/i);
   assert.doesNotMatch(deltaOptionsMigration, /v_total_qty > v_order\.acknowledged_filled_qty/i);
 });
+
+
+const optionsSupervisorMigrationPath = fileURLToPath(new URL('../db/migrations/20261030120000_delta_options_restart_supervisor.sql', import.meta.url));
+const optionsSupervisorMigration = readFileSync(optionsSupervisorMigrationPath, 'utf8');
+
+describe('Delta Testnet Options restart supervisor migration SQL structure', () => {
+  test('adds a transactional, service-role-only durable reconciliation lock', () => {
+    assert.ok(optionsSupervisorMigration.includes('BEGIN;'));
+    assert.ok(optionsSupervisorMigration.includes('COMMIT;'));
+    assert.match(optionsSupervisorMigration, /CREATE OR REPLACE FUNCTION public\.mark_dd_options_group_reconciliation_required/i);
+    assert.match(optionsSupervisorMigration, /SECURITY INVOKER/i);
+    assert.match(optionsSupervisorMigration, /FOR UPDATE/i);
+    assert.match(optionsSupervisorMigration, /SET state = 'RECONCILIATION_REQUIRED'/i);
+    assert.match(optionsSupervisorMigration, /Terminal Options execution group cannot be changed/i);
+    assert.match(optionsSupervisorMigration, /REVOKE ALL ON FUNCTION public\.mark_dd_options_group_reconciliation_required\(UUID, TEXT, TEXT, JSONB\) FROM PUBLIC, anon, authenticated/i);
+    assert.match(optionsSupervisorMigration, /GRANT EXECUTE ON FUNCTION public\.mark_dd_options_group_reconciliation_required\(UUID, TEXT, TEXT, JSONB\) TO service_role/i);
+  });
+
+  test('migration runner applies the supervisor lock after the Options execution ledger', () => {
+    const optionsIndex = migrationRunner.indexOf('20261030100000_delta_options_execution_ledger.sql');
+    const supervisorIndex = migrationRunner.indexOf('20261030120000_delta_options_restart_supervisor.sql');
+    assert.ok(optionsIndex >= 0 && supervisorIndex > optionsIndex);
+  });
+});
