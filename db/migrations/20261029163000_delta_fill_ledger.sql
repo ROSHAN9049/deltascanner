@@ -21,6 +21,7 @@ CREATE INDEX IF NOT EXISTS dd_fills_order_created_idx
 -- appearing as zero while the verified fill/close reconciliation is incomplete.
 ALTER TABLE public.dd_trades
   ADD COLUMN IF NOT EXISTS fees_verified BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS gross_pnl_verified BOOLEAN NOT NULL DEFAULT FALSE,
   ADD COLUMN IF NOT EXISTS net_pnl_verified BOOLEAN NOT NULL DEFAULT FALSE,
   ALTER COLUMN fees DROP NOT NULL,
   ALTER COLUMN fees DROP DEFAULT,
