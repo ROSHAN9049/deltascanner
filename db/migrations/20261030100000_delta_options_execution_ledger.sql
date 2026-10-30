@@ -748,6 +748,7 @@ AS $
 DECLARE
   v_order public.dd_options_execution_orders%ROWTYPE;
   v_fill_id BIGINT;
+  v_existing_order_attempt_id BIGINT;
   v_total_qty NUMERIC;
   v_average_price NUMERIC;
   v_total_commission NUMERIC;
@@ -797,6 +798,29 @@ BEGIN
   RETURNING id INTO v_fill_id;
 
   IF v_fill_id IS NULL THEN
+    SELECT order_attempt_id INTO v_existing_order_attempt_id
+    FROM public.dd_options_execution_fills
+    WHERE exchange_fill_id = p_exchange_fill_id;
+
+    IF v_existing_order_attempt_id IS DISTINCT FROM v_order.id THEN
+      UPDATE public.dd_options_execution_groups
+      SET state = 'RECONCILIATION_REQUIRED',
+          last_error_code = 'OPTIONS_FILL_ID_COLLISION',
+          last_error_detail = 'An exchange fill ID was replayed against a different order attempt',
+          updated_at = NOW()
+      WHERE id IN (
+        v_order.group_id,
+        (SELECT group_id FROM public.dd_options_execution_fills WHERE exchange_fill_id = p_exchange_fill_id)
+      );
+      RETURN jsonb_build_object(
+        'duplicate', false,
+        'collision', true,
+        'reconciliation_required', true,
+        'order_attempt_id', v_order.id,
+        'exchange_fill_id', p_exchange_fill_id
+      );
+    END IF;
+
     RETURN jsonb_build_object(
       'duplicate', true,
       'order_attempt_id', v_order.id,
