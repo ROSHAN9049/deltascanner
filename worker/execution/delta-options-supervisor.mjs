@@ -265,7 +265,7 @@ export function createDeltaOptionsSupervisor({
       }
 
       if (!exchangeOrderId) {
-        if (ACTIVE_ORDER_STATES.has(upper(row.order_state))) {
+        if (ACTIVE_ORDER_STATES.has(upper(row.order_state)) || upper(row.order_state) === 'FILLED') {
           return {
             ok: false,
             reason: 'An active Options order attempt has no verified exchange order ID',
@@ -429,9 +429,13 @@ export function createDeltaOptionsSupervisor({
     for (const exchangeOrder of exchange.openOrders) {
       const normalizedOrder = normalizeExchangeOrder(exchangeOrder);
       const ledgerOrder = findLedgerOrder(normalizedOrder, refreshedOrders);
+      const hasExchangeIdentity = Boolean(normalizedOrder.clientOrderId || normalizedOrder.id);
       if (!ledgerOrder ||
-          !normalizedOrder.clientOrderId ||
-          !knownOrders.has(normalizedOrder.clientOrderId) ||
+          !hasExchangeIdentity ||
+          (normalizedOrder.clientOrderId &&
+            String(ledgerOrder.client_order_id) !== normalizedOrder.clientOrderId) ||
+          (normalizedOrder.id &&
+            String(ledgerOrder.exchange_order_id || '') !== normalizedOrder.id) ||
           Number(ledgerOrder.product_id) !== normalizedOrder.productId ||
           upper(ledgerOrder.symbol) !== normalizedOrder.symbol ||
           upper(ledgerOrder.side) !== normalizedOrder.side ||
