@@ -509,15 +509,18 @@ test('closed REST order acknowledgement immediately polls and persists an OPEN p
 });
 
 
-test('concurrent bracket metadata syncs are coalesced per symbol', async () => {
+test('concurrent bracket metadata syncs are coalesced per symbol and use the filled parent-order detail', async () => {
+  let parentOrderCalls = 0;
+  let resolveParentOrder;
+  const parentOrderPromise = new Promise(resolve => { resolveParentOrder = resolve; });
   let openOrdersCalls = 0;
-  let resolveOrders;
-  const ordersPromise = new Promise(resolve => { resolveOrders = resolve; });
   const updates = [];
   const logs = [];
   const database = {
     async select(table) {
-      if (table === 'dd_delta_positions') return [{ id: 'position-1', symbol: 'BTCUSD', status: 'OPEN' }];
+      if (table === 'dd_delta_positions') {
+        return [{ id: 'position-1', symbol: 'BTCUSD', status: 'OPEN', entry_order_id: '123' }];
+      }
       return [];
     },
     async update(table, query, patch) { updates.push({ table, query, patch }); return []; },
@@ -527,7 +530,12 @@ test('concurrent bracket metadata syncs are coalesced per symbol', async () => {
     env: demoEnv(),
     database,
     executor: {
-      async getOpenOrders() { openOrdersCalls += 1; return ordersPromise; }
+      async getOrderById(id) {
+        parentOrderCalls += 1;
+        assert.equal(String(id), '123');
+        return parentOrderPromise;
+      },
+      async getOpenOrders() { openOrdersCalls += 1; return []; }
     },
     WebSocketImpl: class {}
   });
@@ -552,7 +560,6 @@ test('concurrent bracket metadata syncs are coalesced per symbol', async () => {
   assert.equal(updates[0].patch.tp_price, 62000);
   assert.equal(tracker.bracketMetadataSyncs.size, 0);
 });
-
 
 test('Delta fill normalizer preserves IDs, commission, and microsecond exchange timestamps', () => {
   const fill = normalizeDeltaFill({
