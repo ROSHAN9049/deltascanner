@@ -98,9 +98,9 @@ export function createDeltaOptionsOrderCoordinator({
   executor,
   ledger,
   now = () => Date.now(),
-  assertExecutionAllowed = () => manager?.assertExecutionAllowed?.()
 } = {}) {
-  if (!manager || typeof manager.reserveOrderAttempt !== 'function' ||
+  if (!manager || typeof manager.assertExecutionAllowed !== 'function' ||
+      typeof manager.reserveOrderAttempt !== 'function' ||
       typeof manager.recordOrderAcknowledgement !== 'function') {
     throw new Error('Delta Options coordinator requires the durable execution manager');
   }
@@ -203,7 +203,7 @@ export function createDeltaOptionsOrderCoordinator({
   async function submitOnce(expected, clientOrderId) {
     // The source-code lock is checked before any reservation or network write.
     // The manager and exchange executor independently enforce the same lock.
-    assertExecutionAllowed();
+    manager.assertExecutionAllowed();
     executor.assertConfigured();
 
     const reservation = await manager.reserveOrderAttempt({
