@@ -293,6 +293,10 @@ export function evaluateDeltaOptionsAccountRisk({
     reasons.push('ACCOUNT_RISK_SNAPSHOT_STALE_OR_INVALID');
   }
   if (!['RESERVE', 'ORDER'].includes(normalizedPhase)) reasons.push('ACCOUNT_RISK_PHASE_INVALID');
+  const expectedSupervisorStatus = snapshot?.activeOptionsGroup ? 'RECONCILED' : 'NO_ACTIVE_GROUP';
+  if (snapshot?.optionsWalletReconciliation !== expectedSupervisorStatus) {
+    reasons.push('OPTIONS_RESTART_RECONCILIATION_NOT_CLEAR');
+  }
 
   const settlementAsset = assetSymbol(candidate?.settlement_asset ?? candidate?.settlementAsset);
   if (!settlementAsset || settlementAsset !== 'USD') reasons.push('OPTIONS_SETTLEMENT_ASSET_NOT_VERIFIED_AS_USD');
