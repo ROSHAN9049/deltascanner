@@ -2399,11 +2399,13 @@ export class DeltaEngine {
           const width = hedge ? Math.abs(n(s.strike) - n(hedge.strike)) : 0;
           const maxRiskPerSpread = Math.max(0, width - credit);
           const budget = this.optionRiskBudget(account, settings);
-          const q = maxRiskPerSpread > 0 ? Math.floor(budget / maxRiskPerSpread) : 0;
+          const testnetMode = CONFIG.deltaExecutionMode === 'testnet';
+          const q = !testnetMode && maxRiskPerSpread > 0 ? Math.floor(budget / maxRiskPerSpread) : 0;
           const blocked = [...s.blocked];
           if (!hedge) blocked.push('Defined-risk hedge unavailable');
           if (!(credit > 0)) blocked.push('Net credit <= 0');
-          if (q < 1) blocked.push('Spread risk exceeds option risk budget');
+          if (testnetMode) blocked.push('Testnet credit-spread sizing and two-leg execution remain disabled pending fee/multiplier verification');
+          else if (q < 1) blocked.push('Spread risk exceeds option risk budget');
           const optionRouteReady = CONFIG.deltaExecutionMode === 'testnet'
             ? false
             : CONFIG.tradetronOptionsBridgeEnabled && this.tradetronOptions.isConfigured();
