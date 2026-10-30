@@ -56,3 +56,17 @@ test('candles() preserves 1m, 5m, 15m behavior', async (t) => {
     });
   }
 });
+
+test('optionProducts() requests live call and put option contracts from the configured environment', async () => {
+  const adapter = new DeltaAdapter();
+  const getRequest = captureRequest(adapter);
+  await adapter.optionProducts();
+  const request = getRequest();
+  assert.ok(request, 'optionProducts() should call request()');
+  assert.equal(request.method, 'GET');
+  assert.equal(request.path, '/v2/products');
+  assert.equal(request.params.contract_types, 'call_options,put_options');
+  assert.equal(request.params.states, 'live');
+  assert.equal(request.params.page_size, 100);
+  assert.equal(request.auth, false);
+});
