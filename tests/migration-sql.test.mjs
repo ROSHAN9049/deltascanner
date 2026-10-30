@@ -139,17 +139,18 @@ describe('Delta Testnet Options execution ledger migration SQL structure', () =>
   test('creates separate group and leg ledgers, not dd_delta_positions rows', () => {
     assert.ok(deltaOptionsMigration.includes('BEGIN;'));
     assert.ok(deltaOptionsMigration.includes('COMMIT;'));
-    assert.match(deltaOptionsMigration, /CREATE TABLE IF NOT EXISTS public\\.dd_options_execution_groups/i);
-    assert.match(deltaOptionsMigration, /CREATE TABLE IF NOT EXISTS public\\.dd_options_execution_legs/i);
-    assert.doesNotMatch(deltaOptionsMigration, /INSERT INTO public\\.dd_delta_positions/i);
+    assert.match(deltaOptionsMigration, /CREATE TABLE IF NOT EXISTS public\.dd_options_execution_groups/i);
+    assert.match(deltaOptionsMigration, /CREATE TABLE IF NOT EXISTS public\.dd_options_execution_legs/i);
+    assert.match(deltaOptionsMigration, /CREATE TABLE IF NOT EXISTS public\.dd_options_execution_orders/i);
+    assert.doesNotMatch(deltaOptionsMigration, /INSERT INTO public\.dd_delta_positions/i);
   });
 
   test('enforces one active Options group and unique group/leg idempotency keys', () => {
     assert.match(deltaOptionsMigration, /dd_options_one_active_execution_slot_idx/i);
-    assert.match(deltaOptionsMigration, /WHERE state NOT IN \\('CLOSED', 'REJECTED', 'FAILED'\\)/i);
+    assert.match(deltaOptionsMigration, /WHERE state NOT IN \('CLOSED', 'REJECTED', 'FAILED'\)/i);
     assert.match(deltaOptionsMigration, /client_group_id TEXT NOT NULL UNIQUE/i);
     assert.match(deltaOptionsMigration, /client_order_id TEXT NOT NULL UNIQUE/i);
-    assert.match(deltaOptionsMigration, /UNIQUE \\(group_id, leg_role\\)/i);
+    assert.match(deltaOptionsMigration, /UNIQUE \(group_id, leg_role\)/i);
     assert.match(deltaOptionsMigration, /dd_options_active_leg_symbol_idx/i);
   });
 
@@ -164,9 +165,9 @@ describe('Delta Testnet Options execution ledger migration SQL structure', () =>
 
   test('both ledgers are service-role only and migration follows Delta fill ledger', () => {
     for (const table of ['dd_options_execution_groups', 'dd_options_execution_legs', 'dd_options_execution_orders']) {
-      assert.match(deltaOptionsMigration, new RegExp('ALTER TABLE public\\.' + table + ' ENABLE ROW LEVEL SECURITY', 'i'));
-      assert.match(deltaOptionsMigration, new RegExp('REVOKE ALL ON TABLE public\\.' + table + ' FROM anon, authenticated', 'i'));
-      assert.match(deltaOptionsMigration, new RegExp('GRANT ALL ON TABLE public\\.' + table + ' TO service_role', 'i'));
+      assert.match(deltaOptionsMigration, new RegExp('ALTER TABLE public\.' + table + ' ENABLE ROW LEVEL SECURITY', 'i'));
+      assert.match(deltaOptionsMigration, new RegExp('REVOKE ALL ON TABLE public\.' + table + ' FROM anon, authenticated', 'i'));
+      assert.match(deltaOptionsMigration, new RegExp('GRANT ALL ON TABLE public\.' + table + ' TO service_role', 'i'));
       assert.match(optionsMigrationRunner, new RegExp("'" + table + "'"));
     }
     const fillIndex = optionsMigrationRunner.indexOf('20261029163000_delta_fill_ledger.sql');
