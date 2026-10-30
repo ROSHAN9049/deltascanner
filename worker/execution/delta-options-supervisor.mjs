@@ -579,20 +579,12 @@ export function createDeltaOptionsSupervisor({
         minutesBeforeExpiry
       }) === null;
     if (deadlinePassed) {
-      const hasOpenPosition = openQty > EPSILON;
-      if (hasOpenPosition) {
-        const marked = await markGroupExpiryExitRequired(group, expiryMs, openQty);
-        return {
-          status: 'EXPIRY_EXIT_REQUIRED',
-          executionEnabled: false,
-          group: marked,
-          groupId: group.id,
-          openQty,
-          expiryDeadline: new Date(deadline).toISOString()
-        };
-      }
-      if (upper(group.state) === 'EXIT_REQUIRED') {
-        const closed = await closeGroupAfterExpiryIfFlat(group, expiryMs);
+      // Mark the separate expiry state for both open and already-flat groups.
+      // This avoids misusing the integrity lock and allows a flat group to be
+      // finalized only after the exchange snapshot and terminal orders agree.
+      const marked = await markGroupExpiryExitRequired(group, expiryMs, openQty);
+      if (openQty <= EPSILON) {
+        const closed = await closeGroupAfterExpiryIfFlat({ ...group, state: 'EXIT_REQUIRED' }, expiryMs);
         return {
           status: 'EXPIRY_EXIT_FLAT',
           executionEnabled: false,
@@ -602,16 +594,11 @@ export function createDeltaOptionsSupervisor({
           expiryDeadline: new Date(deadline).toISOString()
         };
       }
-      const locked = await markGroupReconciliationRequired(
-        group,
-        'OPTIONS_EXPIRY_PASSED_FLAT',
-        'Options expiry exit deadline passed while the group was flat; new entries remain prohibited',
-        { expiry_at: group.expiry_at, minutes_before_expiry: minutesBeforeExpiry, open_qty: openQty }
-      );
       return {
-        status: 'RECONCILIATION_REQUIRED',
+        status: 'EXPIRY_EXIT_REQUIRED',
         executionEnabled: false,
-        group: locked,
+        group: marked,
+        groupId: group.id,
         openQty,
         expiryDeadline: new Date(deadline).toISOString()
       };
