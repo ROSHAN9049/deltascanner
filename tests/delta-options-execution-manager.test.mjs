@@ -241,3 +241,11 @@ test('ambiguous reservation recovery requires exact persisted group and both leg
     payload
   ), false);
 });
+
+test('account risk approval is mandatory and fails closed when no gate is supplied', async () => {
+  const manager = createDeltaOptionsExecutionManager({ database: { select: async () => [] } });
+  await assert.rejects(
+    manager.assertAccountRisk({ phase: 'RESERVE' }),
+    /Account-wide Options risk gate is unavailable/
+  );
+});
