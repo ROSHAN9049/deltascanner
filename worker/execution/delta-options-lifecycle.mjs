@@ -98,9 +98,9 @@ function validateSnapshot(group, legs, orders) {
     return 'Credit-spread group must contain exactly one protective and one short leg';
   }
   for (const leg of legs) {
-    if (!quantity(leg.requested_qty) || Number(leg.requested_qty) < 1 ||
-        !quantity(leg.filled_qty) || Number(leg.filled_qty) > Number(leg.requested_qty) ||
-        !quantity(leg.exit_filled_qty) || Number(leg.exit_filled_qty) > Number(leg.filled_qty)) {
+    if (quantity(leg.requested_qty) === null || Number(leg.requested_qty) < 1 ||
+        quantity(leg.filled_qty) === null || Number(leg.filled_qty) > Number(leg.requested_qty) ||
+        quantity(leg.exit_filled_qty) === null || Number(leg.exit_filled_qty) > Number(leg.filled_qty)) {
       return 'Persisted leg fill balances are missing or inconsistent';
     }
   }
