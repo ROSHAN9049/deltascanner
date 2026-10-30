@@ -395,6 +395,7 @@ export function createDeltaOptionsAccountRiskGate({
   if (!database || typeof database.select !== 'function' ||
       !futuresExecutor || typeof futuresExecutor.getOpenPositions !== 'function' ||
       typeof futuresExecutor.getOpenOrders !== 'function' ||
+      typeof futuresExecutor.getOrderById !== 'function' ||
       typeof futuresExecutor.getProductMetadata !== 'function' ||
       typeof futuresExecutor.getRawWalletSnapshot !== 'function' ||
       !optionsExecutor || typeof optionsExecutor.getOptionProducts !== 'function' ||
@@ -426,7 +427,7 @@ export function createDeltaOptionsAccountRiskGate({
       manager.getActiveGroup(),
       database.select(
         'dd_delta_positions',
-        'status=eq.OPEN&select=id,symbol,product_id,side,qty,entry_price,sl_price,strategy'
+        'status=eq.OPEN&select=id,symbol,product_id,side,qty,entry_price,sl_price,strategy,order_id,client_order_id'
       ),
       database.select('dd_settings', 'id=eq.1&select=grid_state'),
       optionsSupervisor.reconcileOnce()
@@ -440,8 +441,38 @@ export function createDeltaOptionsAccountRiskGate({
     const activeOptionsOrders = activeOptionsGroup
       ? await manager.getGroupOrders(activeOptionsGroup.id) : [];
     const optionProducts = await optionsExecutor.getOptionProducts();
+    const dbFuturesBySymbol = new Map(dbFuturesPositions.map(row =>
+      [upper(row?.symbol), row]
+    ));
+    // The positions endpoint does not consistently include attached bracket
+    // prices. Confirm each open position's parent order directly before using
+    // its stop in the account-wide max-loss calculation.
+    const verifiedFuturesPositions = await Promise.all(futuresPositions.map(async position => {
+      const symbol = upper(position?.symbol);
+      const tracked = dbFuturesBySymbol.get(symbol);
+      const orderId = text(tracked?.order_id);
+      if (!symbol || !tracked || !orderId) {
+        throw new Error('Futures position has no matching durable parent order ID; stop-loss risk is unverified');
+      }
+      const parentOrder = await futuresExecutor.getOrderById(orderId);
+      if (!parentOrder || String(parentOrder.id) !== orderId) {
+        throw new Error('Futures parent order lookup did not match the durable order ID');
+      }
+      const stop = numberOrNull(parentOrder.bracket_stop_loss_price);
+      const target = numberOrNull(parentOrder.bracket_take_profit_price);
+      if (!(stop > 0) || !(target > 0)) {
+        throw new Error('Futures exchange parent order does not confirm both protective bracket prices');
+      }
+      return {
+        ...position,
+        sl_price: stop,
+        bracket_stop_loss_price: stop,
+        bracket_take_profit_price: target,
+        verified_parent_order_id: orderId
+      };
+    }));
     const futuresSymbols = [...new Set([
-      ...futuresPositions.map(row => upper(row.symbol)),
+      ...verifiedFuturesPositions.map(row => upper(row.symbol)),
       ...futuresOrders.map(row => upper(row.product_symbol ?? row.symbol))
     ].filter(Boolean))];
     const futuresProducts = await Promise.all(futuresSymbols.map(symbol =>
@@ -458,7 +489,7 @@ export function createDeltaOptionsAccountRiskGate({
       capturedAt,
       futuresWallet,
       optionsWallet,
-      futuresPositions,
+      futuresPositions: verifiedFuturesPositions,
       futuresOrders,
       futuresProducts,
       dbFuturesPositions,
