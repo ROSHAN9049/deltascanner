@@ -1,5 +1,6 @@
 import * as defaultDb from '../../server/db.js';
 import { deltaExecutor } from './delta-executor.mjs';
+import { deltaCloseFields } from './delta-exit-events.mjs';
 
 export const DELTA_POSITION_RECONCILE_INTERVAL_MS = 5 * 60 * 1000;
 const QTY_EPSILON = 1e-8;
@@ -90,6 +91,55 @@ export function createDeltaPositionReconciler({
     }
   }
 
+  async function logUplMismatchIfNeeded(position) {
+    const entryPrice = numberOrNull(position?.entry_price);
+    const markPrice = numberOrNull(position?.current_price);
+    const exchangeUpl = numberOrNull(position?.unrealized_pnl);
+    const qty = numberOrNull(position?.qty);
+    const side = stringValue(position?.side).toUpperCase();
+
+    if (
+      entryPrice === null || markPrice === null ||
+      exchangeUpl === null || qty === null ||
+      qty <= 0 || !['BUY', 'SELL'].includes(side) ||
+      typeof executor.getProductMetadata !== 'function'
+    ) return;
+
+    let product;
+    try {
+      product = await executor.getProductMetadata(position.symbol);
+    } catch {
+      // Diagnostics must not interrupt exchange-authoritative refresh.
+      return;
+    }
+
+    if (stringValue(product?.notional_type).toLowerCase() !== 'vanilla') return;
+    const contractValue = numberOrNull(product?.contract_value);
+    if (contractValue === null || contractValue <= 0) return;
+
+    const sideSign = side === 'BUY' ? 1 : -1;
+    const localUpl = (markPrice - entryPrice) * qty * contractValue * sideSign;
+    const scale = Math.max(Math.abs(localUpl), Math.abs(exchangeUpl));
+    if (scale < 0.01) return;
+
+    const signMismatch = localUpl * exchangeUpl < 0;
+    const driftPct = Math.abs(localUpl - exchangeUpl) / scale * 100;
+    if (!signMismatch && driftPct <= 5) return;
+
+    await writeLog('WARN', '[Reconciler] Unrealized P&L mismatch against local calculation', {
+      event: 'upl_mismatch',
+      symbol: position.symbol,
+      localUpl,
+      exchangeUpl,
+      driftPct: Number(driftPct.toFixed(2)),
+      contractValue,
+      entryPrice,
+      markPrice,
+      qty,
+      side
+    });
+  }
+
   async function updateOpenRow(id, patch) {
     const query = 'id=eq.' + encodeURIComponent(String(id)) + '&status=eq.OPEN';
     if (typeof database.updateReturning === 'function') {
@@ -142,7 +192,7 @@ export function createDeltaPositionReconciler({
 
       const openRows = await database.select(
         'dd_delta_positions',
-        'status=eq.OPEN&select=id,symbol,qty,side,realized_pnl&limit=1000'
+        'status=eq.OPEN&select=id,symbol,qty,side,opened_at,realized_pnl,entry_order_id,client_order_id&limit=1000'
       );
       if (!Array.isArray(openRows)) {
         throw new Error('Could not read dd_delta_positions OPEN rows; DB state left unchanged');
@@ -163,19 +213,50 @@ export function createDeltaPositionReconciler({
         const exchangePosition = exchangeBySymbol.get(symbol);
         if (!exchangePosition) {
           zombiePositions += 1;
+          let details = null;
+          if (typeof executor.getRecentCloseDetails === 'function') {
+            try {
+              details = await executor.getRecentCloseDetails(symbol, row.opened_at, row);
+            } catch (error) {
+              await writeLog('WARN', '[Reconciler] Close-fill lookup failed; exit details remain unverified', {
+                symbol,
+                error: String(error?.message || error).slice(0, 200)
+              });
+            }
+          }
+          const close = deltaCloseFields({}, details);
+          // A REST absence check may not find a close fill. Do not erase an
+          // exchange-reported realized P&L already captured from a position event.
+          const existingRealizedPnl = numberOrNull(row.realized_pnl);
+          if (close.realized_pnl === null && existingRealizedPnl !== null) {
+            close.realized_pnl = existingRealizedPnl;
+          }
+          const botManagedExit = [
+            'bot-exit', 'stop_loss_order', 'take_profit_order'
+          ].includes(close.exit_reason);
+          const closeStatus = botManagedExit ? 'CLOSED' : 'CLOSED_EXTERNALLY';
           const changed = await updateOpenRow(row.id, {
-            status: 'CLOSED_EXTERNALLY',
+            status: closeStatus,
             closed_at: timestamp,
             updated_at: timestamp,
-            unrealized_pnl: 0
+            unrealized_pnl: 0,
+            close_source: 'rest_reconcile',
+            realized_pnl_verified: false,
+            ...close
           });
-          if (changed) markedClosedExternally += 1;
-          await writeLog('WARN', '[Reconciler] Local OPEN position missing from Delta Testnet; marked CLOSED_EXTERNALLY', {
+          if (changed && closeStatus === 'CLOSED_EXTERNALLY') markedClosedExternally += 1;
+          await writeLog('WARN', '[Reconciler] Local OPEN position missing from Delta Testnet; closed from the verified exchange snapshot', {
             id: row.id,
             symbol,
             dbQty: numberOrNull(row.qty),
             closedAt: timestamp,
-            realizedPnlPreserved: row.realized_pnl ?? null
+            closeStatus,
+            exitReason: close.exit_reason,
+            exitPrice: close.exit_price,
+            fees: close.fees,
+            feeCurrency: close.fee_currency,
+            realizedPnl: close.realized_pnl,
+            closeOrderId: close.close_order_id
           });
           continue;
         }
@@ -195,16 +276,20 @@ export function createDeltaPositionReconciler({
             id: row.id, symbol, dbQty, exchangeQty: exchangePosition.qty,
             dbSide: dbSide || null, exchangeSide: exchangePosition.side
           });
-          await updateOpenRow(row.id, {
-            qty: exchangePosition.qty,
-            side: exchangePosition.side,
-            ...(exchangePosition.current_price !== null && exchangePosition.current_price !== undefined
-              ? { current_price: exchangePosition.current_price } : {}),
-            ...(exchangePosition.unrealized_pnl !== null && exchangePosition.unrealized_pnl !== undefined
-              ? { unrealized_pnl: exchangePosition.unrealized_pnl } : {}),
-            updated_at: timestamp
-          });
         }
+
+        // Refresh exchange-authoritative fields on every successful snapshot,
+        // even when local quantity and side already match.
+        // Nulls clear stale values rather than presenting them as current.
+        await updateOpenRow(row.id, {
+          qty: exchangePosition.qty,
+          side: exchangePosition.side,
+          current_price: exchangePosition.current_price ?? null,
+          unrealized_pnl: exchangePosition.unrealized_pnl ?? null,
+          updated_at: timestamp
+        });
+
+        await logUplMismatchIfNeeded(exchangePosition);
       }
 
       // Hydrate an exchange-open position if the DB has no OPEN row for it.

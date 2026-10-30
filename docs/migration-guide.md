@@ -28,7 +28,9 @@ The order is hardcoded in `scripts/apply-all-migrations.mjs`. The base schema go
 | 8 | `db/migrations/20261024100000_delta_testnet_positions.sql` | Creates the private `dd_delta_positions` ledger and indexes/RLS permissions. | Yes | Yes for table/index creation and grants. |
 | 9 | `db/migrations/20261026120000_delta_position_external_close.sql` | Ensures closed-status columns/constraint and index support `CLOSED_EXTERNALLY`. | Yes | Yes through guarded columns/constraint/index recreation. |
 | 10 | `db/migrations/20261029100000_worker_lease_ownership.sql` | Restricts lease acquisition/renewal to the same lease ID and worker ID, or an expired/unowned lease. | No | Yes — uses `CREATE OR REPLACE FUNCTION`. |
-| 11 | `db/migrations/20261029120000_estop_release_challenge.sql` | Adds E-STOP activation timestamp and one-time release-token hash; backfills timestamps for already-active E-STOP without changing its state. | Yes | Yes — uses guarded columns and only fills missing activation timestamps. |
+| 11 | `db/migrations/20261029110000_delta_position_close_details.sql` | Adds nullable exit price/fee/currency/reason/order fields and allows unknown realized P&L to remain NULL. | Yes | Yes — guarded columns and nullable alteration. |
+| 12 | `db/migrations/20261029120000_estop_release_challenge.sql` | Adds E-STOP activation timestamp and one-time release-token hash; backfills timestamps for already-active E-STOP without changing its state. | Yes | Yes — uses guarded columns and only fills missing activation timestamps. |
+| 13 | `db/migrations/20261029163000_delta_fill_ledger.sql` | Adds fill IDs, entry order identity, close-source verification and an idempotent fill-sync checkpoint; allows P&L fields to stay NULL when fees or closes are unverified. | Yes | Yes — guarded columns, additive fill metadata and a service-role-only checkpoint table. |
 
 ### Duplicate-object SQLSTATEs
 

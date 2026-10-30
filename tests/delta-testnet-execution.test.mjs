@@ -6,7 +6,7 @@ import {
   DELTA_TESTNET_REST_BASE,
   DELTA_TESTNET_PRIVATE_WS_URL
 } from '../worker/execution/delta-executor.mjs';
-import { DeltaTestnetTracker, normalizeDeltaWsPosition, strategyFromClientOrderId } from '../worker/execution/delta-tracker.mjs';
+import { DeltaTestnetTracker, normalizeDeltaWsPosition, normalizeDeltaFill, strategyFromClientOrderId } from '../worker/execution/delta-tracker.mjs';
 import { parseDeltaExecutionMode } from '../server/config.js';
 import { assessCorrelatedEntry, correlationGroupForSymbol } from '../worker/engine.mjs';
 
@@ -32,7 +32,9 @@ function fakeRuntime({
   available = equity,
   markPrice = 60000,
   orderState = 'open',
-  orderAverageFillPrice = 60000
+  orderAverageFillPrice = 60000,
+  fills = [],
+  orderHistory = []
 } = {}) {
   const httpCalls = [];
   const logs = [];
@@ -92,6 +94,8 @@ function fakeRuntime({
       const rows = hasPostedOrder && positionsAfterFill !== null ? positionsAfterFill : positions;
       return response({ success: true, result: rows });
     }
+    if (parsed.pathname === '/v2/fills') return response({ success: true, result: fills, meta: {} });
+    if (parsed.pathname === '/v2/orders/history') return response({ success: true, result: orderHistory, meta: {} });
     if (parsed.pathname === '/v2/orders' && init.method === 'GET') return response({ success: true, result: [] });
     if (parsed.pathname === '/v2/wallet/balances') {
       return response({ success: true, result: [], meta: { net_equity: String(equity), available_balance: String(available) } });
@@ -254,6 +258,121 @@ test('20 already-open symbols hit the global position cap', async () => {
   assert.equal(runtime.httpCalls.some(call => call.init.method === 'POST'), false);
 });
 
+test('close-fill lookup correlates to this entry and ignores later same-symbol closes', async () => {
+  const clockMs = Date.parse('2026-10-29T08:00:00.000Z');
+  const openedAt = '2026-10-29T07:00:00.000Z';
+  const runtime = fakeRuntime({
+    fills: [
+      {
+        id: 'entry-fill-1', product_id: 27, product_symbol: 'BTCUSD',
+        order_id: '8001', client_order_id: 'DDM-BTCUSD-entry-001',
+        side: 'buy', size: '2', price: '60000', commission: '0.03', commission_currency: 'USD',
+        settling_asset_symbol: 'USD', created_at: String((clockMs - 60 * 60_000 - 1000) * 1000),
+        meta_data: { new_position: { size: 2, realized_pnl: '0' } }
+      },
+      {
+        id: 'target-close-fill', product_id: 27, product_symbol: 'BTCUSD',
+        order_id: '9001', side: 'sell', size: '2', price: '61005',
+        commission: '0.05', commission_currency: 'USD', settling_asset_symbol: 'USD',
+        fill_type: 'normal', created_at: String((clockMs - 30 * 60_000) * 1000),
+        meta_data: { new_position: { size: 0, realized_pnl: '4.5' }, order_type: 'market_order' }
+      },
+      {
+        id: 'later-unrelated-close-fill', product_id: 27, product_symbol: 'BTCUSD',
+        order_id: '9002', side: 'sell', size: '1', price: '62000',
+        commission: '0.25', commission_currency: 'USD', settling_asset_symbol: 'USD',
+        fill_type: 'normal', created_at: String((clockMs - 10 * 60_000) * 1000),
+        meta_data: { new_position: { size: 0, realized_pnl: '99' }, order_type: 'market_order' }
+      }
+    ],
+    orderHistory: [
+      {
+        id: 9001, product_symbol: 'BTCUSD', stop_order_type: 'stop_loss_order',
+        client_order_id: 'DDX-X-BTCUSD-target-close', reduce_only: true, state: 'closed'
+      },
+      {
+        id: 9002, product_symbol: 'BTCUSD', stop_order_type: null,
+        client_order_id: 'manual-later-close', reduce_only: true, state: 'closed'
+      }
+    ]
+  });
+  const executor = createDeltaExecutor({
+    env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database,
+    now: () => clockMs
+  });
+
+  const details = await executor.getRecentCloseDetails('BTCUSD', openedAt, {
+    entry_order_id: '8001',
+    client_order_id: 'DDM-BTCUSD-entry-001',
+    side: 'BUY'
+  });
+  assert.equal(details.exit_price, 61005);
+  assert.equal(details.fees, 0.05);
+  assert.equal(details.fee_currency, 'USD');
+  assert.equal(details.realized_pnl, 4.5);
+  assert.equal(details.close_order_id, '9001');
+  assert.equal(details.stop_order_type, 'stop_loss_order');
+
+  const fillCall = runtime.httpCalls.find(call => new URL(call.url).pathname === '/v2/fills');
+  const params = new URL(fillCall.url).searchParams;
+  assert.equal(Number(params.get('start_time')), (Date.parse(openedAt) - 30_000) * 1000);
+  assert.equal(Number(params.get('end_time')), clockMs * 1000);
+  assert.equal(fillCall.init.method, 'GET');
+});
+ 
+test('WebSocket close persists confirmed close details and does not substitute mark price', async () => {
+  const position = {
+    id: 17, symbol: 'XAUTUSD', side: 'BUY', qty: 37, status: 'OPEN',
+    entry_price: 3871.87, current_price: 4050, unrealized_pnl: 6.34,
+    realized_pnl: null, strategy: 'MOMENTUM',
+    opened_at: '2026-10-28T00:00:00.000Z'
+  };
+  let closePatch = null;
+  const database = {
+    async select(table) {
+      return table === 'dd_delta_positions' ? [{ ...position }] : [];
+    },
+    async update(table, query, patch) {
+      if (table === 'dd_delta_positions') closePatch = { ...patch };
+      return [];
+    },
+    async log() {}
+  };
+  const tracker = new DeltaTestnetTracker({
+    env: demoEnv(),
+    database,
+    executor: {
+      async getRecentCloseDetails() {
+        return {
+          exit_price: 4058.5, fees: 0.02, fee_currency: 'USD',
+          realized_pnl: 6.1, close_order_id: '9002',
+          stop_order_type: 'take_profit_order',
+          client_order_id: 'DDM-XAUTUSD-entry',
+          close_order_history_found: true
+        };
+      }
+    },
+    WebSocketImpl: class {}
+  });
+  tracker.stopped = false;
+
+  await tracker.processPosition({
+    product_symbol: 'XAUTUSD', size: '0',
+    mark_price: '4050', unrealized_pnl: '6.34',
+    realized_pnl: '6.1'
+  });
+
+  assert.ok(closePatch);
+  assert.equal(closePatch.status, 'CLOSED');
+  assert.equal(closePatch.exit_price, 4058.5);
+  assert.notEqual(closePatch.exit_price, 4050);
+  assert.equal(closePatch.fees, 0.02);
+  assert.equal(closePatch.fee_currency, 'USD');
+  assert.equal(closePatch.realized_pnl, 6.1);
+  assert.equal(closePatch.exit_reason, 'take_profit_order');
+  assert.equal(closePatch.close_order_id, '9002');
+});
+
 test('WebSocket position normalizer handles signed size and strategy ids', () => {
   const short = normalizeDeltaWsPosition({ product_symbol: 'BTCUSD', size: '-2', entry_price: '60000' });
   assert.equal(short.symbol, 'BTCUSD');
@@ -261,6 +380,70 @@ test('WebSocket position normalizer handles signed size and strategy ids', () =>
   assert.equal(short.qty, 2);
   assert.equal(strategyFromClientOrderId('DDS-BTCUSD-123'), 'SCALPING');
   assert.equal(strategyFromClientOrderId('DDG-ETHUSD-123'), 'GRID');
+});
+
+test('WebSocket position update refreshes positive exchange UPL without changing its sign', async () => {
+  const position = {
+    id: 7, symbol: 'XAUTUSD', side: 'BUY', qty: 37, status: 'OPEN',
+    entry_price: 3871.87, current_price: 4000, unrealized_pnl: -6.73,
+    strategy: 'MOMENTUM', opened_at: '2026-10-28T00:00:00.000Z'
+  };
+  const updates = [];
+  const database = {
+    async select(table) { return table === 'dd_delta_positions' ? [{ ...position }] : []; },
+    async update(table, query, patch) {
+      updates.push({ table, query, patch: { ...patch } });
+      if (table === 'dd_delta_positions') Object.assign(position, patch);
+      return [];
+    },
+    async log() {}
+  };
+  const tracker = new DeltaTestnetTracker({
+    env: demoEnv(), database, executor: {}, WebSocketImpl: class {}
+  });
+  tracker.stopped = false;
+
+  await tracker.processPosition({
+    product_symbol: 'XAUTUSD', size: '37', entry_price: '3871.87',
+    mark_price: '4050', unrealized_pnl: '6.34'
+  });
+
+  assert.equal(position.current_price, 4050);
+  assert.equal(position.unrealized_pnl, 6.34);
+  assert.ok(updates.some(row => row.patch.unrealized_pnl === 6.34));
+});
+
+test('WebSocket position update clears stale mark and UPL when fields are missing', async () => {
+  const position = {
+    id: 8, symbol: 'XAUTUSD', side: 'BUY', qty: 37, status: 'OPEN',
+    entry_price: 3871.87, current_price: 4050, unrealized_pnl: -6.73,
+    strategy: 'MOMENTUM', opened_at: '2026-10-28T00:00:00.000Z'
+  };
+  let latestPatch = null;
+  const database = {
+    async select(table) { return table === 'dd_delta_positions' ? [{ ...position }] : []; },
+    async update(table, query, patch) {
+      if (table === 'dd_delta_positions') {
+        latestPatch = { ...patch };
+        Object.assign(position, patch);
+      }
+      return [];
+    },
+    async log() {}
+  };
+  const tracker = new DeltaTestnetTracker({
+    env: demoEnv(), database, executor: {}, WebSocketImpl: class {}
+  });
+  tracker.stopped = false;
+
+  await tracker.processPosition({
+    product_symbol: 'XAUTUSD', size: '37', entry_price: '3871.87'
+  });
+
+  assert.equal(latestPatch.current_price, null);
+  assert.equal(latestPatch.unrealized_pnl, null);
+  assert.equal(position.current_price, null);
+  assert.equal(position.unrealized_pnl, null);
 });
 
 test('bracket entry fails closed if the live mark has crossed the requested SL/TP bracket', async () => {
@@ -369,7 +552,300 @@ test('concurrent bracket metadata syncs are coalesced per symbol', async () => {
   assert.equal(tracker.bracketMetadataSyncs.size, 0);
 });
 
-test('private WebSocket auth subscribes to all-symbol orders and positions channels', async () => {
+
+test('Delta fill normalizer preserves IDs, commission, and microsecond exchange timestamps', () => {
+  const fill = normalizeDeltaFill({
+    fill_id: 'fill-abc-1',
+    symbol: 'btcusd',
+    product_id: 27,
+    order_id: 12345,
+    client_order_id: 'DDM-BTCUSD-test',
+    side: 'buy',
+    size: '2',
+    price: '60000',
+    commission: '0.12', settling_asset_symbol: 'USD',
+    role: 'taker',
+    reason: 'normal',
+    timestamp: 1793289600123456,
+    seq_no: 8
+  });
+  assert.equal(fill.id, 'fill-abc-1');
+  assert.equal(fill.symbol, 'BTCUSD');
+  assert.equal(fill.side, 'BUY');
+  assert.equal(fill.size, 2);
+  assert.equal(fill.price, 60000);
+  assert.equal(fill.commission, 0.12);
+  assert.equal(fill.commission_currency, 'USD');
+  assert.equal(fill.order_id, '12345');
+  assert.equal(fill.client_order_id, 'DDM-BTCUSD-test');
+  assert.equal(fill.timestamp_us, 1793289600123456);
+  assert.equal(fill.sequence_no, 8);
+  assert.equal(fill.source, 'websocket');
+  assert.equal(Date.parse(fill.created_at), 1793289600123);
+});
+
+test('Delta fill normalizer preserves ISO microseconds beyond JavaScript millisecond precision', () => {
+  const timestamp = '2026-10-29T10:00:00.123456Z';
+  const fill = normalizeDeltaFill({
+    id: 'fill-iso-precision',
+    symbol: 'BTCUSD',
+    side: 'buy',
+    size: '1',
+    price: '60000',
+    commission: '0.01', commission_currency: 'USD',
+    created_at: timestamp
+  });
+  assert.equal(fill.created_at, timestamp);
+  assert.equal(fill.timestamp_us, Date.parse('2026-10-29T10:00:00.123Z') * 1000 + 456);
+});
+
+test('Delta fill normalizer refuses incomplete rows instead of creating synthetic fills', () => {
+  assert.equal(normalizeDeltaFill({ symbol: 'BTCUSD', side: 'BUY', size: 1, price: 60000 }), null);
+  assert.equal(normalizeDeltaFill({ id: 'x', symbol: 'BTCUSD', side: 'BUY', size: 0, price: 60000 }), null);
+});
+
+test('executor requests /v2/fills with signed cursor pagination and clamps page size to 50', async () => {
+  const calls = [];
+  const executor = createDeltaExecutor({
+    env: demoEnv(),
+    database: { async select() { return []; }, async log() {} },
+    fetchImpl: async (url, init) => {
+      calls.push({ url: new URL(url), init });
+      return response({
+        success: true,
+        result: [{ id: 'fill-rest-1', product_symbol: 'BTCUSD', side: 'buy', size: 1, price: '60000' }],
+        meta: { after: 'next-cursor', before: null }
+      });
+    },
+    now: () => 1770000000000
+  });
+  const page = await executor.getFillsPage({
+    startTime: 1769990000000000,
+    endTime: 1770000000000000,
+    after: 'cursor-1',
+    pageSize: 100
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url.pathname, '/v2/fills');
+  assert.equal(calls[0].url.searchParams.get('contract_types'), 'perpetual_futures');
+  assert.equal(calls[0].url.searchParams.get('page_size'), '50');
+  assert.equal(calls[0].url.searchParams.get('after'), 'cursor-1');
+  assert.equal(calls[0].url.searchParams.get('start_time'), '1769990000000000');
+  assert.equal(calls[0].url.searchParams.get('end_time'), '1770000000000000');
+  assert.match(calls[0].init.headers.signature, /^[0-9a-f]{64}$/);
+  assert.deepEqual(page.rows.map(row => row.id), ['fill-rest-1']);
+  assert.equal(page.after, 'next-cursor');
+});
+
+test('REST fill sync upserts idempotently and advances checkpoint only after the last page', async () => {
+  const batches = [];
+  let state = null;
+  const database = {
+    async select(table) {
+      if (table === 'dd_delta_fill_sync_state') return state ? [{ ...state }] : [];
+      if (table === 'dd_delta_positions') return [];
+      return [];
+    },
+    async upsert(table, row) {
+      if (table === 'dd_delta_fill_sync_state') state = { ...row };
+    },
+    async upsertMany(table, values, conflict) {
+      batches.push({ table, values: values.map(value => ({ ...value })), conflict });
+    },
+    async log() {}
+  };
+  const executor = {
+    async getFillsPage({ after }) {
+      assert.equal(after, null);
+      return {
+        rows: [{
+          id: 'fill-rest-1', product_symbol: 'BTCUSD', product_id: 27, order_id: '123',
+          side: 'buy', size: '1', price: '60000', commission: '0.1', commission_currency: 'USD',
+          created_at: '1793289600123456', fill_type: 'normal'
+        }],
+        after: null
+      };
+    }
+  };
+  const tracker = new DeltaTestnetTracker({ env: demoEnv(), database, executor, WebSocketImpl: class {} });
+  tracker.stopped = false;
+  const result = await tracker.syncRecentFills();
+  assert.equal(result.completedWindow, true);
+  assert.equal(result.fillsUpserted, 1);
+  const fillBatch = batches.find(row => row.table === 'dd_fills');
+  assert.equal(fillBatch.conflict, 'id');
+  assert.equal(fillBatch.values[0].id, 'fill-rest-1');
+  assert.equal(fillBatch.values[0].source, 'rest');
+  assert.ok(state.last_synced_through_us > 0);
+  assert.equal(state.window_start_us, null);
+  assert.equal(state.window_end_us, null);
+  assert.equal(state.after_cursor, null);
+  assert.equal(state.rows_ingested, 1);
+});
+
+test('closed trade projection requires matching entry order, exit side and full quantity', async () => {
+  const closedPosition = {
+    id: 42, symbol: 'BTCUSD', status: 'CLOSED', close_source: 'private_websocket', realized_pnl_verified: true, strategy: 'MOMENTUM', side: 'BUY',
+    qty: '2', entry_order_id: '123', order_id: 'bracket-stop-900', entry_price: '60000', realized_pnl: '0.2',
+    opened_at: '2026-10-29T10:00:00.000Z', closed_at: '2026-10-29T10:30:00.000Z'
+  };
+  const fills = [
+    { id: 'entry-1', symbol: 'BTCUSD', order_id: '123', side: 'BUY', size: '1', price: '59990', commission: '0.01', commission_currency: 'USD', created_at: '2026-10-29T10:00:01.000Z' },
+    { id: 'entry-2', symbol: 'BTCUSD', order_id: '123', side: 'BUY', size: '1', price: '60010', commission: '0.01', commission_currency: 'USD', created_at: '2026-10-29T10:00:02.000Z' },
+    { id: 'exit-1', symbol: 'BTCUSD', order_id: '456', side: 'SELL', size: '2', price: '60120', commission: '0.02', commission_currency: 'USD', created_at: '2026-10-29T10:29:59.000Z' }
+  ];
+  const materialized = [];
+  const database = {
+    async select(table) {
+      if (table === 'dd_delta_positions') return [closedPosition];
+      if (table === 'dd_fills') return fills;
+      if (table === 'dd_market_cache') return [{ symbol: 'BTCUSD', contract_value: '0.001', notional_type: 'vanilla' }];
+      return [];
+    },
+    async upsertMany(table, values, conflict) {
+      materialized.push({ table, values, conflict });
+    },
+    async log() {}
+  };
+  const tracker = new DeltaTestnetTracker({ env: demoEnv(), database, executor: {}, WebSocketImpl: class {} });
+  tracker.stopped = false;
+  const result = await tracker.materializeVerifiedClosedTrades();
+  assert.equal(result.materialized, 1);
+  assert.equal(materialized.length, 2);
+  const tradeBatch = materialized.find(row => row.table === 'dd_trades');
+  assert.equal(tradeBatch.conflict, 'execution_id');
+  const trade = tradeBatch.values[0];
+  assert.equal(trade.execution_id, 'delta-testnet-position:42');
+  assert.equal(trade.entry_price, 60000);
+  assert.equal(trade.exit_price, 60120);
+  assert.ok(Math.abs(trade.entry_notional - 120) < 1e-9);
+  assert.ok(Math.abs(trade.exit_notional - 120.24) < 1e-9);
+  assert.ok(Math.abs(trade.fees - 0.04) < 1e-9);
+  assert.equal(trade.net_pnl, 0.16);
+  assert.equal(trade.fees_verified, true);
+  assert.equal(trade.gross_pnl_verified, true);
+  assert.equal(trade.net_pnl_verified, true);
+  assert.ok(Math.abs(trade.gross_pnl - 0.24) < 1e-9);
+  assert.equal(trade.pnl_pct, (0.16 / 120) * 100);
+  assert.deepEqual(trade.entry_fill_ids, ['entry-1', 'entry-2']);
+  assert.deepEqual(trade.exit_fill_ids, ['exit-1']);
+  const rotationBatch = materialized.find(row => row.table === 'dd_rotation_ledger');
+  assert.ok(rotationBatch, 'verified positive net P&L should create a rotation accounting event');
+  assert.equal(rotationBatch.conflict, 'execution_id');
+  assert.equal(rotationBatch.values.length, 1);
+  assert.equal(rotationBatch.values[0].execution_id, trade.execution_id);
+  assert.equal(rotationBatch.values[0].profit, 0.16);
+  assert.equal(rotationBatch.values[0].released, 0.144);
+  assert.equal(rotationBatch.values[0].retained, 0.016);
+  assert.equal(rotationBatch.values[0].rotation_id, 'delta-testnet-rotation:42');
+  assert.equal(rotationBatch.values[0].trade_id, null);
+  assert.equal(rotationBatch.values[0].created_at, closedPosition.closed_at);
+});
+
+test('closed trade projection supports partial exits when total fills match the entry quantity', async () => {
+  const closedPosition = {
+    id: 45, symbol: 'BTCUSD', status: 'CLOSED', close_source: 'private_websocket',
+    realized_pnl_verified: true, strategy: 'MOMENTUM', side: 'BUY',
+    // Position qty may reflect a remaining partial size, and order_id may point to a bracket exit.
+    qty: '2', order_id: 'exit-partial-2', client_order_id: 'DDM-BTCUSD-partial', realized_pnl: '0.26',
+    opened_at: '2026-10-29T10:00:00.000Z', closed_at: '2026-10-29T10:30:00.000Z'
+  };
+  const fills = [
+    { id: 'entry-partial-1', symbol: 'BTCUSD', order_id: 'entry-partial', client_order_id: 'DDM-BTCUSD-partial', side: 'BUY', size: '2', price: '60000', commission: '0.01', commission_currency: 'USD', created_at: '2026-10-29T10:00:01.000Z' },
+    { id: 'entry-partial-2', symbol: 'BTCUSD', order_id: 'entry-partial', client_order_id: 'DDM-BTCUSD-partial', side: 'BUY', size: '2', price: '60020', commission: '0.01', commission_currency: 'USD', created_at: '2026-10-29T10:00:02.000Z' },
+    { id: 'exit-partial-1', symbol: 'BTCUSD', order_id: 'exit-partial-1', side: 'SELL', size: '2', price: '60050', commission: '0.01', commission_currency: 'USD', created_at: '2026-10-29T10:15:00.000Z' },
+    { id: 'exit-partial-2', symbol: 'BTCUSD', order_id: 'exit-partial-2', side: 'SELL', size: '2', price: '60100', commission: '0.01', commission_currency: 'USD', created_at: '2026-10-29T10:29:59.000Z' }
+  ];
+  const materialized = [];
+  const database = {
+    async select(table) {
+      if (table === 'dd_delta_positions') return [closedPosition];
+      if (table === 'dd_fills') return fills;
+      if (table === 'dd_market_cache') return [{ symbol: 'BTCUSD', contract_value: '0.001', notional_type: 'vanilla' }];
+      return [];
+    },
+    async upsertMany(table, values, conflict) {
+      materialized.push({ table, values, conflict });
+    },
+    async log() {}
+  };
+  const tracker = new DeltaTestnetTracker({ env: demoEnv(), database, executor: {}, WebSocketImpl: class {} });
+  tracker.stopped = false;
+
+  const result = await tracker.materializeVerifiedClosedTrades();
+
+  assert.equal(result.materialized, 1);
+  const trade = materialized.find(row => row.table === 'dd_trades').values[0];
+  assert.equal(trade.qty, 4);
+  assert.equal(trade.entry_price, 60010);
+  assert.equal(trade.exit_price, 60075);
+  assert.ok(Math.abs(trade.gross_pnl - 0.26) < 1e-9);
+  assert.equal(trade.net_pnl, 0.22);
+  assert.deepEqual(trade.exit_fill_ids, ['exit-partial-1', 'exit-partial-2']);
+});
+
+test('closed trade projection refuses missing exit fill quantity', async () => {
+  const materialized = [];
+  const database = {
+    async select(table) {
+      if (table === 'dd_delta_positions') return [{
+        id: 43, symbol: 'ETHUSD', status: 'CLOSED', close_source: 'private_websocket', realized_pnl_verified: true, strategy: 'SCALPING', side: 'SELL',
+        qty: 3, order_id: 'entry-2', realized_pnl: 0, opened_at: '2026-10-29T10:00:00Z',
+        closed_at: '2026-10-29T10:30:00Z'
+      }];
+      if (table === 'dd_fills') return [
+        { id: 'entry-2', symbol: 'ETHUSD', order_id: 'entry-2', side: 'SELL', size: 3, price: 2500, commission: 0.2, commission_currency: 'USD', created_at: '2026-10-29T10:00:01Z' },
+        { id: 'partial-exit', symbol: 'ETHUSD', order_id: 'exit-2', side: 'BUY', size: 2, price: 2490, commission: 0.2, commission_currency: 'USD', created_at: '2026-10-29T10:29:59Z' }
+      ];
+      return [];
+    },
+    async upsertMany(table, values) { materialized.push({ table, values }); },
+    async log() {}
+  };
+  const tracker = new DeltaTestnetTracker({ env: demoEnv(), database, executor: {}, WebSocketImpl: class {} });
+  tracker.stopped = false;
+  const result = await tracker.materializeVerifiedClosedTrades();
+  assert.equal(result.materialized, 0);
+  assert.equal(materialized.length, 0);
+});
+
+
+test('historical synthetic-close rows keep fill-derived gross but withhold unverified net P&L', async () => {
+  const materialized = [];
+  const database = {
+    async select(table, query) {
+      if (table === 'dd_delta_positions') {
+        if (!String(query).includes('status=in.(CLOSED,CLOSED_EXTERNALLY)')) return [];
+        return [{
+        id: 44, symbol: 'BTCUSD', status: 'CLOSED_EXTERNALLY', close_source: 'rest_reconcile',
+        realized_pnl_verified: false, strategy: 'MOMENTUM', side: 'BUY', qty: 1,
+        order_id: 'entry-3', realized_pnl: 12, opened_at: '2026-10-29T10:00:00Z',
+        closed_at: '2026-10-29T10:30:00Z'
+        }];
+      }
+      if (table === 'dd_fills') return [
+        { id: 'entry-3', symbol: 'BTCUSD', order_id: 'entry-3', side: 'BUY', size: 1, price: 60000, commission: 0.01, commission_currency: 'USD', created_at: '2026-10-29T10:00:01Z' },
+        { id: 'exit-3', symbol: 'BTCUSD', order_id: 'exit-3', side: 'SELL', size: 1, price: 60100, commission: 0.01, commission_currency: 'USD', created_at: '2026-10-29T10:29:59Z' }
+      ];
+      if (table === 'dd_market_cache') return [{ symbol: 'BTCUSD', contract_value: '0.001', notional_type: 'vanilla' }];
+      return [];
+    },
+    async upsertMany(table, values) { materialized.push({ table, values }); },
+    async log() {}
+  };
+  const tracker = new DeltaTestnetTracker({ env: demoEnv(), database, executor: {}, WebSocketImpl: class {} });
+  tracker.stopped = false;
+  const result = await tracker.materializeVerifiedClosedTrades();
+  assert.equal(result.materialized, 1);
+  assert.equal(materialized.length, 1);
+  assert.equal(materialized[0].values[0].gross_pnl, 0.1);
+  assert.equal(materialized[0].values[0].fees, 0.02);
+  assert.equal(materialized[0].values[0].net_pnl, null);
+  assert.equal(materialized[0].values[0].result, 'GROSS WIN · NET UNVERIFIED');
+  assert.equal(materialized.some(row => row.table === 'dd_rotation_ledger'), false);
+});
+
+test('private WebSocket auth subscribes to all-symbol orders, positions, and fill channels', async () => {
   const sent = [];
   const socket = { send: value => sent.push(JSON.parse(value)) };
   const logs = [];
@@ -394,7 +870,11 @@ test('private WebSocket auth subscribes to all-symbol orders and positions chann
     type: 'subscribe',
     payload: { channels: [{ name: 'positions', symbols: ['all'] }] }
   });
-  assert.ok(logs.some(row => row.message.includes('authenticated; orders and positions subscribed')));
+  assert.deepEqual(sent[3], {
+    type: 'subscribe',
+    payload: { channels: [{ name: 'user_trades', symbols: ['all'] }] }
+  });
+  assert.ok(logs.some(row => row.message.includes('authenticated; orders, positions and user_trades subscribed')));
 });
 
 test('private WebSocket fill event updates the order row and records explicit fill confirmation', async () => {
@@ -404,6 +884,7 @@ test('private WebSocket fill event updates the order row and records explicit fi
   const database = {
     async select(table) {
       if (table === 'dd_orders') return [orderRow];
+      if (table === 'dd_delta_positions') return [{ id: 'position-1', symbol: 'ETHUSD', status: 'OPEN', strategy: 'MOMENTUM' }];
       return [];
     },
     async update(table, query, patch) {
@@ -438,6 +919,7 @@ test('private WebSocket fill event updates the order row and records explicit fi
   assert.equal(orderRow.raw.fill_confirmed_by_private_websocket, true);
   assert.ok(orderRow.raw.fill_confirmed_by_private_websocket_at);
   assert.ok(updates.some(row => row.table === 'dd_orders' && row.patch.raw?.fill_confirmed_by_private_websocket === true));
+  assert.ok(updates.some(row => row.table === 'dd_delta_positions' && row.patch.entry_order_id === '2176469490'));
   assert.ok(logs.some(row => row.message.includes('private WebSocket confirmed order fill')));
 });
 
@@ -491,3 +973,86 @@ test('E-STOP blocks entries but permits closePosition to submit a reduce-only ex
   assert.equal(post.body.side, 'sell');
   assert.ok(!runtime.logs.some(row => row.message.includes('Emergency Stop is active')));
 });
+
+
+test('closed trade projection withholds net P&L when fill commissions are incomplete', async () => {
+  const closedPosition = {
+    id: 46, symbol: 'BTCUSD', status: 'CLOSED', close_source: 'private_websocket',
+    realized_pnl_verified: true, strategy: 'MOMENTUM', side: 'BUY',
+    qty: '1', order_id: 'entry-unknown-fee', entry_order_id: 'entry-unknown-fee',
+    realized_pnl: '0.1', opened_at: '2026-10-29T10:00:00.000Z',
+    closed_at: '2026-10-29T10:30:00.000Z'
+  };
+  const fills = [
+    { id: 'entry-unknown-fee', symbol: 'BTCUSD', order_id: 'entry-unknown-fee', side: 'BUY', size: '1', price: '60000', commission: '0.01', commission_currency: 'USD', created_at: '2026-10-29T10:00:01.000Z' },
+    { id: 'exit-unknown-fee', symbol: 'BTCUSD', order_id: 'exit-unknown-fee', side: 'SELL', size: '1', price: '60100', commission: null, commission_currency: 'USD', created_at: '2026-10-29T10:29:59.000Z' }
+  ];
+  const materialized = [];
+  const database = {
+    async select(table) {
+      if (table === 'dd_delta_positions') return [closedPosition];
+      if (table === 'dd_fills') return fills;
+      if (table === 'dd_market_cache') return [{ symbol: 'BTCUSD', contract_value: '0.001', notional_type: 'vanilla' }];
+      return [];
+    },
+    async upsertMany(table, values, conflict) { materialized.push({ table, values, conflict }); },
+    async log() {}
+  };
+  const tracker = new DeltaTestnetTracker({ env: demoEnv(), database, executor: {}, WebSocketImpl: class {} });
+  tracker.stopped = false;
+
+  const result = await tracker.materializeVerifiedClosedTrades();
+
+  assert.equal(result.materialized, 1);
+  const trade = materialized.find(row => row.table === 'dd_trades').values[0];
+  assert.equal(trade.fees, null);
+  assert.equal(trade.fees_verified, false);
+  assert.ok(Math.abs(trade.gross_pnl - 0.1) < 1e-9);
+  assert.equal(trade.gross_pnl_verified, true);
+  assert.equal(trade.net_pnl, null);
+  assert.equal(trade.net_pnl_verified, false);
+  assert.equal(trade.pnl_pct, null);
+  assert.equal(trade.result, 'GROSS WIN · NET UNVERIFIED');
+  assert.ok(!materialized.some(row => row.table === 'dd_rotation_ledger'));
+});
+
+
+
+test('closed trade projection withholds fee-adjusted net P&L when settlement currency is unknown', async () => {
+  const closedPosition = {
+    id: 47, symbol: 'BTCUSD', status: 'CLOSED', close_source: 'private_websocket',
+    realized_pnl_verified: true, strategy: 'MOMENTUM', side: 'BUY',
+    qty: '1', entry_order_id: 'entry-currency-unknown', order_id: 'exit-currency-unknown',
+    realized_pnl: '0.1', opened_at: '2026-10-29T10:00:00.000Z',
+    closed_at: '2026-10-29T10:30:00.000Z'
+  };
+  const fills = [
+    { id: 'entry-currency-unknown', symbol: 'BTCUSD', order_id: 'entry-currency-unknown', side: 'BUY', size: '1', price: '60000', commission: '0.01', created_at: '2026-10-29T10:00:01.000Z' },
+    { id: 'exit-currency-unknown', symbol: 'BTCUSD', order_id: 'exit-currency-unknown', side: 'SELL', size: '1', price: '60100', commission: '0.01', created_at: '2026-10-29T10:29:59.000Z' }
+  ];
+  const materialized = [];
+  const database = {
+    async select(table) {
+      if (table === 'dd_delta_positions') return [closedPosition];
+      if (table === 'dd_fills') return fills;
+      if (table === 'dd_market_cache') return [{ symbol: 'BTCUSD', contract_value: '0.001', notional_type: 'vanilla' }];
+      return [];
+    },
+    async upsertMany(table, values, conflict) { materialized.push({ table, values, conflict }); },
+    async log() {}
+  };
+  const tracker = new DeltaTestnetTracker({ env: demoEnv(), database, executor: {}, WebSocketImpl: class {} });
+  tracker.stopped = false;
+
+  const result = await tracker.materializeVerifiedClosedTrades();
+
+  assert.equal(result.materialized, 1);
+  const trade = materialized.find(row => row.table === 'dd_trades').values[0];
+  assert.equal(trade.fees, null);
+  assert.equal(trade.fees_verified, false);
+  assert.equal(trade.net_pnl, null);
+  assert.equal(trade.net_pnl_verified, false);
+  assert.equal(trade.result, 'GROSS WIN · NET UNVERIFIED');
+  assert.ok(!materialized.some(row => row.table === 'dd_rotation_ledger'));
+});
+
