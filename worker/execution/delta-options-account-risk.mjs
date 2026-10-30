@@ -133,14 +133,14 @@ function evaluateFuturesExposure(snapshot, wantedAsset, reasons) {
     }
     const feeRate = numberOrNull(product?.taker_commission_rate) ??
       numberOrNull(product?.maker_commission_rate) ?? 0.0006;
-    const gridSlippageRate = upper(dbRow?.strategy) === 'GRID' ? 0.0002 : 0;
-    const risk = (Math.abs(entry - stop) * contractValue +
-      entry * contractValue * 2 * (feeRate + gridSlippageRate)) * qty;
+    const stopRisk = Math.abs(entry - stop) * qty * contractValue;
+    const feeRisk = entry * contractValue * qty * 2 * feeRate;
+    const risk = stopRisk + feeRisk;
     if (!Number.isFinite(risk) || risk <= 0) {
       reasons.push('FUTURES_MAX_LOSS_UNVERIFIED:' + symbol);
       continue;
     }
-    if (upper(dbRow?.strategy) === 'GRID') gridRisk += risk;
+    if (upper(dbRow?.strategy) === 'GRID') gridRisk += stopRisk;
     if (settle !== wantedAsset) {
       reasons.push('CROSS_SETTLEMENT_EXPOSURE_NOT_NETTABLE:' + symbol + ':' + settle);
       continue;
@@ -177,14 +177,8 @@ function evaluateFuturesExposure(snapshot, wantedAsset, reasons) {
     for (const row of gridRows) {
       const match = gridPositions.find(position => upper(position?.symbol) === upper(row.symbol));
       if (!match || !closeEnough(match.qty, row.qty) ||
-          !closeEnough(match.riskUsd, (
-            Math.abs(numberOrNull(row.entry_price) - numberOrNull(row.sl_price)) *
-            numberOrNull(productMap.get(upper(row.symbol))?.contract_value) +
-            numberOrNull(row.entry_price) * numberOrNull(productMap.get(upper(row.symbol))?.contract_value) * 2 * (
-              (numberOrNull(productMap.get(upper(row.symbol))?.taker_commission_rate) ??
-                numberOrNull(productMap.get(upper(row.symbol))?.maker_commission_rate) ?? 0.0006) + 0.0002
-            )
-          ) * numberOrNull(row.qty))) {
+          !closeEnough(match.riskUsd, Math.abs(numberOrNull(row.entry_price) - numberOrNull(row.sl_price)) *
+            numberOrNull(productMap.get(upper(row.symbol))?.contract_value) * numberOrNull(row.qty))) {
         reasons.push('GRID_POSITION_RISK_STATE_MISMATCH:' + upper(row.symbol));
       }
     }
