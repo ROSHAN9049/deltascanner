@@ -1,4 +1,4 @@
-import { resolveMinimumStopDistancePct } from '../shared/delta-risk-policy.js';
+import { resolveMinimumStopDistancePct, roundStopLossAwayFromEntry } from '../shared/delta-risk-policy.js';
 const n = v => Number.isFinite(+v) ? +v : 0;
 const optionalNumber = value => {
   if (value === null || value === undefined || (typeof value === 'string' && value.trim() === '')) return null;
@@ -477,7 +477,7 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
       ? price * (1 + stopPct)
       : 0;
   const tick = n(product.tick_size);
-  const sl = side ? roundToTick(rawSl, tick) : 0;
+  const sl = side ? roundStopLossAwayFromEntry(rawSl, tick, side) : 0;
   const riskDistance = side ? Math.abs(price - sl) : 0;
   const tp1 = side === 'BUY'
     ? roundToTick(price + riskDistance, tick)
