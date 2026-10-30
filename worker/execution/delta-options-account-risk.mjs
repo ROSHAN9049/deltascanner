@@ -437,7 +437,6 @@ export function createDeltaOptionsAccountRiskGate({
     if (!Array.isArray(dbFuturesPositions) || !Array.isArray(settingsRows) || settingsRows.length !== 1) {
       throw new Error('Options account risk gate could not verify the Futures/Grid database snapshot');
     }
-    const capturedAt = now();
     const activeOptionsLegs = activeOptionsGroup
       ? await manager.getGroupLegs(activeOptionsGroup.id) : [];
     const activeOptionsOrders = activeOptionsGroup
@@ -451,10 +450,11 @@ export function createDeltaOptionsAccountRiskGate({
       futuresExecutor.getProductMetadata(symbol)
     ));
 
-    let gridState = getGridState() ?? settingsRows[0]?.grid_state ?? null;
+    let gridState = settingsRows[0]?.grid_state ?? getGridState() ?? null;
     if (typeof gridState === 'string') {
       try { gridState = JSON.parse(gridState); } catch { throw new Error('Grid state JSON is malformed'); }
     }
+    const capturedAt = now();
     return {
       executionMode: 'testnet',
       capturedAt,
