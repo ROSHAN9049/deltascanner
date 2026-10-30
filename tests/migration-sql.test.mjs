@@ -129,3 +129,48 @@ describe('Delta Testnet fill ledger migration SQL structure', () => {
     assert.match(migrationRunner, /'dd_delta_fill_sync_state'/);
   });
 });
+
+
+const deltaOptionsMigrationPath = fileURLToPath(new URL('../db/migrations/20261030100000_delta_options_execution_ledger.sql', import.meta.url));
+const deltaOptionsMigration = readFileSync(deltaOptionsMigrationPath, 'utf8');
+const optionsMigrationRunner = readFileSync(fileURLToPath(new URL('../scripts/apply-all-migrations.mjs', import.meta.url)), 'utf8');
+
+describe('Delta Testnet Options execution ledger migration SQL structure', () => {
+  test('creates separate group and leg ledgers, not dd_delta_positions rows', () => {
+    assert.ok(deltaOptionsMigration.includes('BEGIN;'));
+    assert.ok(deltaOptionsMigration.includes('COMMIT;'));
+    assert.match(deltaOptionsMigration, /CREATE TABLE IF NOT EXISTS public\\.dd_options_execution_groups/i);
+    assert.match(deltaOptionsMigration, /CREATE TABLE IF NOT EXISTS public\\.dd_options_execution_legs/i);
+    assert.doesNotMatch(deltaOptionsMigration, /INSERT INTO public\\.dd_delta_positions/i);
+  });
+
+  test('enforces one active Options group and unique group/leg idempotency keys', () => {
+    assert.match(deltaOptionsMigration, /dd_options_one_active_execution_slot_idx/i);
+    assert.match(deltaOptionsMigration, /WHERE state NOT IN \\('CLOSED', 'REJECTED', 'FAILED'\\)/i);
+    assert.match(deltaOptionsMigration, /client_group_id TEXT NOT NULL UNIQUE/i);
+    assert.match(deltaOptionsMigration, /client_order_id TEXT NOT NULL UNIQUE/i);
+    assert.match(deltaOptionsMigration, /UNIQUE \\(group_id, leg_role\\)/i);
+    assert.match(deltaOptionsMigration, /dd_options_active_leg_symbol_idx/i);
+  });
+
+  test('captures partial fills, exit fills, commissions and unknown order state', () => {
+    assert.match(deltaOptionsMigration, /filled_qty NUMERIC NOT NULL DEFAULT 0/i);
+    assert.match(deltaOptionsMigration, /exit_filled_qty NUMERIC NOT NULL DEFAULT 0/i);
+    assert.match(deltaOptionsMigration, /commission_currency TEXT NULL/i);
+    assert.match(deltaOptionsMigration, /exit_commission_currency TEXT NULL/i);
+    assert.match(deltaOptionsMigration, /'UNKNOWN'/i);
+    assert.match(deltaOptionsMigration, /'RECONCILIATION_REQUIRED'/i);
+  });
+
+  test('both ledgers are service-role only and migration follows Delta fill ledger', () => {
+    for (const table of ['dd_options_execution_groups', 'dd_options_execution_legs']) {
+      assert.match(deltaOptionsMigration, new RegExp('ALTER TABLE public\\.' + table + ' ENABLE ROW LEVEL SECURITY', 'i'));
+      assert.match(deltaOptionsMigration, new RegExp('REVOKE ALL ON TABLE public\\.' + table + ' FROM anon, authenticated', 'i'));
+      assert.match(deltaOptionsMigration, new RegExp('GRANT ALL ON TABLE public\\.' + table + ' TO service_role', 'i'));
+      assert.match(optionsMigrationRunner, new RegExp("'" + table + "'"));
+    }
+    const fillIndex = optionsMigrationRunner.indexOf('20261029163000_delta_fill_ledger.sql');
+    const optionsIndex = optionsMigrationRunner.indexOf('20261030100000_delta_options_execution_ledger.sql');
+    assert.ok(fillIndex >= 0 && optionsIndex > fillIndex);
+  });
+});
