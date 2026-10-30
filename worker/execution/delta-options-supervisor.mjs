@@ -244,6 +244,25 @@ export function createDeltaOptionsSupervisor({
     return result;
   }
 
+  async function closeGroupAfterExpiryIfFlat(group, expiryMs) {
+    const response = await database.rpc('close_dd_options_group_after_expiry_if_flat', {
+      p_group_id: String(group.id),
+      p_expiry_at: new Date(expiryMs).toISOString(),
+      p_raw: {
+        source: 'delta_options_restart_supervisor',
+        observed_at: new Date(now()).toISOString()
+      }
+    });
+    const result = Array.isArray(response) ? response[0] : response;
+    if (!result || typeof result !== 'object' ||
+        String(result.group_id) !== String(group.id) ||
+        upper(result.state) !== 'CLOSED' ||
+        !sameQty(result.open_qty, 0)) {
+      throw new Error('Flat Options expiry close was not confirmed by the database');
+    }
+    return result;
+  }
+
   async function getExchangeSnapshot() {
     if (typeof executor.assertConfigured === 'function') executor.assertConfigured();
     const [positions, openOrders] = await Promise.all([
@@ -497,6 +516,8 @@ export function createDeltaOptionsSupervisor({
       return { status: 'RECONCILIATION_REQUIRED', executionEnabled: false, group: locked, reason: positions.reason };
     }
 
+    const openQty = refreshedLegs.reduce((sum, leg) =>
+      sum + Math.max(0, Number(leg.filled_qty) - Number(leg.exit_filled_qty)), 0);
     const unresolvedOrders = [];
     const pendingOrders = [];
     for (const row of refreshedOrders) {
@@ -551,8 +572,6 @@ export function createDeltaOptionsSupervisor({
       );
       return { status: 'RECONCILIATION_REQUIRED', executionEnabled: false, group: locked };
     }
-    const openQty = refreshedLegs.reduce((sum, leg) =>
-      sum + Math.max(0, Number(leg.filled_qty) - Number(leg.exit_filled_qty)), 0);
     const deadline = expiryMs - minutesBeforeExpiry * 60 * 1000;
     const deadlinePassed = now() >= deadline ||
       resolveOptionExpiryExitDeadline(expiryMs, {
@@ -569,6 +588,17 @@ export function createDeltaOptionsSupervisor({
           group: marked,
           groupId: group.id,
           openQty,
+          expiryDeadline: new Date(deadline).toISOString()
+        };
+      }
+      if (upper(group.state) === 'EXIT_REQUIRED') {
+        const closed = await closeGroupAfterExpiryIfFlat(group, expiryMs);
+        return {
+          status: 'EXPIRY_EXIT_FLAT',
+          executionEnabled: false,
+          group: closed,
+          groupId: group.id,
+          openQty: 0,
           expiryDeadline: new Date(deadline).toISOString()
         };
       }
