@@ -235,11 +235,12 @@ test('reports no active group only when both exchange positions and open orders 
   assert.equal(result.openOrderCount, 0);
 });
 
-test('fails closed when private exchange snapshots are malformed or unavailable', async () => {
+test('durably parks an active group when private exchange snapshots are unavailable', async () => {
   const harness = makeHarness({ snapshotError: new Error('private options API timeout') });
   const result = await harness.supervisor.reconcileOnce();
-  assert.equal(result.status, 'SUPERVISOR_UNAVAILABLE');
+  assert.equal(result.status, 'RECONCILIATION_REQUIRED');
   assert.equal(result.executionEnabled, false);
+  assert.equal(harness.calls.rpc[0].args.p_error_code, 'OPTIONS_EXCHANGE_SNAPSHOT_UNAVAILABLE');
 });
 
 test('coalesces overlapping supervisor cycles into one exchange/database reconciliation', async () => {
