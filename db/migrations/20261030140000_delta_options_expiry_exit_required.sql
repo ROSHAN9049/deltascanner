@@ -124,5 +124,89 @@ REVOKE ALL ON FUNCTION public.mark_dd_options_group_expiry_exit_required(UUID, T
 GRANT EXECUTE ON FUNCTION public.mark_dd_options_group_expiry_exit_required(UUID, TIMESTAMPTZ, INTEGER, NUMERIC, JSONB)
   TO service_role;
 
+CREATE OR REPLACE FUNCTION public.close_dd_options_group_after_expiry_if_flat(
+  p_group_id UUID,
+  p_expiry_at TIMESTAMPTZ,
+  p_raw JSONB DEFAULT '{}'::JSONB
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public, pg_temp
+AS $
+DECLARE
+  v_group public.dd_options_execution_groups%ROWTYPE;
+  v_open_qty NUMERIC;
+  v_active_orders INTEGER;
+  v_raw JSONB;
+BEGIN
+  IF p_group_id IS NULL OR p_expiry_at IS NULL OR
+     jsonb_typeof(COALESCE(p_raw, '{}'::JSONB)) IS DISTINCT FROM 'object' THEN
+    RAISE EXCEPTION 'Options expiry-flat close inputs are invalid';
+  END IF;
+
+  SELECT * INTO v_group
+  FROM public.dd_options_execution_groups
+  WHERE id = p_group_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Options execution group does not exist';
+  END IF;
+
+  IF v_group.state <> 'EXIT_REQUIRED' OR v_group.expiry_at IS DISTINCT FROM p_expiry_at THEN
+    RAISE EXCEPTION 'Only the matching expiry-required Options group can be closed by expiry reconciliation';
+  END IF;
+
+  SELECT COALESCE(SUM(GREATEST(0, filled_qty - exit_filled_qty)), 0)
+  INTO v_open_qty
+  FROM public.dd_options_execution_legs
+  WHERE group_id = p_group_id;
+
+  SELECT COUNT(*) INTO v_active_orders
+  FROM public.dd_options_execution_orders
+  WHERE group_id = p_group_id
+    AND order_state IN (
+      'RESERVED', 'SUBMITTED', 'OPEN', 'PARTIALLY_FILLED',
+      'UNKNOWN', 'RECONCILIATION_REQUIRED'
+    );
+
+  IF v_open_qty > 0.00000001 OR v_active_orders > 0 THEN
+    RAISE EXCEPTION 'Options expiry group cannot close until all legs are flat and every order attempt is terminal';
+  END IF;
+
+  v_raw := COALESCE(p_raw, '{}'::JSONB) || jsonb_build_object(
+    'expiry_exit_flat_confirmed', TRUE,
+    'expiry_exit_flat_confirmed_at', NOW(),
+    'expiry_at', v_group.expiry_at,
+    'open_qty', v_open_qty
+  );
+
+  UPDATE public.dd_options_execution_groups
+  SET state = 'CLOSED',
+      closed_at = COALESCE(closed_at, NOW()),
+      last_error_code = 'OPTIONS_EXPIRY_EXIT_FLAT',
+      last_error_detail = 'All Options legs are confirmed flat after the mandatory expiry exit',
+      raw = COALESCE(raw, '{}'::JSONB) || v_raw,
+      updated_at = NOW()
+  WHERE id = p_group_id
+  RETURNING * INTO v_group;
+
+  RETURN jsonb_build_object(
+    'group_id', v_group.id,
+    'client_group_id', v_group.client_group_id,
+    'state', v_group.state,
+    'last_error_code', v_group.last_error_code,
+    'closed_at', v_group.closed_at,
+    'open_qty', v_open_qty
+  );
+END;
+$;
+
+REVOKE ALL ON FUNCTION public.close_dd_options_group_after_expiry_if_flat(UUID, TIMESTAMPTZ, JSONB)
+  FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.close_dd_options_group_after_expiry_if_flat(UUID, TIMESTAMPTZ, JSONB)
+  TO service_role;
+
 NOTIFY pgrst, 'reload schema';
 COMMIT;
