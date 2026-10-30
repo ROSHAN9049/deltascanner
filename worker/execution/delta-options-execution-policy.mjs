@@ -409,6 +409,25 @@ export function resolveOptionExpiryExitDeadline(expiryMs, {
   return deadline > current ? deadline : null;
 }
 
+export function getOptionsOrderClientIdRole(intent, legRole) {
+  const action = normalized(intent);
+  const role = normalized(legRole);
+  if (!['ENTRY', 'EXIT', 'UNWIND'].includes(action) ||
+      !['LONG_PREMIUM', 'PROTECTIVE_WING', 'SHORT_OPTION'].includes(role)) {
+    throw new Error('Cannot map an unsupported Options intent/leg role to a client order ID');
+  }
+  if (action === 'ENTRY') return role;
+  if (action === 'UNWIND') {
+    if (role !== 'PROTECTIVE_WING') {
+      throw new Error('Only a protective wing can use the Options UNWIND client order ID');
+    }
+    return 'UNWIND_WING';
+  }
+  if (role === 'SHORT_OPTION') return 'CLOSE_SHORT';
+  if (role === 'LONG_PREMIUM') return 'CLOSE_LONG';
+  return 'CLOSE_WING';
+}
+
 export function makeOptionsClientOrderId(groupId, legRole, attempt = 1) {
   const group = String(groupId || '').trim();
   const role = normalized(legRole);
