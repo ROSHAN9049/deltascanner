@@ -20,6 +20,7 @@ function ticker(symbol, optionType, productId) {
     contract_type: optionType === 'CALL' ? 'call_options' : 'put_options',
     contract_value: '0.001',
     tick_size: '0.0001',
+    settling_asset: { symbol: 'USD' },
     state: 'live',
     testnet_product_verified: true
   };
