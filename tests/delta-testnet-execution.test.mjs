@@ -721,6 +721,9 @@ test('closed trade projection requires matching entry order, exit side and full 
   assert.ok(Math.abs(trade.exit_notional - 120.24) < 1e-9);
   assert.ok(Math.abs(trade.fees - 0.04) < 1e-9);
   assert.equal(trade.net_pnl, 0.16);
+  assert.equal(trade.fees_verified, true);
+  assert.equal(trade.gross_pnl_verified, true);
+  assert.equal(trade.net_pnl_verified, true);
   assert.ok(Math.abs(trade.gross_pnl - 0.24) < 1e-9);
   assert.equal(trade.pnl_pct, (0.16 / 120) * 100);
   assert.deepEqual(trade.entry_fill_ids, ['entry-1', 'entry-2']);
@@ -1002,8 +1005,11 @@ test('closed trade projection withholds net P&L when fill commissions are incomp
   assert.equal(result.materialized, 1);
   const trade = materialized.find(row => row.table === 'dd_trades').values[0];
   assert.equal(trade.fees, null);
+  assert.equal(trade.fees_verified, false);
   assert.ok(Math.abs(trade.gross_pnl - 0.1) < 1e-9);
+  assert.equal(trade.gross_pnl_verified, true);
   assert.equal(trade.net_pnl, null);
+  assert.equal(trade.net_pnl_verified, false);
   assert.equal(trade.pnl_pct, null);
   assert.equal(trade.result, 'GROSS WIN · NET UNVERIFIED');
   assert.ok(!materialized.some(row => row.table === 'dd_rotation_ledger'));
