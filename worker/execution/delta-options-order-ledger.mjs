@@ -24,7 +24,7 @@ function normalizedState(state) {
   const value = textValue(state).toLowerCase();
   if (value === 'open') return 'OPEN';
   if (value === 'pending') return 'SUBMITTED';
-  if (value === 'closed') return 'SUBMITTED'; // Fills, not the order response, confirm quantity and VWAP.
+  if (value === 'closed' || value === 'filled') return 'SUBMITTED'; // Actual fill records, not the order response, prove quantity and VWAP.
   if (value === 'cancelled' || value === 'canceled') return 'CANCELLED';
   if (value === 'rejected') return 'REJECTED';
   return 'UNKNOWN';
@@ -121,7 +121,7 @@ export function createDeltaOptionsOrderLedger({
     if (!ROLES.has(expected.leg_role)) throw new Error('Options leg role is invalid');
     if (!INTENTS.has(expected.intent)) throw new Error('Options order intent is invalid');
     if (!SIDES.has(expected.side)) throw new Error('Options order side is invalid');
-    if (!/^[CP]-(BTC|ETH)-[0-9]+(?:\\.[0-9]+)?-[0-9]{6}$/.test(expected.symbol)) {
+    if (!/^[CP]-(BTC|ETH)-[0-9]+(?:\.[0-9]+)?-[0-9]{6}$/.test(expected.symbol)) {
       throw new Error('Options order symbol is outside the automated BTC/ETH contract format');
     }
     if (!(expected.limit_price > 0)) throw new Error('Options limit price must be positive');
