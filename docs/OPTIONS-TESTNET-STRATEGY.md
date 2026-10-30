@@ -10,7 +10,7 @@ The market quote/Greeks feed is read from Delta India's public API. In Testnet m
 
 The initial executable candidate design is long premium only:
 
-- Underlyings: BTC, ETH and XAUT, subject to a matching LIVE Testnet product.
+- Underlyings: BTC and ETH only, subject to a matching LIVE Testnet product. Delta India's current Options guide lists BTC and ETH; other underlyings stay out until India-specific support and settlement rules are verified.
 - Underlying direction: only a CONFIRMED underlying signal with score at least 80.
 - Instrument: CALL for bullish direction; PUT for bearish direction.
 - Target absolute delta: 0.45–0.65 (existing `analyseOption` policy).
