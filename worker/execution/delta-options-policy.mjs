@@ -219,7 +219,8 @@ export function calculateOptionTradingFee({ spotPrice, premium, contractValue } 
       premiumValuePerContract: 0,
       feeBeforeGst: 0,
       gst: 0,
-      totalFeePerContract: 0
+      totalFeePerContract: 0,
+      takerSettlementFeePerContract: 0
     };
   }
 
@@ -229,8 +230,15 @@ export function calculateOptionTradingFee({ spotPrice, premium, contractValue } 
   const feeCap = premiumValuePerContract * DELTA_INDIA_OPTION_PREMIUM_FEE_CAP_RATE;
   const feeBeforeGst = Math.min(feeByNotional, feeCap);
   const gst = feeBeforeGst * DELTA_INDIA_GST_RATE;
+  // The current India fee page also says a taker fee is charged on contracts
+  // still open at settlement. Reserve that uncapped notional taker fee as the
+  // conservative close/settlement bound until actual Testnet charges reconcile.
+  const takerSettlementFeeBeforeGst = feeByNotional;
+  const takerSettlementGst = takerSettlementFeeBeforeGst * DELTA_INDIA_GST_RATE;
+  const takerSettlementFeePerContract = takerSettlementFeeBeforeGst + takerSettlementGst;
   return {
-    valid: [notionalPerContract, premiumValuePerContract, feeByNotional, feeCap, feeBeforeGst, gst]
+    valid: [notionalPerContract, premiumValuePerContract, feeByNotional, feeCap, feeBeforeGst, gst,
+      takerSettlementFeeBeforeGst, takerSettlementGst, takerSettlementFeePerContract]
       .every(Number.isFinite),
     notionalPerContract,
     premiumValuePerContract,
@@ -238,7 +246,10 @@ export function calculateOptionTradingFee({ spotPrice, premium, contractValue } 
     feeCap,
     feeBeforeGst,
     gst,
-    totalFeePerContract: feeBeforeGst + gst
+    totalFeePerContract: feeBeforeGst + gst,
+    takerSettlementFeeBeforeGst,
+    takerSettlementGst,
+    takerSettlementFeePerContract
   };
 }
 
@@ -279,9 +290,12 @@ export function calculateLongOptionSizing({
   const riskBudget = accountEquity * pct / 100;
   const premiumPerContract = premium * multiplier;
   const estimatedEntryFeePerContract = fee.totalFeePerContract;
-  // Reserve a second equivalent fee for a voluntary close; worthless expiry has
-  // no settlement fee under the published India help-centre rule.
-  const estimatedRoundTripFeesPerContract = estimatedEntryFeePerContract * 2;
+  // Reserve the uncapped notional taker fee plus GST for a potential close or
+  // expiry settlement. The India fee page says open contracts incur a taker
+  // settlement fee; sizing stays conservative until actual Testnet charges
+  // and any OTM-short exception are reconciled from the fills/settlement ledger.
+  const estimatedRoundTripFeesPerContract =
+    estimatedEntryFeePerContract + fee.takerSettlementFeePerContract;
   const maxLossPerContract = premiumPerContract + estimatedRoundTripFeesPerContract;
   const entryCashPerContract = premiumPerContract + estimatedEntryFeePerContract;
   if (!(riskBudget > 0 && maxLossPerContract > 0 && entryCashPerContract > 0)) {
@@ -382,7 +396,8 @@ export function calculateCreditSpreadSizing({
   const spreadWidthPerContract = strikeWidth * contractValue;
   const maxIntrinsicLossPerContract = Math.max(0, spreadWidthPerContract - netCreditPerContract);
   const entryFeesPerContract = shortFee.totalFeePerContract + hedgeFee.totalFeePerContract;
-  const exitFeeReservePerContract = entryFeesPerContract;
+  const exitFeeReservePerContract =
+    shortFee.takerSettlementFeePerContract + hedgeFee.takerSettlementFeePerContract;
   const maxLossPerContract =
     maxIntrinsicLossPerContract + entryFeesPerContract + exitFeeReservePerContract;
   const marginReservePerContract =
