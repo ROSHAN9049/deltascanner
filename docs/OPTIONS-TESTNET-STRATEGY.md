@@ -14,18 +14,18 @@ The engine analyses both sides, but this phase remains analysis-only. A candidat
 
 The BUY side is long premium only:
 
-- Underlyings: BTC and ETH only, subject to a matching LIVE Testnet product. Delta India's current Options guide lists BTC and ETH; other underlyings stay out until India-specific support and settlement rules are verified.
+- Underlyings in this phase: BTC and ETH only, subject to exact LIVE Testnet product match. XAUT Gold Options are now listed on Delta India, but remain excluded from automated sizing until settlement-currency-specific wallet and margin handling is verified.
 - Underlying direction: only a CONFIRMED underlying signal with score at least 80.
 - Instrument: CALL for bullish direction; PUT for bearish direction.
 - Target absolute delta: 0.45–0.65 (existing `analyseOption` policy).
-- Expiry: configured 2–14 DTE; option symbols are parsed and settlement time is asset-aware.
+- Expiry: configured 2–14 DTE; the parser recognises BTC/ETH at 5:30 PM IST and XAUT at 9:30 PM IST, although XAUT remains excluded from current automated sizing.
 - Liquidity: positive bid/ask, spread no wider than the configured threshold, minimum OI and volume (existing settings).
 - Anti-chase: existing underlying 24-hour move filter.
 - Worker memory: at most 24 selected contracts per underlying, near-the-money within 20%, balanced between calls and puts.
 
 ## Risk model
 
-Long option quantity is not sized from a stop-loss percentage of the premium. Maximum loss starts from the **full premium paid**, multiplied by the explicit Testnet product `contract_value`, plus a conservative two-sided taker-fee allowance. Quantity is the smaller of:
+Long option quantity is not sized from a stop-loss percentage of the premium. Maximum loss starts from the **full premium paid**, multiplied by the explicit Testnet product `contract_value`, plus a conservative two-sided standard-fee reserve. Delta India's published India Options help-centre schedule specifies a 0.010% notional trading fee, capped at 3.5% of premium, plus 18% GST; the estimate applies the lower of the notional fee and premium cap on each side. Quantity is the smaller of:
 
 1. the configured per-trade risk budget (capped at 0.30% of account equity), and
 2. the available-balance limit for the premium and estimated entry fee.
@@ -60,3 +60,6 @@ Before the execution lock can be changed, a separate reviewed PR must implement 
 ## Current release gate
 
 The BUY and SELL analysis engines are implemented in the Draft PR, but the execution constant remains hard false. The running Hostless worker and Main branch are not changed by this draft. A later execution PR must prove, with dedicated Testnet orders, that option product IDs, IOC fills, reduce-only exits, bracket protection, short/wing pairing, partial-fill unwind, and reconciliation work exactly as expected.
+
+
+The Options fee estimator deliberately does not reuse futures `taker_commission_rate`. It uses the published India Options notional-fee / premium-cap formula and reserves GST. Real execution must reconcile actual per-fill commission from Delta's fills ledger; promotional discounts are ignored in sizing.
