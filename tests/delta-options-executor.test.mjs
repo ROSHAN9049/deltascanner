@@ -329,15 +329,33 @@ test('open Option orders and fill pages are scoped to call_options/put_options',
     env: optionsEnv(),
     now: () => NOW,
     fetchImpl: async url => {
-      assert.ok(new URL(url).pathname.includes('/v2/orders/client_order_id/'));
+      const parsed = new URL(url);
+      if (parsed.pathname === '/v2/products') {
+        return jsonResponse({
+          success: true,
+          result: [{
+            id: 101, symbol: 'C-BTC-90000-311026',
+            contract_type: 'call_options', state: 'live',
+            contract_value: '0.001', tick_size: '0.0001'
+          }],
+          meta: {}
+        });
+      }
+      assert.ok(parsed.pathname.includes('/v2/orders/client_order_id/'));
       return jsonResponse({
         success: true,
-        result: { id: 77, client_order_id: 'DDO-1234567890-PW-1', state: 'filled' }
+        result: {
+          id: 77, client_order_id: 'DDO-1234567890-PW-1',
+          symbol: 'C-BTC-90000-311026', product_id: 101,
+          contract_type: 'call_options', state: 'filled'
+        }
       });
     }
   });
   const found = await orderLookup.getOptionOrderByClientId('DDO-1234567890-PW-1');
   assert.equal(found.id, 77);
+  assert.equal(found.product_id, 101);
+  assert.equal(found.automatedEligible, true);
 
   const walletReader = createDeltaOptionsExecutor({
     env: optionsEnv(),
@@ -371,4 +389,76 @@ test('Options order submission remains source-code hard-locked before any API re
     clientOrderId: 'DDO-ABCDEFGHIJKLMN-LP-1'
   }), error => error.message === OPTIONS_EXECUTION_LOCK_REASON);
   assert.equal(calls, 0);
+});
+
+test('option fill and client-order reconciliation reject an unknown Testnet product ID', async () => {
+  const catalogue = [{
+    id: 101, symbol: 'C-BTC-90000-311026',
+    contract_type: 'call_options', state: 'live',
+    contract_value: '0.001', tick_size: '0.0001'
+  }];
+  const badFill = createDeltaOptionsExecutor({
+    env: optionsEnv(),
+    now: () => NOW,
+    fetchImpl: async url => {
+      const path = new URL(url).pathname;
+      if (path === '/v2/products') return jsonResponse({ success: true, result: catalogue, meta: {} });
+      if (path === '/v2/fills') return jsonResponse({
+        success: true,
+        result: [{ id: 12, symbol: 'C-BTC-90000-311026', product_id: 999 }]
+      });
+      throw new Error('Unexpected endpoint: ' + path);
+    }
+  });
+  await assert.rejects(badFill.getOptionFillsPage({
+    startTime: NOW * 1000,
+    endTime: (NOW + 60_000) * 1000
+  }), /invalid or unverified product row/);
+
+  const badOrder = createDeltaOptionsExecutor({
+    env: optionsEnv(),
+    now: () => NOW,
+    fetchImpl: async url => {
+      const path = new URL(url).pathname;
+      if (path === '/v2/products') return jsonResponse({ success: true, result: catalogue, meta: {} });
+      if (path.includes('/v2/orders/client_order_id/')) return jsonResponse({
+        success: true,
+        result: {
+          id: 77,
+          client_order_id: 'DDO-1234567890-PW-1',
+          symbol: 'C-BTC-90000-311026',
+          product_id: 999,
+          contract_type: 'call_options',
+          state: 'filled'
+        }
+      });
+      throw new Error('Unexpected endpoint: ' + path);
+    }
+  });
+  await assert.rejects(
+    badOrder.getOptionOrderByClientId('DDO-1234567890-PW-1'),
+    /did not match its verified product ID/
+  );
+});
+
+test('XAUT Testnet products are monitor-only and cannot be resolved for automated entries', async () => {
+  const executor = createDeltaOptionsExecutor({
+    env: optionsEnv(),
+    now: () => NOW,
+    fetchImpl: async url => new URL(url).pathname === '/v2/products'
+      ? jsonResponse({
+          success: true,
+          result: [{
+            id: 999, symbol: 'C-XAUT-4000-311026',
+            contract_type: 'call_options', state: 'live',
+            contract_value: '0.001', tick_size: '0.0001'
+          }],
+          meta: {}
+        })
+      : jsonResponse({ success: true, result: [] })
+  });
+  await assert.rejects(
+    executor.resolveOptionProduct('C-XAUT-4000-311026'),
+    /read-only and is not eligible/
+  );
 });
