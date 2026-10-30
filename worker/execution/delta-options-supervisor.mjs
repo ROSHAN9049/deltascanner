@@ -425,7 +425,6 @@ export function createDeltaOptionsSupervisor({
       );
       return { status: 'RECONCILIATION_REQUIRED', executionEnabled: false, group: locked };
     }
-    const knownOrders = new Set(refreshedOrders.map(row => String(row.client_order_id)));
     for (const exchangeOrder of exchange.openOrders) {
       const normalizedOrder = normalizeExchangeOrder(exchangeOrder);
       const ledgerOrder = findLedgerOrder(normalizedOrder, refreshedOrders);
