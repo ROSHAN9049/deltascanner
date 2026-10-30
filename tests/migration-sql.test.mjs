@@ -219,6 +219,7 @@ test('Options fill accounting preserves unknown commissions and accepts asynchro
   assert.doesNotMatch(deltaOptionsMigration, /COALESCE\(SUM\(commission\), 0\)/i);
   assert.doesNotMatch(deltaOptionsMigration, /v_total_qty > v_order\.acknowledged_filled_qty/i);
   assert.doesNotMatch(deltaOptionsMigration, /p_ack_filled_qty < v_order\.filled_qty/i);
+  assert.match(deltaOptionsMigration, /acknowledged_filled_qty = GREATEST\(COALESCE\(acknowledged_filled_qty, 0\), p_ack_filled_qty\)/i);
 });
 
 
