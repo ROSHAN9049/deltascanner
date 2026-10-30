@@ -1,3 +1,4 @@
+import { resolveMinimumStopDistancePct } from '../shared/delta-risk-policy.js';
 const n = v => Number.isFinite(+v) ? +v : 0;
 const optionalNumber = value => {
   if (value === null || value === undefined || (typeof value === 'string' && value.trim() === '')) return null;
@@ -464,7 +465,7 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
     ? Math.abs(price - entryE21) / entryAtr
     : 99;
 
-  const stopMin = n(cfg.minStopPct || (isScalping ? 0.75 : 0.95)) / 100;
+  const stopMin = resolveMinimumStopDistancePct(cfg.minStopPct || (isScalping ? 0.75 : 0.95)) / 100;
   const atrStopPct = entryAtr > 0 ? 1.25 * entryAtr / Math.max(price, 1) : 0;
   const marketCostPct = Math.max(0, 2 * n(product.taker_commission_rate) + spreadPct / 100);
   const costFloorStopPct = costGateRatio > 0 ? marketCostPct / costGateRatio : 0;
