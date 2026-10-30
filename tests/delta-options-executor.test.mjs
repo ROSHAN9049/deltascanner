@@ -67,17 +67,17 @@ test('Options Testnet product catalogue uses dedicated HMAC auth and 50-item cur
             {
               id: 101, symbol: 'C-BTC-90000-311026',
               contract_type: 'call_options', state: 'live',
-              contract_value: '0.001', tick_size: '0.0001'
+              contract_value: '0.001', tick_size: '0.0001', settling_asset: { symbol: 'USD' }
             },
             {
               id: 102, symbol: 'P-BTC-85000-311026',
               contract_type: 'put_options', state: 'live',
-              contract_value: '0.001', tick_size: '0.0001'
+              contract_value: '0.001', tick_size: '0.0001', settling_asset: { symbol: 'USD' }
             },
             {
               id: 999, symbol: 'C-XAUT-4000-311026',
               contract_type: 'call_options', state: 'live',
-              contract_value: '0.001', tick_size: '0.0001'
+              contract_value: '0.001', tick_size: '0.0001', settling_asset: { symbol: 'USD' }
             },
             {
               id: 998, symbol: 'BTCUSD',
@@ -93,7 +93,7 @@ test('Options Testnet product catalogue uses dedicated HMAC auth and 50-item cur
         result: [{
           id: 103, symbol: 'C-ETH-3000-311026',
           contract_type: 'call_options', state: 'live',
-          contract_value: '0.01', tick_size: '0.0001'
+          contract_value: '0.01', tick_size: '0.0001', settling_asset: { symbol: 'USD' }
         }],
         meta: { after: null }
       });
@@ -130,12 +130,12 @@ test('resolveOptionProduct requires one exact cached Testnet product match', asy
         {
           id: 701, symbol: 'P-ETH-3000-311026',
           contract_type: 'put_options', state: 'live',
-          contract_value: '0.01', tick_size: '0.0001'
+          contract_value: '0.01', tick_size: '0.0001', settling_asset: { symbol: 'USD' }
         },
         {
           id: 702, symbol: 'C-XAUT-4000-311026',
           contract_type: 'call_options', state: 'live',
-          contract_value: '0.001', tick_size: '0.0001'
+          contract_value: '0.001', tick_size: '0.0001', settling_asset: { symbol: 'USD' }
         }
       ],
       meta: {}
@@ -163,7 +163,7 @@ test('option positions are matched to exact product IDs and XAUT remains read-on
           result: [{
             id: 102, symbol: 'P-BTC-85000-311026',
             contract_type: 'put_options', state: 'live',
-            contract_value: '0.001', tick_size: '0.0001'
+            contract_value: '0.001', tick_size: '0.0001', settling_asset: { symbol: 'USD' }
           }],
           meta: {}
         });
@@ -201,7 +201,7 @@ test('option positions are matched to exact product IDs and XAUT remains read-on
           result: [{
             id: 999, symbol: 'C-XAUT-4000-311026',
             contract_type: 'call_options', state: 'live',
-            contract_value: '0.001', tick_size: '0.0001'
+            contract_value: '0.001', tick_size: '0.0001', settling_asset: { symbol: 'USD' }
           }],
           meta: {}
         });
@@ -231,7 +231,7 @@ test('option positions are matched to exact product IDs and XAUT remains read-on
           result: [{
             id: 103, symbol: 'P-BTC-85000-311026',
             contract_type: 'put_options', state: 'live',
-            contract_value: '0.001', tick_size: '0.0001'
+            contract_value: '0.001', tick_size: '0.0001', settling_asset: { symbol: 'USD' }
           }],
           meta: {}
         });
@@ -273,12 +273,12 @@ test('open Option orders and fill pages are scoped to call_options/put_options',
             {
               id: 101, symbol: 'C-BTC-90000-311026',
               contract_type: 'call_options', state: 'live',
-              contract_value: '0.001', tick_size: '0.0001'
+              contract_value: '0.001', tick_size: '0.0001', settling_asset: { symbol: 'USD' }
             },
             {
               id: 102, symbol: 'P-BTC-85000-311026',
               contract_type: 'put_options', state: 'live',
-              contract_value: '0.001', tick_size: '0.0001'
+              contract_value: '0.001', tick_size: '0.0001', settling_asset: { symbol: 'USD' }
             }
           ],
           meta: {}
@@ -336,7 +336,7 @@ test('open Option orders and fill pages are scoped to call_options/put_options',
           result: [{
             id: 101, symbol: 'C-BTC-90000-311026',
             contract_type: 'call_options', state: 'live',
-            contract_value: '0.001', tick_size: '0.0001'
+            contract_value: '0.001', tick_size: '0.0001', settling_asset: { symbol: 'USD' }
           }],
           meta: {}
         });
@@ -395,7 +395,7 @@ test('option fill and client-order reconciliation reject an unknown Testnet prod
   const catalogue = [{
     id: 101, symbol: 'C-BTC-90000-311026',
     contract_type: 'call_options', state: 'live',
-    contract_value: '0.001', tick_size: '0.0001'
+    contract_value: '0.001', tick_size: '0.0001', settling_asset: { symbol: 'USD' }
   }];
   const badFill = createDeltaOptionsExecutor({
     env: optionsEnv(),
@@ -451,7 +451,7 @@ test('XAUT Testnet products are monitor-only and cannot be resolved for automate
           result: [{
             id: 999, symbol: 'C-XAUT-4000-311026',
             contract_type: 'call_options', state: 'live',
-            contract_value: '0.001', tick_size: '0.0001'
+            contract_value: '0.001', tick_size: '0.0001', settling_asset: { symbol: 'USD' }
           }],
           meta: {}
         })
