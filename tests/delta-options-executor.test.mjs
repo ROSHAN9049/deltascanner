@@ -168,6 +168,22 @@ test('option positions are fetched separately from Futures and malformed rows fa
   assert.equal(url.pathname, '/v2/positions/margined');
   assert.equal(url.searchParams.get('contract_types'), 'call_options,put_options');
 
+  const xautMonitor = createDeltaOptionsExecutor({
+    env: optionsEnv(),
+    now: () => NOW,
+    fetchImpl: async () => jsonResponse({
+      success: true,
+      result: [{
+        product_symbol: 'C-XAUT-4000-311026',
+        product_id: 999,
+        size: 1
+      }]
+    })
+  });
+  const xautPositions = await xautMonitor.getOpenOptionPositions();
+  assert.equal(xautPositions[0].underlying, 'XAUT');
+  assert.equal(xautPositions[0].automatedEligible, false);
+
   const malformed = createDeltaOptionsExecutor({
     env: optionsEnv(),
     now: () => NOW,
@@ -237,6 +253,21 @@ test('open Option orders and fill pages are scoped to call_options/put_options',
   });
   const found = await orderLookup.getOptionOrderByClientId('DDO-1234567890-PW-1');
   assert.equal(found.id, 77);
+
+  const walletReader = createDeltaOptionsExecutor({
+    env: optionsEnv(),
+    now: () => NOW,
+    fetchImpl: async url => {
+      assert.equal(new URL(url).pathname, '/v2/wallet/balances');
+      return jsonResponse({
+        success: true,
+        result: [{ asset_symbol: 'USDT', available_balance: '123.45' }]
+      });
+    }
+  });
+  const wallet = await walletReader.getOptionWalletSnapshot();
+  assert.equal(wallet[0].asset_symbol, 'USDT');
+  assert.equal(wallet[0].available_balance, '123.45');
 });
 
 test('Options order submission remains source-code hard-locked before any API request', async () => {
