@@ -20,7 +20,10 @@ test('trade history displays only the Delta Testnet ledger and does not merge in
   assert.match(history, /Delta Testnet closed-trade history is unavailable or incomplete/);
   assert.match(history, /DELTA TESTNET/);
   assert.match(history, /tradesComplete/);
-  assert.doesNotMatch(history, /API-Derived|UNVERIFIED|raw_pnl|derivedRows|tradetron/i);
+  assert.doesNotMatch(history, /API-Derived|raw_pnl|derivedRows|tradetron/i);
+  // Explicitly label ledger rows whose fees or net P&L are not verified;
+  // this is not an inferred/API-derived trade source.
+  assert.match(history, /NET UNVERIFIED/);
 });
 
 test('the dashboard no longer renders mirror coverage or signal record sections', () => {
