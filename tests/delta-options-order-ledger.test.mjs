@@ -268,6 +268,18 @@ test('refuses to submit without an exact persisted attempt and records a matchin
   assert.equal(repeated.idempotent, true);
 });
 
+test('closed IOC acknowledgement with remaining quantity is terminal cancellation, not a live submission', async () => {
+  const database = createMemoryDatabase();
+  const ledger = createDeltaOptionsOrderLedger({ database, now: () => NOW });
+  await ledger.persistAttempt(INPUT);
+  const row = await ledger.recordAcknowledgement(
+    INPUT.clientOrderId,
+    makeAck({ state: 'closed', unfilled_size: 1 })
+  );
+  assert.equal(row.order_state, 'CANCELLED');
+  assert.equal(Number(row.acknowledged_filled_qty), 2);
+});
+
 test('mismatched exchange acknowledgement locks the attempt for reconciliation', async () => {
   const database = createMemoryDatabase();
   const ledger = createDeltaOptionsOrderLedger({ database, now: () => NOW });
