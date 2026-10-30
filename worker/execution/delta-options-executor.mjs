@@ -222,8 +222,12 @@ export function createDeltaOptionsExecutor({
       const symbol = value(row?.product_symbol || row?.symbol).toUpperCase();
       const parsed = parseDeltaOptionSymbol(symbol, undefined, now());
       const productId = Number(row?.product_id ?? row?.productId);
-      const product = products.find(item => item.symbol === symbol && item.id === productId);
-      if (!parsed || !product) {
+      const expectedType = parsed?.optionType === 'CALL' ? 'call_options' :
+        parsed?.optionType === 'PUT' ? 'put_options' : '';
+      const product = products.find(item => item.symbol === symbol && item.id === productId &&
+        item.contract_type === expectedType);
+      const rowType = value(row?.contract_type).toLowerCase();
+      if (!parsed || !product || (rowType && rowType !== expectedType)) {
         throw new Error('Delta Testnet Options open order response contained a non-option or unverified product row');
       }
       unique.set(value(row?.id || row?.client_order_id || JSON.stringify(row)), row);
@@ -240,7 +244,19 @@ export function createDeltaOptionsExecutor({
         value(order.client_order_id) !== id) {
       throw new Error('Delta Testnet Options order acknowledgement lookup did not match its client_order_id');
     }
-    return order;
+    const symbol = value(order.product_symbol || order.symbol).toUpperCase();
+    const parsed = parseDeltaOptionSymbol(symbol, undefined, now());
+    const productId = Number(order.product_id ?? order.productId);
+    const expectedType = parsed?.optionType === 'CALL' ? 'call_options' :
+      parsed?.optionType === 'PUT' ? 'put_options' : '';
+    const rowType = value(order.contract_type).toLowerCase();
+    const products = await getOptionProducts();
+    const product = products.find(item => item.symbol === symbol && item.id === productId &&
+      item.contract_type === expectedType);
+    if (!parsed || !product || (rowType && rowType !== expectedType)) {
+      throw new Error('Delta Testnet Options order acknowledgement did not match its verified product ID');
+    }
+    return { ...order, symbol, product_id: productId, automatedEligible: product.automatedEligible === true };
   }
 
   async function getOptionWalletSnapshot() {
@@ -267,6 +283,7 @@ export function createDeltaOptionsExecutor({
       after: value(after) || undefined
     });
     if (!Array.isArray(response?.result)) throw new Error('Delta Testnet Options fills response is malformed');
+    const products = await getOptionProducts();
     const rows = response.result.map(row => {
       const symbol = value(row?.product_symbol || row?.symbol).toUpperCase();
       const parsed = parseDeltaOptionSymbol(symbol, undefined, now());
@@ -274,11 +291,19 @@ export function createDeltaOptionsExecutor({
       const contractType = value(row?.contract_type).toLowerCase();
       const expectedType = parsed?.optionType === 'CALL' ? 'call_options' :
         parsed?.optionType === 'PUT' ? 'put_options' : '';
-      if (!parsed || !Number.isSafeInteger(productId) || productId <= 0 ||
+      const product = products.find(item => item.symbol === symbol && item.id === productId &&
+        item.contract_type === expectedType);
+      if (!parsed || !Number.isSafeInteger(productId) || productId <= 0 || !product ||
           (contractType && contractType !== expectedType)) {
-        throw new Error('Delta Testnet Options fills page contains an invalid option contract row');
+        throw new Error('Delta Testnet Options fills page contains an invalid or unverified product row');
       }
-      return { ...row, symbol, product_id: productId, option_type: parsed.optionType };
+      return {
+        ...row,
+        symbol,
+        product_id: productId,
+        option_type: parsed.optionType,
+        automatedEligible: product.automatedEligible === true
+      };
     });
     return {
       rows,
