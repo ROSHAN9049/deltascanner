@@ -699,6 +699,7 @@ export class DeltaTestnetTracker {
           // Gross P&L is calculated only for a known vanilla contract multiplier.
           // Net P&L and result are withheld for synthetic/unverified closes.
           gross_pnl: grossPnl,
+          gross_pnl_verified: grossPnl !== null,
           net_pnl: netPnl,
           net_pnl_verified: netPnl !== null,
           pnl_pct: pnlPct,
