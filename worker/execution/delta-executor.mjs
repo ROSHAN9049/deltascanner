@@ -1067,6 +1067,7 @@ export function createDeltaExecutor({
     getOrderById,
     getFillsPage,
     getAccountSnapshot,
+    getRawWalletSnapshot: getWalletSnapshot,
     getRecentCloseDetails,
     getProductMetadata: resolveProduct,
     assertConfigured
