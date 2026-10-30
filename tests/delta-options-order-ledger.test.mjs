@@ -235,6 +235,7 @@ test('attempts must match the same persisted leg and reverse side for reduce-onl
     ledger.persistAttempt({ ...INPUT, productId: 999 }),
     /conflicts with its persisted leg/
   );
+  database.legs.get(String(INPUT.legId)).filled_qty = 2;
   await assert.rejects(
     ledger.persistAttempt({ ...INPUT, side: 'BUY', intent: 'EXIT', reduceOnly: true }),
     /conflicts with its persisted leg/
@@ -283,7 +284,7 @@ test('ambiguous submit outcome is persisted and cannot be blindly retried', asyn
   const ledger = createDeltaOptionsOrderLedger({ database, now: () => NOW });
   await ledger.persistAttempt(INPUT);
   const unknown = await ledger.markSubmissionUnknown(INPUT.clientOrderId, new Error('socket timeout'));
-  assert.equal(unknown.order_state, 'UNKNOWN');
+  assert.equal(unknown.order_state, 'RECONCILIATION_REQUIRED');
   assert.equal(unknown.raw.blind_retry_prohibited, true);
 
   const repeated = await ledger.markSubmissionUnknown(INPUT.clientOrderId, new Error('another timeout'));
@@ -371,7 +372,7 @@ test('overfills and malformed matching fills never become a successful filled at
   const nextLedger = createDeltaOptionsOrderLedger({ database: nextDatabase, now: () => NOW });
   await nextLedger.persistAttempt(INPUT);
   await nextLedger.recordAcknowledgement(INPUT.clientOrderId, makeAck());
-  await assert.rejects(nextLedger.reconcileFills(INPUT.clientOrderId, {
+  const malformed = await nextLedger.reconcileFills(INPUT.clientOrderId, {
     executor: {
       async getOptionFillsPage() {
         return {
@@ -379,7 +380,8 @@ test('overfills and malformed matching fills never become a successful filled at
             id: 'bad-fill', order_id: '7001', product_id: 999,
             product_symbol: INPUT.symbol, side: 'buy',
             size: '1', price: '100', commission: '0.01',
-            settling_asset_symbol: 'USD'
+            settling_asset_symbol: 'USD',
+            created_at: String((NOW + 10_000) * 1000)
           }],
           after: null
         };
@@ -387,7 +389,8 @@ test('overfills and malformed matching fills never become a successful filled at
     },
     startTimeUs: NOW * 1000,
     endTimeUs: (NOW + 60_000) * 1000
-  }), /conflicts with the persisted order/);
+  });
+  assert.equal(malformed.order_state, 'RECONCILIATION_REQUIRED');
 });
 
 test('fill reconciliation preserves unknown commission rather than treating missing fees as zero', async () => {
@@ -402,7 +405,7 @@ test('fill reconciliation preserves unknown commission rather than treating miss
           rows: [{
             id: 'fill-no-fee', order_id: '7001', product_id: 101,
             product_symbol: INPUT.symbol, side: 'buy',
-            size: '1', price: '100'
+            size: '1', price: '100', created_at: String((NOW + 10_000) * 1000)
           }],
           after: null
         };
@@ -428,7 +431,7 @@ test('rejects an invalid option order symbol and an unbounded fills scan', async
   await ledger.recordAcknowledgement(INPUT.clientOrderId, makeAck());
 
   let page = 0;
-  await assert.rejects(ledger.reconcileFills(INPUT.clientOrderId, {
+  const incomplete = await ledger.reconcileFills(INPUT.clientOrderId, {
     executor: {
       async getOptionFillsPage() {
         page += 1;
@@ -437,5 +440,6 @@ test('rejects an invalid option order symbol and an unbounded fills scan', async
     },
     startTimeUs: NOW * 1000,
     endTimeUs: (NOW + 60_000) * 1000
-  }), /exceeded the configured page bound/);
+  });
+  assert.equal(incomplete.order_state, 'RECONCILIATION_REQUIRED');
 });
