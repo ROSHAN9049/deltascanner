@@ -185,13 +185,14 @@ test('open Option orders and fill pages are scoped to call_options/put_options',
       const parsed = new URL(url);
       calls.push(parsed);
       if (parsed.pathname === '/v2/orders') {
+        const state = parsed.searchParams.get('state');
         return jsonResponse({
           success: true,
           result: [{
-            id: 10,
-            symbol: 'C-BTC-90000-311026',
-            client_order_id: 'DDO-1234567890-PW-1',
-            state: 'open'
+            id: state === 'open' ? 10 : 11,
+            symbol: state === 'open' ? 'C-BTC-90000-311026' : 'P-BTC-85000-311026',
+            client_order_id: state === 'open' ? 'DDO-1234567890-PW-1' : 'DDO-2234567890-LP-1',
+            state
           }],
           meta: {}
         });
@@ -204,7 +205,7 @@ test('open Option orders and fill pages are scoped to call_options/put_options',
     }
   });
   const orders = await executor.getOpenOptionOrders();
-  assert.equal(orders.length, 2); // one row from open, one from pending in mock
+  assert.equal(orders.length, 2);
   assert.ok(calls.filter(url => url.pathname === '/v2/orders').every(url =>
     url.searchParams.get('contract_types') === 'call_options,put_options' &&
     url.searchParams.get('page_size') === '50'
@@ -222,6 +223,20 @@ test('open Option orders and fill pages are scoped to call_options/put_options',
   assert.equal(fillUrl.searchParams.get('page_size'), '50');
   assert.equal(fillUrl.searchParams.get('contract_types'), 'call_options,put_options');
   assert.equal(fillUrl.searchParams.get('after'), 'fill-cursor');
+
+  const orderLookup = createDeltaOptionsExecutor({
+    env: optionsEnv(),
+    now: () => NOW,
+    fetchImpl: async url => {
+      assert.match(new URL(url).pathname, /client_order_id\\//);
+      return jsonResponse({
+        success: true,
+        result: { id: 77, client_order_id: 'DDO-1234567890-PW-1', state: 'filled' }
+      });
+    }
+  });
+  const found = await orderLookup.getOptionOrderByClientId('DDO-1234567890-PW-1');
+  assert.equal(found.id, 77);
 });
 
 test('Options order submission remains source-code hard-locked before any API request', async () => {
@@ -238,6 +253,6 @@ test('Options order submission remains source-code hard-locked before any API re
     qty: 1,
     limitPrice: 100,
     clientOrderId: 'DDO-ABCDEFGHIJKLMN-LP-1'
-  }), new RegExp(OPTIONS_EXECUTION_LOCK_REASON.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }), error => error.message === OPTIONS_EXECUTION_LOCK_REASON);
   assert.equal(calls, 0);
 });
