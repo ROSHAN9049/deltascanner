@@ -20,6 +20,7 @@ function ticker(symbol, optionType, productId, underlying = 'BTC') {
     contract_type: optionType === 'CALL' ? 'call_options' : 'put_options',
     contract_value: '0.001',
     tick_size: '0.0001',
+    settling_asset: { symbol: 'USD' },
     state: 'live',
     testnet_product_verified: true
   };
@@ -216,6 +217,7 @@ test('ambiguous reservation recovery requires exact persisted group and both leg
     strike: String(leg.strike),
     contract_value: String(leg.contractValue),
     tick_size: String(leg.tickSize),
+    settlement_asset: leg.settlement_asset,
     expiry_at: leg.expiry_at,
     side: leg.side,
     requested_qty: leg.qty,
@@ -238,4 +240,12 @@ test('ambiguous reservation recovery requires exact persisted group and both leg
     legRows.map((row, index) => index === 1 ? { ...row, side: 'BUY' } : row),
     payload
   ), false);
+});
+
+test('account risk approval is mandatory and fails closed when no gate is supplied', async () => {
+  const manager = createDeltaOptionsExecutionManager({ database: { select: async () => [] } });
+  await assert.rejects(
+    manager.assertAccountRisk({ phase: 'RESERVE' }),
+    /Account-wide Options risk gate is unavailable/
+  );
 });

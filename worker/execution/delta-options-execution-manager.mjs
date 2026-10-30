@@ -52,6 +52,7 @@ export function matchesPersistedOptionsReservation(groupRow, legRows, payload) {
       !sameNumber(groupRow.risk_budget_usd, group.risk_budget_usd) ||
       !sameNumber(groupRow.max_loss_usd, group.max_loss_usd) ||
       !sameNumber(groupRow.reserved_margin_usd, group.reserved_margin_usd) ||
+      upper(groupRow.settlement_asset) !== upper(group.settlement_asset) ||
       (group.net_credit_usd === null
         ? groupRow.net_credit_usd !== null
         : !sameNumber(groupRow.net_credit_usd, group.net_credit_usd))) {
@@ -72,6 +73,7 @@ export function matchesPersistedOptionsReservation(groupRow, legRows, payload) {
         !sameNumber(row.strike, expected.strike) ||
         !sameNumber(row.contract_value, expected.contractValue) ||
         !sameNumber(row.tick_size, expected.tickSize) ||
+        upper(row.settlement_asset) !== upper(expected.settlement_asset) ||
         !sameInstant(row.expiry_at, expected.expiry_at) ||
         upper(row.side) !== upper(expected.side) ||
         !sameNumber(row.requested_qty, expected.qty) ||
@@ -132,6 +134,7 @@ export function buildOptionsReservationPayload({
     strike: leg.strike,
     contractValue: leg.contractValue,
     tickSize: leg.tickSize,
+    settlement_asset: leg.settlementAsset,
     side: leg.side,
     qty: leg.qty,
     expiry_at: expiryAt,
@@ -149,6 +152,7 @@ export function buildOptionsReservationPayload({
     risk_budget_usd: riskBudget,
     max_loss_usd: maxLoss,
     reserved_margin_usd: reserve,
+    settlement_asset: plan.settlementAsset,
     net_credit_usd: mode === 'OPTIONS_SELL' ? finitePositive(netCreditUsd) : null,
     raw: {
       source: 'delta_options_execution_manager',
@@ -157,6 +161,7 @@ export function buildOptionsReservationPayload({
       max_loss_usd: maxLoss,
       risk_budget_usd: riskBudget,
       reserved_margin_usd: reserve,
+      settlement_asset: plan.settlementAsset,
       net_credit_usd: mode === 'OPTIONS_SELL' ? Number(netCreditUsd) : null
     }
   };
@@ -167,12 +172,39 @@ export function buildOptionsReservationPayload({
 export function createDeltaOptionsExecutionManager({
   database = defaultDatabase,
   now = () => Date.now(),
-  createGroupId = () => crypto.randomUUID()
+  createGroupId = () => crypto.randomUUID(),
+  accountRiskGate = null
 } = {}) {
   function assertExecutionAllowed() {
     if (!isOptionsExecutionAllowed()) {
       throw new Error(OPTIONS_EXECUTION_LOCK_REASON);
     }
+  }
+
+  async function assertAccountRisk(input = {}) {
+    if (!accountRiskGate || typeof accountRiskGate.evaluate !== 'function') {
+      throw new Error('Account-wide Options risk gate is unavailable; reservation and new entries remain blocked');
+    }
+    let request = input;
+    if (upper(input.phase) === 'ORDER' && input.groupId && !input.candidate) {
+      const group = await getActiveGroup();
+      if (!group || String(group.id) !== String(input.groupId)) {
+        throw new Error('Account-wide Options risk gate cannot verify the active order group');
+      }
+      request = {
+        ...input,
+        candidate: {
+          settlement_asset: group.settlement_asset,
+          client_group_id: group.client_group_id
+        }
+      };
+    }
+    const result = await accountRiskGate.evaluate(request);
+    if (!result || result.allowed !== true) {
+      const reasons = Array.isArray(result?.reasons) ? result.reasons.join(',') : 'ACCOUNT_RISK_EVALUATION_UNAVAILABLE';
+      throw new Error('Account-wide Options risk gate blocked the order: ' + reasons);
+    }
+    return result;
   }
 
   function preview(input) {
@@ -192,6 +224,7 @@ export function createDeltaOptionsExecutionManager({
       throw new Error('Atomic Options reservation RPC is unavailable');
     }
     const payload = preview(input);
+    await assertAccountRisk({ phase: 'RESERVE', candidate: payload.group });
     async function recoverAmbiguousReservation() {
       const existing = await getGroupByClientGroupId(payload.group.client_group_id);
       if (!existing) return null;
@@ -305,6 +338,9 @@ export function createDeltaOptionsExecutionManager({
         !['ENTRY', 'EXIT', 'UNWIND'].includes(action) ||
         !Number.isSafeInteger(attempt) || attempt < 1 || !price) {
       throw new Error('Options order-attempt plan is invalid');
+    }
+    if (action === 'ENTRY') {
+      await assertAccountRisk({ phase: 'ORDER', groupId: group });
     }
 
     const clientIdRole = getOptionsOrderClientIdRole(action, role);
@@ -488,6 +524,7 @@ export function createDeltaOptionsExecutionManager({
     reserveOrderAttempt,
     recordOrderAcknowledgement,
     recordExecutionFill,
-    assertExecutionAllowed
+    assertExecutionAllowed,
+    assertAccountRisk
   });
 }

@@ -32,12 +32,16 @@ function verifiedProduct(ticker, now) {
   const contractValue = finitePositive(ticker.contract_value);
   const tickSize = finitePositive(ticker.tick_size);
   const state = String(ticker.state ?? '').toLowerCase();
+  const settlementAsset = String(
+    ticker?.settling_asset?.symbol ?? ticker?.settlingAsset?.symbol ??
+    ticker?.settlement_asset_symbol ?? ''
+  ).trim().toUpperCase();
 
   if (!parsed || parsed.dte <= 0 || !['BTC', 'ETH'].includes(parsed.underlying) ||
       !Number.isSafeInteger(productId) || productId <= 0 ||
       contractType !== optionContractType ||
       state !== 'live' ||
-      !contractValue || !tickSize) return null;
+      !contractValue || !tickSize || settlementAsset !== 'USD') return null;
 
   return {
     ticker,
@@ -49,7 +53,8 @@ function verifiedProduct(ticker, now) {
     strike: parsed.strike,
     expiryMs: parsed.expiryMs,
     contractValue,
-    tickSize
+    tickSize,
+    settlementAsset
   };
 }
 
@@ -82,6 +87,7 @@ export function validateLongOptionEntryPlan({
     underlyingDirection: normalized(underlyingSide),
     optionType: product.optionType,
     expiryMs: product.expiryMs,
+    settlementAsset: product.settlementAsset,
     legs: [{
       role: 'LONG_PREMIUM',
       symbol: product.symbol,
@@ -91,6 +97,7 @@ export function validateLongOptionEntryPlan({
       strike: product.strike,
       contractValue: product.contractValue,
       tickSize: product.tickSize,
+      settlementAsset: product.settlementAsset,
       side: 'BUY',
       qty: quantity,
       reduceOnlyOnExit: true
@@ -153,6 +160,7 @@ export function validateCreditSpreadEntryPlan({
     underlyingDirection: direction,
     optionType: short.optionType,
     expiryMs: short.expiryMs,
+    settlementAsset: short.settlementAsset,
     legs: [
       {
         role: 'PROTECTIVE_WING',
@@ -163,6 +171,7 @@ export function validateCreditSpreadEntryPlan({
         strike: protective.strike,
         contractValue: protective.contractValue,
         tickSize: protective.tickSize,
+        settlementAsset: protective.settlementAsset,
         side: 'BUY',
         qty: quantity,
         reduceOnlyOnExit: true
@@ -176,6 +185,7 @@ export function validateCreditSpreadEntryPlan({
         strike: short.strike,
         contractValue: short.contractValue,
         tickSize: short.tickSize,
+        settlementAsset: short.settlementAsset,
         side: 'SELL',
         qty: quantity,
         reduceOnlyOnExit: true

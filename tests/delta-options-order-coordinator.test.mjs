@@ -13,7 +13,8 @@ function makeHarness({
   submitError = null,
   lookupError = null,
   fillError = null,
-  lockError = null
+  lockError = null,
+  accountRiskError = null
 } = {}) {
   const calls = [];
   const baseReservation = {
@@ -58,6 +59,11 @@ function makeHarness({
     assertExecutionAllowed() {
       calls.push('execution-gate');
       if (lockError) throw lockError;
+    },
+    async assertAccountRisk(input) {
+      calls.push({ accountRisk: input });
+      if (accountRiskError) throw accountRiskError;
+      return { allowed: true };
     },
     async reserveOrderAttempt(input) {
       calls.push({ reserve: input });

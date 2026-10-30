@@ -206,7 +206,6 @@ export function createDeltaOptionsOrderCoordinator({
     // The manager and exchange executor independently enforce the same lock.
     manager.assertExecutionAllowed();
     executor.assertConfigured();
-
     const reservation = await manager.reserveOrderAttempt({
       groupId: expected.groupId,
       legRole: expected.legRole,

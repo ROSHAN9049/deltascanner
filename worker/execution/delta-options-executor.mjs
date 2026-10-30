@@ -98,6 +98,7 @@ export function createDeltaOptionsExecutor({
     const products = [];
     let after = '';
     let previousAfter = '';
+    let catalogueComplete = false;
     for (let page = 0; page < 20; page += 1) {
       const response = await request('GET', '/v2/products', {
         contract_types: OPTION_TYPES,
@@ -134,9 +135,21 @@ export function createDeltaOptionsExecutor({
       }
 
       const nextAfter = value(response?.meta?.after);
-      if (!nextAfter || nextAfter === after || nextAfter === previousAfter || rows.length === 0) break;
+      if (!nextAfter || rows.length === 0) {
+        catalogueComplete = true;
+        break;
+      }
+      if (nextAfter === after || nextAfter === previousAfter) {
+        throw new Error('Delta Testnet Options product pagination cursor repeated; catalogue snapshot is incomplete');
+      }
+      if (page === 19) {
+        throw new Error('Delta Testnet Options product catalogue exceeded the safe pagination limit');
+      }
       previousAfter = after;
       after = nextAfter;
+    }
+    if (!catalogueComplete) {
+      throw new Error('Delta Testnet Options product catalogue did not reach a confirmed final page');
     }
 
     productsCache = products;
@@ -199,6 +212,7 @@ export function createDeltaOptionsExecutor({
     for (const state of ACTIVE_STATES) {
       let after = '';
       let previousAfter = '';
+      let completed = false;
       for (let page = 0; page < 20; page += 1) {
         const response = await request('GET', '/v2/orders', {
           contract_types: OPTION_TYPES,
@@ -211,9 +225,21 @@ export function createDeltaOptionsExecutor({
         }
         all.push(...response.result);
         const nextAfter = value(response?.meta?.after);
-        if (!nextAfter || nextAfter === after || nextAfter === previousAfter || !response.result.length) break;
+        if (!nextAfter || !response.result.length) {
+          completed = true;
+          break;
+        }
+        if (nextAfter === after || nextAfter === previousAfter) {
+          throw new Error('Delta Testnet Options order pagination cursor repeated; account risk snapshot is incomplete');
+        }
+        if (page === 19) {
+          throw new Error('Delta Testnet Options open-order snapshot exceeded the safe pagination limit');
+        }
         previousAfter = after;
         after = nextAfter;
+      }
+      if (!completed) {
+        throw new Error('Delta Testnet Options open-order snapshot did not reach a confirmed final page');
       }
     }
     const products = await getOptionProducts();
@@ -263,7 +289,7 @@ export function createDeltaOptionsExecutor({
     // Return the raw exchange wallet; do not infer the Options settlement
     // currency or margin field until its India Testnet payload is verified.
     const response = await request('GET', '/v2/wallet/balances');
-    return response?.result ?? response;
+    return response;
   }
 
   async function getOptionFillsPage({ startTime, endTime, after = null, pageSize = PAGE_SIZE } = {}) {
