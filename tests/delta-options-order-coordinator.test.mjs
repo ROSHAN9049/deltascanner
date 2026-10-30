@@ -13,7 +13,8 @@ function makeHarness({
   submitError = null,
   lookupError = null,
   fillError = null,
-  lockError = null
+  lockError = null,
+  accountRiskError = null
 } = {}) {
   const calls = [];
   const baseReservation = {
@@ -61,6 +62,7 @@ function makeHarness({
     },
     async assertAccountRisk(input) {
       calls.push({ accountRisk: input });
+      if (accountRiskError) throw accountRiskError;
       return { allowed: true };
     },
     async reserveOrderAttempt(input) {
@@ -247,4 +249,19 @@ test('serializes order requests for the same execution group', async () => {
   );
   release();
   await first;
+});
+
+test('account-wide risk denial happens before a durable order reservation or exchange submission', async () => {
+  const harness = makeHarness({
+    accountRiskError: new Error('Account-wide Options risk gate blocked the order')
+  });
+  await assert.rejects(
+    harness.coordinator.submit(INPUT),
+    /Account-wide Options risk gate blocked the order/
+  );
+  const riskIndex = harness.calls.findIndex(item => item.accountRisk);
+  assert.ok(riskIndex >= 0);
+  assert.equal(harness.calls.some(item => item.reserve), false);
+  assert.equal(harness.calls.some(item => item.place), false);
+  assert.equal(harness.calls.findIndex(item => item.accountRisk), riskIndex);
 });
