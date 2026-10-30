@@ -695,10 +695,12 @@ export class DeltaTestnetTracker {
           entry_notional: entryNotional,
           exit_notional: exitNotional,
           fees,
+          fees_verified: commissionsComplete,
           // Gross P&L is calculated only for a known vanilla contract multiplier.
           // Net P&L and result are withheld for synthetic/unverified closes.
           gross_pnl: grossPnl,
           net_pnl: netPnl,
+          net_pnl_verified: netPnl !== null,
           pnl_pct: pnlPct,
           r_multiple: null,
           exit_reason: null,
