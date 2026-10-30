@@ -198,6 +198,6 @@ test('atomic Options reservation RPC validates both legs and is service-role onl
   assert.match(deltaOptionsMigration, /CREATE OR REPLACE FUNCTION public\.record_dd_options_execution_fill/i);
   assert.match(deltaOptionsMigration, /exchange_fill_id TEXT NOT NULL UNIQUE/i);
   assert.match(deltaOptionsMigration, /acknowledged_filled_qty NUMERIC NULL/i);
-  assert.match(deltaOptionsMigration, /ON CONFLICT \\(exchange_fill_id\\) DO NOTHING/i);
+  assert.match(deltaOptionsMigration, /ON CONFLICT \(exchange_fill_id\) DO NOTHING/i);
   assert.match(deltaOptionsMigration, /OPTIONS_FILL_ID_COLLISION/i);
 });
