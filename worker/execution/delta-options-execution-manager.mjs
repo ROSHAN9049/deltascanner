@@ -106,7 +106,6 @@ export function buildOptionsReservationPayload({
 
 export function createDeltaOptionsExecutionManager({
   database = defaultDatabase,
-  executor,
   now = () => Date.now(),
   createGroupId = () => crypto.randomUUID()
 } = {}) {
@@ -149,13 +148,11 @@ export function createDeltaOptionsExecutionManager({
     return { ...result, payload };
   }
 
-  async function submitReservedOrder(order) {
-    // The locked executor independently repeats this guard before network I/O.
+  async function submitReservedOrder() {
+    // The DB-backed order-attempt/acknowledgement/fill pipeline is not wired yet.
+    // This second release gate remains closed even if the entry constant changes.
     assertExecutionAllowed();
-    if (typeof executor?.placeOptionOrder !== 'function') {
-      throw new Error('Dedicated Delta Testnet Options executor is unavailable');
-    }
-    return executor.placeOptionOrder(order);
+    throw new Error('Options order-attempt persistence and fill reconciliation are incomplete; exchange submission remains disabled');
   }
 
   async function getActiveGroup() {
@@ -172,11 +169,43 @@ export function createDeltaOptionsExecutionManager({
     return rows[0] || null;
   }
 
+  async function getGroupByClientGroupId(clientGroupId) {
+    const id = validClientGroupId(clientGroupId);
+    if (typeof database?.select !== 'function') {
+      throw new Error('Options execution ledger read is unavailable');
+    }
+    const rows = await database.select(
+      'dd_options_execution_groups',
+      'client_group_id=eq.' + encodeURIComponent(id) + '&select=*&limit=2'
+    );
+    if (!Array.isArray(rows) || rows.length > 1) {
+      throw new Error('Options group idempotency lookup returned an invalid snapshot');
+    }
+    return rows[0] || null;
+  }
+
+  async function getGroupLegs(groupId) {
+    const id = String(groupId ?? '').trim();
+    if (!id || id.length > 80 || typeof database?.select !== 'function') {
+      throw new Error('Options group ID or ledger reader is invalid');
+    }
+    const rows = await database.select(
+      'dd_options_execution_legs',
+      'group_id=eq.' + encodeURIComponent(id) + '&select=*&order=id.asc&limit=3'
+    );
+    if (!Array.isArray(rows) || rows.length > 2) {
+      throw new Error('Options group leg snapshot is malformed');
+    }
+    return rows;
+  }
+
   return Object.freeze({
     preview,
     reserve,
     submitReservedOrder,
     getActiveGroup,
+    getGroupByClientGroupId,
+    getGroupLegs,
     assertExecutionAllowed
   });
 }
