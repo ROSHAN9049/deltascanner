@@ -34,6 +34,7 @@ import { createDeltaOptionsExecutionManager } from './execution/delta-options-ex
 import { createDeltaOptionsOrderLedger } from './execution/delta-options-order-ledger.mjs';
 import { createDeltaOptionsOrderCoordinator } from './execution/delta-options-order-coordinator.mjs';
 import { createDeltaOptionsSupervisor } from './execution/delta-options-supervisor.mjs';
+import { createDeltaOptionsAccountRiskGate } from './execution/delta-options-account-risk.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const n = v => Number.isFinite(+v) ? +v : 0;
@@ -285,18 +286,45 @@ export class DeltaEngine {
     this.lastOptionsSupervisorRunAt = 0;
     this.lastOptionsSupervisorLogAt = 0;
     this.lastOptionsSupervisorStatus = 'NOT_RUN';
-    this.optionsExecutionManager = createDeltaOptionsExecutionManager({ database: db });
-    this.optionsOrderLedger = createDeltaOptionsOrderLedger({ database: db });
     this.optionsExecutor = createDeltaOptionsExecutor();
-    // Constructed for the later supervised state machine; never invoked from
-    // scan/signal routing while the source-code Options execution lock is false.
-    this.optionsOrderCoordinator = createDeltaOptionsOrderCoordinator({
+    // The manager is constructed before the supervisor, so use a fail-closed
+    // proxy until the complete read-only account risk service is assembled.
+    let optionsAccountRiskGateImpl = null;
+    const optionsAccountRiskGateProxy = {
+      async evaluate(input) {
+        if (!optionsAccountRiskGateImpl) {
+          return { allowed: false, reasons: ['ACCOUNT_WIDE_RISK_GATE_NOT_INITIALIZED'] };
+        }
+        return optionsAccountRiskGateImpl.evaluate(input);
+      }
+    };
+    this.optionsExecutionManager = createDeltaOptionsExecutionManager({
+      database: db,
+      accountRiskGate: optionsAccountRiskGateProxy
+    });
+    this.optionsOrderLedger = createDeltaOptionsOrderLedger({ database: db });
+    this.optionsSupervisor = createDeltaOptionsSupervisor({
+      database: db,
       manager: this.optionsExecutionManager,
       executor: this.optionsExecutor,
       ledger: this.optionsOrderLedger
     });
-    this.optionsSupervisor = createDeltaOptionsSupervisor({
+    this.optionsAccountRiskGate = createDeltaOptionsAccountRiskGate({
       database: db,
+      futuresExecutor: deltaExecutor,
+      optionsExecutor: this.optionsExecutor,
+      manager: this.optionsExecutionManager,
+      optionsSupervisor: this.optionsSupervisor,
+      getLimits: () => ({
+        maxCombinedOpenRiskPct: Number(process.env.DELTA_OPTIONS_MAX_COMBINED_OPEN_RISK_PCT),
+        minimumAvailableBufferPct: Number(process.env.DELTA_OPTIONS_MIN_AVAILABLE_BUFFER_PCT)
+      }),
+      getGridState: () => this.currentSettings?.grid_state ?? null
+    });
+    optionsAccountRiskGateImpl = this.optionsAccountRiskGate;
+    // Coordinator is constructed for the locked lifecycle; no signal or exit
+    // routing invokes it while the source-code Options lock remains false.
+    this.optionsOrderCoordinator = createDeltaOptionsOrderCoordinator({
       manager: this.optionsExecutionManager,
       executor: this.optionsExecutor,
       ledger: this.optionsOrderLedger
