@@ -149,7 +149,7 @@ export class DeltaAdapter {
       const response = await this.request(
         'GET',
         '/v2/products',
-        { contract_types: 'call_options,put_options', states: 'live', page_size: 100, after },
+        { contract_types: 'call_options,put_options', states: 'live', page_size: 50, after },
         null,
         false,
         { withMeta: true }

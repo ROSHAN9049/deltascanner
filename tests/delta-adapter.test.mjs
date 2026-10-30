@@ -67,6 +67,6 @@ test('optionProducts() requests live call and put option contracts from the conf
   assert.equal(request.path, '/v2/products');
   assert.equal(request.params.contract_types, 'call_options,put_options');
   assert.equal(request.params.states, 'live');
-  assert.equal(request.params.page_size, 100);
+  assert.equal(request.params.page_size, 50);
   assert.equal(request.auth, false);
 });
