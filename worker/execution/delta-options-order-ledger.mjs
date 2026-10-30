@@ -30,22 +30,6 @@ function normalizedState(state) {
   return 'UNKNOWN';
 }
 
-function sameAttempt(row, expected) {
-  return Number(row.group_id) === Number(expected.group_id) ||
-    (String(row.group_id) === String(expected.group_id) &&
-      String(row.leg_id) === String(expected.leg_id) &&
-      upper(row.leg_role) === expected.leg_role &&
-      upper(row.intent) === expected.intent &&
-      Number(row.attempt_no) === expected.attempt_no &&
-      Number(row.product_id) === expected.product_id &&
-      upper(row.symbol) === expected.symbol &&
-      upper(row.side) === expected.side &&
-      Number(row.requested_qty) === expected.requested_qty &&
-      Number(row.limit_price) === expected.limit_price &&
-      Boolean(row.reduce_only) === expected.reduce_only &&
-      String(row.client_order_id) === expected.client_order_id);
-}
-
 function exactAttempt(row, expected) {
   return String(row?.group_id) === String(expected.group_id) &&
     String(row?.leg_id) === String(expected.leg_id) &&
