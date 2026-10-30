@@ -124,3 +124,106 @@ test('fails closed when contract value, fee, balance or risk cap is unknown', ()
     assert.ok(sized.reason);
   }
 });
+
+
+test('bounded option scan retains long, short-leg and protective-wing delta buckets', () => {
+  const rows = [];
+  for (const optionType of ['C', 'P']) {
+    for (const [delta, strike] of [[0.55, 90000], [0.27, 91000], [0.10, 92000]]) {
+      rows.push({
+        symbol: optionType + '-BTC-' + strike + '-051126',
+        mark_price: 100,
+        quotes: { best_bid: 99, best_ask: 101 },
+        greeks: { delta: optionType === 'C' ? delta : -delta },
+        open_interest: 1000,
+        volume: 100
+      });
+    }
+  }
+
+  const selected = selectOptionContractsForScan({
+    rows,
+    underlying: 'BTC',
+    spotPrice: 90000,
+    now: NOW,
+    minDays: 2,
+    maxDays: 14,
+    maxContracts: 6,
+    maxMoneynessPct: 20
+  });
+  assert.equal(selected.length, 6);
+  for (const optionType of ['C', 'P']) {
+    const deltas = selected
+      .filter(row => row.symbol.startsWith(optionType + '-'))
+      .map(row => Math.abs(Number(row.greeks.delta)))
+      .sort((a, b) => a - b);
+    assert.deepEqual(deltas, [0.10, 0.27, 0.55]);
+  }
+});
+
+test('sizes a defined-risk credit spread using both multipliers and fee reserves', () => {
+  const sized = calculateCreditSpreadSizing({
+    equity: 10000,
+    available: 5000,
+    shortBid: 240,
+    hedgeAsk: 80,
+    shortStrike: 90000,
+    hedgeStrike: 88000,
+    shortContractValue: 0.001,
+    hedgeContractValue: 0.001,
+    shortTakerFeeRate: 0.001,
+    hedgeTakerFeeRate: 0.001,
+    riskPct: 0.30
+  });
+  assert.equal(sized.qty, 16);
+  assert.equal(sized.netCreditPerContract, 0.16);
+  assert.equal(sized.spreadWidthPerContract, 2);
+  assert.ok(sized.maxLossPerContract > 1.84);
+  assert.equal(sized.totalRisk, sized.qty * sized.maxLossPerContract);
+  assert.equal(sized.totalMarginReserve, sized.qty * sized.marginReservePerContract);
+});
+
+test('credit spread sizing fails closed for mismatched multipliers, unknown fees, no credit or excess risk', () => {
+  const base = {
+    equity: 10000,
+    available: 5000,
+    shortBid: 240,
+    hedgeAsk: 80,
+    shortStrike: 90000,
+    hedgeStrike: 88000,
+    shortContractValue: 0.001,
+    hedgeContractValue: 0.001,
+    shortTakerFeeRate: 0.001,
+    hedgeTakerFeeRate: 0.001,
+    riskPct: 0.30
+  };
+  for (const overrides of [
+    { hedgeContractValue: 0.01 },
+    { hedgeTakerFeeRate: undefined },
+    { shortBid: 70 },
+    { riskPct: 0.5 },
+    { available: 0 }
+  ]) {
+    const sized = calculateCreditSpreadSizing({ ...base, ...overrides });
+    assert.equal(sized.qty, 0);
+    assert.ok(sized.reason);
+  }
+});
+
+test('credit spread size is limited by the full-width available-balance reserve', () => {
+  const sized = calculateCreditSpreadSizing({
+    equity: 10000,
+    available: 2,
+    shortBid: 240,
+    hedgeAsk: 80,
+    shortStrike: 90000,
+    hedgeStrike: 88000,
+    shortContractValue: 0.001,
+    hedgeContractValue: 0.001,
+    shortTakerFeeRate: 0.001,
+    hedgeTakerFeeRate: 0.001,
+    riskPct: 0.30
+  });
+  assert.equal(sized.qty, 0);
+  assert.match(sized.reason, /full-width credit-spread reserve/);
+});
