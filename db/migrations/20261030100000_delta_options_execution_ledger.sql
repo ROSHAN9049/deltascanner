@@ -475,6 +475,9 @@ BEGIN
   IF v_group.state IN ('CLOSED', 'REJECTED', 'FAILED', 'RECONCILIATION_REQUIRED') THEN
     RAISE EXCEPTION 'Options group is terminal or reconciliation-locked';
   END IF;
+  IF v_group.state = 'EXIT_REQUIRED' AND v_intent = 'ENTRY' THEN
+    RAISE EXCEPTION 'Mandatory Options expiry exit is due; new entry attempts are prohibited';
+  END IF;
 
   SELECT * INTO v_leg
   FROM public.dd_options_execution_legs
@@ -582,7 +585,7 @@ BEGIN
     END;
   ELSE
     IF v_group.strategy <> 'OPTIONS_SELL' OR v_role <> 'PROTECTIVE_WING' OR
-       v_group.state NOT IN ('SHORT_ENTRY_PENDING', 'UNWIND_PENDING') THEN
+       v_group.state NOT IN ('SHORT_ENTRY_PENDING', 'UNWIND_PENDING', 'EXIT_REQUIRED') THEN
       RAISE EXCEPTION 'Only a protective wing during failed/partial short entry may be unwound';
     END IF;
     SELECT * INTO v_short

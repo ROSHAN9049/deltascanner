@@ -216,3 +216,26 @@ test('protective UNWIND and normal EXIT use different immutable client-order IDs
     makeOptionsClientOrderId(GROUP.id, exitRole, 1)
   );
 });
+
+test('expiry exit unwinds a protective-only credit-spread leg and never opens the short', () => {
+  const result = plan({
+    group: { ...GROUP, strategy: 'OPTIONS_SELL', state: 'EXIT_REQUIRED' },
+    legs: spreadLegs({ protective: { filled_qty: 2 } }),
+    orders: [order('PROTECTIVE_WING', 'ENTRY', 'CANCELLED', 2)],
+    expiryExitDue: true
+  });
+  assert.equal(result.status, 'ACTION_READY');
+  assert.equal(result.nextAction.legRole, 'PROTECTIVE_WING');
+  assert.equal(result.nextAction.intent, 'UNWIND');
+  assert.equal(result.nextAction.side, 'SELL');
+  assert.equal(result.nextAction.reduceOnly, true);
+});
+
+test('EXIT_REQUIRED blocks all new entries unless explicit expiry exit planning is active', () => {
+  const result = plan({
+    group: { ...GROUP, state: 'EXIT_REQUIRED' },
+    entrySignalReady: true
+  });
+  assert.equal(result.status, 'EXIT_REQUIRED');
+  assert.equal(result.exitOnly, true);
+});
