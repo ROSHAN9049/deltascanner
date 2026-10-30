@@ -272,12 +272,22 @@ test('closed IOC acknowledgement with remaining quantity is terminal cancellatio
   const database = createMemoryDatabase();
   const ledger = createDeltaOptionsOrderLedger({ database, now: () => NOW });
   await ledger.persistAttempt(INPUT);
+  await ledger.recordAcknowledgement(
+    INPUT.clientOrderId,
+    makeAck({ state: 'open', unfilled_size: 1 })
+  );
   const row = await ledger.recordAcknowledgement(
     INPUT.clientOrderId,
     makeAck({ state: 'closed', unfilled_size: 1 })
   );
   assert.equal(row.order_state, 'CANCELLED');
   assert.equal(Number(row.acknowledged_filled_qty), 1);
+  const repeated = await ledger.recordAcknowledgement(
+    INPUT.clientOrderId,
+    makeAck({ state: 'closed', unfilled_size: 1 })
+  );
+  assert.equal(repeated.idempotent, true);
+  assert.equal(repeated.order_state, 'CANCELLED');
 });
 
 test('mismatched exchange acknowledgement locks the attempt for reconciliation', async () => {
