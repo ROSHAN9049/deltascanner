@@ -56,9 +56,10 @@ export function parseDeltaOptionSymbol(symbol, underlying, now = Date.now()) {
   const year = 2000 + Number(match[4].slice(4, 6));
   if (!(strike > 0) || day < 1 || day > 31 || month < 1 || month > 12) return null;
 
-  // Delta India's current Options guide lists BTC and ETH European contracts.
-  // Reject other underlyings until an India-specific settlement rule is verified.
-  const settlementHour = ['BTC', 'ETH'].includes(asset) ? 12 : null;
+  // Delta India BTC/ETH options settle at 17:30 IST (12:00 UTC).
+  // XAUT gold options settle at 21:30 IST (16:00 UTC).
+  // Unknown underlyings remain fail-closed.
+  const settlementHour = ({ BTC: 12, ETH: 12, XAUT: 16 })[asset] ?? null;
   if (settlementHour === null) return null;
   const expiryMs = Date.UTC(year, month - 1, day, settlementHour);
   const expiry = new Date(expiryMs);
@@ -200,42 +201,89 @@ export function selectOptionContractsForScan({
  * allowance), never to a stop-loss percentage of the premium. Missing product
  * metadata blocks sizing rather than substituting a guessed contract value.
  */
+// Delta Exchange India help-centre schedule (standard, non-promotional):
+// 0.010% of option notional, capped at 3.5% of premium, plus 18% GST.
+export const DELTA_INDIA_OPTION_NOTIONAL_FEE_RATE = 0.0001;
+export const DELTA_INDIA_OPTION_PREMIUM_FEE_CAP_RATE = 0.035;
+export const DELTA_INDIA_GST_RATE = 0.18;
+
+export function calculateOptionTradingFee({ spotPrice, premium, contractValue } = {}) {
+  const spot = finitePositive(spotPrice);
+  const optionPremium = finitePositive(premium);
+  const multiplier = finitePositive(contractValue);
+  if (!spot || !optionPremium || !multiplier) {
+    return {
+      valid: false,
+      reason: 'Option spot price, premium, or contract value is unavailable',
+      notionalPerContract: 0,
+      premiumValuePerContract: 0,
+      feeBeforeGst: 0,
+      gst: 0,
+      totalFeePerContract: 0
+    };
+  }
+
+  const notionalPerContract = spot * multiplier;
+  const premiumValuePerContract = optionPremium * multiplier;
+  const feeByNotional = notionalPerContract * DELTA_INDIA_OPTION_NOTIONAL_FEE_RATE;
+  const feeCap = premiumValuePerContract * DELTA_INDIA_OPTION_PREMIUM_FEE_CAP_RATE;
+  const feeBeforeGst = Math.min(feeByNotional, feeCap);
+  const gst = feeBeforeGst * DELTA_INDIA_GST_RATE;
+  return {
+    valid: [notionalPerContract, premiumValuePerContract, feeByNotional, feeCap, feeBeforeGst, gst]
+      .every(Number.isFinite),
+    notionalPerContract,
+    premiumValuePerContract,
+    feeByNotional,
+    feeCap,
+    feeBeforeGst,
+    gst,
+    totalFeePerContract: feeBeforeGst + gst
+  };
+}
+
 export function calculateLongOptionSizing({
   equity,
   available,
   ask,
+  spotPrice,
   contractValue,
-  takerFeeRate,
   riskPct = 0.30
 } = {}) {
   const accountEquity = finitePositive(equity);
   const availableBalance = finitePositive(available);
   const premium = finitePositive(ask);
   const multiplier = finitePositive(contractValue);
-  const feeRate = finiteNonNegative(takerFeeRate);
   const pct = Number(riskPct);
 
   const blocked = reason => ({
     qty: 0,
     riskBudget: accountEquity && Number.isFinite(pct) ? accountEquity * pct / 100 : 0,
     premiumPerContract: null,
-    estimatedFeesPerContract: null,
+    estimatedEntryFeePerContract: null,
+    estimatedRoundTripFeesPerContract: null,
     maxLossPerContract: null,
     premiumNotional: 0,
     totalRisk: 0,
     reason
   });
 
-  if (!accountEquity || !availableBalance || !premium || !multiplier || feeRate === null ||
-      !Number.isFinite(pct) || pct < 0.05 || pct > 0.30 || feeRate > 0.02) {
-    return blocked('Trusted equity, available balance, ask, contract value, fee or risk metadata is missing/out of bounds');
+  if (!accountEquity || !availableBalance || !premium || !multiplier ||
+      !Number.isFinite(pct) || pct < 0.05 || pct > 0.30) {
+    return blocked('Trusted equity, available balance, ask, contract value or risk cap is missing/out of bounds');
   }
+
+  const fee = calculateOptionTradingFee({ spotPrice, premium, contractValue: multiplier });
+  if (!fee.valid) return blocked(fee.reason);
 
   const riskBudget = accountEquity * pct / 100;
   const premiumPerContract = premium * multiplier;
-  const estimatedFeesPerContract = premiumPerContract * feeRate * 2;
-  const maxLossPerContract = premiumPerContract + estimatedFeesPerContract;
-  const entryCashPerContract = premiumPerContract * (1 + feeRate);
+  const estimatedEntryFeePerContract = fee.totalFeePerContract;
+  // Reserve a second equivalent fee for a voluntary close; worthless expiry has
+  // no settlement fee under the published India help-centre rule.
+  const estimatedRoundTripFeesPerContract = estimatedEntryFeePerContract * 2;
+  const maxLossPerContract = premiumPerContract + estimatedRoundTripFeesPerContract;
+  const entryCashPerContract = premiumPerContract + estimatedEntryFeePerContract;
   if (!(riskBudget > 0 && maxLossPerContract > 0 && entryCashPerContract > 0)) {
     return blocked('Option premium risk could not be calculated');
   }
@@ -245,7 +293,7 @@ export function calculateLongOptionSizing({
   const qty = Math.max(0, Math.min(qtyByRisk, qtyByAvailable));
   const reason = qty < 1
     ? (qtyByAvailable < 1
-      ? 'Available balance is below one option contract premium'
+      ? 'Available balance is below one option contract premium plus entry fee'
       : 'Full-premium risk budget is below one option contract')
     : null;
 
@@ -253,14 +301,14 @@ export function calculateLongOptionSizing({
     qty,
     riskBudget,
     premiumPerContract,
-    estimatedFeesPerContract,
+    estimatedEntryFeePerContract,
+    estimatedRoundTripFeesPerContract,
     maxLossPerContract,
     premiumNotional: qty * premiumPerContract,
     totalRisk: qty * maxLossPerContract,
     reason
   };
 }
-
 
 /**
  * Size a vertical credit spread as a defined-risk pair only. The short and
@@ -274,14 +322,13 @@ export function calculateLongOptionSizing({
 export function calculateCreditSpreadSizing({
   equity,
   available,
+  spotPrice,
   shortBid,
   hedgeAsk,
   shortStrike,
   hedgeStrike,
   shortContractValue,
   hedgeContractValue,
-  shortTakerFeeRate,
-  hedgeTakerFeeRate,
   riskPct = 0.30
 } = {}) {
   const accountEquity = finitePositive(equity);
@@ -292,8 +339,6 @@ export function calculateCreditSpreadSizing({
   const hedgeStrikeValue = finitePositive(hedgeStrike);
   const shortMultiplier = finitePositive(shortContractValue);
   const hedgeMultiplier = finitePositive(hedgeContractValue);
-  const shortFee = finiteNonNegative(shortTakerFeeRate);
-  const hedgeFee = finiteNonNegative(hedgeTakerFeeRate);
   const pct = Number(riskPct);
 
   const blocked = reason => ({
@@ -313,9 +358,8 @@ export function calculateCreditSpreadSizing({
 
   if (!accountEquity || !availableBalance || !shortPremium || !hedgePremium ||
       !shortStrikeValue || !hedgeStrikeValue || !shortMultiplier || !hedgeMultiplier ||
-      shortFee === null || hedgeFee === null || shortFee > 0.02 || hedgeFee > 0.02 ||
       !Number.isFinite(pct) || pct < 0.05 || pct > 0.30) {
-    return blocked('Trusted equity, available balance, both premiums, strikes, multipliers, fees or risk cap are missing/out of bounds');
+    return blocked('Trusted equity, available balance, premiums, strikes, multipliers or risk cap are missing/out of bounds');
   }
 
   const multiplierTolerance = Math.max(shortMultiplier, hedgeMultiplier) * 1e-9;
@@ -326,6 +370,10 @@ export function calculateCreditSpreadSizing({
     return blocked('Net credit is not positive after buying the protective option');
   }
 
+  const shortFee = calculateOptionTradingFee({ spotPrice, premium: shortPremium, contractValue: shortMultiplier });
+  const hedgeFee = calculateOptionTradingFee({ spotPrice, premium: hedgePremium, contractValue: hedgeMultiplier });
+  if (!shortFee.valid || !hedgeFee.valid) return blocked(shortFee.reason || hedgeFee.reason);
+
   const strikeWidth = Math.abs(shortStrikeValue - hedgeStrikeValue);
   if (!(strikeWidth > 0)) return blocked('Credit spread strike width must be positive');
 
@@ -333,12 +381,8 @@ export function calculateCreditSpreadSizing({
   const netCreditPerContract = (shortPremium - hedgePremium) * contractValue;
   const spreadWidthPerContract = strikeWidth * contractValue;
   const maxIntrinsicLossPerContract = Math.max(0, spreadWidthPerContract - netCreditPerContract);
-  const entryFeesPerContract =
-    (shortPremium * contractValue * shortFee) +
-    (hedgePremium * contractValue * hedgeFee);
-  const maxFeeRate = Math.max(shortFee, hedgeFee);
-  const exitFeeReservePerContract =
-    2 * Math.max(spreadWidthPerContract, (shortPremium + hedgePremium) * contractValue) * maxFeeRate;
+  const entryFeesPerContract = shortFee.totalFeePerContract + hedgeFee.totalFeePerContract;
+  const exitFeeReservePerContract = entryFeesPerContract;
   const maxLossPerContract =
     maxIntrinsicLossPerContract + entryFeesPerContract + exitFeeReservePerContract;
   const marginReservePerContract =
