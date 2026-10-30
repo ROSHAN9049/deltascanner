@@ -17,7 +17,8 @@ const [
   pgAdapter,
   snapshotAdapter,
   ledgerServer,
-  deltaOptionsExecutor
+  deltaOptionsExecutor,
+  deltaOptionsExecutionManager
 ] = await Promise.all([
   import('../src/ledger/index.mjs'),
   import('../src/webhooks/index.mjs'),
@@ -25,7 +26,8 @@ const [
   import('../src/ledger/pg-adapter.mjs'),
   import('../src/adapters/tradetron-snapshot-adapter.mjs'),
   import('../src/server/ledger-server.mjs'),
-  import('../worker/execution/delta-options-executor.mjs')
+  import('../worker/execution/delta-options-executor.mjs'),
+  import('../worker/execution/delta-options-execution-manager.mjs')
 ]);
 
 describe('module-load smoke tests', () => {
@@ -67,5 +69,10 @@ describe('module-load smoke tests', () => {
   test('Delta Options executor module loads without opening a private connection', () => {
     assert.strictEqual(typeof deltaOptionsExecutor.createDeltaOptionsExecutor, 'function');
     assert.strictEqual(typeof deltaOptionsExecutor.assertDeltaOptionsTestnetConfiguration, 'function');
+  });
+
+  test('Delta Options execution manager loads with hard-locked reservation entry points', () => {
+    assert.strictEqual(typeof deltaOptionsExecutionManager.createDeltaOptionsExecutionManager, 'function');
+    assert.strictEqual(typeof deltaOptionsExecutionManager.buildOptionsReservationPayload, 'function');
   });
 });
