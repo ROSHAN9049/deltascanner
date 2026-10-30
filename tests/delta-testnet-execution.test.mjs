@@ -509,15 +509,18 @@ test('closed REST order acknowledgement immediately polls and persists an OPEN p
 });
 
 
-test('concurrent bracket metadata syncs are coalesced per symbol', async () => {
+test('concurrent bracket metadata syncs are coalesced per symbol and use the filled parent-order detail', async () => {
+  let parentOrderCalls = 0;
+  let resolveParentOrder;
+  const parentOrderPromise = new Promise(resolve => { resolveParentOrder = resolve; });
   let openOrdersCalls = 0;
-  let resolveOrders;
-  const ordersPromise = new Promise(resolve => { resolveOrders = resolve; });
   const updates = [];
   const logs = [];
   const database = {
     async select(table) {
-      if (table === 'dd_delta_positions') return [{ id: 'position-1', symbol: 'BTCUSD', status: 'OPEN' }];
+      if (table === 'dd_delta_positions') {
+        return [{ id: 'position-1', symbol: 'BTCUSD', status: 'OPEN', entry_order_id: '123' }];
+      }
       return [];
     },
     async update(table, query, patch) { updates.push({ table, query, patch }); return []; },
@@ -527,31 +530,36 @@ test('concurrent bracket metadata syncs are coalesced per symbol', async () => {
     env: demoEnv(),
     database,
     executor: {
-      async getOpenOrders() { openOrdersCalls += 1; return ordersPromise; }
+      async getOrderById(id) {
+        parentOrderCalls += 1;
+        assert.equal(String(id), '123');
+        return parentOrderPromise;
+      },
+      async getOpenOrders() { openOrdersCalls += 1; return []; }
     },
     WebSocketImpl: class {}
   });
   tracker.stopped = false;
 
   const first = tracker.syncBracketMetadata('BTCUSD');
-  await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
   const second = tracker.syncBracketMetadata('BTCUSD');
-  assert.equal(openOrdersCalls, 1, 'only one open-orders request should be in flight for BTCUSD');
+  assert.equal(parentOrderCalls, 1, 'only one parent-order detail request should be in flight for BTCUSD');
 
-  resolveOrders([{
+  resolveParentOrder({
     id: 123,
     product_symbol: 'BTCUSD',
     bracket_stop_loss_price: '59000',
     bracket_take_profit_price: '62000'
-  }]);
+  });
   assert.deepEqual(await Promise.all([first, second]), [true, true]);
-  assert.equal(openOrdersCalls, 1);
+  assert.equal(parentOrderCalls, 1);
+  assert.equal(openOrdersCalls, 0);
   assert.equal(updates.length, 1);
   assert.equal(updates[0].patch.sl_price, 59000);
   assert.equal(updates[0].patch.tp_price, 62000);
   assert.equal(tracker.bracketMetadataSyncs.size, 0);
 });
-
 
 test('Delta fill normalizer preserves IDs, commission, and microsecond exchange timestamps', () => {
   const fill = normalizeDeltaFill({

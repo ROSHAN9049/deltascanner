@@ -4,16 +4,18 @@ import { readFile } from 'node:fs/promises';
 
 const source = await readFile(new URL('../src/GridStrategy.jsx', import.meta.url), 'utf8');
 
-test('Grid UI explicitly locks execution when the worker reports Testnet lifecycle is not migrated', () => {
-  assert.match(source, /gridNotMigratedToDelta\s*=\s*gridEntrySafety\?\.reason\s*===\s*'GRID_NOT_MIGRATED_TO_DELTA_TESTNET'/);
-  assert.match(source, /disabled=\{[^}]*gridNotMigratedToDelta/);
-  assert.match(source, /Grid Testnet Not Migrated/);
+test('Grid UI uses direct Delta Testnet execution labels after worker migration', () => {
+  assert.match(source, /gridEntrySafety\?\.executionMode\s*===\s*'testnet'/);
+  assert.match(source, /Start Grid \(Delta Testnet\)/);
+  assert.match(source, /Direct Delta Testnet market entries with exchange-attached SL\/TP/);
+  assert.match(source, /LIVE remains hard-locked/);
 });
 
-test('Grid P&L is labelled as simulation and never presented as exchange P&L', () => {
+test('Grid P&L distinguishes verified Testnet net P&L from simulator estimates', () => {
+  assert.match(source, /DELTA TESTNET NET P&L/);
+  assert.match(source, /Only fully fill-matched trades with verified commissions/);
   assert.match(source, /SIMULATED GRID P&amp;L/);
   assert.match(source, /not exchange-reported P&amp;L/);
-  assert.match(source, /No direct Delta Testnet Grid orders are sent/);
 });
 
 test('Grid UI has no misleading Tradetron brand or LIVE OFFLINE labels', () => {

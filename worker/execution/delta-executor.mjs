@@ -279,6 +279,17 @@ export function createDeltaExecutor({
     return [...unique.values()];
   }
 
+  async function getOrderById(orderId) {
+    const id = numberOrNull(orderId);
+    if (!Number.isSafeInteger(id) || id <= 0) throw new Error('Delta Testnet order id must be a positive integer');
+    const response = await request('GET', '/v2/orders/' + encodeURIComponent(String(id)));
+    const order = response?.result ?? response;
+    if (!order || typeof order !== 'object' || Array.isArray(order) || Number(order.id) !== id) {
+      throw new Error('Delta Testnet order detail response did not match the requested order id');
+    }
+    return order;
+  }
+
   function timestampMs(value) {
     if (value === undefined || value === null || value === '') return null;
     if (typeof value === 'number' || /^\d+(?:\.\d+)?$/.test(String(value).trim())) {
@@ -1053,6 +1064,7 @@ export function createDeltaExecutor({
     closePosition,
     getOpenPositions,
     getOpenOrders,
+    getOrderById,
     getFillsPage,
     getAccountSnapshot,
     getRecentCloseDetails,

@@ -802,11 +802,28 @@ async syncBracketMetadataOnce(key) {
     let lastError = null;
     while (Date.now() <= deadline && !this.stopped) {
       try {
-        const [orders, active] = await Promise.all([
-          this.executor.getOpenOrders(),
-          this.findOpenRow(key)
-        ]);
+        const active = await this.findOpenRow(key);
         if (!active) return false;
+        const parentOrderId = active.entry_order_id || active.order_id;
+        if (parentOrderId && typeof this.executor.getOrderById === 'function') {
+          try {
+            const parentOrder = await this.executor.getOrderById(parentOrderId);
+            const parentSl = numberOrNull(parentOrder?.bracket_stop_loss_price);
+            const parentTp = numberOrNull(parentOrder?.bracket_take_profit_price);
+            if (parentSl !== null && parentSl > 0 && parentTp !== null && parentTp > 0) {
+              await this.database.update('dd_delta_positions', 'id=eq.' + encodeURIComponent(active.id), {
+                updated_at: nowIso(), sl_price: parentSl, tp_price: parentTp
+              });
+              await this.database.log('INFO', '[Tracker] Exchange bracket metadata verified from filled parent order', {
+                symbol: key, orderId: String(parentOrderId), slPrice: parentSl, tpPrice: parentTp
+              }).catch(() => {});
+              return true;
+            }
+          } catch (error) {
+            lastError = String(error?.message || error).slice(0, 200);
+          }
+        }
+        const orders = await this.executor.getOpenOrders();
         const matching = (Array.isArray(orders) ? orders : []).filter(order =>
           stringValue(order?.product_symbol || order?.symbol).toUpperCase() === key
         );

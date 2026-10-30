@@ -19,6 +19,7 @@ import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from '
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
 import { buildApiDerivedTrackingPlan, strategyForDerivedTrade } from './tradetron-derived-trades.mjs';
 import { deltaExecutor } from './execution/delta-executor.mjs';
+import { manageDeltaTestnetGrid } from './execution/delta-grid-engine.mjs';
 import { assertDirectDeltaExecutionMode, getExecutionRouteBlockReason } from './execution/execution-route-policy.mjs';
 import { canExecuteDeltaTestnetOrders, checkDeltaTestnetPrivateApi, isPrivateApiConnectivityError } from './execution/testnet-private-api-health.mjs';
 import { DEFAULT_CANDLE_CACHE_SYMBOL_LIMIT, pruneCandleCacheState, resolveCandleCacheSymbolLimit, selectTopCandleSymbols } from './candle-cache-policy.mjs';
@@ -566,22 +567,35 @@ export class DeltaEngine {
   }
 
   async manageGridStrategy(settings, account) {
-    // Grid still uses the retired external-bridge lifecycle. Keep it out of the
-    // Delta Testnet executor until its entry/exit lifecycle is explicitly migrated.
     if (CONFIG.deltaExecutionMode === 'testnet') {
-      this.lastGridEntrySafety = {
-        configured: false,
-        trusted: null,
-        blocked: settings.grid_enabled === true,
-        reason: settings.grid_enabled === true ? 'GRID_NOT_MIGRATED_TO_DELTA_TESTNET' : null
-      };
-      if (settings.grid_enabled === true && Date.now() - this.lastGridTestnetSkipLogAt >= 60_000) {
-        this.lastGridTestnetSkipLogAt = Date.now();
-        await this.log('INFO', 'Grid strategy held safely: Delta Testnet Grid lifecycle is not migrated; external bridge routing is disabled', {
-          symbol: String(settings.grid_symbol || 'ETHUSD').toUpperCase(),
-          reason: 'GRID_NOT_MIGRATED_TO_DELTA_TESTNET'
-        });
+      const symbol = ['BTCUSD', 'ETHUSD'].includes(String(settings.grid_symbol || '').toUpperCase())
+        ? String(settings.grid_symbol || '').toUpperCase() : 'ETHUSD';
+      const ticker = this.tickerMap.get(symbol);
+      const product = this.productMap.get(symbol) || {};
+      const needsRefresh = this.gridCandleSymbol !== symbol || Date.now() - this.lastGridCandleRefresh >= 15000;
+      if (settings.grid_enabled === true || (Array.isArray(settings.grid_state?.positions) && settings.grid_state.positions.length > 0)) {
+        if (needsRefresh) {
+          try {
+            await this.refreshCandle(symbol, '1m');
+            this.gridCandleSymbol = symbol;
+            this.lastGridCandleRefresh = Date.now();
+          } catch (error) {
+            await this.log('WARN', 'Delta Testnet Grid candle refresh failed; new entries remain blocked', {
+              symbol, error: String(error?.message || error).slice(0, 220)
+            });
+          }
+        }
       }
+      const dataFresh = this.gridCandleSymbol === symbol &&
+        Date.now() - this.lastGridCandleRefresh < 60000 &&
+        this.getCandles(symbol, '1m').length >= 6;
+      const result = await manageDeltaTestnetGrid({
+        settings, account, ticker, product,
+        candles: this.getCandles(symbol, '1m'),
+        dataFresh, database: db, executor: deltaExecutor
+      });
+      this.lastGridEntrySafety = result.safety;
+      settings.grid_state = result.state;
       return;
     }
     let priorState = settings.grid_state;
