@@ -242,6 +242,7 @@ test('option fee estimator applies the notional rate, premium cap, and GST', () 
   assert.ok(Math.abs(uncapped.feeByNotional - 0.009) < 1e-12);
   assert.ok(Math.abs(uncapped.feeCap - 0.0525) < 1e-12);
   assert.ok(Math.abs(uncapped.totalFeePerContract - 0.01062) < 1e-10);
+  assert.ok(Math.abs(uncapped.takerSettlementFeePerContract - 0.01062) < 1e-10);
 
   const capped = calculateOptionTradingFee({
     spotPrice: 90000,
@@ -251,6 +252,10 @@ test('option fee estimator applies the notional rate, premium cap, and GST', () 
   assert.ok(Math.abs(capped.feeByNotional - 0.009) < 1e-12);
   assert.ok(Math.abs(capped.feeCap - 0.000035) < 1e-12);
   assert.ok(Math.abs(capped.totalFeePerContract - 0.0000413) < 1e-10);
+  // Settlement reserve stays at the uncapped notional taker fee even when the
+  // ordinary premium fee is capped for a very low-premium option.
+  assert.ok(Math.abs(capped.takerSettlementFeePerContract - 0.01062) < 1e-10);
+  assert.ok(capped.takerSettlementFeePerContract > capped.totalFeePerContract);
 });
 
 test('option fee sizing fails closed when the spot price is unavailable', () => {
@@ -260,4 +265,38 @@ test('option fee sizing fails closed when the spot price is unavailable', () => 
   });
   assert.equal(sized.qty, 0);
   assert.match(sized.reason, /spot price/);
+});
+
+
+test('long-option maximum loss reserves a separate uncapped settlement fee', () => {
+  const sized = calculateLongOptionSizing({
+    equity: 10000,
+    available: 1000,
+    ask: 1,
+    spotPrice: 90000,
+    contractValue: 0.001,
+    riskPct: 0.30
+  });
+  assert.equal(sized.premiumPerContract, 0.001);
+  assert.ok(sized.estimatedRoundTripFeesPerContract > sized.estimatedEntryFeePerContract);
+  assert.ok(sized.maxLossPerContract >
+    sized.premiumPerContract + sized.estimatedEntryFeePerContract * 2);
+});
+
+test('credit-spread maximum loss includes uncapped settlement taker fees for both legs', () => {
+  const sized = calculateCreditSpreadSizing({
+    equity: 10000,
+    available: 5000,
+    shortBid: 1,
+    hedgeAsk: 0.4,
+    spotPrice: 90000,
+    shortStrike: 90000,
+    hedgeStrike: 88000,
+    shortContractValue: 0.001,
+    hedgeContractValue: 0.001,
+    riskPct: 0.30
+  });
+  assert.ok(sized.exitFeeReservePerContract > sized.entryFeesPerContract);
+  assert.ok(sized.maxLossPerContract >
+    sized.maxIntrinsicLossPerContract + sized.entryFeesPerContract * 2);
 });
