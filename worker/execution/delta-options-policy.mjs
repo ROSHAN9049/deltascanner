@@ -163,11 +163,12 @@ export function selectOptionContractsForScan({
             b.quality.expiryDistance * 0.05 - b.quality.liquidityBonus;
           return scoreA - scoreB;
         });
+      let addedForBucket = 0;
       for (const candidate of ranked) {
-        if (chosen.size >= deltaBuckets
-          .slice(0, deltaBuckets.indexOf(bucket) + 1)
-          .reduce((sum, item) => sum + item.quota, 0)) break;
-        if (!chosen.has(candidate.row.symbol)) chosen.set(candidate.row.symbol, candidate.row);
+        if (chosen.has(candidate.row.symbol)) continue;
+        chosen.set(candidate.row.symbol, candidate.row);
+        addedForBucket += 1;
+        if (addedForBucket >= bucket.quota) break;
       }
     }
 
@@ -189,7 +190,9 @@ export function selectOptionContractsForScan({
     }
     selected.push(...chosen.values());
   }
-  return selected.slice(0, limit);
+  return selected
+    .slice(0, limit)
+    .map(({ _quality, ...row }) => row);
 }
 
 /**
