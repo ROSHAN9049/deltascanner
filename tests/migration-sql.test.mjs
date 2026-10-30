@@ -163,7 +163,7 @@ describe('Delta Testnet Options execution ledger migration SQL structure', () =>
   });
 
   test('both ledgers are service-role only and migration follows Delta fill ledger', () => {
-    for (const table of ['dd_options_execution_groups', 'dd_options_execution_legs']) {
+    for (const table of ['dd_options_execution_groups', 'dd_options_execution_legs', 'dd_options_execution_orders']) {
       assert.match(deltaOptionsMigration, new RegExp('ALTER TABLE public\\.' + table + ' ENABLE ROW LEVEL SECURITY', 'i'));
       assert.match(deltaOptionsMigration, new RegExp('REVOKE ALL ON TABLE public\\.' + table + ' FROM anon, authenticated', 'i'));
       assert.match(deltaOptionsMigration, new RegExp('GRANT ALL ON TABLE public\\.' + table + ' TO service_role', 'i'));
