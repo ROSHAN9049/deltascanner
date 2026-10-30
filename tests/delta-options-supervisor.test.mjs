@@ -72,6 +72,22 @@ function makeHarness({
   const database = {
     async rpc(name, args) {
       calls.rpc.push({ name, args });
+      if (name === 'mark_dd_options_group_expiry_exit_required') {
+        return {
+          group_id: args.p_group_id,
+          state: 'EXIT_REQUIRED',
+          last_error_code: 'OPTIONS_EXPIRY_EXIT_REQUIRED',
+          open_qty: args.p_open_qty
+        };
+      }
+      if (name === 'close_dd_options_group_after_expiry_if_flat') {
+        return {
+          group_id: args.p_group_id,
+          state: 'CLOSED',
+          last_error_code: 'OPTIONS_EXPIRY_EXIT_FLAT',
+          open_qty: 0
+        };
+      }
       if (name !== 'mark_dd_options_group_reconciliation_required') {
         throw new Error('Unexpected RPC: ' + name);
       }
@@ -256,7 +272,10 @@ test('requires expiry exit before settlement and durably locks the active group'
   const result = await harness.supervisor.reconcileOnce();
   assert.equal(result.status, 'EXPIRY_EXIT_REQUIRED');
   assert.equal(result.executionEnabled, false);
-  assert.equal(harness.calls.rpc[0].args.p_error_code, 'OPTIONS_EXPIRY_EXIT_REQUIRED');
+  assert.equal(result.group.state, 'EXIT_REQUIRED');
+  assert.equal(harness.calls.rpc[0].name, 'mark_dd_options_group_expiry_exit_required');
+  assert.equal(harness.calls.rpc[0].args.p_open_qty, 1);
+  assert.equal(harness.calls.rpc.length, 1);
 });
 
 test('does not label an empty exchange snapshot safe when no active ledger group exists but exchange exposure remains', async () => {
@@ -323,4 +342,21 @@ test('continues exact client-order lookup for a locked attempt but does not auto
   assert.equal(order.order_state, 'RECONCILIATION_REQUIRED');
   assert.equal(order.exchange_order_id, '7001');
   assert.equal(harness.calls.rpc[0].args.p_error_code, 'OPTIONS_ORDER_RECOVERY_UNRESOLVED');
+});
+
+test('closes an expiry-required group only after ledger and exchange both confirm flat', async () => {
+  const expiry = NOW + 20 * 60 * 1000;
+  const harness = makeHarness({
+    group: makeGroup({ state: 'EXIT_REQUIRED', expiry_at: new Date(expiry).toISOString() }),
+    legs: [makeLeg({ filled_qty: 1, exit_filled_qty: 1 })],
+    orders: [makeOrder({ order_state: 'FILLED' })],
+    positions: [],
+    openOrders: []
+  });
+  const result = await harness.supervisor.reconcileOnce();
+  assert.equal(result.status, 'EXPIRY_EXIT_FLAT');
+  assert.equal(result.group.state, 'CLOSED');
+  assert.equal(result.openQty, 0);
+  assert.equal(harness.calls.rpc[0].name, 'close_dd_options_group_after_expiry_if_flat');
+  assert.equal(harness.calls.rpc[0].args.p_group_id, GROUP_ID);
 });
