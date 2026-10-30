@@ -266,6 +266,12 @@ export function createDeltaOptionsOrderLedger({
       updated_at: textValue(ack.updated_at)
     };
 
+    if (identityMatches &&
+        String(row.exchange_order_id || '') === exchangeOrderId &&
+        upper(row.order_state) !== 'RECONCILIATION_REQUIRED') {
+      return { ...row, idempotent: true };
+    }
+
     if (!identityMatches) {
       await database.rpc('record_dd_options_order_ack', {
         p_order_attempt_id: Number(row.id),
