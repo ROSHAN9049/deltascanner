@@ -690,7 +690,6 @@ BEGIN
 
   IF p_ack_filled_qty > v_order.requested_qty OR
      (v_state = 'FILLED' AND p_ack_filled_qty <> v_order.requested_qty) OR
-     p_ack_filled_qty < v_order.filled_qty OR
      v_state IN ('UNKNOWN', 'RECONCILIATION_REQUIRED') THEN
     v_reconciliation_required := TRUE;
     v_state := 'RECONCILIATION_REQUIRED';
