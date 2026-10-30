@@ -305,7 +305,7 @@ export function evaluateDeltaOptionsAccountRisk({
   const maxCombinedRiskPct = numberOrNull(limits.maxCombinedOpenRiskPct);
   const minimumAvailableBufferPct = numberOrNull(limits.minimumAvailableBufferPct);
   if (!(maxCombinedRiskPct > 0 && maxCombinedRiskPct <= 100)) reasons.push('MAX_COMBINED_OPEN_RISK_LIMIT_NOT_CONFIGURED');
-  if (!(minimumAvailableBufferPct >= 0 && minimumAvailableBufferPct < 100)) reasons.push('MINIMUM_AVAILABLE_BALANCE_BUFFER_NOT_CONFIGURED');
+  if (minimumAvailableBufferPct === null || !(minimumAvailableBufferPct >= 0 && minimumAvailableBufferPct < 100)) reasons.push('MINIMUM_AVAILABLE_BALANCE_BUFFER_NOT_CONFIGURED');
 
   const futures = settlementAsset
     ? evaluateFuturesExposure(snapshot || {}, settlementAsset, reasons)
