@@ -203,13 +203,12 @@ test('atomic Options reservation RPC validates both legs and is service-role onl
 });
 
 
-test('Options reservation schema pins group and every leg to a verified USD settlement asset', () => {
-  assert.match(deltaOptionsMigration, /settlement_asset TEXT NOT NULL CHECK \(settlement_asset = 'USD'\)/i);
-  assert.match(deltaOptionsMigration, /v_settlement_asset := UPPER\(COALESCE\(p_group->>'settlement_asset', ''\)\)/i);
-  assert.match(deltaOptionsMigration, /v_settlement_asset <> 'USD'/i);
-  assert.match(deltaOptionsMigration, /UPPER\(COALESCE\(v_leg->>'settlement_asset', ''\)\) <> v_settlement_asset/i);
-  assert.match(deltaOptionsMigration, /reserved_margin_usd, settlement_asset, net_credit_usd/i);
-  assert.match(deltaOptionsMigration, /tick_size, settlement_asset, expiry_at/i);
+test('Options reservation settlement asset is enforced by the dedicated account-risk migration', () => {
+  assert.match(optionsAccountRiskMigration, /ADD COLUMN IF NOT EXISTS settlement_asset TEXT NULL/i);
+  assert.match(optionsAccountRiskMigration, /settlement_asset IS NULL OR settlement_asset = 'USD'/i);
+  assert.match(optionsAccountRiskMigration, /NEW\.raw->>'settlement_asset'/i);
+  assert.match(optionsAccountRiskMigration, /v_group_asset IS DISTINCT FROM v_raw_asset/i);
+  assert.match(optionsAccountRiskMigration, /BEFORE INSERT OR UPDATE OF settlement_asset/i);
 });
 
 test('Options fill accounting preserves unknown commissions and accepts asynchronously confirmed fills', () => {
