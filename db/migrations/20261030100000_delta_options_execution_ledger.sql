@@ -206,6 +206,9 @@ DECLARE
   v_contract_value NUMERIC;
   v_tick_size NUMERIC;
   v_strike NUMERIC;
+  v_symbol_parts TEXT[];
+  v_expected_expiry TIMESTAMPTZ;
+  v_symbol TEXT;
 BEGIN
   IF jsonb_typeof(p_group) <> 'object' OR jsonb_typeof(p_legs) <> 'array' THEN
     RAISE EXCEPTION 'Options reservation requires a group object and leg array';
@@ -301,8 +304,8 @@ BEGIN
     v_contract_value := NULLIF(v_leg->>'contractValue', '')::NUMERIC;
     v_tick_size := NULLIF(v_leg->>'tickSize', '')::NUMERIC;
     v_strike := NULLIF(v_leg->>'strike', '')::NUMERIC;
-
-    IF v_role NOT IN ('LONG_PREMIUM', 'PROTECTIVE_WING', 'SHORT_OPTION') OR
+    v_symbol := UPPER(COALESCE(v_leg->>'symbol', ''));
+    v_symbol_parts := regexp_match(v_symbol, '^([CP])-(BTC|ETH)-([0-9]+)-([0-9]{6})
        v_side NOT IN ('BUY', 'SELL') OR
        v_leg_qty IS DISTINCT FROM v_qty OR
        v_leg_expiry IS DISTINCT FROM v_expiry OR
@@ -322,6 +325,84 @@ BEGIN
       RAISE EXCEPTION 'Options leg underlying does not match the execution group';
     END IF;
   END LOOP;
+
+  INSERT INTO public.dd_options_execution_groups (
+    client_group_id, strategy, state, underlying_symbol, underlying_direction,
+    option_type, expiry_at, requested_qty, matched_qty, risk_budget_usd,
+    max_loss_usd, reserved_margin_usd, net_credit_usd, raw
+  ) VALUES (
+    v_client_group_id, v_strategy, 'RESERVED', v_underlying, v_direction,
+    v_option_type, v_expiry, v_qty, 0, v_risk_budget, v_max_loss,
+    v_reserved_margin, v_net_credit, COALESCE(p_group->'raw', p_group)
+  ) RETURNING id INTO v_group_id;
+
+  INSERT INTO public.dd_options_execution_legs (
+    group_id, leg_role, product_id, symbol, contract_type, option_type,
+    strike, contract_value, tick_size, expiry_at, side, requested_qty,
+    filled_qty, order_state, client_order_id, raw
+  )
+  SELECT
+    v_group_id,
+    UPPER(element->>'role'),
+    (element->>'productId')::INTEGER,
+    UPPER(element->>'symbol'),
+    LOWER(element->>'contractType'),
+    UPPER(element->>'optionType'),
+    (element->>'strike')::NUMERIC,
+    (element->>'contractValue')::NUMERIC,
+    (element->>'tickSize')::NUMERIC,
+    (element->>'expiry_at')::TIMESTAMPTZ,
+    UPPER(element->>'side'),
+    (element->>'qty')::INTEGER,
+    0,
+    'RESERVED',
+    element->>'clientOrderId',
+    element
+  FROM jsonb_array_elements(p_legs) AS x(element);
+
+  RETURN jsonb_build_object(
+    'group_id', v_group_id,
+    'client_group_id', v_client_group_id,
+    'state', 'RESERVED',
+    'leg_count', v_leg_count
+  );
+END;
+$;
+
+REVOKE ALL ON FUNCTION public.reserve_dd_options_execution_group(JSONB, JSONB) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.reserve_dd_options_execution_group(JSONB, JSONB) TO service_role;
+
+NOTIFY pgrst, 'reload schema';
+COMMIT;
+);
+
+    IF v_role NOT IN ('LONG_PREMIUM', 'PROTECTIVE_WING', 'SHORT_OPTION') OR
+       v_side NOT IN ('BUY', 'SELL') OR
+       v_leg_qty IS DISTINCT FROM v_qty OR
+       v_leg_expiry IS DISTINCT FROM v_expiry OR
+       v_leg_option_type IS DISTINCT FROM v_option_type OR
+       v_contract_type NOT IN ('call_options', 'put_options') OR
+       (v_leg_option_type = 'CALL' AND v_contract_type <> 'call_options') OR
+       (v_leg_option_type = 'PUT' AND v_contract_type <> 'put_options') OR
+       COALESCE(NULLIF(v_leg->>'productId', '')::INTEGER, 0) <= 0 OR
+       v_contract_value IS NULL OR v_contract_value <= 0 OR
+       v_tick_size IS NULL OR v_tick_size <= 0 OR
+       v_strike IS NULL OR v_strike <= 0 OR
+       NULLIF(BTRIM(v_leg->>'clientOrderId'), '') IS NULL OR
+       LENGTH(v_leg->>'clientOrderId') > 32 OR
+       v_symbol_parts IS NULL THEN
+      RAISE EXCEPTION 'Options reservation contains an invalid contract leg';
+    END IF;
+    IF v_symbol_parts[1] <> CASE WHEN v_leg_option_type = 'CALL' THEN 'C' ELSE 'P' END OR
+       v_symbol_parts[2] <> CASE WHEN v_underlying = 'BTCUSD' THEN 'BTC' ELSE 'ETH' END OR
+       v_symbol_parts[3]::NUMERIC <> v_strike THEN
+      RAISE EXCEPTION 'Options leg symbol does not match its product type, underlying or strike';
+    END IF;
+    v_expected_expiry :=
+      (TO_DATE(v_symbol_parts[4], 'DDMMYY')::TIMESTAMP + INTERVAL '12 hours') AT TIME ZONE 'UTC';
+    IF v_expected_expiry IS DISTINCT FROM v_expiry THEN
+      RAISE EXCEPTION 'Options leg symbol expiry does not match its verified settlement timestamp';
+    END IF;  END LOOP;
 
   INSERT INTO public.dd_options_execution_groups (
     client_group_id, strategy, state, underlying_symbol, underlying_direction,
