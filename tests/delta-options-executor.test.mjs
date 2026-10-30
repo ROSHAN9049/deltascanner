@@ -462,3 +462,25 @@ test('XAUT Testnet products are monitor-only and cannot be resolved for automate
     /read-only and is not eligible/
   );
 });
+
+test('Options wallet reader preserves the full response envelope and account identity', async () => {
+  const executor = createDeltaOptionsExecutor({
+    env: optionsEnv(),
+    now: () => NOW,
+    fetchImpl: async () => jsonResponse({
+      success: true,
+      meta: { user_id: 777 },
+      result: [{
+        user_id: 777,
+        asset_symbol: 'USD',
+        balance: '100',
+        available_balance: '80',
+        blocked_margin: '20'
+      }]
+    })
+  });
+  const snapshot = await executor.getOptionWalletSnapshot();
+  assert.equal(snapshot.meta.user_id, 777);
+  assert.equal(snapshot.result[0].asset_symbol, 'USD');
+  assert.equal(snapshot.result[0].available_balance, '80');
+});
