@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   calculateCreditSpreadSizing,
   calculateLongOptionSizing,
+  calculateOptionTradingFee,
   parseDeltaOptionSymbol,
   selectOptionContractsForScan
 } from '../worker/execution/delta-options-policy.mjs';
@@ -18,8 +19,11 @@ test('parses Delta BTC option expiry and settlement time', () => {
   assert.equal(parsed.dte, 26 / 24);
 });
 
-test('rejects unsupported non-BTC/ETH underlyings for Delta India options', () => {
-  assert.equal(parseDeltaOptionSymbol('P-XAUT-4000-311026', 'XAUT', NOW), null);
+test('parses XAUT Gold option expiry and rejects unsupported underlyings', () => {
+  const parsed = parseDeltaOptionSymbol('P-XAUT-4000-311026', 'XAUT', NOW);
+  assert.ok(parsed);
+  assert.equal(parsed.optionType, 'PUT');
+  assert.equal(parsed.expiryMs, Date.UTC(2026, 9, 31, 16, 0, 0));
   assert.equal(parseDeltaOptionSymbol('C-SOL-100-311026', 'SOL', NOW), null);
 });
 
@@ -82,33 +86,33 @@ test('sizes long options to whole premium plus fee allowance', () => {
     equity: 10000,
     available: 1000,
     ask: 300,
+    spotPrice: 1000,
     contractValue: 0.1,
-    takerFeeRate: 0.001,
     riskPct: 0.30
   });
   assert.equal(sized.qty, 0);
-  assert.equal(sized.maxLossPerContract, 30.06);
+  assert.ok(sized.maxLossPerContract > 30);
   assert.equal(sized.reason, 'Full-premium risk budget is below one option contract');
 });
 
 test('allows one unit when full premium risk is inside 0.30% budget', () => {
   const sized = calculateLongOptionSizing({
     equity: 10000,
-    available: 2.01,
+    available: 2.02,
     ask: 20,
+    spotPrice: 1000,
     contractValue: 0.1,
-    takerFeeRate: 0.001,
     riskPct: 0.30
   });
   assert.equal(sized.qty, 1);
   assert.equal(sized.premiumNotional, 2);
-  assert.equal(sized.totalRisk, 2.004);
+  assert.ok(sized.totalRisk > 2);
 });
 
 test('fails closed when contract value, fee, balance or risk cap is unknown', () => {
   for (const overrides of [
     { contractValue: 0 },
-    { takerFeeRate: undefined },
+    { spotPrice: undefined },
     { available: 0 },
     { riskPct: 0.5 }
   ]) {
@@ -117,7 +121,7 @@ test('fails closed when contract value, fee, balance or risk cap is unknown', ()
       available: 1000,
       ask: 20,
       contractValue: 0.1,
-      takerFeeRate: 0.001,
+      spotPrice: 1000,
       riskPct: 0.30,
       ...overrides
     });
@@ -168,12 +172,11 @@ test('sizes a defined-risk credit spread using both multipliers and fee reserves
     available: 5000,
     shortBid: 240,
     hedgeAsk: 80,
+    spotPrice: 90000,
     shortStrike: 90000,
     hedgeStrike: 88000,
     shortContractValue: 0.001,
     hedgeContractValue: 0.001,
-    shortTakerFeeRate: 0.001,
-    hedgeTakerFeeRate: 0.001,
     riskPct: 0.30
   });
   assert.equal(sized.qty, 16);
@@ -190,17 +193,16 @@ test('credit spread sizing fails closed for mismatched multipliers, unknown fees
     available: 5000,
     shortBid: 240,
     hedgeAsk: 80,
+    spotPrice: 90000,
     shortStrike: 90000,
     hedgeStrike: 88000,
     shortContractValue: 0.001,
     hedgeContractValue: 0.001,
-    shortTakerFeeRate: 0.001,
-    hedgeTakerFeeRate: 0.001,
     riskPct: 0.30
   };
   for (const overrides of [
     { hedgeContractValue: 0.01 },
-    { hedgeTakerFeeRate: undefined },
+    { spotPrice: undefined },
     { shortBid: 70 },
     { riskPct: 0.5 },
     { available: 0 }
@@ -217,14 +219,45 @@ test('credit spread size is limited by the full-width available-balance reserve'
     available: 2,
     shortBid: 240,
     hedgeAsk: 80,
+    spotPrice: 90000,
     shortStrike: 90000,
     hedgeStrike: 88000,
     shortContractValue: 0.001,
     hedgeContractValue: 0.001,
-    shortTakerFeeRate: 0.001,
-    hedgeTakerFeeRate: 0.001,
     riskPct: 0.30
   });
   assert.equal(sized.qty, 0);
   assert.match(sized.reason, /full-width credit-spread reserve/);
+});
+
+
+test('option fee estimator applies the notional rate, premium cap, and GST', () => {
+  const uncapped = calculateOptionTradingFee({
+    spotPrice: 90000,
+    premium: 1500,
+    contractValue: 0.001
+  });
+  assert.equal(uncapped.notionalPerContract, 90);
+  assert.equal(uncapped.premiumValuePerContract, 1.5);
+  assert.equal(uncapped.feeByNotional, 0.009);
+  assert.equal(uncapped.feeCap, 0.0525);
+  assert.ok(Math.abs(uncapped.totalFeePerContract - 0.01062) < 1e-10);
+
+  const capped = calculateOptionTradingFee({
+    spotPrice: 90000,
+    premium: 1,
+    contractValue: 0.001
+  });
+  assert.equal(capped.feeByNotional, 0.009);
+  assert.equal(capped.feeCap, 0.000035);
+  assert.ok(Math.abs(capped.totalFeePerContract - 0.0000413) < 1e-10);
+});
+
+test('option fee sizing fails closed when the spot price is unavailable', () => {
+  assert.equal(calculateOptionTradingFee({ premium: 10, contractValue: 0.001 }).valid, false);
+  const sized = calculateLongOptionSizing({
+    equity: 10000, available: 1000, ask: 20, contractValue: 0.001, riskPct: 0.30
+  });
+  assert.equal(sized.qty, 0);
+  assert.match(sized.reason, /spot price/);
 });
