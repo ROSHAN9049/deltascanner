@@ -133,7 +133,7 @@ RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY INVOKER
 SET search_path = public, pg_temp
-AS $
+AS $$
 DECLARE
   v_group public.dd_options_execution_groups%ROWTYPE;
   v_open_qty NUMERIC;
