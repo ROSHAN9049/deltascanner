@@ -836,7 +836,7 @@ async syncBracketMetadataOnce(key) {
       let details = null;
       if (typeof this.executor.getRecentCloseDetails === 'function') {
         try {
-          details = await this.executor.getRecentCloseDetails(symbol, active.opened_at);
+          details = await this.executor.getRecentCloseDetails(symbol, active.opened_at, active);
         } catch (error) {
           await this.database.log(
             'WARN',
