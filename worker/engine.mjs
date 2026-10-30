@@ -3,7 +3,7 @@ import WebSocket from 'ws';
 import { CONFIG } from '../server/config.js';
 import { DeltaAdapter } from './delta-adapter.mjs';
 import { analyse, analyseOption, trimDetails, atr as calculateAtr, calculateNormalizedScores } from './strategy.mjs';
-import { calculateLongOptionSizing, parseDeltaOptionSymbol, selectOptionContractsForScan } from './execution/delta-options-policy.mjs';
+import { calculateCreditSpreadSizing, calculateLongOptionSizing, parseDeltaOptionSymbol, selectOptionContractsForScan } from './execution/delta-options-policy.mjs';
 import * as db from '../server/db.js';
 import { SIGNAL_RESERVATION_TTL_MS, TradetronBridge, withSignalReservations } from '../server/tradetron.js';
 import { buildTradetronPnlHistoryRows, TradetronDeveloperApi } from '../server/tradetron-developer-api.mjs';
@@ -1617,7 +1617,7 @@ export class DeltaEngine {
     // There is deliberately no scanner-side global, per-engine, or total-open-position cap.
     // Actual platform/product/margin limits are still validated, and duplicate-symbol
     // protection prevents repeated same-instrument entries while a position is open.
-    if (!signal.candlesFresh && strategy !== 'OPTIONS_BUY') reasons.push('Fresh closed candles unavailable');
+    if (!signal.candlesFresh && !['OPTIONS_BUY', 'OPTIONS_SELL'].includes(strategy)) reasons.push('Fresh closed candles unavailable');
     if (n(account.equity) <= 0) reasons.push('Account equity unavailable');
 
     let size = null;
@@ -1635,6 +1635,25 @@ export class DeltaEngine {
       if (signal.executionLocked) reasons.push('Option execution route locked');
       if (CONFIG.deltaExecutionMode === 'testnet' && signal.ticker?.testnet_product_verified !== true) {
         reasons.push('Option contract is not verified in the Delta Testnet product catalogue');
+      }
+    } else if (strategy === 'OPTIONS_SELL') {
+      const sizing = this.optionSellSizing(signal, account, settings);
+      if (sizing.qty < 1) reasons.push(sizing.reason || 'Defined-risk credit spread size is below one contract');
+      else size = {
+        qty: sizing.qty,
+        notional: sizing.qty * sizing.netCreditPerContract,
+        risk: sizing.totalRisk,
+        marginEstimate: sizing.totalMarginReserve,
+        riskModel: 'DEFINED_RISK_CREDIT_SPREAD_PLUS_FEES'
+      };
+      if (signal.definedRiskOnly !== true || !signal.hedgeSymbol || !signal.hedgeTicker) {
+        reasons.push('A verified protective option leg is required; naked option selling is disabled');
+      }
+      if (signal.executionLocked) reasons.push('Option execution route locked');
+      if (CONFIG.deltaExecutionMode === 'testnet' &&
+          (signal.ticker?.testnet_product_verified !== true ||
+           signal.hedgeTicker?.testnet_product_verified !== true)) {
+        reasons.push('Both spread legs must match live Delta Testnet products');
       }
     } else if (signal.side) {
       const stage = String(signal?.stage || '').toUpperCase();
@@ -1816,6 +1835,24 @@ export class DeltaEngine {
       ask: signal?.ask ?? ticker?.quotes?.best_ask ?? ticker?.best_ask ?? ticker?.ask,
       contractValue: ticker?.contract_value,
       takerFeeRate: ticker?.taker_commission_rate,
+      riskPct: settings?.options_max_risk_pct ?? 0.30
+    });
+  }
+
+  optionSellSizing(signal, account, settings) {
+    const shortTicker = signal?.ticker || {};
+    const hedgeTicker = signal?.hedgeTicker || {};
+    return calculateCreditSpreadSizing({
+      equity: account?.equity,
+      available: account?.available,
+      shortBid: signal?.bid ?? shortTicker?.quotes?.best_bid ?? shortTicker?.best_bid ?? shortTicker?.bid,
+      hedgeAsk: signal?.hedgeAsk ?? hedgeTicker?.quotes?.best_ask ?? hedgeTicker?.best_ask ?? hedgeTicker?.ask,
+      shortStrike: signal?.strike,
+      hedgeStrike: signal?.hedgeStrike,
+      shortContractValue: shortTicker?.contract_value,
+      hedgeContractValue: hedgeTicker?.contract_value,
+      shortTakerFeeRate: shortTicker?.taker_commission_rate,
+      hedgeTakerFeeRate: hedgeTicker?.taker_commission_rate,
       riskPct: settings?.options_max_risk_pct ?? 0.30
     });
   }
@@ -2347,17 +2384,13 @@ export class DeltaEngine {
           const sizing = this.optionSizing({ ...s, ticker: best.ticker }, account, settings);
           const q = sizing.qty;
           const duplicate = (openPositions || []).some(p => String(p.symbol) === s.symbol && n(p.qty) > 0);
-          const routeConfigured = CONFIG.deltaExecutionMode === 'testnet'
-            ? false
-            : CONFIG.tradetronOptionsBridgeEnabled && this.tradetronOptions.isConfigured();
-          const executionLocked = !isOptionsExecutionAllowed();
+          const routeConfigured = false;
+          const executionLocked = true;
           const blocked = [...s.blocked];
           if (q < 1) blocked.push(sizing.reason || 'Full-premium risk budget below one contract');
           if (duplicate) blocked.push('Duplicate option position');
-          if (!routeConfigured) blocked.push(CONFIG.deltaExecutionMode === 'testnet'
-            ? 'Direct Delta Testnet option order lifecycle is not implemented'
-            : 'Tradetron option signal route unavailable');
-          if (executionLocked) blocked.push(OPTIONS_EXECUTION_LOCK_REASON);
+          blocked.push('Direct Delta Testnet single-leg option order lifecycle is not verified');
+          blocked.push(OPTIONS_EXECUTION_LOCK_REASON);
           const ready = s.ready && q >= 1 && !duplicate && routeConfigured && !executionLocked;
           const row = { ...s, ticker: best.ticker, strategy: 'OPTIONS_BUY', qty: q,
             notional: sizing.premiumNotional,
@@ -2392,39 +2425,72 @@ export class DeltaEngine {
         const best = candidates[0];
         if (best) {
           const s = best.signal;
-          const hedgeCandidates = chain
-            .map(ticker => analyseOption(ticker, underlying, 'OPTIONS_SELL', cfg))
-            .filter(h => String(h.optionType) === String(s.optionType) &&
-              n(h.expiryMs) === n(s.expiryMs) &&
-              Math.abs(n(h.delta)) >= 0.05 && Math.abs(n(h.delta)) <= 0.15 &&
-              n(h.mark) > 0 && n(h.ask) > 0 &&
-              (s.optionType === 'CALL' ? n(h.strike) > n(s.strike) : n(h.strike) < n(s.strike)))
-            .sort((a, b) => Math.abs(Math.abs(n(a.delta)) - 0.10) - Math.abs(Math.abs(n(b.delta)) - 0.10));
-          const hedge = hedgeCandidates[0] || null;
-          const credit = hedge ? n(s.bid) - n(hedge.ask) : 0;
+          const hedge = this.pickOptionHedge(s,
+            chain.map(ticker => analyseOption(ticker, underlying, 'OPTIONS_SELL', cfg)));
+          const hedgeTicker = hedge
+            ? chain.find(ticker => String(ticker.symbol).toUpperCase() === String(hedge.symbol).toUpperCase()) || null
+            : null;
+          const hedgeAsk = hedge?.ask || 0;
+          const credit = hedge ? n(s.bid) - n(hedgeAsk) : 0;
           const width = hedge ? Math.abs(n(s.strike) - n(hedge.strike)) : 0;
-          const maxRiskPerSpread = Math.max(0, width - credit);
-          const budget = this.optionRiskBudget(account, settings);
-          const testnetMode = CONFIG.deltaExecutionMode === 'testnet';
-          const q = !testnetMode && maxRiskPerSpread > 0 ? Math.floor(budget / maxRiskPerSpread) : 0;
+          const definedRiskOnly = settings.options_sell_defined_risk_only !== false &&
+            !!hedge && !!hedgeTicker && width > 0;
+          const sizing = this.optionSellSizing({
+            ...s,
+            ticker: best.ticker,
+            hedgeTicker,
+            hedgeSymbol: hedge?.symbol || '',
+            hedgeStrike: hedge?.strike || 0,
+            hedgeAsk
+          }, account, settings);
+          const q = sizing.qty;
+          const bothProductsVerified = best.ticker?.testnet_product_verified === true &&
+            hedgeTicker?.testnet_product_verified === true;
+          const duplicateShort = (openPositions || []).some(p =>
+            String(p.symbol).toUpperCase() === String(s.symbol).toUpperCase() && n(p.qty) > 0);
+          const duplicateHedge = hedge?.symbol && (openPositions || []).some(p =>
+            String(p.symbol).toUpperCase() === String(hedge.symbol).toUpperCase() && n(p.qty) > 0);
+          const optionRouteReady = false;
+          const executionLocked = true;
           const blocked = [...s.blocked];
-          if (!hedge) blocked.push('Defined-risk hedge unavailable');
-          if (!(credit > 0)) blocked.push('Net credit <= 0');
-          if (testnetMode) blocked.push('Testnet credit-spread sizing and two-leg execution remain disabled pending fee/multiplier verification');
-          else if (q < 1) blocked.push('Spread risk exceeds option risk budget');
-          const optionRouteReady = CONFIG.deltaExecutionMode === 'testnet'
-            ? false
-            : CONFIG.tradetronOptionsBridgeEnabled && this.tradetronOptions.isConfigured();
-          const executionLocked = !isOptionsExecutionAllowed() || CONFIG.deltaExecutionMode === 'testnet';
-          if (!optionRouteReady) blocked.push(CONFIG.deltaExecutionMode === 'testnet'
-            ? 'Direct Delta Testnet multi-leg option execution is not implemented'
-            : 'Tradetron option signal route unavailable');
-          if (executionLocked) blocked.push(OPTIONS_EXECUTION_LOCK_REASON);
-          const ready = s.ready && q >= 1 && !!hedge && credit > 0 && optionRouteReady && !executionLocked;
-          const row = { ...s, ticker: best.ticker, strategy: 'OPTIONS_SELL', qty: q,
-            hedgeSymbol: hedge?.symbol || '', hedgeStrike: hedge?.strike || 0, hedgeDelta: hedge?.delta || 0,
-            credit, maxRiskPerSpread, notional: Math.max(0, credit * q), risk: maxRiskPerSpread * q,
-            blocked, executionLocked, ready, optionRouteReady };
+          if (!definedRiskOnly) blocked.push('A same-expiry protective wing is mandatory; naked option selling is disabled');
+          if (!(credit > 0)) blocked.push('Net credit is not positive after hedge premium');
+          if (q < 1) blocked.push(sizing.reason || 'Defined-risk spread size is below one contract');
+          if (CONFIG.deltaExecutionMode === 'testnet' && !bothProductsVerified) {
+            blocked.push('Both short and protective legs must match live Delta Testnet products');
+          }
+          if (duplicateShort || duplicateHedge) blocked.push('One of the option spread legs already has an open position');
+          blocked.push('Direct Delta Testnet paired-leg order, fill and unwind lifecycle is not verified');
+          blocked.push(OPTIONS_EXECUTION_LOCK_REASON);
+          const ready = s.ready && definedRiskOnly && credit > 0 && q >= 1 &&
+            bothProductsVerified && !duplicateShort && !duplicateHedge &&
+            optionRouteReady && !executionLocked;
+          const row = {
+            ...s,
+            ticker: best.ticker,
+            hedgeTicker,
+            strategy: 'OPTIONS_SELL',
+            qty: q,
+            hedgeSymbol: hedge?.symbol || '',
+            hedgeStrike: hedge?.strike || 0,
+            hedgeDelta: hedge?.delta || 0,
+            hedgeAsk,
+            hedgeProductId: n(hedgeTicker?.product_id || hedgeTicker?.id) || null,
+            credit,
+            maxRiskPerSpread: sizing.maxLossPerContract,
+            marginReservePerSpread: sizing.marginReservePerContract,
+            entryFeesPerSpread: sizing.entryFeesPerContract,
+            exitFeeReservePerSpread: sizing.exitFeeReservePerContract,
+            notional: q * sizing.netCreditPerContract,
+            risk: sizing.totalRisk,
+            marginEstimate: sizing.totalMarginReserve,
+            definedRiskOnly,
+            blocked,
+            executionLocked,
+            ready,
+            optionRouteReady,
+            riskModel: 'DEFINED_RISK_CREDIT_SPREAD_PLUS_FEES'
+          };
           await this.insertSignalHistoryRow({
             symbol: row.symbol, product_id: n(best.ticker.product_id || best.ticker.id),
             rank: 1, strategy: 'OPTIONS_SELL', price: row.mark, change_24h: row.underlyingChange,
@@ -2436,13 +2502,30 @@ export class DeltaEngine {
             stop_price: 0, tp1_price: 0, tp_price: 0, qty_contracts: row.qty,
             notional: row.notional, risk_usd: row.risk, fee_risk_ratio: 0, ready: row.ready,
             blocked_reasons: blocked,
-            details: trimDetails({ engine: 'OPTIONS_SELL', optionType: row.optionType, strike: row.strike,
-              dte: row.dte, expiryMs: row.expiryMs, delta: row.delta, gamma: row.gamma,
-              theta: row.theta, vega: row.vega, bid: row.bid, ask: row.ask,
-              openInterest: row.oi, volume: row.volume, hedgeSymbol: row.hedgeSymbol,
-              hedgeStrike: row.hedgeStrike, hedgeDelta: row.hedgeDelta, credit: row.credit,
-              maxRiskPerSpread: row.maxRiskPerSpread, executionLocked: true, optionRouteReady: row.optionRouteReady, signalOnly: CONFIG.signalOnly, tradetronRoute: 'tt_option_*',
-              definedRiskOnly: settings.options_sell_defined_risk_only !== false }, 'OPTIONS_SELL')
+            details: trimDetails({
+              engine: 'OPTIONS_SELL',
+              optionType: row.optionType,
+              strike: row.strike,
+              expiryMs: row.expiryMs,
+              dte: row.dte,
+              delta: row.delta,
+              bid: row.bid,
+              ask: row.ask,
+              hedgeSymbol: row.hedgeSymbol,
+              hedgeProductId: row.hedgeProductId,
+              hedgeStrike: row.hedgeStrike,
+              hedgeDelta: row.hedgeDelta,
+              hedgeAsk: row.hedgeAsk,
+              credit: row.credit,
+              maxRiskPerSpread: row.maxRiskPerSpread,
+              marginReservePerSpread: row.marginReservePerSpread,
+              estimatedFeesPerSpread: row.entryFeesPerSpread + row.exitFeeReservePerSpread,
+              definedRiskOnly: row.definedRiskOnly,
+              executionLocked,
+              optionRouteReady,
+              signalOnly: CONFIG.signalOnly,
+              riskModel: row.riskModel
+            }, 'OPTIONS_SELL')
           });
           out.push(row);
         }
