@@ -190,13 +190,13 @@ test('checks Grid state against exchange/DB exposure without double-counting Gri
   const dbRow = { ...position, strategy: 'GRID' };
   const product = {
     id: 20, symbol: 'ETHUSD', contract_value: 1, tick_size: 0.5,
-    settling_asset: { symbol: 'USD' }
+    settling_asset: { symbol: 'USD' }, taker_commission_rate: 0, maker_commission_rate: 0
   };
   const mismatch = evaluate({
     futuresPositions: [position],
     dbFuturesPositions: [dbRow],
     futuresProducts: [product],
-    gridState: { positions: [{ symbol: 'ETHUSD', qty: 2, riskUsd: 20 }], openRiskUsd: 19 }
+    gridState: { positions: [{ symbol: 'ETHUSD', qty: 2, riskUsd: 20.08 }], openRiskUsd: 19 }
   });
   assert.ok(mismatch.reasons.includes('GRID_STATE_AND_EXCHANGE_RISK_MISMATCH'));
 
@@ -204,7 +204,7 @@ test('checks Grid state against exchange/DB exposure without double-counting Gri
     futuresPositions: [position],
     dbFuturesPositions: [dbRow],
     futuresProducts: [product],
-    gridState: { positions: [{ symbol: 'ETHUSD', qty: 2, riskUsd: 20 }], openRiskUsd: 20 }
+    gridState: { positions: [{ symbol: 'ETHUSD', qty: 2, riskUsd: 20.08 }], openRiskUsd: 20.08 }
   });
   assert.equal(matched.currentOpenRisk, 20);
   assert.equal(matched.allowed, true);
