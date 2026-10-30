@@ -325,6 +325,9 @@ export function createDeltaOptionsExecutionManager({
         !Number.isSafeInteger(attempt) || attempt < 1 || !price) {
       throw new Error('Options order-attempt plan is invalid');
     }
+    if (action === 'ENTRY') {
+      await assertAccountRisk({ phase: 'ORDER', groupId: group });
+    }
 
     const clientIdRole = getOptionsOrderClientIdRole(action, role);
     const clientOrderId = makeOptionsClientOrderId(group, clientIdRole, attempt);
