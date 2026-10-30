@@ -301,11 +301,12 @@ export function createDeltaExecutor({
     const product = await resolveProduct(normalizedSymbol);
     const clockMs = now();
     const openedMs = timestampMs(openedAt);
-    // Query from the actual local open timestamp. A fixed 24-hour cap can
-    // exclude the entry fill of a longer-held position and invite a wrong match.
+    // Include a short pre-open buffer because the exchange fill can precede
+    // the worker's first persisted position event by a few seconds. A fixed
+    // 24-hour cap can exclude the entry fill of a longer-held position.
     const startMs = openedMs === null
       ? clockMs - 24 * 60 * 60 * 1000
-      : Math.min(openedMs, clockMs);
+      : Math.max(0, Math.min(openedMs, clockMs) - 30_000);
     const startTime = Math.round(startMs * 1000);
     const endTime = Math.round(clockMs * 1000);
 
