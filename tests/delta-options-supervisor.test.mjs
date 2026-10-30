@@ -186,7 +186,7 @@ test('locks an active ledger order that is missing from the exchange open-order 
   });
   const result = await harness.supervisor.reconcileOnce();
   assert.equal(result.status, 'RECONCILIATION_REQUIRED');
-  assert.equal(harness.calls.rpc[0].args.p_error_code, 'OPTIONS_ORDER_RECOVERY_UNRESOLVED');
+  assert.equal(harness.calls.rpc[0].args.p_error_code, 'OPTIONS_ORDER_TERMINALITY_UNVERIFIED');
 });
 
 test('parks the group when exchange position quantity differs from the durable fill ledger', async () => {
@@ -322,5 +322,5 @@ test('continues exact client-order lookup for a locked attempt but does not auto
   assert.equal(result.executionEnabled, false);
   assert.equal(order.order_state, 'RECONCILIATION_REQUIRED');
   assert.equal(order.exchange_order_id, '7001');
-  assert.equal(harness.calls.rpc[0].args.p_error_code, 'OPTIONS_ORDER_TERMINALITY_UNVERIFIED');
+  assert.equal(harness.calls.rpc[0].args.p_error_code, 'OPTIONS_ORDER_RECOVERY_UNRESOLVED');
 });
