@@ -219,6 +219,31 @@ export function createDeltaOptionsSupervisor({
     return result;
   }
 
+  async function markGroupExpiryExitRequired(group, expiryMs, openQty) {
+    if (!group?.id || typeof database?.rpc !== 'function') {
+      throw new Error('Options group cannot be durably marked EXIT_REQUIRED');
+    }
+    const response = await database.rpc('mark_dd_options_group_expiry_exit_required', {
+      p_group_id: String(group.id),
+      p_expiry_at: new Date(expiryMs).toISOString(),
+      p_minutes_before_expiry: minutesBeforeExpiry,
+      p_open_qty: openQty,
+      p_raw: {
+        source: 'delta_options_restart_supervisor',
+        observed_at: new Date(now()).toISOString(),
+        expiry_deadline: new Date(expiryMs - minutesBeforeExpiry * 60 * 1000).toISOString()
+      }
+    });
+    const result = Array.isArray(response) ? response[0] : response;
+    if (!result || typeof result !== 'object' ||
+        String(result.group_id) !== String(group.id) ||
+        upper(result.state) !== 'EXIT_REQUIRED' ||
+        !sameQty(result.open_qty, openQty)) {
+      throw new Error('Options expiry exit requirement was not confirmed by the database');
+    }
+    return result;
+  }
+
   async function getExchangeSnapshot() {
     if (typeof executor.assertConfigured === 'function') executor.assertConfigured();
     const [positions, openOrders] = await Promise.all([
@@ -472,42 +497,6 @@ export function createDeltaOptionsSupervisor({
       return { status: 'RECONCILIATION_REQUIRED', executionEnabled: false, group: locked, reason: positions.reason };
     }
 
-    const expiryMs = Date.parse(String(group.expiry_at || ''));
-    if (!Number.isFinite(expiryMs) || expiryMs <= 0) {
-      const locked = await markGroupReconciliationRequired(
-        group,
-        'OPTIONS_EXPIRY_INVALID',
-        'Options group expiry timestamp is invalid'
-      );
-      return { status: 'RECONCILIATION_REQUIRED', executionEnabled: false, group: locked };
-    }
-    const openQty = refreshedLegs.reduce((sum, leg) =>
-      sum + Math.max(0, Number(leg.filled_qty) - Number(leg.exit_filled_qty)), 0);
-    const deadline = expiryMs - minutesBeforeExpiry * 60 * 1000;
-    const deadlinePassed = now() >= deadline ||
-      resolveOptionExpiryExitDeadline(expiryMs, {
-        now: now(),
-        minutesBeforeExpiry
-      }) === null;
-    if (deadlinePassed) {
-      const hasOpenPosition = openQty > EPSILON;
-      const locked = await markGroupReconciliationRequired(
-        group,
-        hasOpenPosition ? 'OPTIONS_EXPIRY_EXIT_REQUIRED' : 'OPTIONS_EXPIRY_PASSED_FLAT',
-        hasOpenPosition
-          ? 'Open Options quantity reached the mandatory pre-expiry exit deadline; supervised exit is required'
-          : 'Options expiry exit deadline passed while the group was flat; new entries remain prohibited',
-        { expiry_at: group.expiry_at, minutes_before_expiry: minutesBeforeExpiry, open_qty: openQty }
-      );
-      return {
-        status: hasOpenPosition ? 'EXPIRY_EXIT_REQUIRED' : 'RECONCILIATION_REQUIRED',
-        executionEnabled: false,
-        group: locked,
-        openQty,
-        expiryDeadline: new Date(deadline).toISOString()
-      };
-    }
-
     const unresolvedOrders = [];
     const pendingOrders = [];
     for (const row of refreshedOrders) {
@@ -553,6 +542,51 @@ export function createDeltaOptionsSupervisor({
       };
     }
 
+    const expiryMs = Date.parse(String(group.expiry_at || ''));
+    if (!Number.isFinite(expiryMs) || expiryMs <= 0) {
+      const locked = await markGroupReconciliationRequired(
+        group,
+        'OPTIONS_EXPIRY_INVALID',
+        'Options group expiry timestamp is invalid'
+      );
+      return { status: 'RECONCILIATION_REQUIRED', executionEnabled: false, group: locked };
+    }
+    const openQty = refreshedLegs.reduce((sum, leg) =>
+      sum + Math.max(0, Number(leg.filled_qty) - Number(leg.exit_filled_qty)), 0);
+    const deadline = expiryMs - minutesBeforeExpiry * 60 * 1000;
+    const deadlinePassed = now() >= deadline ||
+      resolveOptionExpiryExitDeadline(expiryMs, {
+        now: now(),
+        minutesBeforeExpiry
+      }) === null;
+    if (deadlinePassed) {
+      const hasOpenPosition = openQty > EPSILON;
+      if (hasOpenPosition) {
+        const marked = await markGroupExpiryExitRequired(group, expiryMs, openQty);
+        return {
+          status: 'EXPIRY_EXIT_REQUIRED',
+          executionEnabled: false,
+          group: marked,
+          groupId: group.id,
+          openQty,
+          expiryDeadline: new Date(deadline).toISOString()
+        };
+      }
+      const locked = await markGroupReconciliationRequired(
+        group,
+        'OPTIONS_EXPIRY_PASSED_FLAT',
+        'Options expiry exit deadline passed while the group was flat; new entries remain prohibited',
+        { expiry_at: group.expiry_at, minutes_before_expiry: minutesBeforeExpiry, open_qty: openQty }
+      );
+      return {
+        status: 'RECONCILIATION_REQUIRED',
+        executionEnabled: false,
+        group: locked,
+        openQty,
+        expiryDeadline: new Date(deadline).toISOString()
+      };
+    }
+
     return {
       status: upper(group.state) === 'RECONCILIATION_REQUIRED'
         ? 'RECONCILIATION_REQUIRED'
@@ -564,7 +598,7 @@ export function createDeltaOptionsSupervisor({
       openOrderCount: exchange.openOrders.length,
       openQty,
       expiryDeadline: new Date(deadline).toISOString(),
-      expiryExitDue: false
+      expiryExitDue: upper(group.state) === 'EXIT_REQUIRED' || now() >= deadline
     };
   }
 
