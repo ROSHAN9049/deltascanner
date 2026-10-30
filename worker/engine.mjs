@@ -1785,7 +1785,8 @@ export class DeltaEngine {
             ...ticker,
             ...(product || {}),
             symbol,
-            underlying
+            underlying,
+            underlying_spot: spot
           });
         }
 
@@ -1833,8 +1834,8 @@ export class DeltaEngine {
       equity: account?.equity,
       available: account?.available,
       ask: signal?.ask ?? ticker?.quotes?.best_ask ?? ticker?.best_ask ?? ticker?.ask,
+      spotPrice: ticker?.underlying_spot,
       contractValue: ticker?.contract_value,
-      takerFeeRate: ticker?.taker_commission_rate,
       riskPct: settings?.options_max_risk_pct ?? 0.30
     });
   }
@@ -1845,14 +1846,13 @@ export class DeltaEngine {
     return calculateCreditSpreadSizing({
       equity: account?.equity,
       available: account?.available,
+      spotPrice: shortTicker?.underlying_spot,
       shortBid: signal?.bid ?? shortTicker?.quotes?.best_bid ?? shortTicker?.best_bid ?? shortTicker?.bid,
       hedgeAsk: signal?.hedgeAsk ?? hedgeTicker?.quotes?.best_ask ?? hedgeTicker?.best_ask ?? hedgeTicker?.ask,
       shortStrike: signal?.strike,
       hedgeStrike: signal?.hedgeStrike,
       shortContractValue: shortTicker?.contract_value,
       hedgeContractValue: hedgeTicker?.contract_value,
-      shortTakerFeeRate: shortTicker?.taker_commission_rate,
-      hedgeTakerFeeRate: hedgeTicker?.taker_commission_rate,
       riskPct: settings?.options_max_risk_pct ?? 0.30
     });
   }
