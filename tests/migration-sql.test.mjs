@@ -104,6 +104,7 @@ describe('Delta Testnet fill ledger migration SQL structure', () => {
     assert.ok(deltaFillMigration.includes('COMMIT;'));
     assert.match(deltaFillMigration, /ADD COLUMN IF NOT EXISTS client_order_id TEXT NULL/i);
     assert.match(deltaFillMigration, /ADD COLUMN IF NOT EXISTS timestamp_us BIGINT NULL/i);
+    assert.match(deltaFillMigration, /ADD COLUMN IF NOT EXISTS commission_currency TEXT NULL/i);
     assert.match(deltaFillMigration, /ADD COLUMN IF NOT EXISTS close_source TEXT NULL/i);
     assert.match(deltaFillMigration, /ADD COLUMN IF NOT EXISTS entry_order_id TEXT NULL/i);
     assert.match(deltaFillMigration, /ADD COLUMN IF NOT EXISTS fees_verified BOOLEAN NOT NULL DEFAULT FALSE/i);
