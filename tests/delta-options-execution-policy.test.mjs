@@ -294,6 +294,9 @@ test('Options order client IDs are unique by leg and attempt and remain within 3
   assert.ok(id1.length <= 32);
   assert.notEqual(id1, id2);
   assert.notEqual(id1, id3);
+  const collisionPrefixA = makeOptionsClientOrderId('1234567890-group-A', 'SHORT_OPTION', 1);
+  const collisionPrefixB = makeOptionsClientOrderId('1234567890-group-B', 'SHORT_OPTION', 1);
+  assert.notEqual(collisionPrefixA, collisionPrefixB);
   assert.throws(() => makeOptionsClientOrderId('x', 'BAD_ROLE', 1), /Cannot create/);
 });
 
@@ -304,4 +307,21 @@ test('only non-terminal Options groups occupy the exclusive account slot', () =>
   for (const state of ['CLOSED', 'REJECTED', 'FAILED']) {
     assert.equal(isActiveOptionsExecutionState(state), false);
   }
+});
+
+
+test('XAUT option products remain excluded from automated execution plans', () => {
+  const xaut = {
+    symbol: 'C-XAUT-4000-311026',
+    underlying: 'XAUT',
+    product_id: 991,
+    contract_type: 'call_options',
+    contract_value: '0.001',
+    tick_size: '0.0001',
+    state: 'live',
+    testnet_product_verified: true
+  };
+  assert.equal(validateLongOptionEntryPlan({
+    ticker: xaut, underlyingSide: 'BUY', qty: 1, maxLossUsd: 1, now: NOW
+  }).valid, false);
 });
