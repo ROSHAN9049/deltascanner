@@ -17,9 +17,9 @@ test('parses Delta BTC option expiry and settlement time', () => {
   assert.equal(parsed.dte, 26 / 24);
 });
 
-test('parses XAUT option expiry using Gold settlement time', () => {
-  const parsed = parseDeltaOptionSymbol('P-XAUT-4000-311026', 'XAUT', NOW);
-  assert.equal(parsed.expiryMs, Date.UTC(2026, 9, 31, 16, 0, 0));
+test('rejects unsupported non-BTC/ETH underlyings for Delta India options', () => {
+  assert.equal(parseDeltaOptionSymbol('P-XAUT-4000-311026', 'XAUT', NOW), null);
+  assert.equal(parseDeltaOptionSymbol('C-SOL-100-311026', 'SOL', NOW), null);
 });
 
 test('rejects malformed option symbols, wrong underlyings and invalid calendar dates', () => {
