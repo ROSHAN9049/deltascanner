@@ -249,10 +249,10 @@ export function createDeltaOptionsOrderLedger({
   async function markSubmissionUnknown(clientOrderId, error) {
     const row = await getAttempt(clientOrderId);
     if (!row) throw new Error('Cannot mark an Options submission unknown without a persisted attempt');
+    if (upper(row.order_state) === 'UNKNOWN') return { ...row, idempotent: true };
     if (upper(row.order_state) !== 'RESERVED') {
       throw new Error('Options submission can only be marked unknown while its exchange outcome is ambiguous');
     }
-    if (upper(row.order_state) === 'UNKNOWN') return { ...row, idempotent: true };
     return updateAttempt(row.client_order_id, null, {
       order_state: 'UNKNOWN',
       raw: {
