@@ -285,3 +285,27 @@ describe('Delta Testnet Options expiry exit migration SQL structure', () => {
     assert.ok(supervisorIndex >= 0 && expiryIndex > supervisorIndex);
   });
 });
+
+
+const optionsAccountRiskMigrationPath = fileURLToPath(new URL('../db/migrations/20261030160000_delta_options_account_risk.sql', import.meta.url));
+const optionsAccountRiskMigration = readFileSync(optionsAccountRiskMigrationPath, 'utf8');
+
+describe('Delta Testnet Options account-risk migration SQL structure', () => {
+  test('stores settlement evidence without assuming it for legacy rows', () => {
+    assert.ok(optionsAccountRiskMigration.includes('BEGIN;'));
+    assert.ok(optionsAccountRiskMigration.includes('COMMIT;'));
+    assert.match(optionsAccountRiskMigration, /ADD COLUMN IF NOT EXISTS settlement_asset TEXT NULL/i);
+    assert.match(optionsAccountRiskMigration, /settlement_asset IS NULL OR settlement_asset = 'USD'/i);
+    assert.match(optionsAccountRiskMigration, /NEW\.raw->>'settlement_asset'/i);
+    assert.match(optionsAccountRiskMigration, /v_group_asset IS DISTINCT FROM v_raw_asset/i);
+    assert.match(optionsAccountRiskMigration, /BEFORE INSERT OR UPDATE OF settlement_asset/i);
+    assert.match(optionsAccountRiskMigration, /REVOKE ALL ON FUNCTION public\.set_dd_options_group_settlement_asset\(\)/i);
+    assert.match(optionsAccountRiskMigration, /REVOKE ALL ON FUNCTION public\.set_dd_options_leg_settlement_asset\(\)/i);
+  });
+
+  test('migration runner applies account-risk settlement guard after expiry supervisor schema', () => {
+    const expiryIndex = migrationRunner.indexOf('20261030140000_delta_options_expiry_exit_required.sql');
+    const riskIndex = migrationRunner.indexOf('20261030160000_delta_options_account_risk.sql');
+    assert.ok(expiryIndex >= 0 && riskIndex > expiryIndex);
+  });
+});
