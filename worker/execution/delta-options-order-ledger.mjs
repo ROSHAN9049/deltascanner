@@ -110,6 +110,14 @@ export function createDeltaOptionsOrderLedger({
     }
     if (typeof input.reduceOnly !== 'boolean') throw new Error('Options reduce-only intent must be explicit');
 
+    const existing = await getAttempt(expected.client_order_id);
+    if (existing) {
+      if (!exactAttempt(existing, expected)) {
+        throw new Error('Options client order ID already belongs to a different immutable order attempt');
+      }
+      return { ...existing, idempotent: true };
+    }
+
     if (typeof database?.select !== 'function') throw new Error('Options order ledger reader is unavailable');
     const legRows = await database.select(
       'dd_options_execution_legs',
@@ -132,14 +140,6 @@ export function createDeltaOptionsOrderLedger({
         (expected.intent === 'ENTRY' && expected.reduce_only) ||
         (expected.intent !== 'ENTRY' && !expected.reduce_only)) {
       throw new Error('Options order attempt conflicts with its persisted leg role, product, side, quantity or reduce-only intent');
-    }
-
-    const existing = await getAttempt(expected.client_order_id);
-    if (existing) {
-      if (!exactAttempt(existing, expected)) {
-        throw new Error('Options client order ID already belongs to a different immutable order attempt');
-      }
-      return { ...existing, idempotent: true };
     }
 
     const row = {
