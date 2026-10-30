@@ -4040,7 +4040,7 @@ export class DeltaEngine {
     }
     await this.refreshCandleWarmup();
     if (settings.options_enabled !== false &&
-        (Date.now() - this.lastOptionTickerFetch > 60000 || !this.optionTickerMap.size)) {
+        (!this.lastOptionTickerFetch || Date.now() - this.lastOptionTickerFetch >= 60000)) {
       await this.refreshOptionTickers(settings);
     } else if (settings.options_enabled === false) {
       this.optionTickerMap.clear();
