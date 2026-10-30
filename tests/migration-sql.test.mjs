@@ -165,7 +165,7 @@ describe('Delta Testnet Options execution ledger migration SQL structure', () =>
     assert.match(deltaOptionsMigration, /'RECONCILIATION_REQUIRED'/i);
   });
 
-  test('both ledgers are service-role only and migration follows Delta fill ledger', () => {
+  test('all Options tables are service-role only and migration follows Delta fill ledger', () => {
     for (const table of ['dd_options_execution_groups', 'dd_options_execution_legs', 'dd_options_execution_orders']) {
       assert.match(deltaOptionsMigration, new RegExp('ALTER TABLE public\.' + table + ' ENABLE ROW LEVEL SECURITY', 'i'));
       assert.match(deltaOptionsMigration, new RegExp('REVOKE ALL ON TABLE public\.' + table + ' FROM anon, authenticated', 'i'));
@@ -190,4 +190,7 @@ test('atomic Options reservation RPC validates both legs and is service-role onl
   assert.match(deltaOptionsMigration, /'SHORT_OPTION'/i);
   assert.match(deltaOptionsMigration, /INSERT INTO public\.dd_options_execution_groups/i);
   assert.match(deltaOptionsMigration, /INSERT INTO public\.dd_options_execution_legs/i);
+  assert.match(deltaOptionsMigration, /RAISE EXCEPTION 'Credit spread requires one protective BUY and one short SELL'/i);
+  assert.match(deltaOptionsMigration, /RAISE EXCEPTION 'Credit spread protective wing must be farther out of the money'/i);
+  assert.match(deltaOptionsMigration, /v_reserved_margin <= 0/i);
 });
