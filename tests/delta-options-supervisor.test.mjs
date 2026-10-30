@@ -357,6 +357,9 @@ test('closes an expiry-required group only after ledger and exchange both confir
   assert.equal(result.status, 'EXPIRY_EXIT_FLAT');
   assert.equal(result.group.state, 'CLOSED');
   assert.equal(result.openQty, 0);
-  assert.equal(harness.calls.rpc[0].name, 'close_dd_options_group_after_expiry_if_flat');
-  assert.equal(harness.calls.rpc[0].args.p_group_id, GROUP_ID);
+  assert.equal(harness.calls.rpc[0].name, 'mark_dd_options_group_expiry_exit_required');
+  assert.equal(harness.calls.rpc[0].args.p_open_qty, 0);
+  assert.equal(harness.calls.rpc[1].name, 'close_dd_options_group_after_expiry_if_flat');
+  assert.equal(harness.calls.rpc[1].args.p_group_id, GROUP_ID);
+  assert.equal(harness.calls.rpc.length, 2);
 });
