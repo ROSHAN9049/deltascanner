@@ -6,9 +6,13 @@ This phase enables a bounded **signal and risk-analysis path** for the Delta Ind
 
 The market quote/Greeks feed is read from Delta India's public API. In Testnet mode each contract symbol is joined to the LIVE Testnet product catalogue by exact symbol; a production product ID is never accepted as a Testnet order identifier.
 
-## Long-option setup
+## Two-sided strategy design
 
-The initial executable candidate design is long premium only:
+The engine analyses both sides, but this phase remains analysis-only. A candidate may be scored and sized without being eligible to submit an order.
+
+### Long-option BUY
+
+The BUY side is long premium only:
 
 - Underlyings: BTC and ETH only, subject to a matching LIVE Testnet product. Delta India's current Options guide lists BTC and ETH; other underlyings stay out until India-specific support and settlement rules are verified.
 - Underlying direction: only a CONFIRMED underlying signal with score at least 80.
@@ -30,13 +34,29 @@ Unknown contract value, fee, ask, equity, or available balance produces quantity
 
 The strategy continues to display the existing option stop/target reference levels for analysis. They are not treated as exchange-side protection and do not authorize entry.
 
+### Short-option SELL
+
+The SELL side is a same-expiry vertical credit spread only:
+
+- Bullish underlying signal: sell a PUT and buy a lower-strike PUT wing.
+- Bearish underlying signal: sell a CALL and buy a higher-strike CALL wing.
+- The protective wing is mandatory and must match the short leg's expiry, option type, and verified Testnet contract multiplier.
+- The scan cache keeps separate approximately 0.55, 0.27 and 0.10 absolute-delta buckets so BUY contracts, short legs and protective wings are all discoverable.
+- Net credit is short-leg bid less protective-wing ask. Quantity is capped by combined spread max loss plus a fee reserve and by a conservative full-width available-balance reserve.
+- Missing product ID, multiplier, commission, quote or balance yields zero contracts. Naked calls/puts remain prohibited.
+
 ## Not enabled in this phase
 
 - **No option order placement**, even in Testnet.
-- No naked short calls/puts.
-- Credit spreads remain blocked. A future phase must prove leg pairing, atomic or safely sequenced two-leg entry, partial-fill unwind, combined maximum-loss accounting, exchange-side protection for both legs, and orphan-leg reconciliation.
+- Direct Delta Testnet BUY and paired SELL execution remain locked until single-leg protection and paired-leg fill/cancel/unwind/reconciliation behaviour are verified against the Testnet API.
+- Credit spreads are not treated as risk-free; the defined-loss formula includes fee reserves, and a fresh exchange margin check is still required before any entry.
 - No changes to Momentum, Scalping, Grid settings, existing positions, or LIVE credentials/mode.
 
 ## Gate for Phase 2 execution
 
 Before the execution lock can be changed, a separate reviewed PR must implement and test: Testnet product-ID resolution at order time; idempotent single-leg order submission; fill confirmation; full-premium and fee checks against fresh wallet data; supported Testnet reduce-only exit/protection behavior; one-position cap across all option products; exchange-vs-database reconciliation; expiry/time exits; and recovery from partial fills, rejected protection, restarts and lost acknowledgements. Any unverified capability must continue to block new entries.
+
+
+## Current release gate
+
+The BUY and SELL analysis engines are implemented in the Draft PR, but the execution constant remains hard false. The running Hostless worker and Main branch are not changed by this draft. A later execution PR must prove, with dedicated Testnet orders, that option product IDs, IOC fills, reduce-only exits, bracket protection, short/wing pairing, partial-fill unwind, and reconciliation work exactly as expected.
