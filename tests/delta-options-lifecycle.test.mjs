@@ -230,3 +230,12 @@ test('expiry exit unwinds a protective-only credit-spread leg and never opens th
   assert.equal(result.nextAction.side, 'SELL');
   assert.equal(result.nextAction.reduceOnly, true);
 });
+
+test('EXIT_REQUIRED blocks all new entries unless explicit expiry exit planning is active', () => {
+  const result = plan({
+    group: { ...GROUP, state: 'EXIT_REQUIRED' },
+    entrySignalReady: true
+  });
+  assert.equal(result.status, 'EXIT_REQUIRED');
+  assert.equal(result.exitOnly, true);
+});
