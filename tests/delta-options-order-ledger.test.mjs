@@ -307,7 +307,8 @@ test('reconciles multi-page actual fills into exact quantity, VWAP and known com
             id: 'fill-1', order_id: '7001', product_id: 101,
             product_symbol: INPUT.symbol, side: 'buy',
             size: '1', price: '100', commission: '0.01',
-            settling_asset_symbol: 'USD'
+            settling_asset_symbol: 'USD',
+            created_at: String((NOW + 10_000) * 1000)
           }],
           after: 'next-page'
         };
@@ -318,13 +319,15 @@ test('reconciles multi-page actual fills into exact quantity, VWAP and known com
             id: 'fill-2', order_id: '7001', product_id: 101,
             product_symbol: INPUT.symbol, side: 'buy',
             size: '2', price: '110', commission: '0.02',
-            settling_asset_symbol: 'USD'
+            settling_asset_symbol: 'USD',
+            created_at: String((NOW + 10_000) * 1000)
           },
           {
             id: 'fill-2', order_id: '7001', product_id: 101,
             product_symbol: INPUT.symbol, side: 'buy',
             size: '2', price: '110', commission: '0.02',
-            settling_asset_symbol: 'USD'
+            settling_asset_symbol: 'USD',
+            created_at: String((NOW + 10_000) * 1000)
           }
         ],
         after: null
@@ -357,7 +360,8 @@ test('overfills and malformed matching fills never become a successful filled at
             id: 'fill-over', order_id: '7001', product_id: 101,
             product_symbol: INPUT.symbol, side: 'buy',
             size: '4', price: '100', commission: '0.01',
-            settling_asset_symbol: 'USD'
+            settling_asset_symbol: 'USD',
+            created_at: String((NOW + 10_000) * 1000)
           }],
           after: null
         };
