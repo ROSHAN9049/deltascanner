@@ -241,7 +241,7 @@ BEGIN
      v_risk_budget IS NULL OR v_risk_budget <= 0 OR
      v_max_loss IS NULL OR v_max_loss <= 0 OR
      v_max_loss > v_risk_budget OR
-     v_reserved_margin < 0 THEN
+     v_reserved_margin <= 0 THEN
     RAISE EXCEPTION 'Options risk, size, margin or expiry inputs are missing/out of bounds';
   END IF;
 
@@ -263,12 +263,12 @@ BEGIN
       RAISE EXCEPTION 'Credit spread requires positive net credit and a direction-matched same-type pair';
     END IF;
 
-    SELECT element INTO v_wing
-    FROM jsonb_array_elements(p_legs) element
-    WHERE UPPER(COALESCE(element->>'role', '')) = 'PROTECTIVE_WING';
-    SELECT element INTO v_short
-    FROM jsonb_array_elements(p_legs) element
-    WHERE UPPER(COALESCE(element->>'role', '')) = 'SHORT_OPTION';
+    SELECT x.element INTO v_wing
+    FROM jsonb_array_elements(p_legs) AS x(element)
+    WHERE UPPER(COALESCE(x.element->>'role', '')) = 'PROTECTIVE_WING';
+    SELECT x.element INTO v_short
+    FROM jsonb_array_elements(p_legs) AS x(element)
+    WHERE UPPER(COALESCE(x.element->>'role', '')) = 'SHORT_OPTION';
 
     IF v_wing IS NULL OR v_short IS NULL OR
        UPPER(COALESCE(v_wing->>'side', '')) <> 'BUY' OR
@@ -289,9 +289,8 @@ BEGIN
     END IF;
   END IF;
 
-  FOREACH v_leg IN ARRAY ARRAY(
-    SELECT jsonb_array_elements(p_legs)
-  )
+  FOR v_leg IN
+    SELECT x.element FROM jsonb_array_elements(p_legs) AS x(element)
   LOOP
     v_role := UPPER(COALESCE(v_leg->>'role', ''));
     v_side := UPPER(COALESCE(v_leg->>'side', ''));
@@ -356,7 +355,7 @@ BEGIN
     'RESERVED',
     element->>'clientOrderId',
     element
-  FROM jsonb_array_elements(p_legs) element;
+  FROM jsonb_array_elements(p_legs) AS x(element);
 
   RETURN jsonb_build_object(
     'group_id', v_group_id,
