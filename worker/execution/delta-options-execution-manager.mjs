@@ -185,7 +185,21 @@ export function createDeltaOptionsExecutionManager({
     if (!accountRiskGate || typeof accountRiskGate.evaluate !== 'function') {
       throw new Error('Account-wide Options risk gate is unavailable; reservation and new entries remain blocked');
     }
-    const result = await accountRiskGate.evaluate(input);
+    let request = input;
+    if (upper(input.phase) === 'ORDER' && input.groupId && !input.candidate) {
+      const group = await getActiveGroup();
+      if (!group || String(group.id) !== String(input.groupId)) {
+        throw new Error('Account-wide Options risk gate cannot verify the active order group');
+      }
+      request = {
+        ...input,
+        candidate: {
+          settlement_asset: group.settlement_asset,
+          client_group_id: group.client_group_id
+        }
+      };
+    }
+    const result = await accountRiskGate.evaluate(request);
     if (!result || result.allowed !== true) {
       const reasons = Array.isArray(result?.reasons) ? result.reasons.join(',') : 'ACCOUNT_RISK_EVALUATION_UNAVAILABLE';
       throw new Error('Account-wide Options risk gate blocked the order: ' + reasons);
