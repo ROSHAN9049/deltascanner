@@ -20,10 +20,31 @@ const INPUT = {
 
 function createMemoryDatabase() {
   const rows = new Map();
+  const legs = new Map([[
+    String(INPUT.legId),
+    {
+      id: INPUT.legId,
+      group_id: INPUT.groupId,
+      leg_role: INPUT.legRole,
+      product_id: INPUT.productId,
+      symbol: INPUT.symbol,
+      side: INPUT.side,
+      requested_qty: INPUT.requestedQty
+    }
+  ]]);
   let nextId = 1;
   return {
     rows,
+    legs,
     async select(table, query) {
+      if (table === 'dd_options_execution_legs') {
+        const idMatch = query.match(/id=eq\\.([^&]+)/);
+        const groupMatch = query.match(/group_id=eq\\.([^&]+)/);
+        const leg = idMatch ? legs.get(decodeURIComponent(idMatch[1])) : null;
+        return leg && (!groupMatch || leg.group_id === decodeURIComponent(groupMatch[1]))
+          ? [{ ...leg }]
+          : [];
+      }
       assert.equal(table, 'dd_options_execution_orders');
       const clientMatch = query.match(/client_order_id=eq\.([^&]+)/);
       if (clientMatch) {
@@ -49,7 +70,7 @@ function createMemoryDatabase() {
       const exchangeMatch = query.match(/exchange_order_id=eq\.([^&]+)/);
       const clientId = clientMatch ? decodeURIComponent(clientMatch[1]) : null;
       const row = clientId ? rows.get(clientId) : null;
-      if (!row || (exchangeMatch && row.exchange_order_id !== decodeURIComponent(exchangeMatch[1]))) return [];
+      if (!row || (exchangeMatch && row.exchange_order_id !== decodeURIComponent(exchangeMatch[1])) ||\n          (stateMatch && row.order_state !== decodeURIComponent(stateMatch[1]))) return [];
       Object.assign(row, patch);
       return [{ ...row }];
     }
@@ -86,6 +107,30 @@ test('persists a complete immutable attempt before exchange submission and is id
     ledger.persistAttempt({ ...INPUT, side: 'SELL' }),
     /different immutable order attempt/
   );
+  assert.equal(database.rows.size, 1);
+});
+
+test('attempts must match the same persisted leg and reverse side for reduce-only exits', async () => {
+  const database = createMemoryDatabase();
+  const ledger = createDeltaOptionsOrderLedger({ database, now: () => NOW });
+  await assert.rejects(
+    ledger.persistAttempt({ ...INPUT, productId: 999 }),
+    /conflicts with its persisted leg/
+  );
+  await assert.rejects(
+    ledger.persistAttempt({ ...INPUT, side: 'SELL', intent: 'EXIT', reduceOnly: true }),
+    /conflicts with its persisted leg/
+  );
+  const exit = await ledger.persistAttempt({
+    ...INPUT,
+    intent: 'EXIT',
+    attemptNo: 1,
+    side: 'SELL',
+    requestedQty: 2,
+    reduceOnly: true,
+    clientOrderId: 'DDO-ABCD12345678-CL-1'
+  });
+  assert.equal(exit.order_state, 'RESERVED');
   assert.equal(database.rows.size, 1);
 });
 
