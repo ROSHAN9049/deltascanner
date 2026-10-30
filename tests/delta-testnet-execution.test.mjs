@@ -267,7 +267,7 @@ test('close-fill lookup correlates to this entry and ignores later same-symbol c
         id: 'entry-fill-1', product_id: 27, product_symbol: 'BTCUSD',
         order_id: '8001', client_order_id: 'DDM-BTCUSD-entry-001',
         side: 'buy', size: '2', price: '60000', commission: '0.03',
-        settling_asset_symbol: 'USD', created_at: String((clockMs - 59 * 60_000) * 1000),
+        settling_asset_symbol: 'USD', created_at: String((clockMs - 60 * 60_000 - 1000) * 1000),
         meta_data: { new_position: { size: 2, realized_pnl: '0' } }
       },
       {
@@ -315,7 +315,7 @@ test('close-fill lookup correlates to this entry and ignores later same-symbol c
 
   const fillCall = runtime.httpCalls.find(call => new URL(call.url).pathname === '/v2/fills');
   const params = new URL(fillCall.url).searchParams;
-  assert.equal(Number(params.get('start_time')), Date.parse(openedAt) * 1000);
+  assert.equal(Number(params.get('start_time')), (Date.parse(openedAt) - 30_000) * 1000);
   assert.equal(Number(params.get('end_time')), clockMs * 1000);
   assert.equal(fillCall.init.method, 'GET');
 });
