@@ -245,7 +245,7 @@ export function createDeltaOptionsSupervisor({
 
       let exchangeOrderId = text(row.exchange_order_id);
       if (!exchangeOrderId &&
-          ['RESERVED', 'SUBMITTED', 'UNKNOWN'].includes(upper(row.order_state))) {
+          ['RESERVED', 'SUBMITTED', 'UNKNOWN', 'RECONCILIATION_REQUIRED'].includes(upper(row.order_state))) {
         try {
           const acknowledgement = await executor.getOptionOrderByClientId(row.client_order_id);
           row = await ledger.recordAcknowledgement(row.client_order_id, acknowledgement);

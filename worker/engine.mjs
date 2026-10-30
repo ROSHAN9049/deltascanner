@@ -32,6 +32,7 @@ import { createLeaseManager, getLeaseTtlSeconds } from './lease-manager.mjs';
 import { createDeltaOptionsExecutor } from './execution/delta-options-executor.mjs';
 import { createDeltaOptionsExecutionManager } from './execution/delta-options-execution-manager.mjs';
 import { createDeltaOptionsOrderLedger } from './execution/delta-options-order-ledger.mjs';
+import { createDeltaOptionsOrderCoordinator } from './execution/delta-options-order-coordinator.mjs';
 import { createDeltaOptionsSupervisor } from './execution/delta-options-supervisor.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -287,6 +288,13 @@ export class DeltaEngine {
     this.optionsExecutionManager = createDeltaOptionsExecutionManager({ database: db });
     this.optionsOrderLedger = createDeltaOptionsOrderLedger({ database: db });
     this.optionsExecutor = createDeltaOptionsExecutor();
+    // Constructed for the later supervised state machine; never invoked from
+    // scan/signal routing while the source-code Options execution lock is false.
+    this.optionsOrderCoordinator = createDeltaOptionsOrderCoordinator({
+      manager: this.optionsExecutionManager,
+      executor: this.optionsExecutor,
+      ledger: this.optionsOrderLedger
+    });
     this.optionsSupervisor = createDeltaOptionsSupervisor({
       database: db,
       manager: this.optionsExecutionManager,

@@ -123,7 +123,10 @@ function makeHarness({
     async recordAcknowledgement(clientOrderId, ack) {
       const row = orders.find(item => item.client_order_id === clientOrderId);
       row.exchange_order_id = String(ack.id);
-      row.order_state = 'OPEN';
+      // A successful lookup does not release an already locked attempt/group.
+      if (String(row.order_state).toUpperCase() !== 'RECONCILIATION_REQUIRED') {
+        row.order_state = 'OPEN';
+      }
       return { ...row };
     },
     async reconcileFills(clientOrderId, args) {
@@ -292,4 +295,32 @@ test('coalesces overlapping supervisor cycles into one exchange/database reconci
   const [a, b] = await Promise.all([first, second]);
   assert.deepEqual(a, b);
   assert.equal(harness.calls.reconciliations, 1);
+});
+
+
+test('continues exact client-order lookup for a locked attempt but does not auto-unlock it', async () => {
+  const order = makeOrder({
+    exchange_order_id: null,
+    order_state: 'RECONCILIATION_REQUIRED'
+  });
+  const harness = makeHarness({
+    orders: [order],
+    openOrders: [{
+      id: '7001',
+      client_order_id: 'DDO-ABCD12345678-LP-1',
+      product_id: 101,
+      product_symbol: 'C-BTC-90000-311026',
+      side: 'buy',
+      size: 2,
+      state: 'open'
+    }]
+  });
+  const result = await harness.supervisor.reconcileOnce();
+  assert.equal(harness.calls.lookups, 1);
+  assert.equal(harness.calls.reconciliations, 1);
+  assert.equal(result.status, 'RECONCILIATION_REQUIRED');
+  assert.equal(result.executionEnabled, false);
+  assert.equal(order.order_state, 'RECONCILIATION_REQUIRED');
+  assert.equal(order.exchange_order_id, '7001');
+  assert.equal(harness.calls.rpc[0].args.p_error_code, 'OPTIONS_ORDER_RECOVERY_UNRESOLVED');
 });
