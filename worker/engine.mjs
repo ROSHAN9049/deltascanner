@@ -1687,8 +1687,10 @@ export class DeltaEngine {
     // Public India tickers supply quotes/Greeks. In Testnet mode every symbol
     // must first match a LIVE product from the Testnet catalogue so a public
     // production product_id can never leak into a future Testnet order.
-    const underlyings = [...OPTION_UNDERLYINGS];
     const testnetMode = CONFIG.deltaExecutionMode === 'testnet';
+    const underlyings = testnetMode
+      ? OPTION_UNDERLYINGS.filter(asset => ['BTC', 'ETH'].includes(asset))
+      : [...OPTION_UNDERLYINGS];
     const now = Date.now();
 
     if (testnetMode && (
@@ -1702,7 +1704,7 @@ export class DeltaEngine {
           const symbol = String(product?.symbol || '').toUpperCase();
           const contractType = String(product?.contract_type || '').toLowerCase();
           const match = symbol.match(/^[CP]-([A-Z0-9]+)-/);
-          if (!match || !OPTION_UNDERLYINGS.includes(match[1]) ||
+          if (!match || !['BTC', 'ETH'].includes(match[1]) ||
               !['call_options', 'put_options'].includes(contractType)) continue;
           if (product.state && String(product.state).toLowerCase() !== 'live') continue;
 
