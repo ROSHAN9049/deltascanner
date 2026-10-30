@@ -158,3 +158,29 @@ test('active-group read rejects malformed or duplicated snapshots', async () => 
   });
   await assert.rejects(duplicate.getActiveGroup(), /invalid active-group snapshot/);
 });
+
+test('group idempotency and leg readers reject duplicate or malformed ledger snapshots', async () => {
+  const calls = [];
+  const manager = createDeltaOptionsExecutionManager({
+    database: {
+      select: async (table, query) => {
+        calls.push({ table, query });
+        if (table === 'dd_options_execution_groups') {
+          return [{ id: 'group-id', client_group_id: 'client-group-123', state: 'RESERVED' }];
+        }
+        return [{ id: 1, group_id: 'group-id' }, { id: 2, group_id: 'group-id' }];
+      }
+    }
+  });
+  const group = await manager.getGroupByClientGroupId('client-group-123');
+  assert.equal(group.id, 'group-id');
+  const legs = await manager.getGroupLegs('group-id');
+  assert.equal(legs.length, 2);
+  assert.ok(calls.every(call => call.query.includes('limit=') ));
+  await assert.rejects(manager.getGroupByClientGroupId('x'), /8–80 characters/);
+
+  const duplicated = createDeltaOptionsExecutionManager({
+    database: { select: async () => [{ id: '1' }, { id: '2' }] }
+  });
+  await assert.rejects(duplicated.getGroupByClientGroupId('client-group-123'), /invalid snapshot/);
+});
