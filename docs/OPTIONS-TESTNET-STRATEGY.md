@@ -2,7 +2,7 @@
 
 ## Scope
 
-This phase enables a bounded **signal and risk-analysis path** for the Delta India Testnet Options universe. It does not submit option orders. \`OPTIONS_EXECUTION_ALLOWED\` remains \`false\` and \`options_execution_enabled\` remains disabled.
+This phase enables a bounded **signal and risk-analysis path** for the Delta India Testnet Options universe. It does not submit option orders. `OPTIONS_EXECUTION_ALLOWED` remains `false` and `options_execution_enabled` remains disabled.
 
 The market quote/Greeks feed is read from Delta India's public API. In Testnet mode each contract symbol is joined to the LIVE Testnet product catalogue by exact symbol; a production product ID is never accepted as a Testnet order identifier.
 
@@ -13,7 +13,7 @@ The initial executable candidate design is long premium only:
 - Underlyings: BTC, ETH and XAUT, subject to a matching LIVE Testnet product.
 - Underlying direction: only a CONFIRMED underlying signal with score at least 80.
 - Instrument: CALL for bullish direction; PUT for bearish direction.
-- Target absolute delta: 0.45–0.65 (existing \`analyseOption\` policy).
+- Target absolute delta: 0.45–0.65 (existing `analyseOption` policy).
 - Expiry: configured 2–14 DTE; option symbols are parsed and settlement time is asset-aware.
 - Liquidity: positive bid/ask, spread no wider than the configured threshold, minimum OI and volume (existing settings).
 - Anti-chase: existing underlying 24-hour move filter.
@@ -21,7 +21,7 @@ The initial executable candidate design is long premium only:
 
 ## Risk model
 
-Long option quantity is not sized from a stop-loss percentage of the premium. Maximum loss starts from the **full premium paid**, multiplied by the explicit Testnet product \`contract_value\`, plus a conservative two-sided taker-fee allowance. Quantity is the smaller of:
+Long option quantity is not sized from a stop-loss percentage of the premium. Maximum loss starts from the **full premium paid**, multiplied by the explicit Testnet product `contract_value`, plus a conservative two-sided taker-fee allowance. Quantity is the smaller of:
 
 1. the configured per-trade risk budget (capped at 0.30% of account equity), and
 2. the available-balance limit for the premium and estimated entry fee.
