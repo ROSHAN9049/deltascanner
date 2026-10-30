@@ -29,6 +29,33 @@ test('Testnet Grid widens a rung stop to the 1.50% floor and recomputes whole-co
   assert.ok(result.rewardRiskRatio >= 1);
 });
 
+test('Testnet Grid normalizes a prior-rung stop to the 1.50% floor so symmetric grid rungs retain net 1R', () => {
+  const result = sizeDeltaGridEntry({
+    candidate: { ...candidate, stopPrice: 98 },
+    settings: { grid_risk_per_trade_pct: 1, grid_daily_loss_pct: 2, grid_max_positions: 1, max_leverage: 3 },
+    account: { equity: 10000, available: 10000 },
+    product,
+    riskEquity: 10000,
+    remainingDailyRisk: 200
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.stopPrice, 98.5);
+  assert.ok(result.rewardRiskRatio >= 1);
+});
+
+test('Testnet Grid caps each entry at 25% of available margin', () => {
+  const result = sizeDeltaGridEntry({
+    candidate,
+    settings: { grid_risk_per_trade_pct: 1, grid_daily_loss_pct: 2, grid_max_positions: 1, max_leverage: 3 },
+    account: { equity: 10000, available: 1000 },
+    product,
+    riskEquity: 10000,
+    remainingDailyRisk: 200
+  });
+  assert.equal(result.ok, true);
+  assert.ok(result.qty <= Math.floor((1000 * 0.25 * 3) / 100));
+});
+
 test('Testnet Grid skips a narrow rung when the widened stop removes its reward/risk edge', () => {
   const result = sizeDeltaGridEntry({
     candidate: { ...candidate, targetPrice: 101.2 },
