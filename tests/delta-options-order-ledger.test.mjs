@@ -277,7 +277,7 @@ test('closed IOC acknowledgement with remaining quantity is terminal cancellatio
     makeAck({ state: 'closed', unfilled_size: 1 })
   );
   assert.equal(row.order_state, 'CANCELLED');
-  assert.equal(Number(row.acknowledged_filled_qty), 2);
+  assert.equal(Number(row.acknowledged_filled_qty), 1);
 });
 
 test('mismatched exchange acknowledgement locks the attempt for reconciliation', async () => {
