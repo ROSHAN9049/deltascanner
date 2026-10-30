@@ -25,7 +25,7 @@ The BUY side is long premium only:
 
 ## Risk model
 
-Long option quantity is not sized from a stop-loss percentage of the premium. Maximum loss starts from the **full premium paid**, multiplied by the explicit Testnet product `contract_value`, plus a conservative two-sided standard-fee reserve. Delta India's published India Options help-centre schedule specifies a 0.010% notional trading fee, capped at 3.5% of premium, plus 18% GST; the estimate applies the lower of the notional fee and premium cap on each side. Quantity is the smaller of:
+Long option quantity is not sized from a stop-loss percentage of the premium. Maximum loss starts from the **full premium paid**, multiplied by the explicit Testnet product `contract_value`, plus an entry-fee and separate close/settlement reserve. Delta India's current fee table specifies a 0.010% notional trading fee, capped at 3.5% of premium, plus 18% GST, and says open contracts incur a taker fee at settlement. To avoid relying on conflicting expiry examples, sizing applies the lower premium-capped fee on entry and reserves the **uncapped notional taker fee plus GST** for a possible close or settlement on each leg. Actual Testnet fill and settlement charges must be reconciled before execution can be enabled. Quantity is the smaller of:
 
 1. the configured per-trade risk budget (capped at 0.30% of account equity), and
 2. the available-balance limit for the premium and estimated entry fee.
@@ -62,4 +62,4 @@ Before the execution lock can be changed, a separate reviewed PR must implement 
 The BUY and SELL analysis engines are implemented in the Draft PR, but the execution constant remains hard false. The running Hostless worker and Main branch are not changed by this draft. A later execution PR must prove, with dedicated Testnet orders, that option product IDs, IOC fills, reduce-only exits, bracket protection, short/wing pairing, partial-fill unwind, and reconciliation work exactly as expected.
 
 
-The Options fee estimator deliberately does not reuse futures `taker_commission_rate`. It uses the published India Options notional-fee / premium-cap formula and reserves GST. Real execution must reconcile actual per-fill commission from Delta's fills ledger; promotional discounts are ignored in sizing.
+The Options fee estimator deliberately does not reuse futures `taker_commission_rate`. It uses the published India Options notional-fee / premium-cap formula for entry and an uncapped notional taker-fee + GST reserve for close/expiry. The public fee page and Help Center differ in how they describe OTM expiry treatment; this design takes the higher reserve until actual Testnet fill and settlement charges are independently verified. Real execution must reconcile every fee currency and amount; promotional discounts are ignored in sizing.
