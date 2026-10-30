@@ -38,8 +38,8 @@ function createMemoryDatabase() {
     legs,
     async select(table, query) {
       if (table === 'dd_options_execution_legs') {
-        const idMatch = query.match(/id=eq\\.([^&]+)/);
-        const groupMatch = query.match(/group_id=eq\\.([^&]+)/);
+        const idMatch = query.match(/id=eq\.([^&]+)/);
+        const groupMatch = query.match(/group_id=eq\.([^&]+)/);
         const leg = idMatch ? legs.get(decodeURIComponent(idMatch[1])) : null;
         return leg && (!groupMatch || leg.group_id === decodeURIComponent(groupMatch[1]))
           ? [{ ...leg }]
@@ -68,15 +68,17 @@ function createMemoryDatabase() {
       assert.equal(table, 'dd_options_execution_orders');
       const clientMatch = query.match(/client_order_id=eq\.([^&]+)/);
       const exchangeMatch = query.match(/exchange_order_id=eq\.([^&]+)/);
+      const stateMatch = query.match(/order_state=eq\.([^&]+)/);
       const clientId = clientMatch ? decodeURIComponent(clientMatch[1]) : null;
       const row = clientId ? rows.get(clientId) : null;
-      if (!row || (exchangeMatch && row.exchange_order_id !== decodeURIComponent(exchangeMatch[1])) ||\n          (stateMatch && row.order_state !== decodeURIComponent(stateMatch[1]))) return [];
+      if (!row ||
+          (exchangeMatch && row.exchange_order_id !== decodeURIComponent(exchangeMatch[1])) ||
+          (stateMatch && row.order_state !== decodeURIComponent(stateMatch[1]))) return [];
       Object.assign(row, patch);
       return [{ ...row }];
     }
   };
 }
-
 function makeAck(overrides = {}) {
   return {
     id: 7001,
