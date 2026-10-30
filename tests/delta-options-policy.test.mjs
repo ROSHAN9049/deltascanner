@@ -239,7 +239,7 @@ test('option fee estimator applies the notional rate, premium cap, and GST', () 
   });
   assert.equal(uncapped.notionalPerContract, 90);
   assert.equal(uncapped.premiumValuePerContract, 1.5);
-  assert.equal(uncapped.feeByNotional, 0.009);
+  assert.ok(Math.abs(uncapped.feeByNotional - 0.009) < 1e-12);
   assert.equal(uncapped.feeCap, 0.0525);
   assert.ok(Math.abs(uncapped.totalFeePerContract - 0.01062) < 1e-10);
 
@@ -248,7 +248,7 @@ test('option fee estimator applies the notional rate, premium cap, and GST', () 
     premium: 1,
     contractValue: 0.001
   });
-  assert.equal(capped.feeByNotional, 0.009);
+  assert.ok(Math.abs(capped.feeByNotional - 0.009) < 1e-12);
   assert.equal(capped.feeCap, 0.000035);
   assert.ok(Math.abs(capped.totalFeePerContract - 0.0000413) < 1e-10);
 });
