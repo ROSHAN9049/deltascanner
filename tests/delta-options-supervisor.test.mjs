@@ -227,9 +227,20 @@ test('does not assume an unresolved reserved client order was never submitted', 
 
 test('uses the exchange client-order lookup to recover a persisted reservation after restart', async () => {
   const order = makeOrder({ exchange_order_id: null, order_state: 'RESERVED' });
-  const harness = makeHarness({ orders: [order] });
+  const harness = makeHarness({
+    orders: [order],
+    openOrders: [{
+      id: '7001',
+      client_order_id: 'DDO-ABCD12345678-LP-1',
+      product_id: 101,
+      product_symbol: 'C-BTC-90000-311026',
+      side: 'buy',
+      size: 2,
+      state: 'open'
+    }]
+  });
   const result = await harness.supervisor.reconcileOnce();
-  assert.equal(result.status, 'RECONCILED');
+  assert.equal(result.status, 'ORDER_PENDING');
   assert.equal(harness.calls.lookups, 1);
   assert.equal(harness.calls.reconciliations, 1);
 });
