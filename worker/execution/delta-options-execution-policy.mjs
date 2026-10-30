@@ -105,12 +105,14 @@ export function validateCreditSpreadEntryPlan({
   underlyingSide,
   qty,
   maxLossUsd,
+  netCreditUsd,
   now = Date.now()
 } = {}) {
   const short = verifiedProduct(shortTicker, now);
   const protective = verifiedProduct(protectiveTicker, now);
   const quantity = wholeQuantity(qty);
   const maxLoss = finitePositive(maxLossUsd);
+  const netCredit = finitePositive(netCreditUsd);
   const direction = normalized(underlyingSide);
   const expectedShortType = direction === 'BUY' ? 'PUT' : direction === 'SELL' ? 'CALL' : null;
 
@@ -119,6 +121,7 @@ export function validateCreditSpreadEntryPlan({
   }
   if (!quantity) return { valid: false, reason: 'Credit spread quantity must be a positive whole number' };
   if (!maxLoss) return { valid: false, reason: 'Combined credit-spread maximum loss must be known before entry' };
+  if (!netCredit) return { valid: false, reason: 'Net credit after the protective premium and fees must be positive' };
   if (!expectedShortType || short.optionType !== expectedShortType) {
     return { valid: false, reason: 'Short option type does not match the confirmed underlying direction' };
   }
@@ -145,6 +148,7 @@ export function validateCreditSpreadEntryPlan({
     strategy: 'OPTIONS_SELL',
     qty: quantity,
     maxLossUsd: maxLoss,
+    netCreditUsd: netCredit,
     underlyingSymbol: short.underlying + 'USD',
     underlyingDirection: direction,
     optionType: short.optionType,
@@ -189,12 +193,18 @@ export function resolveCreditSpreadEntryProgress({
   shortSubmitted = false,
   shortState = null,
   shortFilledQty = 0,
-  protectiveExcessUnwound = false,
-  protectiveFullUnwindConfirmed = false
+  protectiveFullUnwindSubmitted = false,
+  protectiveFullUnwindState = null,
+  protectiveFullUnwoundQty = 0,
+  protectiveExcessUnwindSubmitted = false,
+  protectiveExcessUnwindState = null,
+  protectiveExcessUnwoundQty = 0
 } = {}) {
   const protectiveQty = wholeQuantity(protectiveFilledQty);
   const shortQty = wholeQuantity(shortFilledQty);
-  if (protectiveQty === null || shortQty === null) {
+  const fullUnwoundQty = wholeQuantity(protectiveFullUnwoundQty);
+  const excessUnwoundQty = wholeQuantity(protectiveExcessUnwoundQty);
+  if ([protectiveQty, shortQty, fullUnwoundQty, excessUnwoundQty].some(value => value === null)) {
     return { state: 'RECONCILIATION_REQUIRED', reason: 'Exchange fill quantity is missing or malformed' };
   }
 
@@ -206,6 +216,9 @@ export function resolveCreditSpreadEntryProgress({
     return { state: 'HEDGE_ENTRY_PENDING', reason: 'Protective BUY is not terminal; short leg must not be sent' };
   }
   if (protectiveQty === 0) {
+    if (hedgeState === 'FILLED') {
+      return { state: 'RECONCILIATION_REQUIRED', reason: 'Protective order says FILLED but the exchange fill quantity is zero' };
+    }
     return { state: 'REJECTED', reason: 'Protective BUY has no confirmed fill; no short order may be placed' };
   }
   if (!shortSubmitted) {
@@ -226,27 +239,69 @@ export function resolveCreditSpreadEntryProgress({
   if (shortQty > protectiveQty) {
     return { state: 'RECONCILIATION_REQUIRED', reason: 'Exchange short fill exceeds confirmed protective-leg quantity' };
   }
+  if (shortOrderState === 'FILLED' && shortQty !== protectiveQty) {
+    return { state: 'RECONCILIATION_REQUIRED', reason: 'Short order says FILLED but short and protective quantities do not match' };
+  }
   if (shortQty === 0) {
-    if (protectiveFullUnwindConfirmed) {
+    if (!protectiveFullUnwindSubmitted) {
+      return {
+        state: 'UNWIND_PENDING',
+        unwindRole: 'PROTECTIVE_WING',
+        unwindQty: protectiveQty,
+        reason: 'Short SELL did not fill; fully unwind the protective BUY before releasing the group'
+      };
+    }
+    const unwindState = normalized(protectiveFullUnwindState);
+    if (UNKNOWN_ORDER_STATES.has(unwindState)) {
+      return { state: 'RECONCILIATION_REQUIRED', reason: 'Protective full-unwind acknowledgement is unknown' };
+    }
+    if (!TERMINAL_ORDER_STATES.has(unwindState)) {
+      return { state: 'UNWIND_PENDING', reason: 'Protective full-unwind order is still pending' };
+    }
+    if (fullUnwoundQty > protectiveQty) {
+      return { state: 'RECONCILIATION_REQUIRED', reason: 'Protective unwind fill exceeds the long position quantity' };
+    }
+    if (fullUnwoundQty === protectiveQty) {
       return { state: 'REJECTED', matchedQty: 0, reason: 'Short SELL did not fill and the protective BUY was fully unwound' };
     }
     return {
       state: 'UNWIND_PENDING',
       unwindRole: 'PROTECTIVE_WING',
-      unwindQty: protectiveQty,
-      reason: 'Short SELL did not fill; close the protective long before releasing the group'
+      unwindQty: protectiveQty - fullUnwoundQty,
+      reason: 'Protective full-unwind IOC was partial; unwind only the confirmed remaining long quantity'
     };
   }
 
   const excessProtectiveQty = protectiveQty - shortQty;
-  if (excessProtectiveQty > 0 && !protectiveExcessUnwound) {
-    return {
-      state: 'UNWIND_PENDING',
-      unwindRole: 'PROTECTIVE_WING',
-      unwindQty: excessProtectiveQty,
-      matchedQty: shortQty,
-      reason: 'Short SELL partially filled; unwind only the unmatched excess protective contracts'
-    };
+  if (excessProtectiveQty > 0) {
+    if (!protectiveExcessUnwindSubmitted) {
+      return {
+        state: 'UNWIND_PENDING',
+        unwindRole: 'PROTECTIVE_WING',
+        unwindQty: excessProtectiveQty,
+        matchedQty: shortQty,
+        reason: 'Short SELL partially filled; unwind only the unmatched excess protective contracts'
+      };
+    }
+    const unwindState = normalized(protectiveExcessUnwindState);
+    if (UNKNOWN_ORDER_STATES.has(unwindState)) {
+      return { state: 'RECONCILIATION_REQUIRED', reason: 'Excess protective unwind acknowledgement is unknown' };
+    }
+    if (!TERMINAL_ORDER_STATES.has(unwindState)) {
+      return { state: 'UNWIND_PENDING', matchedQty: shortQty, reason: 'Excess protective unwind is still pending' };
+    }
+    if (excessUnwoundQty > excessProtectiveQty) {
+      return { state: 'RECONCILIATION_REQUIRED', reason: 'Excess protective unwind exceeds the unmatched protective quantity' };
+    }
+    if (excessUnwoundQty < excessProtectiveQty) {
+      return {
+        state: 'UNWIND_PENDING',
+        unwindRole: 'PROTECTIVE_WING',
+        unwindQty: excessProtectiveQty - excessUnwoundQty,
+        matchedQty: shortQty,
+        reason: 'Excess protective unwind IOC was partial; unwind only the remaining unmatched contracts'
+      };
+    }
   }
 
   return {
@@ -295,6 +350,9 @@ export function resolveCreditSpreadExitProgress({
     if (!TERMINAL_ORDER_STATES.has(shortState)) {
       return { state: 'SHORT_EXIT_PENDING', reason: 'Short close is still pending; protective leg must remain open' };
     }
+    if (shortState === 'FILLED') {
+      return { state: 'RECONCILIATION_REQUIRED', reason: 'Short close says FILLED but exchange-confirmed remaining short quantity is non-zero' };
+    }
     return {
       state: 'SHORT_EXIT_PENDING',
       nextRole: 'SHORT_OPTION',
@@ -321,6 +379,9 @@ export function resolveCreditSpreadExitProgress({
     }
     if (!TERMINAL_ORDER_STATES.has(protectiveState)) {
       return { state: 'HEDGE_EXIT_PENDING', reason: 'Protective close is still pending' };
+    }
+    if (protectiveState === 'FILLED') {
+      return { state: 'RECONCILIATION_REQUIRED', reason: 'Protective close says FILLED but exchange-confirmed remaining long quantity is non-zero' };
     }
     return {
       state: 'HEDGE_EXIT_PENDING',
