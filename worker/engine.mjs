@@ -3,6 +3,7 @@ import WebSocket from 'ws';
 import { CONFIG } from '../server/config.js';
 import { DeltaAdapter } from './delta-adapter.mjs';
 import { analyse, analyseOption, trimDetails, atr as calculateAtr, calculateNormalizedScores } from './strategy.mjs';
+import { calculateLongOptionSizing, parseDeltaOptionSymbol, selectOptionContractsForScan } from './execution/delta-options-policy.mjs';
 import * as db from '../server/db.js';
 import { SIGNAL_RESERVATION_TTL_MS, TradetronBridge, withSignalReservations } from '../server/tradetron.js';
 import { buildTradetronPnlHistoryRows, TradetronDeveloperApi } from '../server/tradetron-developer-api.mjs';
@@ -254,6 +255,8 @@ export class DeltaEngine {
     this.lastSignals = [];
     this.lastOptionSignals = [];
     this.optionTickerMap = new Map();
+    this.optionProductMap = new Map();
+    this.lastOptionProductFetch = 0;
     this.lastOptionTickerFetch = 0;
     this.tickerMap = new Map();
     this.products = [];
@@ -1680,31 +1683,118 @@ export class DeltaEngine {
     return { reasons: [...new Set(reasons)], size };
   }
 
-  async refreshOptionTickers() {
-    // Options trading is intentionally limited to BTC, ETH and Gold (Delta symbol XAUT).
-    // This allowlist is independent of the much larger perpetual-futures scan universe.
+  async refreshOptionTickers(settings = {}) {
+    // Public India tickers supply quotes/Greeks. In Testnet mode every symbol
+    // must first match a LIVE product from the Testnet catalogue so a public
+    // production product_id can never leak into a future Testnet order.
     const underlyings = [...OPTION_UNDERLYINGS];
-    const results = await Promise.all(underlyings.map(async underlying => {
+    const testnetMode = CONFIG.deltaExecutionMode === 'testnet';
+    const now = Date.now();
+
+    if (testnetMode && (
+      !this.lastOptionProductFetch ||
+      now - this.lastOptionProductFetch >= 5 * 60 * 1000
+    )) {
       try {
-        const rows = await this.adapter.optionTickers(underlying);
-        return (Array.isArray(rows) ? rows : []).map(x => ({ ...x, underlying }));
-      } catch (e) {
-        await this.log('WARN', 'Option chain refresh failed', { underlying, error: e.message });
-        return [];
-      }
-    }));
-    const next = new Map();
-    for (const rows of results) {
-      for (const t of rows) {
-        const symbol = String(t.symbol || '').toUpperCase();
-        if (symbol && /^[CP]-/.test(symbol)) next.set(symbol, { ...t, symbol });
+        const products = await this.adapter.optionProducts();
+        const productMap = new Map();
+        for (const product of Array.isArray(products) ? products : []) {
+          const symbol = String(product?.symbol || '').toUpperCase();
+          const contractType = String(product?.contract_type || '').toLowerCase();
+          const match = symbol.match(/^[CP]-([A-Z0-9]+)-/);
+          if (!match || !OPTION_UNDERLYINGS.includes(match[1]) ||
+              !['call_options', 'put_options'].includes(contractType)) continue;
+          if (product.state && String(product.state).toLowerCase() !== 'live') continue;
+
+          const spot = n(this.tickerMap.get(match[1] + 'USD')?.mark_price ||
+            this.tickerMap.get(match[1] + 'USD')?.close);
+          const parsed = parseDeltaOptionSymbol(symbol, match[1], now);
+          const productId = n(product.id ?? product.product_id);
+          if (!parsed || !Number.isSafeInteger(productId) || productId <= 0 ||
+              parsed.dte < Math.max(2, n(settings.options_min_days_to_expiry) || 2) ||
+              parsed.dte > Math.max(2, n(settings.options_max_days_to_expiry) || 14) ||
+              !(spot > 0) || Math.abs(parsed.strike - spot) / spot > 0.20) continue;
+
+          productMap.set(symbol, {
+            product_id: productId,
+            contract_type: contractType,
+            contract_value: product.contract_value,
+            tick_size: product.tick_size,
+            taker_commission_rate: product.taker_commission_rate,
+            state: product.state || 'live',
+            testnet_product_verified: true
+          });
+        }
+        this.optionProductMap = productMap;
+        this.lastOptionProductFetch = now;
+      } catch (error) {
+        this.optionProductMap.clear();
+        this.lastOptionProductFetch = now;
+        await this.log('WARN', 'Testnet option product catalogue unavailable; Options remain analysis-blocked', {
+          error: String(error?.message || error).slice(0, 240)
+        });
       }
     }
-    this.optionTickerMap = next;
-    this.lastOptionTickerFetch = Date.now();
-    await this.log('INFO', 'Option universe refreshed', { contracts: next.size, underlyings });
-  }
 
+    const next = new Map();
+    const counts = {};
+    // Fetch one underlying at a time and retain only a small, near-the-money
+    // 2–14 DTE chain so the Hostless 256 MB worker does not cache full chains.
+    for (const underlying of underlyings) {
+      try {
+        const spotTicker = this.tickerMap.get(underlying + 'USD');
+        const spot = n(spotTicker?.mark_price || spotTicker?.close);
+        if (!(spot > 0)) {
+          counts[underlying] = 0;
+          continue;
+        }
+
+        const rows = await this.adapter.optionTickers(underlying);
+        const joined = [];
+        for (const ticker of Array.isArray(rows) ? rows : []) {
+          const symbol = String(ticker?.symbol || '').toUpperCase();
+          if (!symbol || !/^[CP]-/.test(symbol)) continue;
+          const product = testnetMode ? this.optionProductMap.get(symbol) : null;
+          if (testnetMode && !product) continue;
+          joined.push({
+            ...ticker,
+            ...(product || {}),
+            symbol,
+            underlying
+          });
+        }
+
+        const selected = selectOptionContractsForScan({
+          rows: joined,
+          underlying,
+          spotPrice: spot,
+          now,
+          minDays: settings.options_min_days_to_expiry,
+          maxDays: settings.options_max_days_to_expiry,
+          maxContracts: 24,
+          maxMoneynessPct: 20
+        });
+        counts[underlying] = selected.length;
+        for (const ticker of selected) next.set(ticker.symbol, ticker);
+      } catch (error) {
+        counts[underlying] = 0;
+        await this.log('WARN', 'Option chain refresh failed', {
+          underlying,
+          error: String(error?.message || error).slice(0, 240)
+        });
+      }
+    }
+
+    this.optionTickerMap = next;
+    this.lastOptionTickerFetch = now;
+    await this.log('INFO', 'Bounded option universe refreshed', {
+      contracts: next.size,
+      underlyings,
+      counts,
+      maxContractsPerUnderlying: 24,
+      testnetProductCatalogueMatched: testnetMode
+    });
+  }
 
   optionRiskBudget(account, settings) {
     const equity = n(account?.equity);
@@ -1712,14 +1802,20 @@ export class DeltaEngine {
     return equity > 0 ? equity * pct / 100 : 0;
   }
 
+  optionSizing(signal, account, settings) {
+    const ticker = signal?.ticker || {};
+    return calculateLongOptionSizing({
+      equity: account?.equity,
+      available: account?.available,
+      ask: signal?.ask ?? ticker?.quotes?.best_ask ?? ticker?.best_ask ?? ticker?.ask,
+      contractValue: ticker?.contract_value,
+      takerFeeRate: ticker?.taker_commission_rate,
+      riskPct: settings?.options_max_risk_pct ?? 0.30
+    });
+  }
+
   optionQuantity(signal, account, settings) {
-    const budget = this.optionRiskBudget(account, settings);
-    const cv = Math.max(1e-9, n(signal?.ticker?.contract_value) || 1);
-    const mark = n(signal?.mark);
-    const stopPct = Math.max(1, n(settings.options_buy_stop_pct || 25));
-    if (!budget || !mark) return 0;
-    const riskPerContract = mark * stopPct / 100 * cv;
-    return riskPerContract > 0 ? Math.floor(budget / riskPerContract) : 0;
+    return this.optionSizing(signal, account, settings).qty;
   }
 
   pickOptionHedge(shortSignal, chain) {
@@ -2242,20 +2338,24 @@ export class DeltaEngine {
         const best = candidates[0];
         if (best) {
           const s = best.signal;
-          const q = this.optionQuantity({ ...s, ticker: best.ticker }, account, settings);
+          const sizing = this.optionSizing({ ...s, ticker: best.ticker }, account, settings);
+          const q = sizing.qty;
           const duplicate = (openPositions || []).some(p => String(p.symbol) === s.symbol && n(p.qty) > 0);
-          const routeConfigured = CONFIG.tradetronOptionsBridgeEnabled && this.tradetronOptions.isConfigured();
+          const routeConfigured = CONFIG.deltaExecutionMode === 'testnet'
+            ? false
+            : CONFIG.tradetronOptionsBridgeEnabled && this.tradetronOptions.isConfigured();
           const executionLocked = !isOptionsExecutionAllowed();
           const blocked = [...s.blocked];
-          if (q < 1) blocked.push('Risk budget below 1 contract');
+          if (q < 1) blocked.push(sizing.reason || 'Full-premium risk budget below one contract');
           if (duplicate) blocked.push('Duplicate option position');
-          if (!routeConfigured) blocked.push('Tradetron option signal route unavailable');
+          if (!routeConfigured) blocked.push(CONFIG.deltaExecutionMode === 'testnet'
+            ? 'Direct Delta Testnet option order lifecycle is not implemented'
+            : 'Tradetron option signal route unavailable');
           if (executionLocked) blocked.push(OPTIONS_EXECUTION_LOCK_REASON);
           const ready = s.ready && q >= 1 && !duplicate && routeConfigured && !executionLocked;
-          const cv = Math.max(1e-9, n(best.ticker.contract_value) || 1);
           const row = { ...s, ticker: best.ticker, strategy: 'OPTIONS_BUY', qty: q,
-            notional: q * s.mark * cv,
-            risk: q * s.mark * (Math.max(1, n(settings.options_buy_stop_pct || 25)) / 100) * cv,
+            notional: sizing.premiumNotional,
+            risk: sizing.totalRisk,
             blocked, executionLocked, ready };
           await this.insertSignalHistoryRow({
             symbol: row.symbol, product_id: n(best.ticker.product_id || best.ticker.id),
@@ -2272,7 +2372,7 @@ export class DeltaEngine {
               dte: row.dte, expiryMs: row.expiryMs, delta: row.delta, gamma: row.gamma, theta: row.theta,
               vega: row.vega, bid: row.bid, ask: row.ask, openInterest: row.oi, volume: row.volume,
               underlyingSymbol: row.underlyingSymbol, underlyingScore: row.underlyingScore,
-              executionLocked, routeConfigured, signalOnly: CONFIG.signalOnly, tradetronRoute: 'tt_option_*' }, 'OPTIONS_BUY')
+              executionLocked, routeConfigured, signalOnly: CONFIG.signalOnly, testnetProductVerified: best.ticker.testnet_product_verified === true, riskModel: 'FULL_PREMIUM_PLUS_TWO_SIDE_FEES' }, 'OPTIONS_BUY')
           });
           out.push(row);
         }
@@ -2304,9 +2404,13 @@ export class DeltaEngine {
           if (!hedge) blocked.push('Defined-risk hedge unavailable');
           if (!(credit > 0)) blocked.push('Net credit <= 0');
           if (q < 1) blocked.push('Spread risk exceeds option risk budget');
-          const optionRouteReady = CONFIG.tradetronOptionsBridgeEnabled && this.tradetronOptions.isConfigured();
-          const executionLocked = !isOptionsExecutionAllowed();
-          if (!optionRouteReady) blocked.push('Tradetron option signal route unavailable');
+          const optionRouteReady = CONFIG.deltaExecutionMode === 'testnet'
+            ? false
+            : CONFIG.tradetronOptionsBridgeEnabled && this.tradetronOptions.isConfigured();
+          const executionLocked = !isOptionsExecutionAllowed() || CONFIG.deltaExecutionMode === 'testnet';
+          if (!optionRouteReady) blocked.push(CONFIG.deltaExecutionMode === 'testnet'
+            ? 'Direct Delta Testnet multi-leg option execution is not implemented'
+            : 'Tradetron option signal route unavailable');
           if (executionLocked) blocked.push(OPTIONS_EXECUTION_LOCK_REASON);
           const ready = s.ready && q >= 1 && !!hedge && credit > 0 && optionRouteReady && !executionLocked;
           const row = { ...s, ticker: best.ticker, strategy: 'OPTIONS_SELL', qty: q,
@@ -3931,11 +4035,11 @@ export class DeltaEngine {
       await this.cacheMarketState();
     }
     await this.refreshCandleWarmup();
-    // Testnet Options orders are deliberately hard-locked. Avoid retaining the
-    // much larger BTC/ETH/XAUT option chains in the 256 MB worker process.
-    if (CONFIG.deltaExecutionMode !== 'testnet' && settings.options_enabled !== false &&
+    if (settings.options_enabled !== false &&
         (Date.now() - this.lastOptionTickerFetch > 60000 || !this.optionTickerMap.size)) {
-      await this.refreshOptionTickers();
+      await this.refreshOptionTickers(settings);
+    } else if (settings.options_enabled === false) {
+      this.optionTickerMap.clear();
     }
 
     const account = await this.accountSnapshot(settings);
