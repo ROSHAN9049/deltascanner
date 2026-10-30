@@ -1,8 +1,5 @@
 import crypto from 'node:crypto';
-import {
-  DELTA_TESTNET_REST_BASE,
-  DELTA_TESTNET_PRIVATE_WS_URL
-} from './delta-executor.mjs';
+import { DELTA_TESTNET_REST_BASE } from './delta-executor.mjs';
 import { OPTIONS_EXECUTION_ALLOWED, OPTIONS_EXECUTION_LOCK_REASON } from '../options-execution-lock.mjs';
 import { parseDeltaOptionSymbol } from './delta-options-policy.mjs';
 
