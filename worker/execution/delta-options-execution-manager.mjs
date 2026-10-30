@@ -235,6 +235,203 @@ export function createDeltaOptionsExecutionManager({
     throw new Error('Options order-attempt persistence and fill reconciliation are incomplete; exchange submission remains disabled');
   }
 
+  async function getOrderAttemptByClientId(clientOrderId) {
+    const id = String(clientOrderId ?? '').trim();
+    if (!id || id.length > 32 || typeof database?.select !== 'function') {
+      throw new Error('Options client order ID or ledger reader is invalid');
+    }
+    const rows = await database.select(
+      'dd_options_execution_orders',
+      'client_order_id=eq.' + encodeURIComponent(id) + '&select=*&limit=2'
+    );
+    if (!Array.isArray(rows) || rows.length > 1) {
+      throw new Error('Options client-order idempotency lookup returned an invalid snapshot');
+    }
+    return rows[0] || null;
+  }
+
+  async function getGroupOrders(groupId) {
+    const id = String(groupId ?? '').trim();
+    if (!id || id.length > 80 || typeof database?.select !== 'function') {
+      throw new Error('Options group ID or ledger reader is invalid');
+    }
+    const rows = await database.select(
+      'dd_options_execution_orders',
+      'group_id=eq.' + encodeURIComponent(id) + '&select=*&order=created_at.asc,id.asc&limit=100'
+    );
+    if (!Array.isArray(rows) || rows.length > 100) {
+      throw new Error('Options group order-attempt snapshot is malformed or truncated');
+    }
+    return rows;
+  }
+
+  async function getGroupFills(groupId) {
+    const id = String(groupId ?? '').trim();
+    if (!id || id.length > 80 || typeof database?.select !== 'function') {
+      throw new Error('Options group ID or ledger reader is invalid');
+    }
+    const rows = await database.select(
+      'dd_options_execution_fills',
+      'group_id=eq.' + encodeURIComponent(id) + '&select=*&order=filled_at.asc,id.asc&limit=1000'
+    );
+    if (!Array.isArray(rows) || rows.length > 1000) {
+      throw new Error('Options group fill snapshot is malformed or truncated');
+    }
+    return rows;
+  }
+
+  async function reserveOrderAttempt({
+    groupId,
+    legRole,
+    intent,
+    attemptNo,
+    limitPrice
+  } = {}) {
+    // The source-code execution lock prevents even a DB order reservation in
+    // this phase. When deliberately reviewed later, the RPC reserves the order
+    // before the exchange request and derives side/quantity inside Postgres.
+    assertExecutionAllowed();
+    if (typeof database?.rpc !== 'function') {
+      throw new Error('Options order-attempt reservation RPC is unavailable');
+    }
+    const group = String(groupId ?? '').trim();
+    const role = upper(legRole);
+    const action = upper(intent);
+    const attempt = Number(attemptNo);
+    const price = finitePositive(limitPrice);
+    if (!group || group.length > 80 ||
+        !['LONG_PREMIUM', 'PROTECTIVE_WING', 'SHORT_OPTION'].includes(role) ||
+        !['ENTRY', 'EXIT', 'UNWIND'].includes(action) ||
+        !Number.isSafeInteger(attempt) || attempt < 1 || !price) {
+      throw new Error('Options order-attempt plan is invalid');
+    }
+
+    const clientIdRole = action === 'ENTRY' ? role
+      : role === 'SHORT_OPTION' ? 'CLOSE_SHORT'
+        : role === 'LONG_PREMIUM' ? 'CLOSE_LONG' : 'CLOSE_WING';
+    const clientOrderId = makeOptionsClientOrderId(group, clientIdRole, attempt);
+    const args = {
+      p_group_id: group,
+      p_leg_role: role,
+      p_intent: action,
+      p_attempt_no: attempt,
+      p_client_order_id: clientOrderId,
+      p_limit_price: price
+    };
+
+    async function recoverAmbiguousAttempt() {
+      const existing = await getOrderAttemptByClientId(clientOrderId);
+      if (!existing) return null;
+      if (String(existing.group_id) !== group ||
+          upper(existing.leg_role) !== role ||
+          upper(existing.intent) !== action ||
+          Number(existing.attempt_no) !== attempt ||
+          String(existing.client_order_id) !== clientOrderId ||
+          !sameNumber(existing.limit_price, price) ||
+          !['RESERVED', 'SUBMITTED', 'OPEN', 'PARTIALLY_FILLED', 'FILLED', 'CANCELLED'].includes(upper(existing.order_state))) {
+        return null;
+      }
+      return { ...existing, recoveredAfterAmbiguousRpc: true };
+    }
+
+    try {
+      const response = await database.rpc('reserve_dd_options_order_attempt', args);
+      const result = Array.isArray(response) ? response[0] : response;
+      if (result && typeof result === 'object' &&
+          result.client_order_id === clientOrderId &&
+          String(result.group_id) === group &&
+          upper(result.leg_role) === role &&
+          upper(result.intent) === action &&
+          Number(result.attempt_no) === attempt &&
+          finitePositive(result.qty) &&
+          finitePositive(result.limit_price)) {
+        return result;
+      }
+      const recovered = await recoverAmbiguousAttempt().catch(() => null);
+      if (recovered) return recovered;
+      throw new Error('Options order-attempt reservation could not be confirmed');
+    } catch (error) {
+      const recovered = await recoverAmbiguousAttempt().catch(() => null);
+      if (recovered) return recovered;
+      throw error;
+    }
+  }
+
+  async function recordOrderAcknowledgement({
+    orderAttemptId,
+    exchangeOrderId = null,
+    orderState,
+    acknowledgedFilledQty,
+    averageFillPrice = null,
+    raw = {}
+  } = {}) {
+    if (typeof database?.rpc !== 'function') {
+      throw new Error('Options order acknowledgement RPC is unavailable');
+    }
+    const id = Number(orderAttemptId);
+    const qty = Number(acknowledgedFilledQty);
+    if (!Number.isSafeInteger(id) || id <= 0 ||
+        !Number.isFinite(qty) || qty < 0) {
+      throw new Error('Options order acknowledgement id or filled quantity is invalid');
+    }
+    const response = await database.rpc('record_dd_options_order_ack', {
+      p_order_attempt_id: id,
+      p_exchange_order_id: exchangeOrderId === null ? null : String(exchangeOrderId),
+      p_order_state: upper(orderState || 'UNKNOWN'),
+      p_ack_filled_qty: qty,
+      p_ack_average_fill_price: averageFillPrice === null ? null : finitePositive(averageFillPrice),
+      p_raw: raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+    });
+    const result = Array.isArray(response) ? response[0] : response;
+    if (!result || typeof result !== 'object' || Number(result.order_attempt_id) !== id) {
+      throw new Error('Options order acknowledgement was not persisted');
+    }
+    return result;
+  }
+
+  async function recordExecutionFill({
+    orderAttemptId,
+    exchangeFillId,
+    fillQty,
+    fillPrice,
+    commission = null,
+    commissionCurrency = null,
+    filledAt,
+    raw = {}
+  } = {}) {
+    if (typeof database?.rpc !== 'function') {
+      throw new Error('Options execution fill RPC is unavailable');
+    }
+    const id = Number(orderAttemptId);
+    const qty = finitePositive(fillQty);
+    const price = finitePositive(fillPrice);
+    const fillId = String(exchangeFillId ?? '').trim();
+    const timestamp = new Date(filledAt);
+    if (!Number.isSafeInteger(id) || id <= 0 || !qty || !price ||
+        !fillId || fillId.length > 128 || !Number.isFinite(timestamp.getTime()) ||
+        (commission !== null && !Number.isFinite(Number(commission))) ||
+        (commission !== null && !String(commissionCurrency ?? '').trim())) {
+      throw new Error('Options exchange fill is incomplete or invalid');
+    }
+    const response = await database.rpc('record_dd_options_execution_fill', {
+      p_order_attempt_id: id,
+      p_exchange_fill_id: fillId,
+      p_fill_qty: qty,
+      p_fill_price: price,
+      p_commission: commission === null ? null : Number(commission),
+      p_commission_currency: commissionCurrency === null ? null : upper(commissionCurrency),
+      p_filled_at: timestamp.toISOString(),
+      p_raw: raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+    });
+    const result = Array.isArray(response) ? response[0] : response;
+    if (!result || typeof result !== 'object' ||
+        Number(result.order_attempt_id) !== id ||
+        typeof result.duplicate !== 'boolean') {
+      throw new Error('Options exchange fill was not persisted or returned an invalid result');
+    }
+    return result;
+  }
+
   async function getActiveGroup() {
     if (typeof database?.select !== 'function') {
       throw new Error('Options execution ledger read is unavailable');
@@ -286,6 +483,12 @@ export function createDeltaOptionsExecutionManager({
     getActiveGroup,
     getGroupByClientGroupId,
     getGroupLegs,
+    getOrderAttemptByClientId,
+    getGroupOrders,
+    getGroupFills,
+    reserveOrderAttempt,
+    recordOrderAcknowledgement,
+    recordExecutionFill,
     assertExecutionAllowed
   });
 }
