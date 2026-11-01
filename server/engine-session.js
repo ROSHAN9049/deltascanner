@@ -53,13 +53,15 @@ export function createEngineSessionCookie(secret, {
   const expiresAt = Math.floor(now / 1000) + ENGINE_SESSION_TTL_SECONDS;
   const value = expiresAt + '.' + signature(secret, expiresAt);
   const expires = new Date(expiresAt * 1000).toUTCString();
+  const sameSite = production ? 'None' : 'Strict';
   return ENGINE_SESSION_COOKIE + '=' + value +
-    '; Path=/api; HttpOnly; SameSite=Strict; Max-Age=' + ENGINE_SESSION_TTL_SECONDS +
+    '; Path=/api; HttpOnly; SameSite=' + sameSite + '; Max-Age=' + ENGINE_SESSION_TTL_SECONDS +
     '; Expires=' + expires + (production ? '; Secure' : '');
 }
 
 export function clearEngineSessionCookie({ production = secureByDefault() } = {}) {
-  return ENGINE_SESSION_COOKIE + '=; Path=/api; HttpOnly; SameSite=Strict; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT' +
+  const sameSite = production ? 'None' : 'Strict';
+  return ENGINE_SESSION_COOKIE + '=; Path=/api; HttpOnly; SameSite=' + sameSite + '; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT' +
     (production ? '; Secure' : '');
 }
 
@@ -82,8 +84,9 @@ export function hasValidEngineSecretHeader(req, secret) {
 }
 
 /**
- * Browser requests using the session cookie must be same-origin for mutations.
- * The HttpOnly + SameSite=Strict cookie is an additional CSRF barrier.
+ * Same-origin requests are allowed. Cross-origin Site -> App mutations
+ * require an exact origin in APP_ALLOWED_ORIGINS.
+ * Production session cookies use SameSite=None; Secure.
  */
 export function isSameOriginRequest(req) {
   const origin = clean(header(req, 'origin'));
