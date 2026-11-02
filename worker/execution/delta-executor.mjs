@@ -227,14 +227,15 @@ export function createDeltaExecutor({
     return productsCache;
   }
 
-  async function resolveProduct(symbol) {
+  async function resolveProduct(symbol, { entryOnly = true } = {}) {
     const normalized = stringOrEmpty(symbol).toUpperCase();
-    const product = isAllowedDeltaTestnetFutureSymbol(normalized)
-      ? (await getProducts()).find(row =>
-          stringOrEmpty(row?.symbol || row?.product_symbol).toUpperCase() === normalized &&
-          isEligibleDeltaTestnetPerpetualProduct(row)
-        )
-      : null;
+    const product = (await getProducts()).find(row => {
+      const rowSymbol = stringOrEmpty(row?.symbol || row?.product_symbol).toUpperCase();
+      if (rowSymbol !== normalized ||
+          stringOrEmpty(row?.contract_type || '').toLowerCase() !== 'perpetual_futures') return false;
+      if (!entryOnly) return true; // Preserve reduce-only exits for any existing Testnet position.
+      return isAllowedDeltaTestnetFutureSymbol(normalized) && isEligibleDeltaTestnetPerpetualProduct(row);
+    });
     const id = numberOrNull(product?.id ?? product?.product_id);
     if (!product || !Number.isSafeInteger(id) || id <= 0) {
       throw new Error('Delta Testnet perpetual product is not available: ' + normalized);
@@ -1065,7 +1066,7 @@ export function createDeltaExecutor({
       if (quantity !== position.qty) {
         throw new Error('Partial close is disabled in this phase to avoid cancelling protection for a remaining position');
       }
-      const product = await resolveProduct(normalizedSymbol);
+      const product = await resolveProduct(normalizedSymbol, { entryOnly: false });
       const orders = await getOpenOrders();
       const matchingOrders = orders.filter(row =>
         stringOrEmpty(row?.product_symbol || row?.symbol).toUpperCase() === normalizedSymbol
