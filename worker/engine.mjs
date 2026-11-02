@@ -354,6 +354,15 @@ export class DeltaEngine {
     try { await db.update('dd_settings', 'id=eq.1', { ...patch, updated_at: iso() }); } catch (e) { await this.log('ERROR', 'State persistence failed', { error: e.message }); }
   }
 
+  // Persist only a tick that came from a non-empty, accepted public ticker snapshot.
+  // This runs before analysis/history writes so downstream persistence failures
+  // cannot make a healthy market feed appear stale to the dashboard.
+  async persistMarketTick() {
+    if (!(this.lastTickAt > 0) || this.tickerMap.size === 0) return false;
+    await this.updateEngineState({ last_tick_at: new Date(this.lastTickAt).toISOString() });
+    return true;
+  }
+
   async syncTradetronDeveloperApi() {
     if (!this.tradetronDeveloperApi.isConfigured()) return;
     if (this.tradetronDeveloperSyncInFlight) return this.tradetronDeveloperSyncInFlight;
@@ -999,11 +1008,20 @@ export class DeltaEngine {
     const activeExecutionSymbols = new Set(active
       .filter(product => product.executionProductAvailable === true)
       .map(product => String(product.symbol || '').trim().toUpperCase()));
-    const missingTestnetSymbols = DELTA_TESTNET_FUTURES_ALLOWLIST.filter(symbol =>
-      catalogueMissingSymbols.includes(symbol) || !activeExecutionSymbols.has(symbol)
+    const missingFromTestnetCatalog = catalogueMissingSymbols;
+    const missingFromMarketDataUniverse = DELTA_TESTNET_FUTURES_ALLOWLIST.filter(symbol =>
+      testnetBySymbol.has(symbol) && !activeExecutionSymbols.has(symbol)
     );
+    const missingTestnetSymbols = DELTA_TESTNET_FUTURES_ALLOWLIST.filter(symbol =>
+      missingFromTestnetCatalog.includes(symbol) || missingFromMarketDataUniverse.includes(symbol)
+    );
+    const availableTestnetAllowlistSymbols = DELTA_TESTNET_FUTURES_ALLOWLIST.filter(symbol =>
+      activeExecutionSymbols.has(symbol)
+    );
+    // Full-catalog readiness is diagnostic only. Each entry is independently
+    // checked against its own verified Testnet product below; one unmapped
+    // allowlist member must not disable the other valid symbols.
     this.testnetExecutionCatalogReady = executionMode === 'testnet' &&
-      testnetBySymbol.size === DELTA_TESTNET_FUTURES_ALLOWLIST.length &&
       missingTestnetSymbols.length === 0;
 
     this.products = active;
@@ -1015,7 +1033,12 @@ export class DeltaEngine {
       testnetExecutionProducts: testnetBySymbol.size,
       testnetExecutionSymbols: [...testnetBySymbol.keys()].sort(),
       testnetAllowlistExpected: DELTA_TESTNET_FUTURES_ALLOWLIST,
+      testnetAllowlistAvailable: availableTestnetAllowlistSymbols,
+      testnetAllowlistAvailableCount: availableTestnetAllowlistSymbols.length,
       testnetAllowlistMissing: missingTestnetSymbols,
+      testnetAllowlistMissingFromTestnetCatalog: missingFromTestnetCatalog,
+      testnetAllowlistMissingFromMarketDataUniverse: missingFromMarketDataUniverse,
+      testnetAllowlistPartialReady: executionMode === 'testnet' && availableTestnetAllowlistSymbols.length > 0,
       testnetAllowlistReady: this.testnetExecutionCatalogReady,
       executionCatalogError
     });
@@ -1670,16 +1693,18 @@ export class DeltaEngine {
       CONFIG.environment === 'TESTNET' && CONFIG.deltaExecutionMode === 'testnet';
     const routeBlock = getExecutionRouteBlockReason(CONFIG.deltaExecutionMode, directTestnetEnabled);
     if (routeBlock) reasons.push(routeBlock);
-    if (CONFIG.deltaExecutionMode === 'testnet' && !this.testnetExecutionCatalogReady) {
-      reasons.push('Delta Testnet product allowlist is incomplete; all new entries are blocked');
-    }
     if (CONFIG.deltaExecutionMode === 'testnet' && !isMarketTickFresh(this.lastTickAt)) {
       reasons.push('Market tick is stale or unavailable; new entries are blocked');
     }
     if (CONFIG.deltaExecutionMode === 'testnet' && !isAllowedDeltaTestnetFutureSymbol(signal?.symbol)) {
       reasons.push('Symbol is outside the fixed Delta Testnet futures allowlist');
     }
-    if (CONFIG.deltaExecutionMode === 'testnet' && signal?.executionProductAvailable !== true) {
+    const testnetProductId = Number(signal?.productId);
+    if (CONFIG.deltaExecutionMode === 'testnet' && (
+      signal?.executionProductAvailable !== true ||
+      !Number.isSafeInteger(testnetProductId) ||
+      testnetProductId <= 0
+    )) {
       reasons.push('Delta Testnet route unavailable: no verified live, operational product for this symbol');
     }
     const duplicateBlocker = duplicatePositionBlocker(openPositions, signal.symbol);
@@ -2343,6 +2368,22 @@ export class DeltaEngine {
     return accepted.length;
   }
 
+  async persistSignalHistorySafely(rows) {
+    const candidates = Array.isArray(rows) ? rows : [];
+    if (!candidates.length) return 0;
+    try {
+      return await this.insertSignalHistoryBatch(candidates);
+    } catch (error) {
+      await this.log('ERROR', 'Signal history batch persistence failed; live scan continues', {
+        rowCount: candidates.length,
+        code: error?.code || null,
+        status: error?.status || null,
+        error: String(error?.message || error).slice(0, 400)
+      }).catch(() => {});
+      return 0;
+    }
+  }
+
   async logDedupStatsIfDue() {
     if (this.dedupAnalysisCycles === 0 || this.dedupAnalysisCycles % 1000 !== 0) return;
     const reduction = this.dedupTotalCandidates
@@ -2674,7 +2715,7 @@ export class DeltaEngine {
         }
         const cacheRow = {
           cache_key: s.symbol + ':' + strategyName,
-          symbol: s.symbol, product_id: s.productId, strategy: strategyName,
+          symbol: s.symbol, product_id: s.marketDataProductId, strategy: strategyName,
           price: s.price, change_24h: s.change, turnover_usd: s.turnover, spread_pct: s.spreadPct,
           volume_spike: s.volumeSpike, score: s.score, stage: s.stage, side: s.side,
           rsi: s.rsi, trend: s.trend, confirm_trend: s.confirmTrend, btc_trend: s.btcTrend,
@@ -2710,7 +2751,7 @@ export class DeltaEngine {
         // in-memory deduplicator suppresses unchanged WATCH rows but always allows
         // stage/side transitions such as WATCH -> SETUP -> CONFIRMED.
         signalHistoryRows.push({
-          symbol: s.symbol, product_id: s.productId, rank: i + 1,
+          symbol: s.symbol, product_id: s.marketDataProductId, rank: i + 1,
           strategy: strategyName, price: s.price, change_24h: s.change,
           turnover_usd: s.turnover, spread_pct: s.spreadPct, volume_spike: s.volumeSpike,
           score: s.score, stage: s.stage, side: s.side, rsi: s.rsi, trend: s.trend,
@@ -2727,7 +2768,7 @@ export class DeltaEngine {
     }
     // Persist compact stage history in one request before caching/routing.
     // Unchanged observations (including WATCH) are filtered by the dedup cache.
-    if (signalHistoryRows.length) await this.insertSignalHistoryBatch(signalHistoryRows);
+    await this.persistSignalHistorySafely(signalHistoryRows);
     const optionSignals = await this.analyseOptions(out, account, settings, openPositions || []);
     const byUnderlying = new Map();
     for (const s of optionSignals) {
@@ -2887,15 +2928,14 @@ export class DeltaEngine {
     }
 
     const expectedProductId = Number(signal?.productId);
-    if (!this.testnetExecutionCatalogReady ||
-        signal?.executionProductAvailable !== true ||
+    if (signal?.executionProductAvailable !== true ||
         !isAllowedDeltaTestnetFutureSymbol(signal?.symbol) ||
         !Number.isSafeInteger(expectedProductId) || expectedProductId <= 0) {
       await this.log('WARN', 'Delta Testnet entry skipped: symbol or product ID is not in the verified nine-product allowlist', {
         symbol: signal?.symbol ?? null,
         productId: signal?.productId ?? null,
         executionProductAvailable: signal?.executionProductAvailable === true,
-        catalogReady: this.testnetExecutionCatalogReady,
+        catalogFullyReady: this.testnetExecutionCatalogReady,
         executionBlocked: true
       }).catch(() => {});
       return false;
@@ -4140,6 +4180,7 @@ export class DeltaEngine {
     if (Date.now() - this.lastUniverseRefresh > 15 * 60 * 1000 || !this.products.length) await this.refreshProducts();
     if (Date.now() - this.lastTickerFetch > 30000 || !this.tickerMap.size) {
       await this.refreshTickers();
+      await this.persistMarketTick();
       await this.cacheMarketState();
     } else {
       await this.cacheMarketState();

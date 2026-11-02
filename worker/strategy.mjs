@@ -588,7 +588,12 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
   const resistanceWindow = closed5.slice(-20).map(c => n(c.high)).filter(v => v > 0);
 
   return {
-    symbol: ticker.symbol, productId: product.id, price, change,
+    symbol: ticker.symbol,
+    // productId is the Testnet execution ID; marketDataProductId is the
+    // public scanner ID used by dd_signals and dd_signal_cache.
+    productId: product.id,
+    marketDataProductId: n(product.marketDataProductId ?? product.id) || null,
+    price, change,
     executionProductAvailable: product.executionProductAvailable !== false,
     turnover: n(ticker.turnover_usd || ticker.turnover),
     signalCandleTs, spreadPct, side, stage, score,
