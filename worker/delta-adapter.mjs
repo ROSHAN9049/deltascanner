@@ -20,15 +20,23 @@ function hmac(secret, text) {
 }
 
 /**
- * Public market data remains production-sourced even while private execution is
- * on Testnet. Product catalog and all authenticated requests stay on the
- * environment-specific base so Testnet product/account identifiers aren't mixed.
+ * Public tickers and candles remain production-sourced. In Testnet execution
+ * mode, product metadata must come from the Testnet catalog even when the
+ * scanner's public-data environment is SIGNAL_ONLY.
  */
-export function resolveDeltaRequestBase({ auth = false, marketData = false } = {}, {
+export function resolveDeltaRequestBase({
+  auth = false,
+  marketData = false,
+  productCatalog = false
+} = {}, {
   base = CONFIG.restBase,
-  marketDataBase = CONFIG.marketDataRestBase || 'https://api.india.delta.exchange'
+  marketDataBase = CONFIG.marketDataRestBase || 'https://api.india.delta.exchange',
+  productCatalogBase = base
 } = {}) {
-  return marketData && !auth ? marketDataBase : base;
+  if (auth) return base;
+  if (marketData) return marketDataBase;
+  if (productCatalog) return productCatalogBase;
+  return base;
 }
 
 export class DeltaAdapter {
@@ -36,6 +44,9 @@ export class DeltaAdapter {
     if (!['TESTNET', 'SIGNAL_ONLY'].includes(CONFIG.environment)) throw new Error('Unsupported scanner environment');
     this.base = CONFIG.restBase;
     this.marketDataBase = CONFIG.marketDataRestBase || 'https://api.india.delta.exchange';
+    this.productCatalogBase = CONFIG.deltaExecutionMode === 'testnet'
+      ? CONFIG.deltaTestnetRestBase
+      : this.base;
     this.apiKey = CONFIG.apiKey;
     this.apiSecret = CONFIG.apiSecret;
     this.privateAuthConfigured = !!this.apiKey && !!this.apiSecret;
@@ -74,9 +85,14 @@ export class DeltaAdapter {
           headers.timestamp = ts;
         }
         if (body !== undefined && body !== null) headers['Content-Type'] = 'application/json';
-        const requestBase = resolveDeltaRequestBase({ auth, marketData: options.marketData === true }, {
+        const requestBase = resolveDeltaRequestBase({
+          auth,
+          marketData: options.marketData === true,
+          productCatalog: options.productCatalog === true
+        }, {
           base: this.base,
-          marketDataBase: this.marketDataBase
+          marketDataBase: this.marketDataBase,
+          productCatalogBase: this.productCatalogBase
         });
         const response = await fetch(requestBase + path + query, {
           method,
@@ -119,6 +135,8 @@ export class DeltaAdapter {
     return execute();
   }
   async health() { return this.request('GET', '/v2/tickers', { contract_types: 'perpetual_futures' }, null, false, { marketData: true }); }
+  // Scanner universe remains production-sourced. Perpetual product metadata
+  // used for execution is joined separately from the Delta Testnet catalogue.
   async products() {
     const all = [];
     let after = '';
@@ -130,7 +148,7 @@ export class DeltaAdapter {
         { contract_types: 'perpetual_futures', states: 'live', page_size: 100, after },
         null,
         false,
-        { withMeta: true }
+        { withMeta: true, marketData: true }
       );
       const rows = Array.isArray(response?.result) ? response.result : [];
       all.push(...rows);
@@ -139,6 +157,39 @@ export class DeltaAdapter {
       previousAfter = after;
       after = nextAfter;
     }
+    return all;
+  }
+  async executionProducts() {
+    if (CONFIG.deltaExecutionMode !== 'testnet') return [];
+    const all = [];
+    let after = '';
+    let previousAfter = '';
+    let complete = false;
+    for (let page = 0; page < 20; page++) {
+      const response = await this.request(
+        'GET',
+        '/v2/products',
+        { contract_types: 'perpetual_futures', states: 'live', page_size: 100, after },
+        null,
+        false,
+        { withMeta: true, productCatalog: true }
+      );
+      if (!Array.isArray(response?.result)) {
+        throw new Error('Delta Testnet product catalogue response is malformed');
+      }
+      all.push(...response.result);
+      const nextAfter = String(response?.meta?.after || '');
+      if (!nextAfter) {
+        complete = true;
+        break;
+      }
+      if (nextAfter === previousAfter || nextAfter === after) {
+        throw new Error('Delta Testnet product catalogue pagination cursor repeated');
+      }
+      previousAfter = after;
+      after = nextAfter;
+    }
+    if (!complete) throw new Error('Delta Testnet product catalogue exceeded the page limit');
     return all;
   }
   async optionProducts() {
@@ -152,7 +203,7 @@ export class DeltaAdapter {
         { contract_types: 'call_options,put_options', states: 'live', page_size: 100, after },
         null,
         false,
-        { withMeta: true }
+        { withMeta: true, productCatalog: true }
       );
       const rows = Array.isArray(response?.result) ? response.result : [];
       all.push(...rows);

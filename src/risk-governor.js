@@ -405,9 +405,21 @@ export function buildRiskGovernorGates({
 
   const qty = safeNum(selected.qty_contracts);
   const notional = safeNum(selected.notional);
-  const marginStatus = qty !== null && notional !== null
-    ? status(true, qty >= 1 && notional > 0)
-    : GATE_UNKNOWN;
+  const signalReadyForSizing =
+    String(selected.stage || '').trim().toUpperCase() === 'CONFIRMED' &&
+    selected.ready === true;
+  const marginStatus = !signalReadyForSizing
+    ? GATE_UNKNOWN
+    : qty !== null && notional !== null
+      ? status(true, qty >= 1 && notional > 0)
+      : GATE_UNKNOWN;
+  const marginBlockReason = marginStatus === GATE_BLOCK
+    ? 'Quantity or notional fails the minimum-size check'
+    : marginStatus === GATE_UNKNOWN
+      ? signalReadyForSizing
+        ? 'Quantity or notional missing for a confirmed, ready signal'
+        : 'Sizing is deferred until signal is CONFIRMED and ready=true'
+      : '';
 
   return [
     gateResult({ gate: 'Normalized score >= 80', result: normalizedScoreStatus, observedValue: normalizedScore, unit: 'score', threshold: 80, thresholdUnit: 'score', blockReason: normalizedScoreStatus === GATE_BLOCK ? 'Normalized score is below 80' : normalizedScoreStatus === GATE_UNKNOWN ? 'Normalized score unavailable; readiness fails closed' : '' }),
@@ -422,6 +434,6 @@ export function buildRiskGovernorGates({
     gateResult({ gate: 'Fresh closed candles', result: freshnessStatus, observedValue: candlesFresh ?? null, blockReason: freshnessStatus === GATE_BLOCK ? 'Candle freshness blocked' : freshnessStatus === GATE_UNKNOWN ? 'Candle freshness was not supplied' : '' }),
     gateResult({ gate: 'API / worker healthy', result: healthStatus, observedValue: healthObservedFields || null, blockReason: healthBlockReason }),
     gateResult({ gate: 'Duplicate symbol', result: duplicateStatus, observedValue: duplicateObservedValue, blockReason: duplicateBlockReason }),
-    gateResult({ gate: 'Margin / min size', result: marginStatus, observedValue: qty, unit: 'contracts', threshold: 1, thresholdUnit: 'contract', blockReason: marginStatus === GATE_BLOCK ? 'Quantity or notional fails the minimum-size check' : marginStatus === GATE_UNKNOWN ? 'Quantity or notional missing' : '' })
+    gateResult({ gate: 'Margin / min size', result: marginStatus, observedValue: qty, unit: 'contracts', threshold: 1, thresholdUnit: 'contract', blockReason: marginBlockReason })
   ];
 }

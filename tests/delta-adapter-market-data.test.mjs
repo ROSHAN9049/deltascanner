@@ -19,13 +19,26 @@ test('public ticker/candle requests use the production feed when execution REST 
   assert.equal(resolveDeltaRequestBase({ marketData: true, auth: false }, config), PRODUCTION_REST);
 });
 
-test('Testnet product catalogue and private requests stay on the Testnet REST base', () => {
-  const config = { base: TESTNET_REST, marketDataBase: PRODUCTION_REST };
-  assert.equal(resolveDeltaRequestBase({}, config), TESTNET_REST);
+test('production scanner catalogue and public data stay on production while Testnet execution catalog stays on Testnet', () => {
+  const config = {
+    base: PRODUCTION_REST,
+    marketDataBase: PRODUCTION_REST,
+    productCatalogBase: TESTNET_REST
+  };
+  assert.equal(resolveDeltaRequestBase({ marketData: true }, config), PRODUCTION_REST);
+  assert.equal(resolveDeltaRequestBase({ productCatalog: true }, config), TESTNET_REST);
+  assert.equal(resolveDeltaRequestBase({}, config), PRODUCTION_REST);
+});
+
+test('authenticated account/order requests keep their execution base', () => {
+  const config = {
+    base: TESTNET_REST,
+    marketDataBase: PRODUCTION_REST,
+    productCatalogBase: TESTNET_REST
+  };
   assert.equal(resolveDeltaRequestBase({ auth: true }, config), TESTNET_REST);
-  // Authenticated account/order operations can never be switched to production
-  // by accidentally passing the public market-data option.
-  assert.equal(resolveDeltaRequestBase({ auth: true, marketData: true }, config), TESTNET_REST);
+  // Authenticated requests never switch hosts even if a public-data option is accidentally passed.
+  assert.equal(resolveDeltaRequestBase({ auth: true, marketData: true, productCatalog: true }, config), TESTNET_REST);
   assert.equal(CONFIG.privateWs, CONFIG.signalOnly ? '' : TESTNET_PRIVATE_WS);
 });
 
