@@ -18,16 +18,16 @@ test('legacy Tradetron Vercel webhook endpoint has been removed', async () => {
   await assert.rejects(access(new URL('../api/tradetron/webhook.js', import.meta.url)));
 });
 
-test('worker disables Tradetron routes, routes Grid to Delta Testnet, and keeps Options locked', async () => {
+test('worker disables Tradetron routes, keeps Testnet Grid hard-locked, and keeps Options locked', async () => {
   const engine = await read('../worker/engine.mjs');
   const config = await read('../server/config.js');
   assert.doesNotMatch(engine, /void this\.syncTradetronDeveloperApi\(\)/);
-  assert.match(engine, /manageDeltaTestnetGrid/);
+  assert.doesNotMatch(engine, /manageDeltaTestnetGrid/);
+  assert.match(engine, /Delta Testnet Grid execution remains hard-locked/);
   assert.match(engine, /CONFIG\.deltaExecutionMode === 'testnet'/);
-  assert.doesNotMatch(engine, /GRID_NOT_MIGRATED_TO_DELTA_TESTNET/);
   assert.doesNotMatch(engine, /async openOptionTrade\(/);
   assert.doesNotMatch(engine, /emitOptionEntry\(|emitOptionSpread\(/);
-  assert.match(engine, /getExecutionRouteBlockReason\(CONFIG\.deltaExecutionMode\)/);
+  assert.match(engine, /getExecutionRouteBlockReason\(CONFIG\.deltaExecutionMode, directTestnetEnabled\)/);
   assert.match(config, /tradetronBridgeEnabled: false/);
   assert.match(config, /tradetronDynamicBridgeEnabled: false/);
   assert.match(config, /tradetronOptionsBridgeEnabled: false/);
