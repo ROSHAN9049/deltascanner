@@ -956,12 +956,14 @@ export class DeltaEngine {
 
   async refreshProducts() {
     const raw = await this.adapter.products();
-    const active = (Array.isArray(raw) ? raw : []).filter(p =>
-      p.contract_type === 'perpetual_futures' &&
-      p.state === 'live' &&
-      p.trading_status === 'operational' &&
-      p.only_reduce_only_orders_allowed !== true
-    );
+    const active = (Array.isArray(raw) ? raw : []).filter(p => {
+      const onlyReduceOnly = p?.only_reduce_only_orders_allowed ??
+        p?.product_specs?.only_reduce_only_orders_allowed;
+      return p?.contract_type === 'perpetual_futures' &&
+        p?.state === 'live' &&
+        p?.trading_status === 'operational' &&
+        onlyReduceOnly === false;
+    });
     this.products = active;
     this.productMap = new Map(active.map(p => [p.symbol, p]));
     this.lastUniverseRefresh = Date.now();
