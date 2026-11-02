@@ -1,6 +1,6 @@
 import { GATE_BLOCK, GATE_PASS, GATE_UNKNOWN, gateResult } from './gate-result.js';
 import { safeNum } from './formatters.js';
-import { getStrategyPositionLimit, countOpenStrategyPositions } from '../shared/strategy-position-limits.js';
+import { assessStrategyPositionCap } from '../shared/strategy-position-limits.js';
 
 function detailsOf(selected) {
   if (selected?.details && typeof selected.details === 'object' && !Array.isArray(selected.details)) {
@@ -195,7 +195,8 @@ export function buildRiskGovernorGates({
   routeDataVerified = false,
   entrySafetyTrusted = null,
   scoreMin = 80,
-  settings = {}
+  settings = {},
+  pendingOrders = null
 } = {}) {
   if (!selected || typeof selected !== 'object') return [];
 
@@ -247,11 +248,18 @@ export function buildRiskGovernorGates({
   const momentumStrategy = strategy === 'MOMENTUM';
   const scalpStrategy = strategy === 'SCALP' || strategy === 'SCALPING';
   const supportedStrategy = momentumStrategy || scalpStrategy;
-  const strategyPositionLimit = getStrategyPositionLimit(settings, strategy);
-  const strategyPositionCount = countOpenStrategyPositions(positions, strategy);
-  const strategyPositionStatus = strategyPositionLimit === null || strategyPositionCount === null
+  const strategyPositionCap = assessStrategyPositionCap({
+    strategy,
+    settings,
+    openPositions: positions,
+    pendingOrders,
+    now: Date.now()
+  });
+  const strategyPositionLimit = strategyPositionCap.limit;
+  const strategyPositionCount = strategyPositionCap.exposure;
+  const strategyPositionStatus = strategyPositionCap.status === 'UNKNOWN'
     ? GATE_UNKNOWN
-    : status(true, strategyPositionCount < strategyPositionLimit);
+    : status(true, strategyPositionCap.status === 'PASS');
   const rangeLimit = momentumStrategy ? 4 : 3;
   const emaDistanceLimit = momentumStrategy ? 3.5 : 2.5;
 
@@ -449,9 +457,9 @@ export function buildRiskGovernorGates({
       threshold: strategyPositionLimit,
       thresholdUnit: 'positions',
       blockReason: strategyPositionStatus === GATE_BLOCK
-        ? 'Configured strategy position cap has been reached'
+        ? strategyPositionCap.reason
         : strategyPositionStatus === GATE_UNKNOWN
-          ? 'Open position snapshot or strategy limit unavailable; capacity is unknown'
+          ? strategyPositionCap.reason
           : ''
     }),
     gateResult({ gate: 'Margin / min size', result: marginStatus, observedValue: qty, unit: 'contracts', threshold: 1, thresholdUnit: 'contract', blockReason: marginBlockReason })
