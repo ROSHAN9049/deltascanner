@@ -20,15 +20,23 @@ function hmac(secret, text) {
 }
 
 /**
- * Public market data remains production-sourced even while private execution is
- * on Testnet. Product catalog and all authenticated requests stay on the
- * environment-specific base so Testnet product/account identifiers aren't mixed.
+ * Public tickers and candles remain production-sourced. In Testnet execution
+ * mode, product metadata must come from the Testnet catalog even when the
+ * scanner's public-data environment is SIGNAL_ONLY.
  */
-export function resolveDeltaRequestBase({ auth = false, marketData = false } = {}, {
+export function resolveDeltaRequestBase({
+  auth = false,
+  marketData = false,
+  productCatalog = false
+} = {}, {
   base = CONFIG.restBase,
-  marketDataBase = CONFIG.marketDataRestBase || 'https://api.india.delta.exchange'
+  marketDataBase = CONFIG.marketDataRestBase || 'https://api.india.delta.exchange',
+  productCatalogBase = base
 } = {}) {
-  return marketData && !auth ? marketDataBase : base;
+  if (auth) return base;
+  if (marketData) return marketDataBase;
+  if (productCatalog) return productCatalogBase;
+  return base;
 }
 
 export class DeltaAdapter {
@@ -36,6 +44,9 @@ export class DeltaAdapter {
     if (!['TESTNET', 'SIGNAL_ONLY'].includes(CONFIG.environment)) throw new Error('Unsupported scanner environment');
     this.base = CONFIG.restBase;
     this.marketDataBase = CONFIG.marketDataRestBase || 'https://api.india.delta.exchange';
+    this.productCatalogBase = CONFIG.deltaExecutionMode === 'testnet'
+      ? CONFIG.deltaTestnetRestBase
+      : this.base;
     this.apiKey = CONFIG.apiKey;
     this.apiSecret = CONFIG.apiSecret;
     this.privateAuthConfigured = !!this.apiKey && !!this.apiSecret;
@@ -74,9 +85,14 @@ export class DeltaAdapter {
           headers.timestamp = ts;
         }
         if (body !== undefined && body !== null) headers['Content-Type'] = 'application/json';
-        const requestBase = resolveDeltaRequestBase({ auth, marketData: options.marketData === true }, {
+        const requestBase = resolveDeltaRequestBase({
+          auth,
+          marketData: options.marketData === true,
+          productCatalog: options.productCatalog === true
+        }, {
           base: this.base,
-          marketDataBase: this.marketDataBase
+          marketDataBase: this.marketDataBase,
+          productCatalogBase: this.productCatalogBase
         });
         const response = await fetch(requestBase + path + query, {
           method,
@@ -130,7 +146,7 @@ export class DeltaAdapter {
         { contract_types: 'perpetual_futures', states: 'live', page_size: 100, after },
         null,
         false,
-        { withMeta: true }
+        { withMeta: true, productCatalog: true }
       );
       const rows = Array.isArray(response?.result) ? response.result : [];
       all.push(...rows);
@@ -152,7 +168,7 @@ export class DeltaAdapter {
         { contract_types: 'call_options,put_options', states: 'live', page_size: 100, after },
         null,
         false,
-        { withMeta: true }
+        { withMeta: true, productCatalog: true }
       );
       const rows = Array.isArray(response?.result) ? response.result : [];
       all.push(...rows);
