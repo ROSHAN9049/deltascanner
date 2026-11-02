@@ -355,6 +355,7 @@ test('Risk Governor keeps Momentum and Scalping capacities independent', () => {
   const rows = buildRiskGovernorGates({
     selected: { symbol:'QQQXUSD', strategy:'SCALPING', stage:'CONFIRMED', score:90 },
     settings: { max_momentum_positions:5, max_scalping_positions:5 },
+    pendingOrders: [],
     positions: [
       ...Array.from({length:5},(_,i)=>({id:'m'+i,symbol:'M'+i,strategy:'MOMENTUM',status:'OPEN',qty:1})),
       ...Array.from({length:4},(_,i)=>({id:'s'+i,symbol:'S'+i,strategy:'SCALPING',status:'OPEN',qty:1}))
@@ -370,7 +371,8 @@ test('Risk Governor fails closed when open-position snapshot is unavailable', ()
   const rows = buildRiskGovernorGates({
     selected:{symbol:'DOGSUSD',strategy:'MOMENTUM'},
     settings:{max_momentum_positions:5},
-    positions:null
+    positions:null,
+    pendingOrders:[]
   });
   assert.equal(rows.find(row=>row.gate==='Strategy open-position cap').result,GATE_UNKNOWN);
 });
