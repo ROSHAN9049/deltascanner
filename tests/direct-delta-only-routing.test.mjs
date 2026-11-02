@@ -29,7 +29,7 @@ test('non-Testnet execution is locked and does not silently fall back to an exte
     assert.throws(() => assertDirectDeltaExecutionMode(mode), error => {
       assert.equal(error.code, 'direct_delta_testnet_only');
       assert.equal(error.executionLocked, true);
-      assert.match(error.message, /Direct Delta Testnet execution is not enabled/);
+      assert.match(error.message, /Direct Delta Testnet execution is not explicitly enabled/);
       return true;
     });
   }
