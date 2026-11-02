@@ -19,6 +19,10 @@ export function normalizeDeltaSymbol(symbol) {
   return String(symbol ?? '').trim().toUpperCase();
 }
 
+export function isDirectDeltaExecutionMode(mode) {
+  return String(mode ?? '').trim().toLowerCase() === DIRECT_DELTA_EXECUTION_MODE;
+}
+
 export function resolveDirectDeltaExecutionEnabled(environment, mode) {
   return String(environment ?? '').trim().toUpperCase() === 'TESTNET' &&
     String(mode ?? '').trim().toLowerCase() === DIRECT_DELTA_EXECUTION_MODE;
