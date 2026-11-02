@@ -9,10 +9,18 @@ import { deltaExecutor } from './execution/delta-executor.mjs';
 import { DeltaTestnetTracker } from './execution/delta-tracker.mjs';
 import { createDeltaPositionReconciler } from './execution/delta-reconciler.mjs';
 import { checkDeltaTestnetPrivateApi, DELTA_TESTNET_PRIVATE_API_RETRY_MS } from './execution/testnet-private-api-health.mjs';
+import { canStartWorkerInExecutionProfile } from './execution/execution-route-policy.mjs';
 
 const githubActionsPublicScanOnly = isGithubActionsPublicScanOnly();
 
-if (!CONFIG.signalOnly || CONFIG.directDeltaExecutionEnabled) throw new Error('Scanner must run in SIGNAL_ONLY mode with direct Delta execution disabled.');
+if (!canStartWorkerInExecutionProfile({
+  environment: CONFIG.environment,
+  deltaExecutionMode: CONFIG.deltaExecutionMode,
+  directDeltaExecutionEnabled: CONFIG.directDeltaExecutionEnabled,
+  githubActionsPublicScanOnly
+})) {
+  throw new Error('Worker must run in SIGNAL_ONLY scan-only mode or explicit Delta TESTNET execution mode; production/live execution is unsupported.');
+}
 if (!CONFIG.engineSecret) throw new Error('ENGINE_SECRET is required.');
 if (!CONFIG.supabaseUrl || !CONFIG.supabaseAdminKey) throw new Error('SUPABASE_URL / Supabase server key is required.');
 
@@ -107,10 +115,10 @@ async function verifyDeltaTestnetPrivateApi(reason = 'startup') {
       engine.privateExecutionAvailable = true;
 
       if (reason === 'startup') {
-        console.log('[DeltaScanner] Authenticated Delta TESTNET API OK; equity=' + account.equity + '; open positions=' + positions.length);
+        console.log('[DeltaScanner] Authenticated Delta TESTNET API OK; equity=' + account.equity + '; open positions=' + positions.length + '; direct execution configured=' + CONFIG.directDeltaExecutionEnabled);
       } else if (!wasAvailable) {
-        console.log('[DeltaScanner] Delta Testnet private API restored; wallet and positions verified. Order execution unlocked.');
-        await log('INFO', 'Delta Testnet private API restored; wallet and positions verified; order execution unlocked', {
+        console.log('[DeltaScanner] Delta Testnet private API restored; wallet and positions verified. E-STOP, Auto Trade, fresh-tick, allowlist and risk gates remain mandatory.');
+        await log('INFO', 'Delta Testnet private API restored; wallet and positions verified; entry interlocks remain mandatory', {
           equity: account.equity,
           openPositions: positions.length
         }).catch(() => {});
@@ -171,10 +179,22 @@ async function verifyDeltaTestnetPrivateApi(reason = 'startup') {
 }
 
 async function startupPreflight() {
-  console.log('[DeltaScanner] Starting public-market signal scanner; DELTA_EXECUTION_MODE=' + CONFIG.deltaExecutionMode);
+  console.log('[DeltaScanner] Starting public-market signal scanner; environment=' + CONFIG.environment + '; DELTA_EXECUTION_MODE=' + CONFIG.deltaExecutionMode + '; directDeltaExecutionEnabled=' + CONFIG.directDeltaExecutionEnabled);
   try {
-    const settings = await db.select('dd_settings', 'id=eq.1&select=id&limit=1');
+    const settings = await db.select(
+      'dd_settings',
+      'id=eq.1&select=id,enabled,emergency_stop,auto_trade,last_tick_at,max_open_positions&limit=1'
+    );
     console.log('[DeltaScanner] Supabase connectivity OK; settings rows=' + (settings?.length || 0));
+    const entrySettings = Array.isArray(settings) ? settings[0] : null;
+    console.log('[DeltaScanner] Entry interlocks: enabled=' + (entrySettings?.enabled ?? 'UNKNOWN') +
+      '; emergency_stop=' + (entrySettings?.emergency_stop ?? 'UNKNOWN') +
+      '; auto_trade=' + (entrySettings?.auto_trade ?? 'UNKNOWN') +
+      '; last_tick_at=' + (entrySettings?.last_tick_at ?? 'UNKNOWN') +
+      '; max_open_positions=' + (entrySettings?.max_open_positions ?? 'UNKNOWN'));
+    if (CONFIG.directDeltaExecutionEnabled) {
+      console.log('[DeltaScanner] Delta TESTNET futures route configured; no production/live route exists; entries remain blocked unless all database, freshness, product and risk interlocks pass.');
+    }
     await engine.adapter.health();
     console.log('[DeltaScanner] Delta India production public market API OK');
     if (CONFIG.deltaExecutionMode === 'testnet') {

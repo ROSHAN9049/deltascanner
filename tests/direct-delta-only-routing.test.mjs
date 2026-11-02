@@ -13,17 +13,23 @@ test('only explicit Delta Testnet mode selects the direct execution route', () =
   for (const mode of ['disabled', '', undefined, null, 'live', 'paper', 'tradetron']) {
     assert.equal(isDirectDeltaExecutionMode(mode), false, String(mode));
   }
-  assert.equal(getExecutionRouteBlockReason('testnet'), '');
-  assert.match(getExecutionRouteBlockReason('disabled'), /scan-only/);
+  assert.equal(getExecutionRouteBlockReason('testnet', true), '');
+  assert.match(getExecutionRouteBlockReason('testnet'), /scan-only/);
+  assert.match(getExecutionRouteBlockReason('disabled', true), /scan-only/);
 });
 
 test('non-Testnet execution is locked and does not silently fall back to an external bridge', () => {
-  assert.equal(assertDirectDeltaExecutionMode('testnet'), true);
+  assert.equal(assertDirectDeltaExecutionMode('testnet', true), true);
+  assert.throws(() => assertDirectDeltaExecutionMode('testnet'), error => {
+    assert.equal(error.code, 'direct_delta_testnet_only');
+    assert.equal(error.executionLocked, true);
+    return true;
+  });
   for (const mode of ['disabled', 'live', undefined, null]) {
     assert.throws(() => assertDirectDeltaExecutionMode(mode), error => {
       assert.equal(error.code, 'direct_delta_testnet_only');
       assert.equal(error.executionLocked, true);
-      assert.match(error.message, /Direct Delta Testnet execution is not enabled/);
+      assert.match(error.message, /Direct Delta Testnet execution is not explicitly enabled/);
       return true;
     });
   }
@@ -34,8 +40,8 @@ test('worker routing is wired to the direct-only policy', () => {
   const index = readFileSync(new URL('../worker/index.mjs', import.meta.url), 'utf8');
   const config = readFileSync(new URL('../server/config.js', import.meta.url), 'utf8');
 
-  assert.match(engine, /getExecutionRouteBlockReason\(CONFIG\.deltaExecutionMode\)/);
-  assert.match(engine, /assertDirectDeltaExecutionMode\(CONFIG\.deltaExecutionMode\)/);
+  assert.match(engine, /getExecutionRouteBlockReason\(CONFIG\.deltaExecutionMode, directTestnetEnabled\)/);
+  assert.match(engine, /assertDirectDeltaExecutionMode\(CONFIG\.deltaExecutionMode,/);
 
   const executeSignalStart = engine.indexOf('async executeSignal(');
   const openTradeStart = engine.indexOf('async openTrade(', executeSignalStart);
@@ -45,7 +51,9 @@ test('worker routing is wired to the direct-only policy', () => {
   const executeSignalSource = engine.slice(executeSignalStart, openTradeStart);
   const openTradeSource = engine.slice(openTradeStart, manageOptionStart);
   assert.doesNotMatch(executeSignalSource, /getTradetronBridgeForSymbol|emitEntry\(/);
+  assert.match(openTradeSource, /CONFIG\.environment !== 'TESTNET'/);
   assert.match(openTradeSource, /CONFIG\.deltaExecutionMode !== 'testnet'/);
+  assert.match(openTradeSource, /CONFIG\.directDeltaExecutionEnabled !== true/);
   assert.match(openTradeSource, /only direct Delta Testnet execution is supported/);
   assert.match(openTradeSource, /return false;/);
   assert.doesNotMatch(engine, /async openOptionTrade\(/);

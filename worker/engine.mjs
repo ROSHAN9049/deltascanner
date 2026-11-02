@@ -20,8 +20,7 @@ import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from '
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
 import { buildApiDerivedTrackingPlan, strategyForDerivedTrade } from './tradetron-derived-trades.mjs';
 import { deltaExecutor } from './execution/delta-executor.mjs';
-import { manageDeltaTestnetGrid } from './execution/delta-grid-engine.mjs';
-import { assertDirectDeltaExecutionMode, getExecutionRouteBlockReason } from './execution/execution-route-policy.mjs';
+import { assertDirectDeltaExecutionMode, getExecutionRouteBlockReason, DELTA_TESTNET_FUTURES_ALLOWLIST, isAllowedDeltaTestnetFutureSymbol, isEligibleDeltaTestnetPerpetualProduct, isMarketTickFresh, canStartWorkerInExecutionProfile } from './execution/execution-route-policy.mjs';
 import { canExecuteDeltaTestnetOrders, checkDeltaTestnetPrivateApi, isPrivateApiConnectivityError } from './execution/testnet-private-api-health.mjs';
 import { DEFAULT_CANDLE_CACHE_SYMBOL_LIMIT, pruneCandleCacheState, resolveCandleCacheSymbolLimit, selectTopCandleSymbols } from './candle-cache-policy.mjs';
 import { formatMemoryLog, MEMORY_LOG_INTERVAL_MS, summarizeMemoryUsage } from './memory-monitor.mjs';
@@ -261,6 +260,8 @@ export class DeltaEngine {
     this.tickerMap = new Map();
     this.products = [];
     this.productMap = new Map();
+    this.testnetExecutionCatalogReady = false;
+    this.testnetGridLockedLogEmitted = false;
     this.candles = new Map();
     this.candleCacheLimit = resolveCandleCacheSymbolLimit(process.env.CANDLE_CACHE_MAX_SYMBOLS, DEFAULT_CANDLE_CACHE_SYMBOL_LIMIT);
     this.candleCacheSymbols = new Set();
@@ -570,35 +571,16 @@ export class DeltaEngine {
   }
 
   async manageGridStrategy(settings, account) {
+    // Grid remains explicitly out of scope for this futures execution phase.
+    // Its separate Testnet order path must not be enabled by the Momentum/Scalping switch.
     if (CONFIG.deltaExecutionMode === 'testnet') {
-      const symbol = ['BTCUSD', 'ETHUSD'].includes(String(settings.grid_symbol || '').toUpperCase())
-        ? String(settings.grid_symbol || '').toUpperCase() : 'ETHUSD';
-      const ticker = this.tickerMap.get(symbol);
-      const product = this.productMap.get(symbol) || {};
-      const needsRefresh = this.gridCandleSymbol !== symbol || Date.now() - this.lastGridCandleRefresh >= 15000;
-      if (settings.grid_enabled === true || (Array.isArray(settings.grid_state?.positions) && settings.grid_state.positions.length > 0)) {
-        if (needsRefresh) {
-          try {
-            await this.refreshCandle(symbol, '1m');
-            this.gridCandleSymbol = symbol;
-            this.lastGridCandleRefresh = Date.now();
-          } catch (error) {
-            await this.log('WARN', 'Delta Testnet Grid candle refresh failed; new entries remain blocked', {
-              symbol, error: String(error?.message || error).slice(0, 220)
-            });
-          }
-        }
+      if (settings.grid_enabled === true && !this.testnetGridLockedLogEmitted) {
+        this.testnetGridLockedLogEmitted = true;
+        await this.log('WARN', 'Delta Testnet Grid execution remains hard-locked; only allowlisted Momentum/Scalping futures entries are supported', {
+          symbol: settings.grid_symbol || null,
+          executionBlocked: true
+        });
       }
-      const dataFresh = this.gridCandleSymbol === symbol &&
-        Date.now() - this.lastGridCandleRefresh < 60000 &&
-        this.getCandles(symbol, '1m').length >= 6;
-      const result = await manageDeltaTestnetGrid({
-        settings, account, ticker, product,
-        candles: this.getCandles(symbol, '1m'),
-        dataFresh, database: db, executor: deltaExecutor
-      });
-      this.lastGridEntrySafety = result.safety;
-      settings.grid_state = result.state;
       return;
     }
     let priorState = settings.grid_state;
@@ -971,17 +953,7 @@ export class DeltaEngine {
     if (executionMode === 'testnet') {
       try {
         const testnetRows = await this.adapter.executionProducts();
-        executionProducts = (Array.isArray(testnetRows) ? testnetRows : []).filter(product => {
-          const id = Number(product?.id ?? product?.product_id);
-          const onlyReduceOnly = product?.only_reduce_only_orders_allowed ??
-            product?.product_specs?.only_reduce_only_orders_allowed;
-          return Number.isSafeInteger(id) && id > 0 &&
-            /^[A-Z0-9]+USD$/.test(String(product?.symbol || '').toUpperCase()) &&
-            product?.contract_type === 'perpetual_futures' &&
-            product?.state === 'live' &&
-            product?.trading_status === 'operational' &&
-            onlyReduceOnly === false;
-        });
+        executionProducts = (Array.isArray(testnetRows) ? testnetRows : []).filter(isEligibleDeltaTestnetPerpetualProduct);
       } catch (error) {
         executionCatalogError = String(error?.message || error).slice(0, 220);
         await this.log('WARN', 'Delta Testnet product catalogue unavailable; all new entries remain scan-only', {
@@ -992,8 +964,11 @@ export class DeltaEngine {
     }
 
     const testnetBySymbol = new Map(executionProducts.map(product => [
-      String(product.symbol).toUpperCase(), product
+      String(product.symbol).trim().toUpperCase(), product
     ]));
+    const catalogueMissingSymbols = executionMode === 'testnet'
+      ? DELTA_TESTNET_FUTURES_ALLOWLIST.filter(symbol => !testnetBySymbol.has(symbol))
+      : [...DELTA_TESTNET_FUTURES_ALLOWLIST];
     const active = marketProducts.map(marketProduct => {
       if (executionMode !== 'testnet') return marketProduct;
       const symbol = String(marketProduct.symbol || '').toUpperCase();
@@ -1021,6 +996,16 @@ export class DeltaEngine {
       };
     });
 
+    const activeExecutionSymbols = new Set(active
+      .filter(product => product.executionProductAvailable === true)
+      .map(product => String(product.symbol || '').trim().toUpperCase()));
+    const missingTestnetSymbols = DELTA_TESTNET_FUTURES_ALLOWLIST.filter(symbol =>
+      catalogueMissingSymbols.includes(symbol) || !activeExecutionSymbols.has(symbol)
+    );
+    this.testnetExecutionCatalogReady = executionMode === 'testnet' &&
+      testnetBySymbol.size === DELTA_TESTNET_FUTURES_ALLOWLIST.length &&
+      missingTestnetSymbols.length === 0;
+
     this.products = active;
     this.productMap = new Map(active.map(product => [String(product.symbol).toUpperCase(), product]));
     this.lastUniverseRefresh = Date.now();
@@ -1028,6 +1013,10 @@ export class DeltaEngine {
       active: active.length,
       marketDataProducts: marketProducts.length,
       testnetExecutionProducts: testnetBySymbol.size,
+      testnetExecutionSymbols: [...testnetBySymbol.keys()].sort(),
+      testnetAllowlistExpected: DELTA_TESTNET_FUTURES_ALLOWLIST,
+      testnetAllowlistMissing: missingTestnetSymbols,
+      testnetAllowlistReady: this.testnetExecutionCatalogReady,
       executionCatalogError
     });
   }
@@ -1677,8 +1666,19 @@ export class DeltaEngine {
 
     if (settings.emergency_stop) reasons.push('Emergency Stop');
     if (!settings.enabled || !settings.auto_trade) reasons.push('Auto OFF');
-    const routeBlock = getExecutionRouteBlockReason(CONFIG.deltaExecutionMode);
+    const directTestnetEnabled = CONFIG.directDeltaExecutionEnabled === true &&
+      CONFIG.environment === 'TESTNET' && CONFIG.deltaExecutionMode === 'testnet';
+    const routeBlock = getExecutionRouteBlockReason(CONFIG.deltaExecutionMode, directTestnetEnabled);
     if (routeBlock) reasons.push(routeBlock);
+    if (CONFIG.deltaExecutionMode === 'testnet' && !this.testnetExecutionCatalogReady) {
+      reasons.push('Delta Testnet product allowlist is incomplete; all new entries are blocked');
+    }
+    if (CONFIG.deltaExecutionMode === 'testnet' && !isMarketTickFresh(this.lastTickAt)) {
+      reasons.push('Market tick is stale or unavailable; new entries are blocked');
+    }
+    if (CONFIG.deltaExecutionMode === 'testnet' && !isAllowedDeltaTestnetFutureSymbol(signal?.symbol)) {
+      reasons.push('Symbol is outside the fixed Delta Testnet futures allowlist');
+    }
     if (CONFIG.deltaExecutionMode === 'testnet' && signal?.executionProductAvailable !== true) {
       reasons.push('Delta Testnet route unavailable: no verified live, operational product for this symbol');
     }
@@ -2835,7 +2835,8 @@ export class DeltaEngine {
   }
 
   async executeSignal(signal, strategy, qty, clientOrderId) {
-    assertDirectDeltaExecutionMode(CONFIG.deltaExecutionMode);
+    assertDirectDeltaExecutionMode(CONFIG.deltaExecutionMode,
+      CONFIG.directDeltaExecutionEnabled === true && CONFIG.environment === 'TESTNET');
     if (CONFIG.deltaExecutionMode === 'testnet') {
       if (!canExecuteDeltaTestnetOrders(CONFIG.deltaExecutionMode, this.privateExecutionAvailable)) {
         throw new Error('Delta Testnet private API unavailable; order execution is hard-locked in SCAN-ONLY mode');
@@ -2843,7 +2844,7 @@ export class DeltaEngine {
       try {
         return await deltaExecutor.placeBracketOrder(
           signal.symbol, signal.side, qty, signal.price, signal.sl, signal.tp,
-          { strategy, clientOrderId }
+          { strategy, clientOrderId, expectedProductId: signal.productId }
         );
       } catch (error) {
         if (isPrivateApiConnectivityError(error)) {
@@ -2871,14 +2872,40 @@ export class DeltaEngine {
       }).catch(() => {});
       return false;
     }
-    // A disabled/unknown mode is scan-only. Do not reach either legacy
-    // bridge routing or the adapter's production-host fallback.
-    if (CONFIG.deltaExecutionMode !== 'testnet') {
+    // Only the explicit TESTNET environment may route entries. SIGNAL_ONLY
+    // remains scan-only even when the private Testnet API is reachable.
+    if (CONFIG.environment !== 'TESTNET' ||
+        CONFIG.deltaExecutionMode !== 'testnet' ||
+        CONFIG.directDeltaExecutionEnabled !== true) {
       await this.log('WARN', 'Order entry blocked: only direct Delta Testnet execution is supported; scanner remains scan-only.', {
         executionMode: CONFIG.deltaExecutionMode,
         symbol: signal?.symbol ?? null,
         strategy,
         executionLocked: true
+      }).catch(() => {});
+      return false;
+    }
+
+    const expectedProductId = Number(signal?.productId);
+    if (!this.testnetExecutionCatalogReady ||
+        signal?.executionProductAvailable !== true ||
+        !isAllowedDeltaTestnetFutureSymbol(signal?.symbol) ||
+        !Number.isSafeInteger(expectedProductId) || expectedProductId <= 0) {
+      await this.log('WARN', 'Delta Testnet entry skipped: symbol or product ID is not in the verified nine-product allowlist', {
+        symbol: signal?.symbol ?? null,
+        productId: signal?.productId ?? null,
+        executionProductAvailable: signal?.executionProductAvailable === true,
+        catalogReady: this.testnetExecutionCatalogReady,
+        executionBlocked: true
+      }).catch(() => {});
+      return false;
+    }
+    if (!isMarketTickFresh(this.lastTickAt)) {
+      await this.log('WARN', 'Delta Testnet entry blocked: market tick is stale or unavailable', {
+        symbol: signal?.symbol ?? null,
+        lastTickAt: this.lastTickAt || null,
+        maxTickAgeMs: 180000,
+        executionBlocked: true
       }).catch(() => {});
       return false;
     }
@@ -3649,16 +3676,19 @@ export class DeltaEngine {
         }
       });
       ws.on('message', raw => {
-        this.lastTickAt = Date.now();
         try {
           const msg = JSON.parse(raw.toString());
           const items = Array.isArray(msg.d) ? msg.d : (msg.d && typeof msg.d === 'object' ? [msg.d] : [msg]);
           for (const x of items) {
-            const symbol = String(x.sy || x.symbol || '').replace(/^MARK:/, '');
+            const symbol = String(x.sy || x.symbol || '').replace(/^MARK:/, '').trim().toUpperCase();
             if (!symbol) continue;
             if (msg.type === 'mark_price' || String(msg.type).includes('mark_price')) {
               const t = this.tickerMap.get(symbol);
-              if (t) this.tickerMap.set(symbol, { ...t, mark_price: n(x.p || x.mark_price || x.c || t.mark_price) });
+              const markPrice = n(x.p || x.mark_price || x.c);
+              if (t && markPrice > 0) {
+                this.tickerMap.set(symbol, { ...t, mark_price: markPrice });
+                this.lastTickAt = Date.now();
+              }
             } else if (String(msg.type || '').startsWith('candlestick_')) {
               // The exchange can stream candle events for every listed perpetual.
               // Do not build/retain history for symbols outside the bounded cache.
@@ -3698,6 +3728,7 @@ export class DeltaEngine {
               const series = merged.candles.slice(-120);
               if (this.rejectAtrSpike(symbol, resolution, current, series, 'WebSocket')) continue;
               this.candles.set(key, series);
+              this.lastTickAt = Date.now();
               if (merged.action === 'appended') {
                 const count = (this.candleUpdateCounts.get(key) || 0) + 1;
                 this.candleUpdateCounts.set(key, count);
@@ -3711,17 +3742,22 @@ export class DeltaEngine {
                 }
               }
             } else if (msg.type === 'ticker' || msg.type === 'v2/ticker') {
+              if (!this.productMap.has(symbol)) continue;
               const t = this.tickerMap.get(symbol) || { symbol };
+              const markPrice = n(x.mark_price || x.mp || t.mark_price);
+              const closePrice = n(x.close || x.c || t.close);
+              if (!(markPrice > 0 || closePrice > 0)) continue;
               this.tickerMap.set(symbol, {
                 ...t,
                 ...x,
                 symbol,
-                mark_price: n(x.mark_price || x.mp || t.mark_price),
-                close: n(x.close || x.c || t.close),
+                mark_price: markPrice,
+                close: closePrice,
                 ltp_change_24h: n(x.ltp_change_24h || x.ch || t.ltp_change_24h),
                 turnover_usd: n(x.turnover_usd || x.v || t.turnover_usd),
                 open_interest: n(x.open_interest || x.oi || t.open_interest)
               });
+              this.lastTickAt = Date.now();
             }
           }
         } catch {}
@@ -4290,7 +4326,7 @@ export class DeltaEngine {
     await this.updateEngineState({
       equity: account.equity, available_balance: account.available, realized_pnl: realized,
       unrealized_pnl: unrealized, fees_today: feesToday,
-      last_tick_at: new Date(this.lastTickAt || Date.now()).toISOString(),
+      last_tick_at: this.lastTickAt > 0 ? new Date(this.lastTickAt).toISOString() : null,
       worker_started_at: new Date(this.startedAt).toISOString(), idle_reason: idle
     });
     await this.log('INFO', heartbeatMessage, {
@@ -4358,8 +4394,13 @@ export class DeltaEngine {
   }
 
   async run() {
-    if (!CONFIG.signalOnly || CONFIG.directDeltaExecutionEnabled) {
-      throw new Error('Production direct execution disabled; scanner must be SIGNAL_ONLY');
+    if (!canStartWorkerInExecutionProfile({
+      environment: CONFIG.environment,
+      deltaExecutionMode: CONFIG.deltaExecutionMode,
+      directDeltaExecutionEnabled: CONFIG.directDeltaExecutionEnabled,
+      githubActionsPublicScanOnly: false
+    })) {
+      throw new Error('DeltaEngine requires SIGNAL_ONLY scan-only or explicit Delta TESTNET execution profile; production/live execution is unsupported.');
     }
     if (this.running) return;
     this.running = true;

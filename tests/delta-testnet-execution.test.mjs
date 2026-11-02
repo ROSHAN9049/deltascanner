@@ -11,6 +11,7 @@ import { parseDeltaExecutionMode } from '../server/config.js';
 import { assessCorrelatedEntry, correlationGroupForSymbol } from '../worker/engine.mjs';
 
 const demoEnv = () => ({
+  DELTA_ENVIRONMENT: 'TESTNET',
   DELTA_EXECUTION_MODE: 'testnet',
   DELTA_TESTNET_API_KEY: 'demo-key-not-real',
   DELTA_TESTNET_API_SECRET: 'demo-secret-not-real',
@@ -34,7 +35,8 @@ function fakeRuntime({
   orderState = 'open',
   orderAverageFillPrice = 60000,
   fills = [],
-  orderHistory = []
+  orderHistory = [],
+  timestamp = Date.now()
 } = {}) {
   const httpCalls = [];
   const logs = [];
@@ -44,7 +46,10 @@ function fakeRuntime({
 
   const database = {
     async select(table, query) {
-      if (table === 'dd_settings') return [{ id: 1, emergency_stop: emergencyStop }];
+      if (table === 'dd_settings') return [{
+        id: 1, enabled: true, emergency_stop: emergencyStop, auto_trade: true,
+        max_open_positions: 20, last_tick_at: new Date(timestamp).toISOString()
+      }];
       if (table === 'dd_delta_positions') {
         const symbolMatch = query.match(/symbol=eq\.([^&]+)/);
         if (symbolMatch) {
@@ -85,7 +90,10 @@ function fakeRuntime({
     const parsed = new URL(url);
     httpCalls.push({ url, init, body: init.body ? JSON.parse(init.body) : null });
     if (parsed.pathname === '/v2/products') {
-      return response({ success: true, result: [{ id: 27, symbol: 'BTCUSD', contract_type: 'perpetual_futures' }], meta: {} });
+      return response({ success: true, result: [
+        { id: 181689, symbol: 'XAUTUSD', contract_type: 'perpetual_futures', state: 'live', trading_status: 'operational', only_reduce_only_orders_allowed: false },
+        { id: 27, symbol: 'BTCUSD', contract_type: 'perpetual_futures', state: 'live', trading_status: 'operational', only_reduce_only_orders_allowed: false }
+      ], meta: {} });
     }
     if (parsed.pathname.startsWith('/v2/tickers/')) {
       return response({ success: true, result: { symbol: parsed.pathname.split('/').pop(), mark_price: String(markPrice) } });
@@ -156,13 +164,13 @@ test('executor requires testnet and refuses any non-testnet URL', async () => {
 });
 
 test('bracket entry is a Testnet market order with exchange-side SL/TP and signed HMAC headers', async () => {
-  const runtime = fakeRuntime();
+  const runtime = fakeRuntime({ timestamp: 1770000000000 });
   const executor = createDeltaExecutor({
     env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database,
     now: () => 1770000000000
   });
-  const order = await executor.placeBracketOrder('BTCUSD', 'BUY', 1, 60000, 59000, 62000, {
-    strategy: 'MOMENTUM', clientOrderId: 'DDM-BTCUSD-TEST-1'
+  const order = await executor.placeBracketOrder('XAUTUSD', 'BUY', 1, 60000, 59000, 62000, {
+    strategy: 'MOMENTUM', clientOrderId: 'DDM-XAUTUSD-TEST-1'
   });
   assert.equal(order.id, 123);
   const post = runtime.httpCalls.find(call => new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST');
@@ -173,7 +181,7 @@ test('bracket entry is a Testnet market order with exchange-side SL/TP and signe
   assert.equal(post.body.bracket_stop_loss_price, '59000');
   assert.equal(post.body.bracket_take_profit_price, '62000');
   assert.equal(post.body.bracket_stop_trigger_method, 'mark_price');
-  assert.equal(post.body.client_order_id, 'DDM-BTCUSD-TEST-1');
+  assert.equal(post.body.client_order_id, 'DDM-XAUTUSD-TEST-1');
   assert.match(post.init.headers.signature, /^[0-9a-f]{64}$/);
   assert.equal(post.init.headers.timestamp, '1770000000');
 });
@@ -205,13 +213,13 @@ test('bracket entry fails closed on invalid SL or TP before making any API reque
 });
 
 test('placeOrder chooses market without price and limit with price', async () => {
-  const runtime = fakeRuntime();
+  const runtime = fakeRuntime({ timestamp: 1770000000000 });
   const executor = createDeltaExecutor({
     env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database,
     now: () => 1770000000000
   });
-  await executor.placeOrder('BTCUSD', 'BUY', 1, null);
-  await executor.placeOrder('BTCUSD', 'SELL', 1, 61000);
+  await executor.placeOrder('XAUTUSD', 'BUY', 1, null);
+  await executor.placeOrder('XAUTUSD', 'SELL', 1, 61000);
   const posts = runtime.httpCalls.filter(call => new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST');
   assert.equal(posts[0].body.order_type, 'market_order');
   assert.equal(posts[0].body.limit_price, undefined);
@@ -222,28 +230,28 @@ test('placeOrder chooses market without price and limit with price', async () =>
 test('Emergency Stop blocks an entry before any exchange order is submitted', async () => {
   const runtime = fakeRuntime({ emergencyStop: true });
   const executor = createDeltaExecutor({ env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database });
-  await assert.rejects(executor.placeBracketOrder('BTCUSD', 'BUY', 1, 60000, 59000, 62000), /Emergency Stop is active/);
+  await assert.rejects(executor.placeBracketOrder('XAUTUSD', 'BUY', 1, 60000, 59000, 62000), /Emergency Stop is active or unknown/);
   assert.equal(runtime.httpCalls.some(call => call.init.method === 'POST'), false);
 });
 
 test('unknown Emergency Stop state fails closed', async () => {
   const runtime = fakeRuntime({ emergencyStop: null });
   const executor = createDeltaExecutor({ env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database });
-  await assert.rejects(executor.placeBracketOrder('BTCUSD', 'BUY', 1, 60000, 59000, 62000), /Emergency Stop state is unknown/);
+  await assert.rejects(executor.placeBracketOrder('XAUTUSD', 'BUY', 1, 60000, 59000, 62000), /Emergency Stop is active or unknown/);
   assert.equal(runtime.httpCalls.some(call => call.init.method === 'POST'), false);
 });
 
 test('daily loss at or beyond 5 percent halts entries', async () => {
   const runtime = fakeRuntime({ closedRows: [{ realized_pnl: -50 }], equity: 1000 });
   const executor = createDeltaExecutor({ env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database });
-  await assert.rejects(executor.placeBracketOrder('BTCUSD', 'BUY', 1, 60000, 59000, 62000), /Daily P&L stop reached/);
+  await assert.rejects(executor.placeBracketOrder('XAUTUSD', 'BUY', 1, 60000, 59000, 62000), /Daily P&L stop reached/);
   assert.equal(runtime.httpCalls.some(call => call.init.method === 'POST'), false);
 });
 
 test('unknown realized P&L fails closed instead of treating it as zero', async () => {
   const runtime = fakeRuntime({ closedRows: [{ realized_pnl: null }], equity: 1000 });
   const executor = createDeltaExecutor({ env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database });
-  await assert.rejects(executor.placeBracketOrder('BTCUSD', 'BUY', 1, 60000, 59000, 62000), /Daily realized P&L is incomplete/);
+  await assert.rejects(executor.placeBracketOrder('XAUTUSD', 'BUY', 1, 60000, 59000, 62000), /Daily realized P&L is incomplete/);
   assert.equal(runtime.httpCalls.some(call => call.init.method === 'POST'), false);
 });
 
@@ -254,7 +262,7 @@ test('20 already-open symbols hit the global position cap', async () => {
   }));
   const runtime = fakeRuntime({ positions, equity: 1000 });
   const executor = createDeltaExecutor({ env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database });
-  await assert.rejects(executor.placeBracketOrder('BTCUSD', 'BUY', 1, 60000, 59000, 62000), /cap reached/);
+  await assert.rejects(executor.placeBracketOrder('XAUTUSD', 'BUY', 1, 60000, 59000, 62000), /cap reached/);
   assert.equal(runtime.httpCalls.some(call => call.init.method === 'POST'), false);
 });
 
@@ -453,8 +461,8 @@ test('bracket entry fails closed if the live mark has crossed the requested SL/T
   });
 
   await assert.rejects(
-    executor.placeBracketOrder('BTCUSD', 'SELL', 1, 60000, 61000, 59000, {
-      strategy: 'MOMENTUM', clientOrderId: 'DDM-BTCUSD-CROSSED'
+    executor.placeBracketOrder('XAUTUSD', 'SELL', 1, 60000, 61000, 59000, {
+      strategy: 'MOMENTUM', clientOrderId: 'DDM-XAUTUSD-CROSSED'
     }),
     /Live mark has moved outside the requested SL\/TP bracket/
   );
@@ -472,7 +480,7 @@ test('closed REST order acknowledgement immediately polls and persists an OPEN p
     orderAverageFillPrice: 60010,
     positionsAfterFill: [{
       product_id: 27,
-      product_symbol: 'BTCUSD',
+      product_symbol: 'XAUTUSD',
       size: -1,
       entry_price: '60010',
       mark_price: '60012',
@@ -484,20 +492,20 @@ test('closed REST order acknowledgement immediately polls and persists an OPEN p
     env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database
   });
 
-  const order = await executor.placeBracketOrder('BTCUSD', 'SELL', 1, 60000, 61000, 59000, {
-    strategy: 'MOMENTUM', clientOrderId: 'DDM-BTCUSD-RESTFILL'
+  const order = await executor.placeBracketOrder('XAUTUSD', 'SELL', 1, 60000, 61000, 59000, {
+    strategy: 'MOMENTUM', clientOrderId: 'DDM-XAUTUSD-RESTFILL'
   });
 
   assert.equal(order.state, 'closed');
   assert.equal(runtime.persistedPositions.length, 1);
   const position = runtime.persistedPositions[0];
-  assert.equal(position.symbol, 'BTCUSD');
+  assert.equal(position.symbol, 'XAUTUSD');
   assert.equal(position.side, 'SELL');
   assert.equal(position.qty, 1);
   assert.equal(position.status, 'OPEN');
   assert.equal(position.entry_price, 60010);
   assert.equal(position.order_id, '123');
-  assert.equal(position.client_order_id, 'DDM-BTCUSD-RESTFILL');
+  assert.equal(position.client_order_id, 'DDM-XAUTUSD-RESTFILL');
   assert.ok(runtime.logs.some(row =>
     row.message.includes('REST fill confirmation persisted to dd_delta_positions')
   ));
@@ -937,7 +945,7 @@ test('bracket entry rejects SL distance below the 1.5 percent minimum', async ()
     env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database
   });
   await assert.rejects(
-    executor.placeBracketOrder('ETHUSD', 'SELL', 1, 2310.75, 2332.9, 2256, {
+    executor.placeBracketOrder('XAUTUSD', 'SELL', 1, 2310.75, 2332.9, 2256, {
       strategy: 'MOMENTUM', clientOrderId: 'DDM-ETHUSD-TIGHTSL'
     }),
     /SL distance too tight \(0\.96%\), minimum required 1\.50%/

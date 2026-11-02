@@ -2,6 +2,7 @@ import { resolveMinimumStopDistancePct } from '../../shared/delta-risk-policy.js
 import crypto from 'node:crypto';
 import * as defaultDb from '../../server/db.js';
 import { indiaDateKey } from '../../src/date-utils.js';
+import { isAllowedDeltaTestnetFutureSymbol, isEligibleDeltaTestnetPerpetualProduct, isMarketTickFresh } from './execution-route-policy.mjs';
 
 export const DELTA_TESTNET_REST_BASE = 'https://cdn-ind.testnet.deltaex.org';
 export const DELTA_TESTNET_PRIVATE_WS_URL = 'wss://socket-ind.testnet.deltaex.org';
@@ -226,12 +227,15 @@ export function createDeltaExecutor({
     return productsCache;
   }
 
-  async function resolveProduct(symbol) {
+  async function resolveProduct(symbol, { entryOnly = true } = {}) {
     const normalized = stringOrEmpty(symbol).toUpperCase();
-    const product = (await getProducts()).find(row =>
-      stringOrEmpty(row?.symbol || row?.product_symbol).toUpperCase() === normalized &&
-      stringOrEmpty(row?.contract_type || 'perpetual_futures').toLowerCase().includes('perpetual')
-    );
+    const product = (await getProducts()).find(row => {
+      const rowSymbol = stringOrEmpty(row?.symbol || row?.product_symbol).toUpperCase();
+      if (rowSymbol !== normalized ||
+          stringOrEmpty(row?.contract_type || '').toLowerCase() !== 'perpetual_futures') return false;
+      if (!entryOnly) return true; // Preserve reduce-only exits for any existing Testnet position.
+      return isAllowedDeltaTestnetFutureSymbol(normalized) && isEligibleDeltaTestnetPerpetualProduct(row);
+    });
     const id = numberOrNull(product?.id ?? product?.product_id);
     if (!product || !Number.isSafeInteger(id) || id <= 0) {
       throw new Error('Delta Testnet perpetual product is not available: ' + normalized);
@@ -310,7 +314,7 @@ export function createDeltaExecutor({
 
   async function getRecentCloseDetails(symbol, openedAt = null, position = {}) {
     const normalizedSymbol = stringOrEmpty(symbol).toUpperCase();
-    const product = await resolveProduct(normalizedSymbol);
+    const product = await resolveProduct(normalizedSymbol, { entryOnly: false });
     const clockMs = now();
     const openedMs = timestampMs(openedAt);
     // Include a short pre-open buffer because the exchange fill can precede
@@ -537,17 +541,33 @@ export function createDeltaExecutor({
     // E-STOP is an entry inhibit, not an exit inhibit. Explicit EXIT
     // operations reduce exposure and must remain available during E-STOP.
     if (operation === 'EXIT') return;
-    const settingsRows = await database.select('dd_settings', 'id=eq.1&select=id,emergency_stop');
-    if (!Array.isArray(settingsRows) || !settingsRows.length) {
-      throw new Error('Emergency Stop setting is unavailable; Delta Testnet execution is blocked');
-    }
-    if (settingsRows[0].emergency_stop === true) {
-      throw new Error('Emergency Stop is active; Delta Testnet executor refuses all orders');
-    }
-    if (settingsRows[0].emergency_stop !== false) {
-      throw new Error('Emergency Stop state is unknown; Delta Testnet execution is blocked');
+    if (stringOrEmpty(env.DELTA_ENVIRONMENT).toUpperCase() !== 'TESTNET') {
+      throw new Error('Delta Testnet entries require the explicit DELTA_ENVIRONMENT=TESTNET profile');
     }
     const normalizedSymbol = stringOrEmpty(symbol).toUpperCase();
+    if (!isAllowedDeltaTestnetFutureSymbol(normalizedSymbol)) {
+      throw new Error('Delta Testnet futures symbol is outside the fixed nine-product allowlist: ' + normalizedSymbol);
+    }
+    const settingsRows = await database.select(
+      'dd_settings',
+      'id=eq.1&select=id,enabled,emergency_stop,auto_trade,last_tick_at,max_open_positions'
+    );
+    if (!Array.isArray(settingsRows) || !settingsRows.length) {
+      throw new Error('Entry settings are unavailable; Delta Testnet execution is blocked');
+    }
+    const entrySettings = settingsRows[0];
+    if (entrySettings.enabled !== true) {
+      throw new Error('Trading engine is disabled; Delta Testnet entry blocked');
+    }
+    if (entrySettings.emergency_stop !== false) {
+      throw new Error('Emergency Stop is active or unknown; Delta Testnet executor refuses all entries');
+    }
+    if (entrySettings.auto_trade !== true) {
+      throw new Error('Auto Trade is OFF or unknown; Delta Testnet executor refuses all entries');
+    }
+    if (!isMarketTickFresh(entrySettings.last_tick_at, now())) {
+      throw new Error('Persisted market tick is stale or unavailable; Delta Testnet entry blocked');
+    }
     const dayStart = indiaDateKey(new Date(now())) + 'T00:00:00+05:30';
     const [exchangePositions, exchangeOrders, wallet, closedToday, trackedOpenRows, recordedOrders] = await Promise.all([
       getOpenPositions(),
@@ -577,9 +597,14 @@ export function createDeltaExecutor({
     if (openSymbols.has(normalizedSymbol)) {
       throw new Error('Same-symbol position/order/reservation already exists: ' + normalizedSymbol);
     }
-    if (openSymbols.size >= MAX_DELTA_TESTNET_OPEN_POSITIONS) {
+    const configuredPositionCap = numberOrNull(entrySettings.max_open_positions);
+    if (!Number.isSafeInteger(configuredPositionCap) || configuredPositionCap <= 0) {
+      throw new Error('Configured max_open_positions is missing or invalid; Delta Testnet entry blocked');
+    }
+    const effectivePositionCap = Math.min(MAX_DELTA_TESTNET_OPEN_POSITIONS, configuredPositionCap);
+    if (openSymbols.size >= effectivePositionCap) {
       throw new Error('Delta Testnet open-position cap reached (' + openSymbols.size + '/' +
-        MAX_DELTA_TESTNET_OPEN_POSITIONS + ')');
+        effectivePositionCap + ')');
     }
 
     const equity = accountEquity(wallet);
@@ -959,6 +984,10 @@ export function createDeltaExecutor({
       }
       await assertSafety(normalizedSymbol, 'ENTRY');
       const product = await resolveProduct(normalizedSymbol);
+      const expectedProductId = numberOrNull(options?.expectedProductId);
+      if (expectedProductId !== null && expectedProductId !== product.id) {
+        throw new Error('Delta Testnet product ID changed since signal generation; entry blocked');
+      }
 
       let liveMarkPrice;
       try {
@@ -1037,7 +1066,7 @@ export function createDeltaExecutor({
       if (quantity !== position.qty) {
         throw new Error('Partial close is disabled in this phase to avoid cancelling protection for a remaining position');
       }
-      const product = await resolveProduct(normalizedSymbol);
+      const product = await resolveProduct(normalizedSymbol, { entryOnly: false });
       const orders = await getOpenOrders();
       const matchingOrders = orders.filter(row =>
         stringOrEmpty(row?.product_symbol || row?.symbol).toUpperCase() === normalizedSymbol

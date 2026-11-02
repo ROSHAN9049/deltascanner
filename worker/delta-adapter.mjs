@@ -272,24 +272,19 @@ export class DeltaAdapter {
   wallet() { return this.request('GET', '/v2/wallet/balances', {}, null, true); }
   heartbeatCreate(body) { return this.request('POST', '/v2/heartbeat/create', {}, body, true); }
   heartbeat(body) { return this.request('POST', '/v2/heartbeat', {}, body, true); }
-  placeOrder(body) {
-    if (CONFIG.signalOnly || !CONFIG.directDeltaExecutionEnabled) throw new Error('Direct Delta order execution is disabled in SIGNAL_ONLY mode');
-    return this.request('POST', '/v2/orders', {}, body, true);
+  placeOrder() {
+    throw new Error('Generic DeltaAdapter order routing remains disabled; use the dedicated allowlisted Delta Testnet futures executor');
   }
-  cancelOrder(body) {
-    if (CONFIG.signalOnly || !CONFIG.directDeltaExecutionEnabled) throw new Error('Direct Delta order execution is disabled in SIGNAL_ONLY mode');
-    return this.request('DELETE', '/v2/orders', {}, body, true);
+  cancelOrder() {
+    throw new Error('Generic DeltaAdapter order routing remains disabled; use the dedicated allowlisted Delta Testnet futures executor');
   }
-  placeBracket(body) {
-    if (CONFIG.signalOnly || !CONFIG.directDeltaExecutionEnabled) throw new Error('Direct Delta order execution is disabled in SIGNAL_ONLY mode');
-    return this.request('POST', '/v2/orders/bracket', {}, body, true);
+  placeBracket() {
+    throw new Error('Generic DeltaAdapter order routing remains disabled; use the dedicated allowlisted Delta Testnet futures executor');
   }
-  editBracket(body) {
-    if (CONFIG.signalOnly || !CONFIG.directDeltaExecutionEnabled) throw new Error('Direct Delta order execution is disabled in SIGNAL_ONLY mode');
-    return this.request('PUT', '/v2/orders/bracket', {}, body, true);
+  editBracket() {
+    throw new Error('Generic DeltaAdapter order routing remains disabled; use the dedicated allowlisted Delta Testnet futures executor');
   }
-  setOrderLeverage(productId, leverage) {
-    if (CONFIG.signalOnly || !CONFIG.directDeltaExecutionEnabled) throw new Error('Direct Delta leverage changes are disabled in SIGNAL_ONLY mode');
-    return this.request('POST', '/v2/products/' + productId + '/orders/leverage', {}, { leverage }, true);
+  setOrderLeverage() {
+    throw new Error('Generic DeltaAdapter leverage changes remain disabled in this phase');
   }
 }
