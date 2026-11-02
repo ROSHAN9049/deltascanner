@@ -955,15 +955,15 @@ export class DeltaEngine {
   }
 
   async refreshProducts({ executionMode = CONFIG.deltaExecutionMode } = {}) {
-    // Keep the full production product universe for the 250-symbol public
-    // scanner. In Testnet mode, overlay only verified Testnet order metadata.
+    // Keep the full production product universe for scanning. Testnet product
+    // metadata is a separate, symbol-matched overlay used only for execution.
     const raw = await this.adapter.products();
-    const marketProducts = (Array.isArray(raw) ? raw : []).filter(p =>
-      p?.contract_type === 'perpetual_futures' &&
-      p?.state === 'live' &&
-      p?.trading_status === 'operational' &&
-      p?.only_reduce_only_orders_allowed !== true &&
-      p?.product_specs?.only_reduce_only_orders_allowed !== true
+    const marketProducts = (Array.isArray(raw) ? raw : []).filter(product =>
+      product?.contract_type === 'perpetual_futures' &&
+      product?.state === 'live' &&
+      product?.trading_status === 'operational' &&
+      product?.only_reduce_only_orders_allowed !== true &&
+      product?.product_specs?.only_reduce_only_orders_allowed !== true
     );
 
     let executionProducts = [];
@@ -1022,7 +1022,7 @@ export class DeltaEngine {
     });
 
     this.products = active;
-    this.productMap = new Map(active.map(product => [product.symbol, product]));
+    this.productMap = new Map(active.map(product => [String(product.symbol).toUpperCase(), product]));
     this.lastUniverseRefresh = Date.now();
     await this.log('INFO', 'Delta product universe refreshed', {
       active: active.length,
