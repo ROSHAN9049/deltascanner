@@ -118,7 +118,7 @@ async function verifyDeltaTestnetPrivateApi(reason = 'startup') {
         console.log('[DeltaScanner] Authenticated Delta TESTNET API OK; equity=' + account.equity + '; open positions=' + positions.length + '; direct execution configured=' + CONFIG.directDeltaExecutionEnabled);
       } else if (!wasAvailable) {
         console.log('[DeltaScanner] Delta Testnet private API restored; wallet and positions verified. E-STOP, Auto Trade, fresh-tick, allowlist and risk gates remain mandatory.');
-        await log('INFO', 'Delta Testnet private API restored; wallet and positions verified; order execution unlocked', {
+        await log('INFO', 'Delta Testnet private API restored; wallet and positions verified; entry interlocks remain mandatory', {
           equity: account.equity,
           openPositions: positions.length
         }).catch(() => {});
