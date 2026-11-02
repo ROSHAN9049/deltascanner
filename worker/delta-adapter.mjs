@@ -272,24 +272,19 @@ export class DeltaAdapter {
   wallet() { return this.request('GET', '/v2/wallet/balances', {}, null, true); }
   heartbeatCreate(body) { return this.request('POST', '/v2/heartbeat/create', {}, body, true); }
   heartbeat(body) { return this.request('POST', '/v2/heartbeat', {}, body, true); }
-  placeOrder(body) {
+  placeOrder() {
     throw new Error('Generic DeltaAdapter order routing remains disabled; use the dedicated allowlisted Delta Testnet futures executor');
-    return this.request('POST', '/v2/orders', {}, body, true);
   }
-  cancelOrder(body) {
+  cancelOrder() {
     throw new Error('Generic DeltaAdapter order routing remains disabled; use the dedicated allowlisted Delta Testnet futures executor');
-    return this.request('DELETE', '/v2/orders', {}, body, true);
   }
-  placeBracket(body) {
+  placeBracket() {
     throw new Error('Generic DeltaAdapter order routing remains disabled; use the dedicated allowlisted Delta Testnet futures executor');
-    return this.request('POST', '/v2/orders/bracket', {}, body, true);
   }
-  editBracket(body) {
+  editBracket() {
     throw new Error('Generic DeltaAdapter order routing remains disabled; use the dedicated allowlisted Delta Testnet futures executor');
-    return this.request('PUT', '/v2/orders/bracket', {}, body, true);
   }
-  setOrderLeverage(productId, leverage) {
+  setOrderLeverage() {
     throw new Error('Generic DeltaAdapter leverage changes remain disabled in this phase');
-    return this.request('POST', '/v2/products/' + productId + '/orders/leverage', {}, { leverage }, true);
   }
 }
