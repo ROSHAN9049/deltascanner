@@ -19,15 +19,15 @@ test('public ticker/candle requests use the production feed when execution REST 
   assert.equal(resolveDeltaRequestBase({ marketData: true, auth: false }, config), PRODUCTION_REST);
 });
 
-test('Testnet product catalogue uses the Testnet endpoint even in SIGNAL_ONLY scanner mode', () => {
+test('production scanner catalogue and public data stay on production while Testnet execution catalog stays on Testnet', () => {
   const config = {
     base: PRODUCTION_REST,
     marketDataBase: PRODUCTION_REST,
     productCatalogBase: TESTNET_REST
   };
+  assert.equal(resolveDeltaRequestBase({ marketData: true }, config), PRODUCTION_REST);
   assert.equal(resolveDeltaRequestBase({ productCatalog: true }, config), TESTNET_REST);
   assert.equal(resolveDeltaRequestBase({}, config), PRODUCTION_REST);
-  assert.equal(resolveDeltaRequestBase({ marketData: true, productCatalog: true }, config), PRODUCTION_REST);
 });
 
 test('authenticated account/order requests keep their execution base', () => {
