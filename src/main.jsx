@@ -511,7 +511,9 @@ function Dashboard({ market, settings, health, positions, accountDataProtected =
     const gateRows = buildRiskGovernorGates({
       selected: signal,
       health,
+      settings,
       positions: accountDataProtected ? null : positions,
+      pendingOrders: accountDataProtected ? null : deltaTestnetOrders,
       routedSymbols: routeContext?.routedSymbols || [],
       routeDataVerified: routeContext?.routeDataVerified === true,
       entrySafetyTrusted: routeContext?.entrySafetyTrusted === true
