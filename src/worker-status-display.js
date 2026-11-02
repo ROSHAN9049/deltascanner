@@ -53,6 +53,35 @@ export function getWorkerStatusDisplay({
   };
 }
 
+
+export function getExchangeHealthDisplay(health = {}) {
+  const healthy = health?.exchangeHealthy === true;
+  const status = health?.exchangeProbeStatus;
+  const statusLabel = Number.isInteger(status) ? 'HTTP ' + status : '';
+  const error = String(health?.exchangeProbeError || '').trim();
+
+  if (healthy) {
+    return {
+      healthy: true,
+      label: 'HEALTHY',
+      detail: [
+        'Delta Testnet public API probe passed',
+        statusLabel,
+        health?.exchangeProbeCached === true ? 'cached result' : 'fresh probe'
+      ].filter(Boolean).join(' · ')
+    };
+  }
+
+  const fallback = 'No verified response from Delta Testnet public products endpoint';
+  const statusAlreadyIncluded = statusLabel && new RegExp('\\bHTTP\\s+' + status + '\\b', 'i').test(error);
+  return {
+    healthy: false,
+    label: 'DEGRADED',
+    detail: [error || fallback, statusLabel && !statusAlreadyIncluded ? statusLabel : '']
+      .filter(Boolean).join(' · ')
+  };
+}
+
 export function formatHealthAge(milliseconds) {
   const value = Number(milliseconds);
   if (milliseconds === null || milliseconds === undefined || !Number.isFinite(value) || value < 0) return 'NO DATA';
