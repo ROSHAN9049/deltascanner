@@ -589,7 +589,7 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
 
   return {
     symbol: ticker.symbol, productId: product.id, price, change,
-    executionProductAvailable: product.executionProductAvailable !== false,
+    executionProductAvailable: product.executionProductAvailable === true,
     turnover: n(ticker.turnover_usd || ticker.turnover),
     signalCandleTs, spreadPct, side, stage, score,
     volumeSpike: vr, entryVolumeSpike: entryVolume, contextVolumeSpike: contextVolume,
