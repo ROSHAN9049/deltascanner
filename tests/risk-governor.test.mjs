@@ -341,6 +341,7 @@ test('Risk Governor blocks Momentum at its independent strategy cap', () => {
   const rows = buildRiskGovernorGates({
     selected: { symbol:'DOGSUSD', strategy:'MOMENTUM', stage:'CONFIRMED', score:90 },
     settings: { max_momentum_positions:5, max_scalping_positions:5 },
+    pendingOrders: [],
     positions: Array.from({length:5},(_,i)=>({
       id:'m'+i, symbol:'MOM'+i+'USD', strategy:'MOMENTUM', status:'OPEN', qty:1
     }))
