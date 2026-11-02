@@ -534,7 +534,7 @@ function Dashboard({ market, settings, health, positions, accountDataProtected =
       <div className="muted">Visibility only. The signal total is the exact count of stored history observations, not every repeated scan calculation; unchanged observations may be sampled and writes can pause under database storage safeguards.</div>
     </Panel>
     <Panel title={'Full Delta Market Scanner · '+(market?.length||0)+' live perpetuals · Signal Only'}><MarketTable market={market} signals={signals} openPositionSymbols={openSymbols}/></Panel>
-    <section className="grid2"><RiskGovernor signals={signals} health={health} settings={settings} positions={accountDataProtected?null:positions} onInspect={onInspect} inspect={inspect} routedSymbols={routeContext?.routedSymbols || []} routeDataVerified={routeContext?.routeDataVerified === true} entrySafetyTrusted={routeContext?.entrySafetyTrusted === true}/>
+    <section className="grid2"><RiskGovernor signals={signals} health={health} settings={settings} positions={accountDataProtected?null:positions} pendingOrders={accountDataProtected?null:deltaTestnetOrders} onInspect={onInspect} inspect={inspect} routedSymbols={routeContext?.routedSymbols || []} routeDataVerified={routeContext?.routeDataVerified === true} entrySafetyTrusted={routeContext?.entrySafetyTrusted === true}/>
       <Panel title={'Signal Stages · '+visibleCoinCount+' coins · WATCH → SETUP → CONFIRMED'}><div className="marketCount">Momentum and Scalping status for the same top {visibleCoinCount} coins shown in the market table.</div>
         <div className="tablewrap"><table><thead><tr><th>COIN</th><th>ENG</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>QTY</th><th>NOTIONAL</th><th>RISK</th><th>READY</th><th>WHY BLOCKED</th></tr></thead><tbody>
         {visibleSignals.map(s => {
@@ -610,7 +610,7 @@ function MarketTable({ market, signals, openPositionSymbols = new Set() }) {
   })}</tbody></table></div></>;
 }
 
-function RiskGovernor({ signals, health, settings = {}, positions, onInspect, inspect, scoreMin = 80, routedSymbols = [], routeDataVerified = false, entrySafetyTrusted = null }) {
+function RiskGovernor({ signals, health, settings = {}, positions, pendingOrders = null, onInspect, inspect, scoreMin = 80, routedSymbols = [], routeDataVerified = false, entrySafetyTrusted = null }) {
   const selected = inspect;
   if (!selected) return <Panel title="Risk Governor"><div className="lockedText">No signal selected yet.</div></Panel>;
   const gates = buildRiskGovernorGates({
@@ -621,7 +621,8 @@ function RiskGovernor({ signals, health, settings = {}, positions, onInspect, in
     routeDataVerified,
     entrySafetyTrusted,
     scoreMin,
-    settings
+    settings,
+    pendingOrders
   });
   const normalizedDiagnostic = buildNormalizedScoreDiagnostic(selected);
   const formatScore = value => value === null ? '—' : value.toFixed(2);
