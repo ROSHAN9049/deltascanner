@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { resolveDirectDeltaExecutionEnabled } from '../worker/execution/execution-route-policy.mjs';
 
 // Support local .env for non-Railway use without overwriting injected environment values.
 function loadLocalEnvFile() {
@@ -94,7 +95,8 @@ export const CONFIG = Object.freeze({
   deltaTestnetRestBase,
   deltaTestnetWsUrl,
   marketDataRestBase,
-  directDeltaExecutionEnabled: false,
+  // Direct order routing is enabled only in the explicit Demo/Testnet profile.
+  directDeltaExecutionEnabled: resolveDirectDeltaExecutionEnabled(environment, deltaExecutionMode),
   // Keep private REST operations on the environment-specific API base. Public
   // scanner data has an explicit production feed, independent of execution mode.
   restBase: signalOnly ? 'https://api.india.delta.exchange' : 'https://cdn-ind.testnet.deltaex.org',
