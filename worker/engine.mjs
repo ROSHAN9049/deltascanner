@@ -1063,7 +1063,8 @@ export class DeltaEngine {
         const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : 0;
         return {
           symbol: ticker.symbol,
-          product_id: p.executionProductAvailable === false ? null : n(p.id),
+          // dd_market_cache stores the public market-data product ID; Testnet execution IDs stay separate.
+          product_id: n(p.marketDataProductId ?? p.id),
           contract_type: p.contract_type || 'perpetual_futures',
           state: p.state || 'live',
           trading_status: p.trading_status || 'operational',
