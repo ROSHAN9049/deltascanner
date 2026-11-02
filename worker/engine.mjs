@@ -954,20 +954,82 @@ export class DeltaEngine {
     }
   }
 
-  async refreshProducts() {
+  async refreshProducts({ executionMode = CONFIG.deltaExecutionMode } = {}) {
+    // Keep the full production product universe for the 250-symbol public
+    // scanner. In Testnet mode, overlay only verified Testnet order metadata.
     const raw = await this.adapter.products();
-    const active = (Array.isArray(raw) ? raw : []).filter(p => {
-      const onlyReduceOnly = p?.only_reduce_only_orders_allowed ??
-        p?.product_specs?.only_reduce_only_orders_allowed;
-      return p?.contract_type === 'perpetual_futures' &&
-        p?.state === 'live' &&
-        p?.trading_status === 'operational' &&
-        onlyReduceOnly === false;
+    const marketProducts = (Array.isArray(raw) ? raw : []).filter(p =>
+      p?.contract_type === 'perpetual_futures' &&
+      p?.state === 'live' &&
+      p?.trading_status === 'operational' &&
+      p?.only_reduce_only_orders_allowed !== true &&
+      p?.product_specs?.only_reduce_only_orders_allowed !== true
+    );
+
+    let executionProducts = [];
+    let executionCatalogError = null;
+    if (executionMode === 'testnet') {
+      try {
+        const testnetRows = await this.adapter.executionProducts();
+        executionProducts = (Array.isArray(testnetRows) ? testnetRows : []).filter(product => {
+          const id = Number(product?.id ?? product?.product_id);
+          const onlyReduceOnly = product?.only_reduce_only_orders_allowed ??
+            product?.product_specs?.only_reduce_only_orders_allowed;
+          return Number.isSafeInteger(id) && id > 0 &&
+            /^[A-Z0-9]+USD$/.test(String(product?.symbol || '').toUpperCase()) &&
+            product?.contract_type === 'perpetual_futures' &&
+            product?.state === 'live' &&
+            product?.trading_status === 'operational' &&
+            onlyReduceOnly === false;
+        });
+      } catch (error) {
+        executionCatalogError = String(error?.message || error).slice(0, 220);
+        await this.log('WARN', 'Delta Testnet product catalogue unavailable; all new entries remain scan-only', {
+          error: executionCatalogError,
+          executionLocked: true
+        }).catch(() => {});
+      }
+    }
+
+    const testnetBySymbol = new Map(executionProducts.map(product => [
+      String(product.symbol).toUpperCase(), product
+    ]));
+    const active = marketProducts.map(marketProduct => {
+      if (executionMode !== 'testnet') return marketProduct;
+      const symbol = String(marketProduct.symbol || '').toUpperCase();
+      const testnetProduct = testnetBySymbol.get(symbol);
+      if (!testnetProduct) {
+        return {
+          ...marketProduct,
+          marketDataProductId: marketProduct.id ?? null,
+          id: null,
+          executionProductAvailable: false,
+          contract_value: 0,
+          notional_type: null,
+          max_leverage_notional: 0,
+          default_leverage: 0,
+          taker_commission_rate: 0,
+          maker_commission_rate: 0
+        };
+      }
+      return {
+        ...marketProduct,
+        ...testnetProduct,
+        marketDataProductId: marketProduct.id ?? null,
+        id: Number(testnetProduct.id ?? testnetProduct.product_id),
+        executionProductAvailable: true
+      };
     });
+
     this.products = active;
-    this.productMap = new Map(active.map(p => [p.symbol, p]));
+    this.productMap = new Map(active.map(product => [product.symbol, product]));
     this.lastUniverseRefresh = Date.now();
-    await this.log('INFO', 'Delta product universe refreshed', { active: active.length });
+    await this.log('INFO', 'Delta product universe refreshed', {
+      active: active.length,
+      marketDataProducts: marketProducts.length,
+      testnetExecutionProducts: testnetBySymbol.size,
+      executionCatalogError
+    });
   }
 
   async refreshTickers() {
@@ -1001,7 +1063,7 @@ export class DeltaEngine {
         const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : 0;
         return {
           symbol: ticker.symbol,
-          product_id: n(p.id),
+          product_id: p.executionProductAvailable === false ? null : n(p.id),
           contract_type: p.contract_type || 'perpetual_futures',
           state: p.state || 'live',
           trading_status: p.trading_status || 'operational',
@@ -1026,6 +1088,8 @@ export class DeltaEngine {
           details: {
             description: p.description || null,
             shortDescription: p.short_description || null,
+            marketDataProductId: p.marketDataProductId ?? null,
+            executionProductAvailable: p.executionProductAvailable ?? null,
             makerFee: n(p.maker_commission_rate),
             takerFee: n(p.taker_commission_rate),
             launchTime: p.launch_time || null,
@@ -1614,6 +1678,9 @@ export class DeltaEngine {
     if (!settings.enabled || !settings.auto_trade) reasons.push('Auto OFF');
     const routeBlock = getExecutionRouteBlockReason(CONFIG.deltaExecutionMode);
     if (routeBlock) reasons.push(routeBlock);
+    if (CONFIG.deltaExecutionMode === 'testnet' && signal?.executionProductAvailable !== true) {
+      reasons.push('Delta Testnet route unavailable: no verified live, operational product for this symbol');
+    }
     const duplicateBlocker = duplicatePositionBlocker(openPositions, signal.symbol);
     if (duplicateBlocker) reasons.push(duplicateBlocker);
     // There is deliberately no scanner-side global, per-engine, or total-open-position cap.
