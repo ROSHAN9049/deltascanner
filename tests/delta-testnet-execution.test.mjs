@@ -945,7 +945,7 @@ test('bracket entry rejects SL distance below the 1.5 percent minimum', async ()
     env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database
   });
   await assert.rejects(
-    executor.placeBracketOrder('ETHUSD', 'SELL', 1, 2310.75, 2332.9, 2256, {
+    executor.placeBracketOrder('XAUTUSD', 'SELL', 1, 2310.75, 2332.9, 2256, {
       strategy: 'MOMENTUM', clientOrderId: 'DDM-ETHUSD-TIGHTSL'
     }),
     /SL distance too tight \(0\.96%\), minimum required 1\.50%/
