@@ -1,6 +1,32 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { formatHealthAge, formatLeaseRemaining, formatRetentionLastRun, getEmergencyStopTooltip, getWorkerStatusDisplay } from '../src/worker-status-display.js';
+import { formatHealthAge, formatLeaseRemaining, formatRetentionLastRun, getEmergencyStopTooltip, getWorkerStatusDisplay, getExchangeHealthDisplay } from '../src/worker-status-display.js';
+
+
+test('exchange health diagnostics show the verified probe error and HTTP status', () => {
+  const display = getExchangeHealthDisplay({
+    exchangeHealthy: false,
+    exchangeProbeError: 'Delta Testnet returned HTTP 403',
+    exchangeProbeStatus: 403
+  });
+  assert.equal(display.healthy, false);
+  assert.equal(display.label, 'DEGRADED');
+  assert.equal(display.detail, 'Delta Testnet returned HTTP 403');
+});
+
+test('exchange health diagnostics explain a missing or successful probe', () => {
+  const missing = getExchangeHealthDisplay({ exchangeHealthy: false });
+  assert.equal(missing.label, 'DEGRADED');
+  assert.equal(missing.detail, 'No verified response from Delta Testnet public products endpoint');
+
+  const healthy = getExchangeHealthDisplay({
+    exchangeHealthy: true,
+    exchangeProbeStatus: 200,
+    exchangeProbeCached: true
+  });
+  assert.equal(healthy.label, 'HEALTHY');
+  assert.equal(healthy.detail, 'Delta Testnet public API probe passed · HTTP 200 · cached result');
+});
 
 test('cap reached blocks new signals in both cards while scanning stays on', () => {
   const status = getWorkerStatusDisplay({
