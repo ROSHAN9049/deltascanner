@@ -1008,9 +1008,7 @@ export class DeltaEngine {
     const activeExecutionSymbols = new Set(active
       .filter(product => product.executionProductAvailable === true)
       .map(product => String(product.symbol || '').trim().toUpperCase()));
-    const missingFromTestnetCatalog = DELTA_TESTNET_FUTURES_ALLOWLIST.filter(symbol =>
-      !testnetBySymbol.has(symbol)
-    );
+    const missingFromTestnetCatalog = catalogueMissingSymbols;
     const missingFromMarketDataUniverse = DELTA_TESTNET_FUTURES_ALLOWLIST.filter(symbol =>
       testnetBySymbol.has(symbol) && !activeExecutionSymbols.has(symbol)
     );
