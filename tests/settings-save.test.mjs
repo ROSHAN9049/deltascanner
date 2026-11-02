@@ -21,9 +21,13 @@ function fakeFetch({ initialRows, savedRows }) {
   return {
     fetch: async (url, options = {}) => {
       const requestUrl = String(url);
-      assert.match(requestUrl, /^https:\/\/supabase\.test\/rest\/v1\/(dd_settings|dd_delta_positions)\?/);
+      assert.match(requestUrl, /^https:\/\/supabase\.test\/rest\/v1\/(dd_settings|dd_delta_positions|dd_engine_logs)\?/);
       if (requestUrl.includes('/dd_delta_positions?')) {
         return { ok: true, status: 200, text: async () => '[]' };
+      }
+      if (requestUrl.includes('/dd_engine_logs?')) {
+        const row = JSON.parse(options.body || '{}');
+        return { ok: true, status: 201, text: async () => JSON.stringify([row]) };
       }
       if (options.method === 'PATCH') {
         const body = JSON.parse(options.body || '{}');
