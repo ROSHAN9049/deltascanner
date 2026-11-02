@@ -135,6 +135,8 @@ export class DeltaAdapter {
     return execute();
   }
   async health() { return this.request('GET', '/v2/tickers', { contract_types: 'perpetual_futures' }, null, false, { marketData: true }); }
+  // Scanner universe remains production-sourced. Perpetual product metadata
+  // used for execution is joined separately from the Delta Testnet catalogue.
   async products() {
     const all = [];
     let after = '';
@@ -146,7 +148,7 @@ export class DeltaAdapter {
         { contract_types: 'perpetual_futures', states: 'live', page_size: 100, after },
         null,
         false,
-        { withMeta: true, productCatalog: true }
+        { withMeta: true, marketData: true }
       );
       const rows = Array.isArray(response?.result) ? response.result : [];
       all.push(...rows);
@@ -155,6 +157,39 @@ export class DeltaAdapter {
       previousAfter = after;
       after = nextAfter;
     }
+    return all;
+  }
+  async executionProducts() {
+    if (CONFIG.deltaExecutionMode !== 'testnet') return [];
+    const all = [];
+    let after = '';
+    let previousAfter = '';
+    let complete = false;
+    for (let page = 0; page < 20; page++) {
+      const response = await this.request(
+        'GET',
+        '/v2/products',
+        { contract_types: 'perpetual_futures', states: 'live', page_size: 100, after },
+        null,
+        false,
+        { withMeta: true, productCatalog: true }
+      );
+      if (!Array.isArray(response?.result)) {
+        throw new Error('Delta Testnet product catalogue response is malformed');
+      }
+      all.push(...response.result);
+      const nextAfter = String(response?.meta?.after || '');
+      if (!nextAfter) {
+        complete = true;
+        break;
+      }
+      if (nextAfter === previousAfter || nextAfter === after) {
+        throw new Error('Delta Testnet product catalogue pagination cursor repeated');
+      }
+      previousAfter = after;
+      after = nextAfter;
+    }
+    if (!complete) throw new Error('Delta Testnet product catalogue exceeded the page limit');
     return all;
   }
   async optionProducts() {
