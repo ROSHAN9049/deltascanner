@@ -10,6 +10,7 @@ import {
   roundStopLossAwayFromEntry
 } from '../../shared/delta-risk-policy.js';
 import { indiaDateKey } from '../../src/date-utils.js';
+import { assessStrategyPositionCap } from '../../shared/strategy-position-limits.js';
 
 const n = value => Number.isFinite(Number(value)) ? Number(value) : 0;
 const DELTA_GRID_MAX_AVAILABLE_MARGIN_FRACTION = 0.25;
@@ -394,6 +395,25 @@ export async function manageDeltaTestnetGrid({
       symbol, error: String(error?.message || error).slice(0, 220)
     }).catch(() => {});
     return block('GRID_EXCHANGE_RECONCILIATION_UNAVAILABLE');
+  }
+
+  const gridPositionCap = assessStrategyPositionCap({
+    strategy: 'GRID',
+    settings,
+    openPositions: dbOpenGridRows,
+    pendingOrders: gridOrders,
+    now: timestamp
+  });
+  if (gridPositionCap.status !== 'PASS') {
+    state.status = 'BLOCKED';
+    await database.log('WARN', 'Delta Testnet Grid entry blocked by per-strategy position cap', {
+      symbol,
+      exposure: gridPositionCap.exposure,
+      maxGridPositions: gridPositionCap.limit,
+      reason: gridPositionCap.reason,
+      executionBlocked: true
+    }).catch(() => {});
+    return block(gridPositionCap.reason || 'GRID_STRATEGY_POSITION_CAP_UNAVAILABLE');
   }
 
   const exchangeGridPositions = exchangePositions.filter(row =>
