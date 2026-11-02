@@ -57,5 +57,6 @@ test('worker keeps the Options execution lock and Grid single-position invariant
   const { readFile } = await import('node:fs/promises');
   const gridSource = await readFile(new URL('../worker/execution/delta-grid-engine.mjs', import.meta.url),'utf8');
   assert.equal(isOptionsExecutionAllowed(),false);
-  assert.match(gridSource,/GRID_SINGLE_POSITION_INVARIANT_BROKEN/);\n  assert.match(gridSource,/assessStrategyPositionCap/);
+  assert.match(gridSource,/GRID_SINGLE_POSITION_INVARIANT_BROKEN/);
+  assert.match(gridSource,/assessStrategyPositionCap/);
 });
