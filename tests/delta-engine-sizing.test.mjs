@@ -148,3 +148,40 @@ test('position sizing fails closed when available margin is zero', () => {
 
   assert.equal(size, null);
 });
+
+
+test('refreshProducts accepts only Testnet products explicitly allowing new orders', async () => {
+  const engine = new DeltaEngine();
+  engine.adapter = {
+    async products() {
+      return [
+        {
+          id: 181689, symbol: 'XAUTUSD', contract_type: 'perpetual_futures',
+          state: 'live', trading_status: 'operational',
+          only_reduce_only_orders_allowed: false, contract_value: '0.001'
+        },
+        {
+          id: 27, symbol: 'BTCUSD', contract_type: 'perpetual_futures',
+          state: 'live', trading_status: 'operational',
+          product_specs: { only_reduce_only_orders_allowed: false }, contract_value: '0.001'
+        },
+        {
+          id: 3136, symbol: 'ETHUSD', contract_type: 'perpetual_futures',
+          state: 'live', trading_status: 'operational',
+          only_reduce_only_orders_allowed: true, contract_value: '0.01'
+        },
+        {
+          id: 999, symbol: 'UNKNOWNUSD', contract_type: 'perpetual_futures',
+          state: 'live', trading_status: 'operational',
+          contract_value: '1'
+        }
+      ];
+    }
+  };
+  engine.log = async () => {};
+
+  await engine.refreshProducts();
+
+  assert.deepEqual([...engine.productMap.keys()].sort(), ['BTCUSD', 'XAUTUSD']);
+  assert.equal(engine.productMap.get('XAUTUSD').contract_value, '0.001');
+});
