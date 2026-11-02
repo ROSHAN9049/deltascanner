@@ -966,12 +966,9 @@ export class DeltaEngine {
     const testnetBySymbol = new Map(executionProducts.map(product => [
       String(product.symbol).trim().toUpperCase(), product
     ]));
-    const missingTestnetSymbols = executionMode === 'testnet'
+    const catalogueMissingSymbols = executionMode === 'testnet'
       ? DELTA_TESTNET_FUTURES_ALLOWLIST.filter(symbol => !testnetBySymbol.has(symbol))
       : [...DELTA_TESTNET_FUTURES_ALLOWLIST];
-    this.testnetExecutionCatalogReady = executionMode === 'testnet' &&
-      testnetBySymbol.size === DELTA_TESTNET_FUTURES_ALLOWLIST.length &&
-      missingTestnetSymbols.length === 0;
     const active = marketProducts.map(marketProduct => {
       if (executionMode !== 'testnet') return marketProduct;
       const symbol = String(marketProduct.symbol || '').toUpperCase();
@@ -998,6 +995,16 @@ export class DeltaEngine {
         executionProductAvailable: true
       };
     });
+
+    const activeExecutionSymbols = new Set(active
+      .filter(product => product.executionProductAvailable === true)
+      .map(product => String(product.symbol || '').trim().toUpperCase()));
+    const missingTestnetSymbols = DELTA_TESTNET_FUTURES_ALLOWLIST.filter(symbol =>
+      catalogueMissingSymbols.includes(symbol) || !activeExecutionSymbols.has(symbol)
+    );
+    this.testnetExecutionCatalogReady = executionMode === 'testnet' &&
+      testnetBySymbol.size === DELTA_TESTNET_FUTURES_ALLOWLIST.length &&
+      missingTestnetSymbols.length === 0;
 
     this.products = active;
     this.productMap = new Map(active.map(product => [String(product.symbol).toUpperCase(), product]));
@@ -3669,16 +3676,19 @@ export class DeltaEngine {
         }
       });
       ws.on('message', raw => {
-        this.lastTickAt = Date.now();
         try {
           const msg = JSON.parse(raw.toString());
           const items = Array.isArray(msg.d) ? msg.d : (msg.d && typeof msg.d === 'object' ? [msg.d] : [msg]);
           for (const x of items) {
-            const symbol = String(x.sy || x.symbol || '').replace(/^MARK:/, '');
+            const symbol = String(x.sy || x.symbol || '').replace(/^MARK:/, '').trim().toUpperCase();
             if (!symbol) continue;
             if (msg.type === 'mark_price' || String(msg.type).includes('mark_price')) {
               const t = this.tickerMap.get(symbol);
-              if (t) this.tickerMap.set(symbol, { ...t, mark_price: n(x.p || x.mark_price || x.c || t.mark_price) });
+              const markPrice = n(x.p || x.mark_price || x.c);
+              if (t && markPrice > 0) {
+                this.tickerMap.set(symbol, { ...t, mark_price: markPrice });
+                this.lastTickAt = Date.now();
+              }
             } else if (String(msg.type || '').startsWith('candlestick_')) {
               // The exchange can stream candle events for every listed perpetual.
               // Do not build/retain history for symbols outside the bounded cache.
@@ -3718,6 +3728,7 @@ export class DeltaEngine {
               const series = merged.candles.slice(-120);
               if (this.rejectAtrSpike(symbol, resolution, current, series, 'WebSocket')) continue;
               this.candles.set(key, series);
+              this.lastTickAt = Date.now();
               if (merged.action === 'appended') {
                 const count = (this.candleUpdateCounts.get(key) || 0) + 1;
                 this.candleUpdateCounts.set(key, count);
@@ -3731,17 +3742,22 @@ export class DeltaEngine {
                 }
               }
             } else if (msg.type === 'ticker' || msg.type === 'v2/ticker') {
+              if (!this.productMap.has(symbol)) continue;
               const t = this.tickerMap.get(symbol) || { symbol };
+              const markPrice = n(x.mark_price || x.mp || t.mark_price);
+              const closePrice = n(x.close || x.c || t.close);
+              if (!(markPrice > 0 || closePrice > 0)) continue;
               this.tickerMap.set(symbol, {
                 ...t,
                 ...x,
                 symbol,
-                mark_price: n(x.mark_price || x.mp || t.mark_price),
-                close: n(x.close || x.c || t.close),
+                mark_price: markPrice,
+                close: closePrice,
                 ltp_change_24h: n(x.ltp_change_24h || x.ch || t.ltp_change_24h),
                 turnover_usd: n(x.turnover_usd || x.v || t.turnover_usd),
                 open_interest: n(x.open_interest || x.oi || t.open_interest)
               });
+              this.lastTickAt = Date.now();
             }
           }
         } catch {}
@@ -4310,7 +4326,7 @@ export class DeltaEngine {
     await this.updateEngineState({
       equity: account.equity, available_balance: account.available, realized_pnl: realized,
       unrealized_pnl: unrealized, fees_today: feesToday,
-      last_tick_at: new Date(this.lastTickAt || Date.now()).toISOString(),
+      last_tick_at: this.lastTickAt > 0 ? new Date(this.lastTickAt).toISOString() : null,
       worker_started_at: new Date(this.startedAt).toISOString(), idle_reason: idle
     });
     await this.log('INFO', heartbeatMessage, {
