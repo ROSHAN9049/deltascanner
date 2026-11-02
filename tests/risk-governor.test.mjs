@@ -336,6 +336,49 @@ test('health gate reports which required values are missing without changing BLO
 });
 
 
+
+test('Risk Governor blocks Momentum at its independent strategy cap', () => {
+  const rows = buildRiskGovernorGates({
+    selected: { symbol:'DOGSUSD', strategy:'MOMENTUM', stage:'CONFIRMED', score:90 },
+    settings: { max_momentum_positions:5, max_scalping_positions:5 },
+    pendingOrders: [],
+    positions: Array.from({length:5},(_,i)=>({
+      id:'m'+i, symbol:'MOM'+i+'USD', strategy:'MOMENTUM', status:'OPEN', qty:1
+    }))
+  });
+  const cap = rows.find(row=>row.gate==='Strategy open-position cap');
+  assert.equal(cap.result,GATE_BLOCK);
+  assert.equal(cap.observedValue,5);
+  assert.equal(cap.threshold,5);
+});
+
+test('Risk Governor keeps Momentum and Scalping capacities independent', () => {
+  const rows = buildRiskGovernorGates({
+    selected: { symbol:'QQQXUSD', strategy:'SCALPING', stage:'CONFIRMED', score:90 },
+    settings: { max_momentum_positions:5, max_scalping_positions:5 },
+    pendingOrders: [],
+    positions: [
+      ...Array.from({length:5},(_,i)=>({id:'m'+i,symbol:'M'+i,strategy:'MOMENTUM',status:'OPEN',qty:1})),
+      ...Array.from({length:4},(_,i)=>({id:'s'+i,symbol:'S'+i,strategy:'SCALPING',status:'OPEN',qty:1}))
+    ]
+  });
+  const cap = rows.find(row=>row.gate==='Strategy open-position cap');
+  assert.equal(cap.result,GATE_PASS);
+  assert.equal(cap.observedValue,4);
+  assert.equal(cap.threshold,5);
+});
+
+test('Risk Governor fails closed when open-position snapshot is unavailable', () => {
+  const rows = buildRiskGovernorGates({
+    selected:{symbol:'DOGSUSD',strategy:'MOMENTUM'},
+    settings:{max_momentum_positions:5},
+    positions:null,
+    pendingOrders:[]
+  });
+  assert.equal(rows.find(row=>row.gate==='Strategy open-position cap').result,GATE_UNKNOWN);
+});
+
+
 test('closed historical position rows do not block a new entry for the same symbol', () => {
   const rows = buildRiskGovernorGates({
     selected: { symbol: 'BTCUSD', stage: 'CONFIRMED', score: 90 },

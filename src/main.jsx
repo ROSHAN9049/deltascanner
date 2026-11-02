@@ -231,6 +231,18 @@ function App() {
           (typeof data.persisted?.emergency_stop !== 'boolean' || data.persisted.emergency_stop !== patch.emergencyStop)) {
         throw new Error('E-STOP save could not be verified against the persisted database value.');
       }
+      const strategyLimitPersistenceChecks = [
+        ['maxMomentumPositions', 'max_momentum_positions'],
+        ['maxScalpingPositions', 'max_scalping_positions'],
+        ['maxGridPositions', 'max_grid_positions'],
+        ['maxOptionsPositions', 'max_options_positions']
+      ];
+      for (const [inputKey, persistedKey] of strategyLimitPersistenceChecks) {
+        if (patch[inputKey] !== undefined &&
+            Number(data.persisted?.[persistedKey]) !== patch[inputKey]) {
+          throw new Error(inputKey + ' save could not be verified against the persisted database value.');
+        }
+      }
       if (data.persisted && typeof data.persisted === 'object' && !Array.isArray(data.persisted)) {
         setState(current => current && ({
           ...current,
@@ -499,7 +511,9 @@ function Dashboard({ market, settings, health, positions, accountDataProtected =
     const gateRows = buildRiskGovernorGates({
       selected: signal,
       health,
+      settings,
       positions: accountDataProtected ? null : positions,
+      pendingOrders: accountDataProtected ? null : deltaTestnetOrders,
       routedSymbols: routeContext?.routedSymbols || [],
       routeDataVerified: routeContext?.routeDataVerified === true,
       entrySafetyTrusted: routeContext?.entrySafetyTrusted === true
@@ -522,7 +536,7 @@ function Dashboard({ market, settings, health, positions, accountDataProtected =
       <div className="muted">Visibility only. The signal total is the exact count of stored history observations, not every repeated scan calculation; unchanged observations may be sampled and writes can pause under database storage safeguards.</div>
     </Panel>
     <Panel title={'Full Delta Market Scanner · '+(market?.length||0)+' live perpetuals · Signal Only'}><MarketTable market={market} signals={signals} openPositionSymbols={openSymbols}/></Panel>
-    <section className="grid2"><RiskGovernor signals={signals} health={health} positions={accountDataProtected?null:positions} onInspect={onInspect} inspect={inspect} routedSymbols={routeContext?.routedSymbols || []} routeDataVerified={routeContext?.routeDataVerified === true} entrySafetyTrusted={routeContext?.entrySafetyTrusted === true}/>
+    <section className="grid2"><RiskGovernor signals={signals} health={health} settings={settings} positions={accountDataProtected?null:positions} pendingOrders={accountDataProtected?null:deltaTestnetOrders} onInspect={onInspect} inspect={inspect} routedSymbols={routeContext?.routedSymbols || []} routeDataVerified={routeContext?.routeDataVerified === true} entrySafetyTrusted={routeContext?.entrySafetyTrusted === true}/>
       <Panel title={'Signal Stages · '+visibleCoinCount+' coins · WATCH → SETUP → CONFIRMED'}><div className="marketCount">Momentum and Scalping status for the same top {visibleCoinCount} coins shown in the market table.</div>
         <div className="tablewrap"><table><thead><tr><th>COIN</th><th>ENG</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>QTY</th><th>NOTIONAL</th><th>RISK</th><th>READY</th><th>WHY BLOCKED</th></tr></thead><tbody>
         {visibleSignals.map(s => {
@@ -598,7 +612,7 @@ function MarketTable({ market, signals, openPositionSymbols = new Set() }) {
   })}</tbody></table></div></>;
 }
 
-function RiskGovernor({ signals, health, positions, onInspect, inspect, scoreMin = 80, routedSymbols = [], routeDataVerified = false, entrySafetyTrusted = null }) {
+function RiskGovernor({ signals, health, settings = {}, positions, pendingOrders = null, onInspect, inspect, scoreMin = 80, routedSymbols = [], routeDataVerified = false, entrySafetyTrusted = null }) {
   const selected = inspect;
   if (!selected) return <Panel title="Risk Governor"><div className="lockedText">No signal selected yet.</div></Panel>;
   const gates = buildRiskGovernorGates({
@@ -608,7 +622,9 @@ function RiskGovernor({ signals, health, positions, onInspect, inspect, scoreMin
     routedSymbols,
     routeDataVerified,
     entrySafetyTrusted,
-    scoreMin
+    scoreMin,
+    settings,
+    pendingOrders
   });
   const normalizedDiagnostic = buildNormalizedScoreDiagnostic(selected);
   const formatScore = value => value === null ? '—' : value.toFixed(2);
@@ -922,8 +938,16 @@ function Settings({ settings, currentOpenPositions = null, secret, setSecret, bu
     momentumRr: settings.momentum_rr ?? 2.5,
     scalpingRr: settings.scalping_rr ?? 2.5,
     tp1Pct: settings.tp1_pct ?? 33,
-    maxHoldMinutes: settings.max_hold_minutes ?? 240
-  }), [settings.risk_pct, settings.momentum_rr, settings.scalping_rr, settings.tp1_pct, settings.max_hold_minutes]);
+    maxHoldMinutes: settings.max_hold_minutes ?? 240,
+    maxMomentumPositions: settings.max_momentum_positions ?? 5,
+    maxScalpingPositions: settings.max_scalping_positions ?? 5,
+    maxGridPositions: settings.max_grid_positions ?? 2,
+    maxOptionsPositions: settings.max_options_positions ?? 4
+  }), [
+    settings.risk_pct, settings.momentum_rr, settings.scalping_rr, settings.tp1_pct,
+    settings.max_hold_minutes, settings.max_momentum_positions, settings.max_scalping_positions,
+    settings.max_grid_positions, settings.max_options_positions
+  ]);
   const [draft, setDraft] = useState(serverValues);
   const [dirty, setDirty] = useState(false);
   const dirtyRef = useRef(false);
@@ -954,7 +978,11 @@ function Settings({ settings, currentOpenPositions = null, secret, setSecret, bu
       momentumRr: Number(draft.momentumRr),
       scalpingRr: Number(draft.scalpingRr),
       tp1Pct: Number(draft.tp1Pct),
-      maxHoldMinutes: Number(draft.maxHoldMinutes)
+      maxHoldMinutes: Number(draft.maxHoldMinutes),
+      maxMomentumPositions: Number(draft.maxMomentumPositions),
+      maxScalpingPositions: Number(draft.maxScalpingPositions),
+      maxGridPositions: Number(draft.maxGridPositions),
+      maxOptionsPositions: Number(draft.maxOptionsPositions)
     };
     if (!Object.values(patch).every(Number.isFinite)) {
       setSaveState('Enter a valid number in every field.');
@@ -964,7 +992,9 @@ function Settings({ settings, currentOpenPositions = null, secret, setSecret, bu
         patch.momentumRr < 1 || patch.momentumRr > 5 ||
         patch.scalpingRr < 1 || patch.scalpingRr > 5 ||
         patch.tp1Pct < 1 || patch.tp1Pct > 99 ||
-        patch.maxHoldMinutes < 1 || patch.maxHoldMinutes > 1440) {
+        patch.maxHoldMinutes < 1 || patch.maxHoldMinutes > 1440 ||
+        ![patch.maxMomentumPositions, patch.maxScalpingPositions, patch.maxGridPositions, patch.maxOptionsPositions]
+          .every(value => Number.isSafeInteger(value) && value >= 1 && value <= 20)) {
       setSaveState('Please check the allowed range for each setting.');
       return;
     }
@@ -992,7 +1022,11 @@ function Settings({ settings, currentOpenPositions = null, secret, setSecret, bu
         momentumRr: patch.momentumRr,
         scalpingRr: patch.scalpingRr,
         tp1Pct: patch.tp1Pct,
-        maxHoldMinutes: patch.maxHoldMinutes
+        maxHoldMinutes: patch.maxHoldMinutes,
+        maxMomentumPositions: patch.maxMomentumPositions,
+        maxScalpingPositions: patch.maxScalpingPositions,
+        maxGridPositions: patch.maxGridPositions,
+        maxOptionsPositions: patch.maxOptionsPositions
       });
       dirtyRef.current = false;
       setDirty(false);
@@ -1022,6 +1056,11 @@ function Settings({ settings, currentOpenPositions = null, secret, setSecret, bu
           <small>Trusted position snapshot unavailable. Worker fails closed — no new entries will be sent.</small>
         </>}
       </div>
+      <label>Max Momentum Positions<input type="number" min="1" max="20" step="1" value={draft.maxMomentumPositions} onChange={e=>changeDraft('maxMomentumPositions',e.target.value)} disabled={busy} required/></label>
+      <label>Max Scalping Positions<input type="number" min="1" max="20" step="1" value={draft.maxScalpingPositions} onChange={e=>changeDraft('maxScalpingPositions',e.target.value)} disabled={busy} required/></label>
+      <label>Max Grid Positions<input type="number" min="1" max="20" step="1" value={draft.maxGridPositions} onChange={e=>changeDraft('maxGridPositions',e.target.value)} disabled={busy} required/></label>
+      <label>Max Options Positions<input type="number" min="1" max="20" step="1" value={draft.maxOptionsPositions} onChange={e=>changeDraft('maxOptionsPositions',e.target.value)} disabled={busy} required/></label>
+      <p className="settingHint">Strategy caps apply independently in addition to the global position cap. Grid remains single-slot and Grid/Options execution remain hard-locked until their separate safety requirements are reviewed.</p>
       <label>Momentum RR<input type="number" min="1" max="5" step="0.1" value={draft.momentumRr} onChange={e=>changeDraft('momentumRr',e.target.value)} disabled={busy} required/></label>
       <label>Scalping RR<input type="number" min="1" max="5" step="0.1" value={draft.scalpingRr} onChange={e=>changeDraft('scalpingRr',e.target.value)} disabled={busy} required/></label>
       <label>TP1 %<input type="number" min="1" max="99" step="1" value={draft.tp1Pct} onChange={e=>changeDraft('tp1Pct',e.target.value)} disabled={busy} required/></label>

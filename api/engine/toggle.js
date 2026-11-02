@@ -105,6 +105,23 @@ export default async function handler(req, res) {
       }
     }
     if (body.continuousMode !== undefined) patch.continuous_mode = !!body.continuousMode;
+    const strategyPositionLimitFields = [
+      ['maxMomentumPositions', 'max_momentum_positions'],
+      ['maxScalpingPositions', 'max_scalping_positions'],
+      ['maxGridPositions', 'max_grid_positions'],
+      ['maxOptionsPositions', 'max_options_positions']
+    ];
+    for (const [inputKey, column] of strategyPositionLimitFields) {
+      if (body[inputKey] === undefined) continue;
+      const value = Number(body[inputKey]);
+      if (!Number.isSafeInteger(value) || value < 1 || value > 20) {
+        return res.status(400).json({
+          success: false,
+          error: inputKey + ' must be an integer from 1 to 20.'
+        });
+      }
+      patch[column] = value;
+    }
     if (body.maxOpenPositions !== undefined) patch.max_open_positions = Math.max(1, Math.min(100, Math.round(Number(body.maxOpenPositions))));
     if (body.riskPct !== undefined) patch.risk_pct = Math.max(0.1, Math.min(5, Number(body.riskPct)));
     if (body.momentumRr !== undefined) patch.momentum_rr = Math.max(1, Math.min(5, Number(body.momentumRr)));

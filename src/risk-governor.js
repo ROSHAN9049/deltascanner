@@ -1,5 +1,6 @@
 import { GATE_BLOCK, GATE_PASS, GATE_UNKNOWN, gateResult } from './gate-result.js';
 import { safeNum } from './formatters.js';
+import { assessStrategyPositionCap } from '../shared/strategy-position-limits.js';
 
 function detailsOf(selected) {
   if (selected?.details && typeof selected.details === 'object' && !Array.isArray(selected.details)) {
@@ -193,7 +194,9 @@ export function buildRiskGovernorGates({
   routedSymbols = null,
   routeDataVerified = false,
   entrySafetyTrusted = null,
-  scoreMin = 80
+  scoreMin = 80,
+  settings = {},
+  pendingOrders = null
 } = {}) {
   if (!selected || typeof selected !== 'object') return [];
 
@@ -245,6 +248,18 @@ export function buildRiskGovernorGates({
   const momentumStrategy = strategy === 'MOMENTUM';
   const scalpStrategy = strategy === 'SCALP' || strategy === 'SCALPING';
   const supportedStrategy = momentumStrategy || scalpStrategy;
+  const strategyPositionCap = assessStrategyPositionCap({
+    strategy,
+    settings,
+    openPositions: positions,
+    pendingOrders,
+    now: Date.now()
+  });
+  const strategyPositionLimit = strategyPositionCap.limit;
+  const strategyPositionCount = strategyPositionCap.exposure;
+  const strategyPositionStatus = strategyPositionCap.status === 'UNKNOWN'
+    ? GATE_UNKNOWN
+    : status(true, strategyPositionCap.status === 'PASS');
   const rangeLimit = momentumStrategy ? 4 : 3;
   const emaDistanceLimit = momentumStrategy ? 3.5 : 2.5;
 
@@ -434,6 +449,19 @@ export function buildRiskGovernorGates({
     gateResult({ gate: 'Fresh closed candles', result: freshnessStatus, observedValue: candlesFresh ?? null, blockReason: freshnessStatus === GATE_BLOCK ? 'Candle freshness blocked' : freshnessStatus === GATE_UNKNOWN ? 'Candle freshness was not supplied' : '' }),
     gateResult({ gate: 'API / worker healthy', result: healthStatus, observedValue: healthObservedFields || null, blockReason: healthBlockReason }),
     gateResult({ gate: 'Duplicate symbol', result: duplicateStatus, observedValue: duplicateObservedValue, blockReason: duplicateBlockReason }),
+    gateResult({
+      gate: 'Strategy open-position cap',
+      result: strategyPositionStatus,
+      observedValue: strategyPositionCount,
+      unit: 'positions',
+      threshold: strategyPositionLimit,
+      thresholdUnit: 'positions',
+      blockReason: strategyPositionStatus === GATE_BLOCK
+        ? strategyPositionCap.reason
+        : strategyPositionStatus === GATE_UNKNOWN
+          ? strategyPositionCap.reason
+          : ''
+    }),
     gateResult({ gate: 'Margin / min size', result: marginStatus, observedValue: qty, unit: 'contracts', threshold: 1, thresholdUnit: 'contract', blockReason: marginBlockReason })
   ];
 }
