@@ -48,6 +48,7 @@ test('observed values can pass only the gate they actually verify', () => {
       symbol: 'BTCUSD',
       strategy: 'MOMENTUM',
       stage: 'CONFIRMED',
+      ready: true,
       score: 90,
       fee_risk_ratio: 0.1,
       change_24h: 0,
@@ -359,4 +360,37 @@ test('only a non-zero OPEN position blocks duplicate entries', () => {
   assert.equal(gate(closedAndOpen, 'Duplicate symbol'), GATE_BLOCK);
   const duplicate = closedAndOpen.find(row => row.gate === 'Duplicate symbol');
   assert.match(duplicate.observedValue, /qty=2/);
+});
+
+
+test('non-confirmed SETUP signals defer sizing instead of reporting a minimum-size failure', () => {
+  const rows = buildRiskGovernorGates({
+    selected: {
+      symbol: 'XAUTUSD',
+      strategy: 'MOMENTUM',
+      stage: 'SETUP',
+      ready: false,
+      qty_contracts: 0,
+      notional: 0
+    }
+  });
+  const margin = rows.find(row => row.gate === 'Margin / min size');
+  assert.equal(margin.result, GATE_UNKNOWN);
+  assert.match(margin.blockReason, /deferred until signal is CONFIRMED and ready=true/);
+});
+
+test('confirmed ready signals with zero quantity remain blocked by the minimum-size gate', () => {
+  const rows = buildRiskGovernorGates({
+    selected: {
+      symbol: 'XAUTUSD',
+      strategy: 'MOMENTUM',
+      stage: 'CONFIRMED',
+      ready: true,
+      qty_contracts: 0,
+      notional: 0
+    }
+  });
+  const margin = rows.find(row => row.gate === 'Margin / min size');
+  assert.equal(margin.result, GATE_BLOCK);
+  assert.match(margin.blockReason, /fails the minimum-size check/);
 });
