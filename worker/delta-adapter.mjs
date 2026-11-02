@@ -273,23 +273,23 @@ export class DeltaAdapter {
   heartbeatCreate(body) { return this.request('POST', '/v2/heartbeat/create', {}, body, true); }
   heartbeat(body) { return this.request('POST', '/v2/heartbeat', {}, body, true); }
   placeOrder(body) {
-    if (CONFIG.signalOnly || !CONFIG.directDeltaExecutionEnabled) throw new Error('Direct Delta order execution is disabled in SIGNAL_ONLY mode');
+    throw new Error('Generic DeltaAdapter order routing remains disabled; use the dedicated allowlisted Delta Testnet futures executor');
     return this.request('POST', '/v2/orders', {}, body, true);
   }
   cancelOrder(body) {
-    if (CONFIG.signalOnly || !CONFIG.directDeltaExecutionEnabled) throw new Error('Direct Delta order execution is disabled in SIGNAL_ONLY mode');
+    throw new Error('Generic DeltaAdapter order routing remains disabled; use the dedicated allowlisted Delta Testnet futures executor');
     return this.request('DELETE', '/v2/orders', {}, body, true);
   }
   placeBracket(body) {
-    if (CONFIG.signalOnly || !CONFIG.directDeltaExecutionEnabled) throw new Error('Direct Delta order execution is disabled in SIGNAL_ONLY mode');
+    throw new Error('Generic DeltaAdapter order routing remains disabled; use the dedicated allowlisted Delta Testnet futures executor');
     return this.request('POST', '/v2/orders/bracket', {}, body, true);
   }
   editBracket(body) {
-    if (CONFIG.signalOnly || !CONFIG.directDeltaExecutionEnabled) throw new Error('Direct Delta order execution is disabled in SIGNAL_ONLY mode');
+    throw new Error('Generic DeltaAdapter order routing remains disabled; use the dedicated allowlisted Delta Testnet futures executor');
     return this.request('PUT', '/v2/orders/bracket', {}, body, true);
   }
   setOrderLeverage(productId, leverage) {
-    if (CONFIG.signalOnly || !CONFIG.directDeltaExecutionEnabled) throw new Error('Direct Delta leverage changes are disabled in SIGNAL_ONLY mode');
+    throw new Error('Generic DeltaAdapter leverage changes remain disabled in this phase');
     return this.request('POST', '/v2/products/' + productId + '/orders/leverage', {}, { leverage }, true);
   }
 }
