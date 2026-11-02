@@ -22,6 +22,10 @@ import { buildApiDerivedTrackingPlan, strategyForDerivedTrade } from './tradetro
 import { deltaExecutor } from './execution/delta-executor.mjs';
 import { assertDirectDeltaExecutionMode, getExecutionRouteBlockReason, DELTA_TESTNET_FUTURES_ALLOWLIST, isAllowedDeltaTestnetFutureSymbol, isEligibleDeltaTestnetPerpetualProduct, isMarketTickFresh, canStartWorkerInExecutionProfile } from './execution/execution-route-policy.mjs';
 import { canExecuteDeltaTestnetOrders, checkDeltaTestnetPrivateApi, isPrivateApiConnectivityError } from './execution/testnet-private-api-health.mjs';
+import {
+  assessStrategyPositionCap,
+  normalizeStrategyPositionKey
+} from '../shared/strategy-position-limits.js';
 import { DEFAULT_CANDLE_CACHE_SYMBOL_LIMIT, pruneCandleCacheState, resolveCandleCacheSymbolLimit, selectTopCandleSymbols } from './candle-cache-policy.mjs';
 import { formatMemoryLog, MEMORY_LOG_INTERVAL_MS, summarizeMemoryUsage } from './memory-monitor.mjs';
 import { cleanupWebSocketListeners } from './websocket-lifecycle.mjs';
@@ -1670,6 +1674,69 @@ export class DeltaEngine {
     return db.select('dd_trades', 'order=closed_at.desc&limit=200');
   }
 
+  async getStrategyPositionCapAssessment(strategy, settings = {}) {
+    const strategyKey = normalizeStrategyPositionKey(strategy);
+    if (!strategyKey) {
+      return {
+        strategy: null, limit: null, openPositions: null, pendingReservations: null,
+        exposure: null, status: 'UNKNOWN', blocked: true,
+        reason: 'Unsupported strategy; strategy position capacity cannot be verified'
+      };
+    }
+
+    const strategyFilter = strategyKey === 'OPTIONS'
+      ? 'strategy=in.(OPTIONS_BUY,OPTIONS_SELL,OPTIONS)'
+      : 'strategy=eq.' + encodeURIComponent(strategyKey);
+    const recentFilledAfter = encodeURIComponent(
+      new Date(Date.now() - 120_000).toISOString()
+    );
+    try {
+      const [openPositions, pendingOrders, recentlyFilledOrders] = await Promise.all([
+        db.select(
+          'dd_delta_positions',
+          strategyFilter + '&status=eq.OPEN&select=id,symbol,strategy,entry_order_id,client_order_id,order_id&limit=200'
+        ),
+        db.select(
+          'dd_orders',
+          strategyFilter + '&role=eq.ENTRY&state=in.(PENDING,UNKNOWN,NEW,OPEN,PARTIALLY_FILLED)&select=id,client_order_id,strategy,role,state,created_at&limit=200'
+        ),
+        db.select(
+          'dd_orders',
+          strategyFilter + '&role=eq.ENTRY&state=eq.FILLED&created_at=gte.' + recentFilledAfter +
+            '&select=id,client_order_id,strategy,role,state,created_at&limit=200'
+        )
+      ]);
+      if (!Array.isArray(openPositions) || !Array.isArray(pendingOrders) ||
+          !Array.isArray(recentlyFilledOrders)) {
+        throw new Error('Position or entry-reservation query returned malformed data');
+      }
+      return assessStrategyPositionCap({
+        strategy: strategyKey,
+        settings,
+        openPositions,
+        pendingOrders: [...pendingOrders, ...recentlyFilledOrders],
+        now: Date.now()
+      });
+    } catch (error) {
+      const message = 'Per-strategy position-cap snapshot unavailable for ' + strategyKey +
+        '; new entries fail closed';
+      await this.log('WARN', message, {
+        strategy: strategyKey,
+        error: String(error?.message || error).slice(0, 240)
+      }).catch(() => {});
+      return {
+        strategy: strategyKey,
+        limit: null,
+        openPositions: null,
+        pendingReservations: null,
+        exposure: null,
+        status: 'UNKNOWN',
+        blocked: true,
+        reason: message
+      };
+    }
+  }
+
   async riskGate(signal, strategy, account, settings, openPositions, trades) {
     const reasons = [...(signal.blocked || [])];
     const continuous = settings.continuous_mode !== false;
@@ -1709,7 +1776,12 @@ export class DeltaEngine {
     }
     const duplicateBlocker = duplicatePositionBlocker(openPositions, signal.symbol);
     if (duplicateBlocker) reasons.push(duplicateBlocker);
-    // There is deliberately no scanner-side global, per-engine, or total-open-position cap.
+    const strategyPositionCap = await this.getStrategyPositionCapAssessment(strategy, settings);
+    if (strategyPositionCap.status !== 'PASS') {
+      reasons.push(strategyPositionCap.reason);
+    }
+    // The strategy cap is independent of the global platform cap; unresolved
+    // OPEN positions and pending ENTRY reservations consume a strategy slot.
     // Actual platform/product/margin limits are still validated, and duplicate-symbol
     // protection prevents repeated same-instrument entries while a position is open.
     if (!signal.candlesFresh && strategy !== 'OPTIONS_BUY') reasons.push('Fresh closed candles unavailable');
