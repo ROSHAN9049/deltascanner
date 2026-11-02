@@ -150,25 +150,42 @@ test('position sizing fails closed when available margin is zero', () => {
 });
 
 
-test('refreshProducts accepts only Testnet products explicitly allowing new orders', async () => {
+test('refreshProducts preserves the production scanner universe and overlays only verified Testnet metadata', async () => {
   const engine = new DeltaEngine();
   engine.adapter = {
     async products() {
       return [
         {
-          id: 181689, symbol: 'XAUTUSD', contract_type: 'perpetual_futures',
-          state: 'live', trading_status: 'operational',
-          only_reduce_only_orders_allowed: false, contract_value: '0.001'
-        },
-        {
           id: 27, symbol: 'BTCUSD', contract_type: 'perpetual_futures',
           state: 'live', trading_status: 'operational',
-          product_specs: { only_reduce_only_orders_allowed: false }, contract_value: '0.001'
+          contract_value: '0.001', tick_size: '0.5'
         },
         {
           id: 3136, symbol: 'ETHUSD', contract_type: 'perpetual_futures',
           state: 'live', trading_status: 'operational',
-          only_reduce_only_orders_allowed: true, contract_value: '0.01'
+          contract_value: '0.01', tick_size: '0.05'
+        },
+        {
+          id: 131253, symbol: 'XAUTUSD', contract_type: 'perpetual_futures',
+          state: 'live', trading_status: 'operational',
+          contract_value: '0.001', tick_size: '0.01'
+        }
+      ];
+    },
+    async executionProducts() {
+      return [
+        {
+          id: 181689, symbol: 'XAUTUSD', contract_type: 'perpetual_futures',
+          state: 'live', trading_status: 'operational',
+          only_reduce_only_orders_allowed: false,
+          contract_value: '0.001', tick_size: '0.01',
+          notional_type: 'vanilla', max_leverage_notional: '1250000'
+        },
+        {
+          id: 3136, symbol: 'ETHUSD', contract_type: 'perpetual_futures',
+          state: 'live', trading_status: 'operational',
+          only_reduce_only_orders_allowed: true,
+          contract_value: '0.01', tick_size: '0.05'
         },
         {
           id: 999, symbol: 'UNKNOWNUSD', contract_type: 'perpetual_futures',
@@ -180,8 +197,22 @@ test('refreshProducts accepts only Testnet products explicitly allowing new orde
   };
   engine.log = async () => {};
 
-  await engine.refreshProducts();
+  await engine.refreshProducts({ executionMode: 'testnet' });
 
-  assert.deepEqual([...engine.productMap.keys()].sort(), ['BTCUSD', 'XAUTUSD']);
-  assert.equal(engine.productMap.get('XAUTUSD').contract_value, '0.001');
+  assert.deepEqual([...engine.productMap.keys()].sort(), ['BTCUSD', 'ETHUSD', 'XAUTUSD']);
+  const xaut = engine.productMap.get('XAUTUSD');
+  assert.equal(xaut.id, 181689);
+  assert.equal(xaut.marketDataProductId, 131253);
+  assert.equal(xaut.executionProductAvailable, true);
+  assert.equal(xaut.contract_value, '0.001');
+  assert.equal(xaut.max_leverage_notional, '1250000');
+
+  const btc = engine.productMap.get('BTCUSD');
+  assert.equal(btc.id, null);
+  assert.equal(btc.executionProductAvailable, false);
+  assert.equal(btc.contract_value, 0);
+
+  const eth = engine.productMap.get('ETHUSD');
+  assert.equal(eth.id, null, 'reduce-only Testnet products cannot become entry routes');
+  assert.equal(eth.executionProductAvailable, false);
 });
