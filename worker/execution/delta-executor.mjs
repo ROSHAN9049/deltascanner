@@ -314,7 +314,7 @@ export function createDeltaExecutor({
 
   async function getRecentCloseDetails(symbol, openedAt = null, position = {}) {
     const normalizedSymbol = stringOrEmpty(symbol).toUpperCase();
-    const product = await resolveProduct(normalizedSymbol);
+    const product = await resolveProduct(normalizedSymbol, { entryOnly: false });
     const clockMs = now();
     const openedMs = timestampMs(openedAt);
     // Include a short pre-open buffer because the exchange fill can precede
