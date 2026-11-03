@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { safeNum } from './formatters.js';
-import { GRID_BRIDGE_MAX_POSITIONS, GRID_RISK_PER_TRADE_CHOICES, normalizeGridRiskPerTradePct } from '../shared/grid-settings.js';
+import { GRID_BRIDGE_MAX_POSITIONS, GRID_RISK_PER_TRADE_CHOICES, getGridDisplayStatus, normalizeGridRiskPerTradePct } from '../shared/grid-settings.js';
 
 const n = value => safeNum(value) ?? 0;
 const usd = value => {
@@ -85,14 +85,14 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
   const openLevelSet = new Set(positions.map(position => Number(position.levelIndex)));
   const targetLevelSet = new Set(positions.map(position => Number(position.levelIndex) + 1));
   const lockedConfig = positions.length > 0;
-  const stateStatus = gridState.status || 'OFF';
   const gridNotMigratedToDelta = gridEntrySafety?.reason === 'GRID_NOT_MIGRATED_TO_DELTA_TESTNET';
   const deltaTestnetGrid = executionMode === 'testnet' ||
     gridEntrySafety?.executionMode === 'testnet' || gridState.executionMode === 'DELTA_TESTNET';
-  const gridWaitingForProduct = deltaTestnetGrid && testnetDiagnostics?.testnetProductAvailable !== true;
-  const visibleGridStatus = deltaTestnetGrid
-    ? gridWaitingForProduct ? 'ACTIVE (WAITING FOR TESTNET PRODUCTS)' : 'ACTIVE (DIAGNOSTICS ONLY)'
-    : gridNotMigratedToDelta ? 'HELD · NOT MIGRATED' : stateStatus.replaceAll('_', ' ');
+  const { label: visibleGridStatus, detail: visibleGridStatusDetail } = getGridDisplayStatus({
+    executionMode, gridEntrySafety, gridState,
+    gridEnabled: settings.grid_enabled === true,
+    testnetDiagnostics
+  });
   const lastTrade = trades[0];
 
   if (accountDataProtected) return <Panel title="Grid Strategy · Protected"><div className="lockedText">Grid position state, simulated trades, equity and risk locks are private. Enter the configured engine key in Settings before reviewing or changing Grid configuration.</div></Panel>;
@@ -126,9 +126,7 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
 
   return <>
     <section className="cards">
-      <div className="card"><small>GRID ENGINE</small><strong>{visibleGridStatus}</strong><span>{deltaTestnetGrid
-        ? 'Worker evaluates Grid market data in an isolated diagnostic dry run. Unsupported BTC/ETH products are skipped; no exchange orders or positions are created.'
-        : 'Offline simulator only; not an exchange order engine.'}</span></div>
+      <div className="card"><small>GRID DIAGNOSTICS / STRATEGY</small><strong>{visibleGridStatus}</strong><span>{visibleGridStatusDetail}</span></div>
       <div className="card"><small>INSTRUMENT / LIVE PRICE</small><strong>{symbol}</strong><span>{currentPrice > 0 ? price(currentPrice) : 'Waiting for market price'} · Delta public market feed</span></div>
       <div className="card"><small>OPEN GRID POSITIONS</small><strong>{positions.length} / {GRID_BRIDGE_MAX_POSITIONS}</strong><span>{usd(openRisk === null && positions.length === 0 ? 0 : openRisk)} estimated remaining-to-grid-stop risk.</span></div>
       <div className="card"><small>{deltaTestnetGrid ? 'DELTA TESTNET NET P&L' : 'SIMULATED GRID P&amp;L'}</small><strong className={realizedGridPnl === null ? 'muted' : realizedGridPnl >= 0 ? 'up' : 'down'}>{usd(realizedGridPnl)}</strong><span>{deltaTestnetGrid ? 'Only fully fill-matched trades with verified commissions; otherwise P&L is unverified.' : 'Offline estimate after estimated fees and slippage; not exchange-reported P&amp;L.'}</span></div>
@@ -182,7 +180,7 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
           const position = positions.find(item => Number(item.levelIndex) === level.index);
           const targetFor = positions.filter(item => Number(item.levelIndex) + 1 === level.index);
           const status = position ? 'POSITION OPEN' : targetFor.length ? 'EXIT TARGET' : level.index === levels.length - 1 ? 'TOP · NO ENTRY' : (currentPrice > 0 && Math.abs(currentPrice - level.price) / level.price < 0.001 ? 'NEAR PRICE' : 'AVAILABLE');
-          return <tr key={level.index}><td>G{String(level.index + 1).padStart(2,'0')}</td><td>{price(level.price)}</td><td>{level.index < levels.length - 1 ? (deltaTestnetGrid ? 'MARKET BUY' : 'LIMIT BUY') : '—'}</td><td>{level.target > 0 ? price(level.target) : '—'}</td><td className={position ? 'warn' : targetFor.length ? 'up' : 'muted'}>{status}{position ? ' · ' + (safeNum(position.qty) === null ? 'QTY NO DATA' : safeNum(position.qty) + ' qty') : ''}</td></tr>;
+          return <tr key={level.index}><td>G{String(level.index + 1).padStart(2,'0')}</td><td>{price(level.price)}</td><td>{level.index < levels.length - 1 ? (deltaTestnetGrid ? 'LOCKED · NO ORDER' : 'LIMIT BUY') : '—'}</td><td>{level.target > 0 ? price(level.target) : '—'}</td><td className={position ? 'warn' : targetFor.length ? 'up' : 'muted'}>{status}{position ? ' · ' + (safeNum(position.qty) === null ? 'QTY NO DATA' : safeNum(position.qty) + ' qty') : ''}</td></tr>;
         })}
       </tbody></table></div>
     </Panel>
