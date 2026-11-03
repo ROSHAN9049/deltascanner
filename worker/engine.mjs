@@ -605,7 +605,7 @@ export class DeltaEngine {
 
     if (!testnetProductAvailable && !this.unsupportedBridgeWarnings.has(warningKey)) {
       this.unsupportedBridgeWarnings.add(warningKey);
-      await safeLog('WARN', 'Grid skipped: ' + symbol + ' not available on Delta Testnet; market-only diagnostics continue', {
+      await safeLog('WARN', 'Grid skipped: ' + symbol + ' not available on Delta Testnet; Delta Testnet Grid execution remains hard-locked and market-only diagnostics continue', {
         symbol,
         testnetAllowlisted: isAllowedDeltaTestnetFutureSymbol(symbol),
         testnetProductAvailable: false,
