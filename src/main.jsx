@@ -380,7 +380,7 @@ function App() {
     {tab === 'momentum' && <EngineView engine="MOMENTUM" signals={signals} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols} />}
     {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" strategy="MOMENTUM" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'scalping' && <EngineView engine="SCALPING" signals={signals} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols} />}
-    {tab === 'grid' && <GridStrategy settings={settings} market={market} busy={busy} mutate={mutate} accountDataProtected={accountDataProtected} gridEntrySafety={executionCoverage?.gridEntrySafety || null} />}
+    {tab === 'grid' && <GridStrategy settings={settings} market={market} busy={busy} mutate={mutate} accountDataProtected={accountDataProtected} gridEntrySafety={executionCoverage?.gridEntrySafety || null} executionMode={executionCoverage?.deltaExecutionMode || 'disabled'} testnetDiagnostics={executionCoverage?.gridTestnetDiagnostics || null} />}
     {tab === 'options' && <OptionsView signals={signals} settings={settings} optionCache={optionCache} executionCoverage={state?.executionCoverage || null} />}
     {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" strategy="SCALPING" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'positions' && <Positions rows={positions} accountDataProtected={accountDataProtected} />}
@@ -717,12 +717,29 @@ function OptionsView({ signals, settings, optionCache = [], executionCoverage = 
             : '';
   const buys = rows.filter(x => x.strategy === 'OPTIONS_BUY');
   const sells = rows.filter(x => x.strategy === 'OPTIONS_SELL');
+  const testnetMode = executionCoverage?.deltaExecutionMode === 'testnet';
+  const optionsDiagnostics = executionCoverage?.optionsTestnetDiagnostics || null;
+  const optionsEngineStatus = !testnetMode ? 'ANALYSIS ONLY'
+    : !optionsDiagnostics ? 'ACTIVE (WAITING FOR TESTNET PRODUCTS)'
+      : optionsDiagnostics.status === 'WAITING_FOR_TESTNET_PRODUCTS' ? 'ACTIVE (WAITING FOR TESTNET PRODUCTS)'
+        : optionsDiagnostics.status === 'WAITING_FOR_TESTNET_QUOTES' ? 'ACTIVE (WAITING FOR TESTNET QUOTES)'
+          : optionsDiagnostics.status === 'DIAGNOSTICS_ERROR' ? 'ACTIVE (DIAGNOSTICS DEGRADED)'
+            : optionsDiagnostics.status === 'DISABLED_BY_SETTING' ? 'DISABLED IN SETTINGS'
+              : 'ACTIVE (DIAGNOSTICS ONLY)';
+  const optionsEngineDetail = !testnetMode
+    ? 'Options order routing remains locked.'
+    : optionsDiagnostics
+      ? 'Testnet products: ' + (optionsDiagnostics.testnetProductsAvailable ?? 0) +
+        ' · quote candidates: ' + (optionsDiagnostics.optionTickersAvailable ?? 0) +
+        ' · order routing remains hard-locked.'
+      : 'Waiting for the Worker product-catalogue check. Order routing remains hard-locked.';
   const buyMinDelta = safeNum(settings.options_buy_min_delta) || 0.45;
   const buyMaxDelta = safeNum(settings.options_buy_max_delta) || 0.65;
   const sellMinDelta = safeNum(settings.options_sell_min_delta) || 0.20;
   const sellMaxDelta = safeNum(settings.options_sell_max_delta) || 0.35;
   return <>
     <section className="cards">
+      <Card label="OPTIONS ENGINE" value={optionsEngineStatus} sub={optionsEngineDetail}/>
       <Card label="OPTIONS DATA" value={freshness.status.replaceAll('_', ' ')} sub={capturedAt ? 'Latest candidate snapshot · ' + capturedAt : 'Timestamped analysis data required'}/>
       <Card label="BUY CANDIDATES" value={buys.length} sub={freshness.fresh ? 'Delta target ' + buyMinDelta.toFixed(2) + '–' + buyMaxDelta.toFixed(2) : 'Hidden until a fresh snapshot is available'}/>
       <Card label="SELL CANDIDATES" value={sells.length} sub={freshness.fresh ? 'Delta target ' + sellMinDelta.toFixed(2) + '–' + sellMaxDelta.toFixed(2) + ' · spread only' : 'Hidden until a fresh snapshot is available'}/>
@@ -735,9 +752,11 @@ function OptionsView({ signals, settings, optionCache = [], executionCoverage = 
       <p className="muted">Fresh option quotes and Greeks must be independently verified before reviewing candidates. No stale row is presented as current.</p>
     </div> : null}
     <div className="lockedText">
-      <b className="warn">⚠ OPTIONS EXECUTION LOCKED — ANALYSIS ONLY</b>
-      <p>Entries remain hard-locked until spread legs, defined maximum loss, dedicated credentials, and contract mappings are independently verified. A configured route is not execution authorization.</p>
-      <p className="muted">No Options entry signal should be sent from this scanner while the safety lock is active.</p>
+      <b className="warn">{testnetMode ? '⚠ OPTIONS DIAGNOSTICS ACTIVE — EXECUTION LOCKED' : '⚠ OPTIONS EXECUTION LOCKED — ANALYSIS ONLY'}</b>
+      <p>{testnetMode
+        ? 'The Worker checks BTC, ETH, and XAUT Testnet option catalogues and quotes. Missing contracts or quotes are skipped and logged; no Options order route is called.'
+        : 'Entries remain hard-locked until spread legs, defined maximum loss, dedicated credentials, and contract mappings are independently verified.'}</p>
+      <p className="muted">The execution lock remains in force. Product availability and diagnostic signals do not authorize an order.</p>
     </div>
     <Panel title="Options BUY · Analysis Only">
       <OptionTable rows={buys} type="BUY" deltaMin={buyMinDelta} deltaMax={buyMaxDelta} emptyMessage={freshness.fresh ? 'No option BUY candidates for the latest snapshot.' : 'Stale or unverified candidates are hidden; no current BUY candidates are shown.'} />
