@@ -193,6 +193,8 @@ function App() {
   useEffect(() => { const id = setInterval(() => setClock(Date.now()), 1000); return () => clearInterval(id); }, []);
 
   const settings = state?.settings && typeof state.settings === 'object' && !Array.isArray(state.settings) ? state.settings : {};
+  const emergencyStopKnown = typeof settings.emergency_stop === 'boolean';
+  const emergencyStopActive = emergencyStopKnown && settings.emergency_stop === true;
   const trades = Array.isArray(state?.deltaTestnetTrades) ? state.deltaTestnetTrades : [];
   const positions = Array.isArray(state?.deltaTestnetPositions) ? state.deltaTestnetPositions : [];
   const accountDataProtected = state?.accountDataProtected === true;
@@ -267,7 +269,11 @@ function App() {
     Math.ceil((estopReleaseCountdownEndsAt - clock) / 1000)
   );
   const requestEmergencyStopChange = async () => {
-    if (settings.emergency_stop === true) {
+    if (!emergencyStopKnown) {
+      setError('Emergency Stop state is unavailable from the database. The control is disabled until it is verified.');
+      return;
+    }
+    if (emergencyStopActive) {
       setBusy(true);
       setError('');
       try {
@@ -305,7 +311,7 @@ function App() {
     setEstopReleaseCountdownEndsAt(0);
   };
   const confirmEmergencyStopRelease = async () => {
-    if (settings.emergency_stop !== true || estopReleaseCountdown > 0 ||
+    if (!emergencyStopActive || estopReleaseCountdown > 0 ||
         !estopReleaseVerified || !estopReleaseToken) return;
     const saved = await mutate({
       emergencyStop: false,
@@ -365,8 +371,14 @@ function App() {
         <button className="action" disabled={busy || !state || accountDataProtected} onClick={() => mutate({ autoTrade: !settings.auto_trade })} aria-pressed={settings.auto_trade === true} title="Save Auto Trade to dd_settings and confirm the persisted value">
           {settings.auto_trade === true ? 'AUTO TRADE ON' : 'AUTO TRADE OFF'}
         </button>
-        <button className="estop" disabled={busy || !state || accountDataProtected} onClick={requestEmergencyStopChange}>
-          {settings.emergency_stop ? 'RELEASE E-STOP' : 'EMERGENCY STOP'}
+        <button
+          className={emergencyStopActive ? 'estop' : 'action'}
+          disabled={busy || !state || accountDataProtected || !emergencyStopKnown}
+          onClick={requestEmergencyStopChange}
+          aria-pressed={emergencyStopActive}
+          title={!emergencyStopKnown ? 'Emergency Stop state unavailable' : emergencyStopActive ? 'Emergency Stop active in dd_settings' : 'Emergency Stop released in dd_settings'}
+        >
+          {!emergencyStopKnown ? 'E-STOP STATE UNKNOWN' : emergencyStopActive ? 'RELEASE E-STOP' : 'EMERGENCY STOP'}
         </button>
       </div>
     </header>
@@ -957,14 +969,16 @@ function equityPoints(trades) {
 }
 function Testnet({settings,health,currentOpenPositionCount=null,accountDataProtected=false}) {
  const count=safeNum(currentOpenPositionCount);
- const status=getWorkerStatusDisplay({scannerEnabled:settings.enabled!==false,autoTrade:settings.auto_trade===true,continuousMode:settings.continuous_mode===true,emergencyStop:settings.emergency_stop===true,currentOpenPositions:count,maxOpenPositions:settings.max_open_positions??null});
+ const emergencyStopKnown=typeof settings.emergency_stop==='boolean';
+ const emergencyStopActive=emergencyStopKnown&&settings.emergency_stop===true;
+ const status=getWorkerStatusDisplay({scannerEnabled:settings.enabled!==false,autoTrade:settings.auto_trade===true,continuousMode:settings.continuous_mode===true,emergencyStop:emergencyStopKnown?emergencyStopActive:null,currentOpenPositions:count,maxOpenPositions:settings.max_open_positions??null});
  const exchangeHealth=getExchangeHealthDisplay(health);
- const online=health?.workerLeaseActive===true&&health?.heartbeatFresh===true, tone=settings.emergency_stop===true?'critical':status.capReached&&settings.auto_trade===true?'warning':'';
+ const online=health?.workerLeaseActive===true&&health?.heartbeatFresh===true, tone=!emergencyStopKnown?'warning':emergencyStopActive?'critical':status.capReached&&settings.auto_trade===true?'warning':'';
  const ages='Tick: '+formatHealthAge(health?.tickAgeMs)+' · Heartbeat: '+formatHealthAge(health?.heartbeatAgeMs)+' · Lease: '+formatLeaseRemaining(health?.leaseRemainingMs);
  const r=health?.retention||{}, deleted=Number.isSafeInteger(Number(r.rowsDeleted))&&Number(r.rowsDeleted)>=0?Number(r.rowsDeleted):0, days=Number.isSafeInteger(Number(r.configDays))&&Number(r.configDays)>=1?Number(r.configDays):1, fail=Number.isSafeInteger(Number(r.consecutiveFailures))&&Number(r.consecutiveFailures)>=0?Number(r.consecutiveFailures):0;
  const successMs=r.lastSuccess?Date.parse(r.lastSuccess):NaN, success=Number.isFinite(successMs)?new Date(successMs).toLocaleString('en-IN'):'NO DATA';
  return <><section className="cards"><Card label="ENVIRONMENT" value="DELTA TESTNET" sub="Testnet-only execution environment"/><Card label="AUTO TRADE" value={settings.auto_trade===true?'ON':'OFF'} sub={status.autoTradeSubtitle} tone={tone}/><Card label="CONTINUOUS MODE" value={status.continuousValue} sub={status.continuousSubtitle}/><Card label="DELTA OPEN POSITIONS" value={accountDataProtected?'LOCKED':count===null?'NO DATA':count} sub={accountDataProtected?'Unlock Settings to view positions':count===null?'Delta Testnet count unavailable':'Exchange-confirmed Delta Testnet open-position count'}/></section>
- <Panel title="Worker Status · Delta Testnet"><div className="lockedText">Direct order execution is restricted to Delta Exchange Testnet. Production/live Delta orders remain hard-locked.</div><div className="statusLine"><span>Worker {online?'ONLINE':'OFFLINE'}</span>{' · '}<span>Lease {health?.workerLeaseActive?'ACTIVE':'INACTIVE'}</span>{' · '}<span>Heartbeat {health?.heartbeatFresh?'FRESH':'STALE'}</span>{' · '}<span>Tick {health?.tickFresh?'FRESH':'STALE'}</span>{' · '}<span>Worker health {exchangeHealth.label}</span>{' · '}<span>Emergency stop {settings.emergency_stop===true?'ACTIVE':'RELEASED'}</span></div><div className="healthAges">{ages}</div><div className="healthAges" role="status" aria-live="polite">Exchange probe: {exchangeHealth.detail}</div><div className="healthAges" title={'Last successful run: '+(Number.isFinite(successMs)?success:'NO DATA')+' · consecutive failures: '+fail}>Retention: last run {formatRetentionLastRun(r.lastRun)} · deleted {deleted.toLocaleString('en-IN')} rows · config: {days} day{days===1?'':'s'}</div><p className="muted">Testnet entries require a valid signal, fresh market data, acceptable risk/margin, same-symbol duplicate protection, and global position-cap allowance ({status.hasCapData?status.capLabel+' used':'NO DATA'}). Production/live Delta orders remain hard-locked.</p></Panel></>;
+ <Panel title="Worker Status · Delta Testnet"><div className="lockedText">Direct order execution is restricted to Delta Exchange Testnet. Production/live Delta orders remain hard-locked.</div><div className="statusLine"><span>Worker {online?'ONLINE':'OFFLINE'}</span>{' · '}<span>Lease {health?.workerLeaseActive?'ACTIVE':'INACTIVE'}</span>{' · '}<span>Heartbeat {health?.heartbeatFresh?'FRESH':'STALE'}</span>{' · '}<span>Tick {health?.tickFresh?'FRESH':'STALE'}</span>{' · '}<span>Worker health {exchangeHealth.label}</span>{' · '}<span>Emergency stop {emergencyStopKnown?(emergencyStopActive?'ACTIVE':'RELEASED'):'UNKNOWN'}</span></div><div className="healthAges">{ages}</div><div className="healthAges" role="status" aria-live="polite">Exchange probe: {exchangeHealth.detail}</div><div className="healthAges" title={'Last successful run: '+(Number.isFinite(successMs)?success:'NO DATA')+' · consecutive failures: '+fail}>Retention: last run {formatRetentionLastRun(r.lastRun)} · deleted {deleted.toLocaleString('en-IN')} rows · config: {days} day{days===1?'':'s'}</div><p className="muted">Testnet entries require a valid signal, fresh market data, acceptable risk/margin, same-symbol duplicate protection, and global position-cap allowance ({status.hasCapData?status.capLabel+' used':'NO DATA'}). Production/live Delta orders remain hard-locked.</p></Panel></>;
 }
 function Settings({ settings, currentOpenPositions = null, secret, setSecret, busy, mutate, onUnlock, onLock, authenticated = false }) {
   const capStatus = getGlobalPositionCapDisplay({
