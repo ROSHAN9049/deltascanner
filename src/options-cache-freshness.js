@@ -52,3 +52,14 @@ export function assessOptionsCacheFreshness(rows, {
     newestAt: new Date(newestMs).toISOString(), oldestAt: new Date(oldestMs).toISOString(), ageMs
   };
 }
+
+
+/**
+ * The dedicated option cache is the current candidate snapshot. Historical
+ * dd_signals are audit/history rows and must never repopulate a cleared cache.
+ */
+export function selectCurrentOptionsCacheRows(optionCache) {
+  return Array.isArray(optionCache)
+    ? optionCache.filter(row => row && typeof row === 'object' && !Array.isArray(row))
+    : [];
+}

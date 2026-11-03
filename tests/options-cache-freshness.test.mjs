@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   assessOptionsCacheFreshness,
-  OPTIONS_CACHE_MAX_AGE_MS
+  OPTIONS_CACHE_MAX_AGE_MS,
+  selectCurrentOptionsCacheRows
 } from '../src/options-cache-freshness.js';
 
 const NOW = Date.parse('2026-10-29T16:30:00.000Z');
@@ -57,4 +58,25 @@ test('a recent newest option row does not hide a stale row in the same mixed cac
   assert.equal(result.newestAt, new Date(NOW - 60_000).toISOString());
   assert.equal(result.oldestAt, new Date(NOW - 190.17 * 60 * 60 * 1000).toISOString());
   assert.ok(result.ageMs > 190 * 60 * 60 * 1000);
+});
+
+
+test('an explicitly empty current Options cache does not fall back to historical signal rows', () => {
+  assert.deepEqual(selectCurrentOptionsCacheRows([]), []);
+  assert.deepEqual(selectCurrentOptionsCacheRows(undefined), []);
+  assert.deepEqual(selectCurrentOptionsCacheRows(null), []);
+});
+
+test('current Options cache accepts only object snapshot rows', () => {
+  const rows = [
+    { symbol: 'C-BTC-78000-131126', strategy: 'OPTIONS_BUY' },
+    null,
+    'historical row',
+    [],
+    { symbol: 'P-ETH-2300-131126', strategy: 'OPTIONS_SELL' }
+  ];
+  assert.deepEqual(selectCurrentOptionsCacheRows(rows), [
+    { symbol: 'C-BTC-78000-131126', strategy: 'OPTIONS_BUY' },
+    { symbol: 'P-ETH-2300-131126', strategy: 'OPTIONS_SELL' }
+  ]);
 });
