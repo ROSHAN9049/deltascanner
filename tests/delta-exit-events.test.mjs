@@ -4,15 +4,16 @@ import { deltaCloseFields, normalizeDeltaExitReason } from '../worker/execution/
 
 test('exit reason mapping uses documented fill/order evidence', () => {
   const cases = [
-    [{ reason: 'Stop Loss Order' }, 'stop_loss_order'],
-    [{ stop_order_type: 'stop_loss_order' }, 'stop_loss_order'],
-    [{ stop_order_type: 'take_profit_order' }, 'take_profit_order'],
-    [{ fill_type: 'liquidation' }, 'liquidation'],
-    [{ fill_type: 'adl' }, 'adl'],
-    [{ fill_type: 'settlement' }, 'settlement'],
-    [{ client_order_id: 'DDX-X-BTCUSD-close' }, 'bot-exit'],
-    [{ close_order_history_found: true }, 'manual-or-external'],
-    [{}, 'unknown']
+    [{ reason: 'Stop Loss Order' }, 'SL'],
+    [{ stop_order_type: 'stop_loss_order' }, 'SL'],
+    [{ stop_order_type: 'take_profit_order' }, 'TP'],
+    [{ fill_type: 'liquidation' }, 'LIQUIDATION'],
+    [{ fill_type: 'adl' }, 'ADL'],
+    [{ fill_type: 'settlement' }, 'SETTLEMENT'],
+    [{ client_order_id: 'DDX-X-BTCUSD-close' }, 'BOT'],
+    [{ client_order_id: 'manual-close-9001' }, 'MANUAL'],
+    [{ close_order_history_found: true }, 'MANUAL'],
+    [{}, 'UNKNOWN']
   ];
   for (const [event, expected] of cases) {
     assert.equal(normalizeDeltaExitReason(event), expected);
@@ -25,7 +26,7 @@ test('missing close details remain null and mark price never becomes exit price'
   assert.equal(fields.fees, null);
   assert.equal(fields.fee_currency, null);
   assert.equal(fields.realized_pnl, null);
-  assert.equal(fields.exit_reason, 'unknown');
+  assert.equal(fields.exit_reason, 'UNKNOWN');
   assert.equal(fields.close_order_id, null);
   const entryOrderOnly = deltaCloseFields({ order_id: 'entry-order', current_price: 4050 });
   assert.equal(entryOrderOnly.close_order_id, null);
@@ -49,6 +50,6 @@ test('verified close details take precedence over unverified event fields', () =
   assert.equal(fields.fees, 0.15);
   assert.equal(fields.fee_currency, 'USD');
   assert.equal(fields.realized_pnl, 3.25);
-  assert.equal(fields.exit_reason, 'take_profit_order');
+  assert.equal(fields.exit_reason, 'TP');
   assert.equal(fields.close_order_id, '9001');
 });
