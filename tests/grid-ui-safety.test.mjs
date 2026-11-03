@@ -13,7 +13,7 @@ test('Grid UI separates diagnostic activity from persisted halt and keeps Testne
   assert.match(source, /TESTNET ORDER ROUTE LOCKED/);
   assert.match(source, /LOCKED · NO ORDER/);
   assert.match(source, /Testnet Diagnostics Only · Orders Locked/);
-  assert.match(source, /no exchange orders or positions are created/);
+  assert.match(sharedStatusSource, /no exchange orders or reservations are created/);
   assert.doesNotMatch(source, /Start Grid \(Delta Testnet\)/);
 });
 
