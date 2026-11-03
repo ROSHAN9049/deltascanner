@@ -626,6 +626,16 @@ export class DeltaEngine {
       return this.lastGridTestnetDiagnostics;
     }
 
+    if (!testnetProductAvailable) {
+      this.lastGridTestnetDiagnostics = {
+        symbol, executionMode: 'testnet', enabled: settings.grid_enabled === true,
+        marketDataAvailable: true, testnetProductAvailable: false, executionLocked: true,
+        status: 'WAITING_FOR_TESTNET_PRODUCTS', markPrice: mark,
+        candidateEntries: 0, candidateExits: 0, orderRoutingAttempted: false, updatedAt: iso()
+      };
+      return this.lastGridTestnetDiagnostics;
+    }
+
     try {
       const needsRefresh = this.gridCandleSymbol !== symbol ||
         Date.now() - this.lastGridCandleRefresh >= 15000;
@@ -699,14 +709,10 @@ export class DeltaEngine {
         orderRoutingAttempted: false,
         updatedAt: iso()
       };
-      await safeLog(testnetProductAvailable ? 'INFO' : 'WARN',
-        testnetProductAvailable
-          ? 'Grid Testnet diagnostics evaluated; execution remains hard-locked'
-          : 'Grid skipped: ' + symbol + ' not available on Testnet; diagnostic evaluation only',
-        {
-          ...this.lastGridTestnetDiagnostics,
-          note: 'Memory-only dry run. Hypothetical entries are not exchange orders or open positions.'
-        });
+      await safeLog('INFO', 'Grid Testnet diagnostics evaluated; execution remains hard-locked', {
+        ...this.lastGridTestnetDiagnostics,
+        note: 'Memory-only dry run. Hypothetical entries are not exchange orders or open positions.'
+      });
       return this.lastGridTestnetDiagnostics;
     } catch (error) {
       this.lastGridTestnetDiagnostics = {
