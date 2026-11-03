@@ -45,3 +45,16 @@ test('empty options data reports NO_DATA rather than a zero-risk setup', () => {
     fresh: false, status: 'NO_DATA', rowCount: 0, newestAt: null, oldestAt: null, ageMs: null
   });
 });
+
+test('a recent newest option row does not hide a stale row in the same mixed cache batch', () => {
+  const result = assessOptionsCacheFreshness([
+    { symbol: 'C-XAUT-4020-301026', cached_at: new Date(NOW - 190.17 * 60 * 60 * 1000).toISOString() },
+    { symbol: 'C-BTC-78000-131126', cached_at: new Date(NOW - 60_000).toISOString() }
+  ], { now: () => NOW });
+
+  assert.equal(result.fresh, false);
+  assert.equal(result.status, 'STALE');
+  assert.equal(result.newestAt, new Date(NOW - 60_000).toISOString());
+  assert.equal(result.oldestAt, new Date(NOW - 190.17 * 60 * 60 * 1000).toISOString());
+  assert.ok(result.ageMs > 190 * 60 * 60 * 1000);
+});

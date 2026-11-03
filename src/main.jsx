@@ -704,8 +704,11 @@ function OptionsView({ signals, settings, optionCache = [], executionCoverage = 
   const capturedAt = freshness.newestAt
     ? new Date(freshness.newestAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
     : null;
+  const oldestCapturedAt = freshness.oldestAt
+    ? new Date(freshness.oldestAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
+    : null;
   const freshnessMessage = freshness.status === 'STALE'
-    ? 'Snapshot is ' + (ageMinutes >= 60 ? (ageMinutes / 60).toFixed(1) + ' hours old' : ageMinutes + ' minutes old') + '; cached candidates are hidden until refreshed.'
+    ? 'The oldest cached option row is ' + (ageMinutes >= 60 ? (ageMinutes / 60).toFixed(1) + ' hours old' : ageMinutes + ' minutes old') + '; the entire mixed-age batch is hidden even if newer rows exist.'
     : freshness.status === 'UNKNOWN_TIMESTAMP'
       ? 'Candidate timestamps are missing or invalid; cached rows are hidden because freshness cannot be verified.'
       : freshness.status === 'FUTURE_TIMESTAMP'
@@ -726,11 +729,25 @@ function OptionsView({ signals, settings, optionCache = [], executionCoverage = 
           : optionsDiagnostics.status === 'DIAGNOSTICS_ERROR' ? 'ACTIVE (DIAGNOSTICS DEGRADED)'
             : optionsDiagnostics.status === 'DISABLED_BY_SETTING' ? 'DISABLED IN SETTINGS'
               : 'ACTIVE (DIAGNOSTICS ONLY)';
+  const diagnosticRefreshAt = optionsDiagnostics?.updatedAt
+    ? new Date(optionsDiagnostics.updatedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
+    : null;
+  const productCounts = optionsDiagnostics?.productCountsByUnderlying || {};
+  const quoteCounts = optionsDiagnostics?.quoteCountsByUnderlying || {};
+  const underlyingCounts = ['BTC', 'ETH', 'XAUT']
+    .map(asset => asset + ' products ' + (productCounts[asset] ?? '—') + ' / quotes ' + (quoteCounts[asset] ?? '—'))
+    .join(' · ');
+  const missingUnderlyings = Array.isArray(optionsDiagnostics?.missingUnderlyings)
+    ? optionsDiagnostics.missingUnderlyings
+    : [];
   const optionsEngineDetail = !testnetMode
     ? 'Options order routing remains locked.'
     : optionsDiagnostics
-      ? 'Testnet products: ' + (optionsDiagnostics.testnetProductsAvailable ?? 0) +
+      ? (diagnosticRefreshAt ? 'Diagnostics refreshed ' + diagnosticRefreshAt + ' IST · ' : '') +
+        'Testnet products: ' + (optionsDiagnostics.testnetProductsAvailable ?? 0) +
         ' · quote candidates: ' + (optionsDiagnostics.optionTickersAvailable ?? 0) +
+        ' · ' + underlyingCounts +
+        (missingUnderlyings.length ? ' · no eligible products: ' + missingUnderlyings.join(', ') : '') +
         ' · order routing remains hard-locked.'
       : 'Waiting for the Worker product-catalogue check. Order routing remains hard-locked.';
   const buyMinDelta = safeNum(settings.options_buy_min_delta) || 0.45;
@@ -740,7 +757,9 @@ function OptionsView({ signals, settings, optionCache = [], executionCoverage = 
   return <>
     <section className="cards">
       <Card label="OPTIONS ENGINE" value={optionsEngineStatus} sub={optionsEngineDetail}/>
-      <Card label="OPTIONS DATA" value={freshness.status.replaceAll('_', ' ')} sub={capturedAt ? 'Latest candidate snapshot · ' + capturedAt : 'Timestamped analysis data required'}/>
+      <Card label="OPTIONS DATA" value={freshness.status.replaceAll('_', ' ')} sub={freshness.fresh
+        ? (capturedAt ? 'Fresh candidate snapshot · ' + capturedAt : 'Fresh timestamped analysis data')
+        : (oldestCapturedAt ? 'Oldest cached row · ' + oldestCapturedAt + (capturedAt && capturedAt !== oldestCapturedAt ? ' · newest row · ' + capturedAt : '') : 'Timestamped analysis data required')}/>
       <Card label="BUY CANDIDATES" value={buys.length} sub={freshness.fresh ? 'Delta target ' + buyMinDelta.toFixed(2) + '–' + buyMaxDelta.toFixed(2) : 'Hidden until a fresh snapshot is available'}/>
       <Card label="SELL CANDIDATES" value={sells.length} sub={freshness.fresh ? 'Delta target ' + sellMinDelta.toFixed(2) + '–' + sellMaxDelta.toFixed(2) + ' · spread only' : 'Hidden until a fresh snapshot is available'}/>
       <Card label="OPTIONS ROUTE CONFIG" value={executionCoverage?.optionsRouteConfigured === true ? 'CONFIGURED' : 'NOT CONFIGURED'} sub="Route configuration does not unlock Options execution"/>
@@ -748,7 +767,8 @@ function OptionsView({ signals, settings, optionCache = [], executionCoverage = 
     {!freshness.fresh ? <div className="lockedText" role="status">
       <b className="warn">⚠ OPTIONS SNAPSHOT {freshness.status.replaceAll('_', ' ')} — CANDIDATES HIDDEN</b>
       <p>{freshnessMessage}</p>
-      {capturedAt ? <p>Last snapshot: {capturedAt} IST · age about {ageMinutes >= 60 ? (ageMinutes / 60).toFixed(1) + ' hours' : ageMinutes + ' minutes'}.</p> : null}
+      {oldestCapturedAt ? <p>Oldest cached row: {oldestCapturedAt} IST · age about {ageMinutes >= 60 ? (ageMinutes / 60).toFixed(1) + ' hours' : ageMinutes + ' minutes'}.</p> : null}
+      {capturedAt && capturedAt !== oldestCapturedAt ? <p>Newest cached row: {capturedAt} IST. Newer rows do not make an older mixed batch trustworthy.</p> : null}
       <p className="muted">Fresh option quotes and Greeks must be independently verified before reviewing candidates. No stale row is presented as current.</p>
     </div> : null}
     <div className="lockedText">

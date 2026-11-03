@@ -16,6 +16,7 @@ import { MIN_RAW_CANDLES_FOR_ATR, mergeCandleUpdate, normalizeCandleBatch, norma
 import { detectAtrSpike, replaceOutlierCandleWithPrevious } from './atr-spike-guard.mjs';
 import { shouldEmitThrottledLog, websocketReconnectDelay, WS_ERROR_LOG_COOLDOWN_MS } from './ws-resilience.mjs';
 import { isOptionsExecutionAllowed, OPTIONS_EXECUTION_LOCK_REASON } from './options-execution-lock.mjs';
+import { countOptionProductsByUnderlying, replaceOptionCacheSnapshot } from './options-cache-snapshot.mjs';
 import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from './signal-failure-diagnostics.mjs';
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
 import { buildApiDerivedTrackingPlan, strategyForDerivedTrade } from './tradetron-derived-trades.mjs';
@@ -2046,7 +2047,6 @@ export class DeltaEngine {
     const testnetMode = CONFIG.deltaExecutionMode === 'testnet';
     const underlyings = [...OPTION_UNDERLYINGS];
     const now = Date.now();
-    const productCountsByUnderlying = Object.fromEntries(underlyings.map(asset => [asset, 0]));
     let productCatalogueError = null;
 
     if (testnetMode && (
@@ -2082,7 +2082,6 @@ export class DeltaEngine {
             state: product.state || 'live',
             testnet_product_verified: true
           });
-          productCountsByUnderlying[match[1]] += 1;
         }
         this.optionProductMap = productMap;
         this.lastOptionProductFetch = now;
@@ -2097,6 +2096,10 @@ export class DeltaEngine {
         }).catch(() => {});
       }
     }
+
+    // The catalogue is cached for five minutes, but diagnostics refresh each
+    // minute. Recompute per-underlying counts from the retained Map every cycle.
+    const productCountsByUnderlying = countOptionProductsByUnderlying(this.optionProductMap, underlyings);
 
     const next = new Map();
     const counts = {};
@@ -3098,6 +3101,7 @@ export class DeltaEngine {
       const previous = optionCache.get(key);
       if (!previous || n(s.score) > n(previous.score)) optionCache.set(key, s);
     }
+    const optionSnapshotAt = iso();
     const optionCacheRows = [...optionCache.values()].map(s => ({
       cache_key: String(s.underlyingSymbol || '').toUpperCase().replace(/USD$/, '') + ':' + s.strategy,
       underlying: String(s.underlyingSymbol || '').toUpperCase().replace(/USD$/, ''),
@@ -3123,7 +3127,7 @@ export class DeltaEngine {
       side: s.side,
       ready: s.ready,
       blocked_reasons: s.blocked || [],
-      cached_at: iso(),
+      cached_at: optionSnapshotAt,
       details: {
         optionType: s.optionType,
         strike: s.strike,
@@ -3142,7 +3146,28 @@ export class DeltaEngine {
         goldOptionSettlement: String(s.underlyingSymbol || '').toUpperCase().startsWith('XAUT')
       }
     }));
-    await db.upsertMany('dd_option_cache', optionCacheRows, 'cache_key');
+    try {
+      await replaceOptionCacheSnapshot(optionCacheRows, {
+        remove: db.remove,
+        upsertMany: db.upsertMany
+      });
+      await this.log('INFO', 'Options candidate cache replaced with a complete scan snapshot', {
+        candidateRows: optionCacheRows.length,
+        cachedAt: optionSnapshotAt,
+        executionLocked: true,
+        orderRoutingAttempted: false
+      });
+    } catch (error) {
+      // Best-effort clear prevents a failed partial refresh from leaving old
+      // contracts mixed with a newer candidate batch. The UI also rejects stale rows.
+      await db.remove('dd_option_cache', 'cache_key=not.is.null').catch(() => {});
+      await this.log('WARN', 'Options candidate cache replacement failed; cached rows remain untrusted', {
+        candidateRows: optionCacheRows.length,
+        error: String(error?.message || error).slice(0, 240),
+        executionLocked: true,
+        orderRoutingAttempted: false
+      }).catch(() => {});
+    }
 
     this.lastSignals = out;
     await this.logDedupStatsIfDue();
