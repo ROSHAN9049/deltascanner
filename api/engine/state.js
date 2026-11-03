@@ -138,7 +138,9 @@ export default async function handler(req, res) {
         directDeltaExecutionEnabled: false,
         deltaExecutionMode,
         deltaExecutionModeSource,
-        gridEntrySafety: privateDataAuthorized ? heartbeatLog?.data?.gridEntrySafety || null : null
+        gridEntrySafety: privateDataAuthorized ? heartbeatLog?.data?.gridEntrySafety || null : null,
+        gridTestnetDiagnostics: heartbeatLog?.data?.gridTestnetDiagnostics || null,
+        optionsTestnetDiagnostics: heartbeatLog?.data?.optionsTestnetDiagnostics || null
       },
       settings: settingsRows?.[0] || null,
       activity,
