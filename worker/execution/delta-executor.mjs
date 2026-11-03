@@ -493,7 +493,7 @@ export function createDeltaExecutor({
       fill_type: closeFill?.fill_type ?? null,
       reduce_only: orderHistory?.reduce_only ?? null,
       close_order_history_found: Boolean(orderHistory),
-      close_fill_history_complete: true
+      close_fill_history_complete: fillHistory.complete === true
     };
   }
 
