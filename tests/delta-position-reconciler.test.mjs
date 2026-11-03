@@ -220,7 +220,8 @@ test('REST reconciliation persists close-fill details only when they are verifia
   assert.equal(rt.rows[0].fees, 0.2);
   assert.equal(rt.rows[0].fee_currency, 'USD');
   assert.equal(rt.rows[0].realized_pnl, 6);
-  assert.equal(rt.rows[0].exit_reason, 'take_profit_order');
+  assert.equal(rt.rows[0].exit_reason, 'TP');
+  assert.equal(rt.rows[0].realized_pnl_verified, true);
   assert.equal(rt.rows[0].close_order_id, '9001');
 });
 
