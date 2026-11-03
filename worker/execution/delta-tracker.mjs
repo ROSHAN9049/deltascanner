@@ -738,12 +738,10 @@ export class DeltaTestnetTracker {
         const grossPnl = vanilla && contractValue > 0
           ? (side === 'BUY' ? exit.price - entry.price : entry.price - exit.price) * tradeQty * contractValue
           : null;
-        // Delta's reported realized P&L is not fee-adjusted. Publish net P&L
-        // only when both exchange-reported realized P&L and complete fill fees
-        // are verified; never silently treat missing commissions as zero.
-        const netPnl = realizedPnlVerified && fees !== null
-          ? realizedPnl - fees
-          : null;
+        // Delta documents position/fill realized_pnl as net realized P&L.
+        // Keep commissions as a separately reported fee field; subtracting them
+        // again would double-count costs and understate the exchange result.
+        const netPnl = realizedPnlVerified ? realizedPnl : null;
         const pnlPct = netPnl !== null && entryNotional > 0 ? netPnl / entryNotional * 100 : null;
         const result = netPnl !== null
           ? netPnl > 0 ? 'WIN' : netPnl < 0 ? 'LOSS' : 'FLAT'
