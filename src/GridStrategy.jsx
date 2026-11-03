@@ -47,7 +47,7 @@ const fieldMap = {
   gridReduceAfterLosses: 'gridReduceAfterLosses'
 };
 
-export default function GridStrategy({ settings = {}, market = [], busy = false, mutate, accountDataProtected = false, gridEntrySafety = null }) {
+export default function GridStrategy({ settings = {}, market = [], busy = false, mutate, accountDataProtected = false, gridEntrySafety = null, executionMode = 'disabled', testnetDiagnostics = null }) {
   const [draft, setDraft] = useState(() => parseDraft(settings));
   const gridState = settings.grid_state && typeof settings.grid_state === 'object'
     ? settings.grid_state : {};
@@ -87,8 +87,12 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
   const lockedConfig = positions.length > 0;
   const stateStatus = gridState.status || 'OFF';
   const gridNotMigratedToDelta = gridEntrySafety?.reason === 'GRID_NOT_MIGRATED_TO_DELTA_TESTNET';
-  const deltaTestnetGrid = gridEntrySafety?.executionMode === 'testnet' || gridState.executionMode === 'DELTA_TESTNET';
-  const visibleGridStatus = gridNotMigratedToDelta ? 'HELD · NOT MIGRATED' : stateStatus.replaceAll('_', ' ');
+  const deltaTestnetGrid = executionMode === 'testnet' ||
+    gridEntrySafety?.executionMode === 'testnet' || gridState.executionMode === 'DELTA_TESTNET';
+  const gridWaitingForProduct = deltaTestnetGrid && testnetDiagnostics?.testnetProductAvailable !== true;
+  const visibleGridStatus = deltaTestnetGrid
+    ? gridWaitingForProduct ? 'ACTIVE (WAITING FOR TESTNET PRODUCTS)' : 'ACTIVE (DIAGNOSTICS ONLY)'
+    : gridNotMigratedToDelta ? 'HELD · NOT MIGRATED' : stateStatus.replaceAll('_', ' ');
   const lastTrade = trades[0];
 
   if (accountDataProtected) return <Panel title="Grid Strategy · Protected"><div className="lockedText">Grid position state, simulated trades, equity and risk locks are private. Enter the configured engine key in Settings before reviewing or changing Grid configuration.</div></Panel>;
@@ -122,14 +126,16 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
 
   return <>
     <section className="cards">
-      <div className="card"><small>GRID ENGINE</small><strong>{visibleGridStatus}</strong><span>{deltaTestnetGrid ? 'Direct Delta India TESTNET execution; one exchange position with verified bracket protection.' : 'Offline simulator only; not an exchange order engine.'}</span></div>
+      <div className="card"><small>GRID ENGINE</small><strong>{visibleGridStatus}</strong><span>{deltaTestnetGrid
+        ? 'Worker evaluates Grid market data in an isolated diagnostic dry run. Unsupported BTC/ETH products are skipped; no exchange orders or positions are created.'
+        : 'Offline simulator only; not an exchange order engine.'}</span></div>
       <div className="card"><small>INSTRUMENT / LIVE PRICE</small><strong>{symbol}</strong><span>{currentPrice > 0 ? price(currentPrice) : 'Waiting for market price'} · Delta public market feed</span></div>
       <div className="card"><small>OPEN GRID POSITIONS</small><strong>{positions.length} / {GRID_BRIDGE_MAX_POSITIONS}</strong><span>{usd(openRisk === null && positions.length === 0 ? 0 : openRisk)} estimated remaining-to-grid-stop risk.</span></div>
       <div className="card"><small>{deltaTestnetGrid ? 'DELTA TESTNET NET P&L' : 'SIMULATED GRID P&amp;L'}</small><strong className={realizedGridPnl === null ? 'muted' : realizedGridPnl >= 0 ? 'up' : 'down'}>{usd(realizedGridPnl)}</strong><span>{deltaTestnetGrid ? 'Only fully fill-matched trades with verified commissions; otherwise P&L is unverified.' : 'Offline estimate after estimated fees and slippage; not exchange-reported P&amp;L.'}</span></div>
       <div className="card"><small>DAY PNL</small><strong className={totalDayPnl === null ? 'muted' : totalDayPnl >= 0 ? 'up' : 'down'}>{usd(totalDayPnl)}</strong><span>Realized + mark-to-market; daily stop {Number(settings.grid_daily_loss_pct || 2).toFixed(1)}%.</span></div>
       <div className="card"><small>STRATEGY EQUITY</small><strong>{usd(currentEquity)}</strong><span>Sizing basis: {deltaTestnetGrid ? 'Delta Testnet account equity at Grid start' : 'offline-simulator capital'} · Drawdown {drawdownPct === null ? 'NO DATA' : drawdownPct.toFixed(2) + '%'} · hard stop 5%.</span></div>
       <div className="card"><small>MOMENTUM FILTER</small><strong className={momentum.paused ? 'warn' : 'up'}>{momentum.paused ? 'PAUSED' : 'CLEAR'}</strong><span>{momentum.direction || 'NO DATA'} · {momentumMovePct === null ? 'NO DATA' : momentumMovePct.toFixed(2) + '%'} move · reversal {momentumRetracementPct === null ? 'NO DATA' : momentumRetracementPct.toFixed(2) + '%' }.</span></div>
-      <div className="card"><small>EXECUTION</small><strong>{gridNotMigratedToDelta ? 'DELTA TESTNET LOCKED' : deltaTestnetGrid ? 'DELTA TESTNET' : 'SIMULATOR'}</strong><span>{deltaTestnetGrid ? 'Direct Delta Testnet market entries with exchange-attached SL/TP; LIVE remains hard-locked.' : 'Offline simulator; no exchange orders are sent.'}</span></div>
+      <div className="card"><small>EXECUTION</small><strong>{deltaTestnetGrid ? 'TESTNET ORDER ROUTE LOCKED' : gridNotMigratedToDelta ? 'DELTA TESTNET LOCKED' : 'SIMULATOR'}</strong><span>{deltaTestnetGrid ? 'Diagnostic-only: Grid order routing is disabled until the selected symbol has a verified Testnet product and a reviewed execution lifecycle.' : 'Offline simulator; no exchange orders are sent.'}</span></div>
     </section>
 
     <Panel title="Grid Configuration · BTCUSD / ETHUSD">
@@ -152,7 +158,7 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
         {' '}Existing Grid positions continue to follow their own exit rules.
       </div> : null}
         <button className="action" disabled={busy || !readyToStart} onClick={save}>Save Configuration</button>
-        <button className="action gridStart" disabled={busy || !readyToStart || settings.grid_enabled === true || !!gridState.pausedReason || gridSafetyBlocked || gridNotMigratedToDelta} onClick={start}>{gridNotMigratedToDelta ? 'Grid Testnet Not Migrated' : deltaTestnetGrid ? 'Start Grid (Delta Testnet)' : 'Start Grid (Simulator)'}</button>
+        <button className="action gridStart" disabled={busy || !readyToStart || settings.grid_enabled === true || !!gridState.pausedReason || gridSafetyBlocked || gridNotMigratedToDelta || deltaTestnetGrid} onClick={start}>{deltaTestnetGrid ? 'Testnet Diagnostics Only · Orders Locked' : gridNotMigratedToDelta ? 'Grid Testnet Not Migrated' : 'Start Grid (Simulator)'}</button>
         <button className="action" title="New entries stop. Existing positions continue to be managed." disabled={busy || settings.grid_enabled !== true} onClick={pause}>Pause Grid (Exit Only)</button>
         <button className="dangerBtn" title="Resets grid state. Does NOT trigger global Emergency Stop." disabled={busy || lockedConfig || !gridState.pausedReason || settings.emergency_stop === true || ['DAILY_LOSS_LIMIT','OVERALL_DRAWDOWN_STOP'].includes(gridState.pausedReason)} onClick={reset}>Reset Grid Config</button>
       </div>
@@ -198,7 +204,9 @@ export default function GridStrategy({ settings = {}, market = [], busy = false,
       {trades.length ? <div className="tablewrap"><table className="gridLevelsTable"><thead><tr><th>CLOSED</th><th>LEVEL</th><th>ENTRY</th><th>EXIT</th><th>QTY</th><th>NET PNL</th><th>REASON</th></tr></thead><tbody>{trades.slice(0,20).map(trade => <tr key={trade.id}><td>{trade.closedAt ? new Date(trade.closedAt).toLocaleString('en-IN') : '—'}</td><td>G{Number(trade.levelIndex)+1}</td><td>{price(trade.entryPrice)}</td><td>{price(trade.exitPrice)}</td><td>{safeNum(trade.qty) === null ? '—' : safeNum(trade.qty)}</td><td className={safeNum(trade.netPnl) === null ? 'muted' : safeNum(trade.netPnl) >= 0 ? 'up' : 'down'}>{usd(trade.netPnl)}</td><td>{trade.reason}</td></tr>)}</tbody></table></div> : <div className="lockedText">No completed grid trades yet.</div>}
       {lastTrade ? <div className="statusLine">Last trade: {lastTrade.reason} · net {usd(lastTrade.netPnl)} · {lastTrade.symbol}</div> : null}
     </Panel>
-    <div className="gridTestNotice">GRID SAFETY: This is an offline/grid bridge strategy, not a direct Delta Testnet strategy. In Delta Testnet mode, new Grid entries remain blocked until the full entry, bracket protection, partial-exit and reconciliation lifecycle is migrated and verified end-to-end. Do not treat simulated P&amp;L as exchange P&amp;L.</div>
+    <div className="gridTestNotice">{deltaTestnetGrid
+      ? 'GRID TESTNET DIAGNOSTICS: Market data and grid levels are evaluated in memory. BTCUSD / ETHUSD are skipped when absent from the verified Testnet futures allowlist. No Grid order, position, or reservation is created. The single-slot invariant and execution lock remain in force.'
+      : 'GRID SAFETY: This is an offline/grid bridge strategy, not a direct Delta Testnet strategy. Do not treat simulated P&amp;L as exchange P&amp;L.'}</div>
   </>;
 }
 
