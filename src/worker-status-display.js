@@ -14,11 +14,15 @@ export function getWorkerStatusDisplay({
     Number.isFinite(maximum) && maximum >= 1;
   const capReached = hasCapData && current >= maximum;
   const capLabel = hasCapData ? current + '/' + maximum : 'NO DATA';
+  const emergencyStopKnown = typeof emergencyStop === 'boolean';
+  const emergencyStopActive = emergencyStopKnown && emergencyStop === true;
 
   const autoTradeSubtitle = !scannerEnabled
     ? 'Scanner disabled. Market scans and signal refreshes are paused.'
-    : emergencyStop
-      ? '🚨 EMERGENCY STOP ACTIVE. New entries and automatic routing are halted; market scanning may continue.'
+    : !emergencyStopKnown
+      ? 'Emergency Stop state unavailable; entries remain blocked until verified.'
+      : emergencyStopActive
+        ? '🚨 EMERGENCY STOP ACTIVE. New entries and automatic routing are halted; market scanning may continue.'
       : !autoTrade
         ? 'Scanner remains active. Auto Trade is OFF, so no automatic entries are routed.'
         : capReached
@@ -29,8 +33,10 @@ export function getWorkerStatusDisplay({
 
   const continuousSubtitle = !scannerEnabled
     ? 'Scanner is disabled; no market scan or signal refresh occurs.'
-    : emergencyStop
-      ? 'Emergency Stop is active; new entries are halted while public-market scanning may continue.'
+    : !emergencyStopKnown
+      ? 'Emergency Stop state unavailable; entries are blocked until verified.'
+      : emergencyStopActive
+        ? 'Emergency Stop is active; new entries are halted while public-market scanning may continue.'
       : !autoTrade
         ? 'Auto Trade is OFF; the scanner continues to scan, but automatic entries are not routed.'
         : !continuousMode
@@ -49,7 +55,9 @@ export function getWorkerStatusDisplay({
     capLabel,
     autoTradeSubtitle,
     continuousSubtitle,
-    continuousValue: !scannerEnabled ? 'OFF' : emergencyStop ? 'ON · HALTED' : !autoTrade ? 'OFF · AUTO TRADE' : continuousMode ? 'ON · ' + (capReached ? 'BLOCKED' : 'ACTIVE') : 'OFF · MANUAL'
+    emergencyStopKnown,
+    emergencyStopActive,
+    continuousValue: !scannerEnabled ? 'OFF' : !emergencyStopKnown ? 'STATUS UNKNOWN' : emergencyStopActive ? 'ON · HALTED' : !autoTrade ? 'OFF · AUTO TRADE' : continuousMode ? 'ON · ' + (capReached ? 'BLOCKED' : 'ACTIVE') : 'OFF · MANUAL'
   };
 }
 

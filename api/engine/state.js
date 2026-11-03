@@ -1,6 +1,6 @@
 import { CONFIG } from '../../server/config.js';
 import { count, select } from '../../server/db.js';
-import { findWorkerHeartbeatRow, normalizeWorkerExecutionMode, protectEngineState } from '../../server/engine-state-privacy.js';
+import { findWorkerHeartbeatRow, normalizeWorkerExecutionMode, normalizeEmergencyStopValue, protectEngineState } from '../../server/engine-state-privacy.js';
 import { indiaDateKey } from '../../src/date-utils.js';
 import { summarizeVerifiedDeltaClosedPnl } from '../../server/delta-closed-pnl.js';
 import { createEngineSessionCookie, hasEngineAccess, isEngineSessionValid } from '../../server/engine-session.js';
@@ -111,6 +111,11 @@ export default async function handler(req, res) {
         ])
       : [{ ok: false, row: null }, null];
 
+    const rawSettings = Array.isArray(settingsRows) ? settingsRows[0] || null : null;
+    const settings = rawSettings ? {
+      ...rawSettings,
+      emergency_stop: normalizeEmergencyStopValue(rawSettings.emergency_stop)
+    } : null;
     const deltaTestnetPositions = deltaTestnetPositionRows || [];
     const deltaTestnetOrders = deltaTestnetOrderRows || [];
     const deltaTestnetTrades = deltaTestnetTradeRows || [];
@@ -142,7 +147,7 @@ export default async function handler(req, res) {
         gridTestnetDiagnostics: heartbeatLog?.data?.gridTestnetDiagnostics || null,
         optionsTestnetDiagnostics: heartbeatLog?.data?.optionsTestnetDiagnostics || null
       },
-      settings: settingsRows?.[0] || null,
+      settings,
       activity,
       signals: signals || [],
       signalCache: signalCache || [],

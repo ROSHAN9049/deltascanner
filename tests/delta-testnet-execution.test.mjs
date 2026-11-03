@@ -320,6 +320,7 @@ test('close-fill lookup correlates to this entry and ignores later same-symbol c
   assert.equal(details.realized_pnl, 4.5);
   assert.equal(details.close_order_id, '9001');
   assert.equal(details.stop_order_type, 'stop_loss_order');
+  assert.equal(details.close_fill_history_complete, true);
 
   const fillCall = runtime.httpCalls.find(call => new URL(call.url).pathname === '/v2/fills');
   const params = new URL(fillCall.url).searchParams;
@@ -377,7 +378,7 @@ test('WebSocket close persists confirmed close details and does not substitute m
   assert.equal(closePatch.fees, 0.02);
   assert.equal(closePatch.fee_currency, 'USD');
   assert.equal(closePatch.realized_pnl, 6.1);
-  assert.equal(closePatch.exit_reason, 'take_profit_order');
+  assert.equal(closePatch.exit_reason, 'TP');
   assert.equal(closePatch.close_order_id, '9002');
 });
 
@@ -737,12 +738,12 @@ test('closed trade projection requires matching entry order, exit side and full 
   assert.ok(Math.abs(trade.entry_notional - 120) < 1e-9);
   assert.ok(Math.abs(trade.exit_notional - 120.24) < 1e-9);
   assert.ok(Math.abs(trade.fees - 0.04) < 1e-9);
-  assert.equal(trade.net_pnl, 0.16);
+  assert.equal(trade.net_pnl, 0.2);
   assert.equal(trade.fees_verified, true);
   assert.equal(trade.gross_pnl_verified, true);
   assert.equal(trade.net_pnl_verified, true);
   assert.ok(Math.abs(trade.gross_pnl - 0.24) < 1e-9);
-  assert.equal(trade.pnl_pct, (0.16 / 120) * 100);
+  assert.equal(trade.pnl_pct, (0.2 / 120) * 100);
   assert.deepEqual(trade.entry_fill_ids, ['entry-1', 'entry-2']);
   assert.deepEqual(trade.exit_fill_ids, ['exit-1']);
   const rotationBatch = materialized.find(row => row.table === 'dd_rotation_ledger');
@@ -750,9 +751,9 @@ test('closed trade projection requires matching entry order, exit side and full 
   assert.equal(rotationBatch.conflict, 'execution_id');
   assert.equal(rotationBatch.values.length, 1);
   assert.equal(rotationBatch.values[0].execution_id, trade.execution_id);
-  assert.equal(rotationBatch.values[0].profit, 0.16);
-  assert.equal(rotationBatch.values[0].released, 0.144);
-  assert.equal(rotationBatch.values[0].retained, 0.016);
+  assert.equal(rotationBatch.values[0].profit, 0.2);
+  assert.equal(rotationBatch.values[0].released, 0.18);
+  assert.equal(rotationBatch.values[0].retained, 0.02);
   assert.equal(rotationBatch.values[0].rotation_id, 'delta-testnet-rotation:42');
   assert.equal(rotationBatch.values[0].trade_id, null);
   assert.equal(rotationBatch.values[0].created_at, closedPosition.closed_at);
@@ -796,7 +797,7 @@ test('closed trade projection supports partial exits when total fills match the 
   assert.equal(trade.entry_price, 60010);
   assert.equal(trade.exit_price, 60075);
   assert.ok(Math.abs(trade.gross_pnl - 0.26) < 1e-9);
-  assert.equal(trade.net_pnl, 0.22);
+  assert.equal(trade.net_pnl, 0.26);
   assert.deepEqual(trade.exit_fill_ids, ['exit-partial-1', 'exit-partial-2']);
 });
 
@@ -991,7 +992,7 @@ test('E-STOP blocks entries but permits closePosition to submit a reduce-only ex
 });
 
 
-test('closed trade projection withholds net P&L when fill commissions are incomplete', async () => {
+test('uses exchange-reported net P&L while keeping incomplete commission data unverified', async () => {
   const closedPosition = {
     id: 46, symbol: 'BTCUSD', status: 'CLOSED', close_source: 'private_websocket',
     realized_pnl_verified: true, strategy: 'MOMENTUM', side: 'BUY',
@@ -1025,16 +1026,16 @@ test('closed trade projection withholds net P&L when fill commissions are incomp
   assert.equal(trade.fees_verified, false);
   assert.ok(Math.abs(trade.gross_pnl - 0.1) < 1e-9);
   assert.equal(trade.gross_pnl_verified, true);
-  assert.equal(trade.net_pnl, null);
-  assert.equal(trade.net_pnl_verified, false);
-  assert.equal(trade.pnl_pct, null);
-  assert.equal(trade.result, 'GROSS WIN · NET UNVERIFIED');
-  assert.ok(!materialized.some(row => row.table === 'dd_rotation_ledger'));
+  assert.ok(Math.abs(trade.net_pnl - 0.1) < 1e-9);
+  assert.equal(trade.net_pnl_verified, true);
+  assert.ok(Math.abs(trade.pnl_pct - (0.1 / 60 * 100)) < 1e-9);
+  assert.equal(trade.result, 'WIN');
+  assert.ok(Math.abs(materialized.find(row => row.table === 'dd_rotation_ledger').values[0].profit - 0.1) < 1e-9);
 });
 
 
 
-test('closed trade projection withholds fee-adjusted net P&L when settlement currency is unknown', async () => {
+test('uses exchange-reported net P&L when fill settlement currency is unknown', async () => {
   const closedPosition = {
     id: 47, symbol: 'BTCUSD', status: 'CLOSED', close_source: 'private_websocket',
     realized_pnl_verified: true, strategy: 'MOMENTUM', side: 'BUY',
@@ -1066,9 +1067,9 @@ test('closed trade projection withholds fee-adjusted net P&L when settlement cur
   const trade = materialized.find(row => row.table === 'dd_trades').values[0];
   assert.equal(trade.fees, null);
   assert.equal(trade.fees_verified, false);
-  assert.equal(trade.net_pnl, null);
-  assert.equal(trade.net_pnl_verified, false);
-  assert.equal(trade.result, 'GROSS WIN · NET UNVERIFIED');
-  assert.ok(!materialized.some(row => row.table === 'dd_rotation_ledger'));
+  assert.ok(Math.abs(trade.net_pnl - 0.1) < 1e-9);
+  assert.equal(trade.net_pnl_verified, true);
+  assert.equal(trade.result, 'WIN');
+  assert.ok(Math.abs(materialized.find(row => row.table === 'dd_rotation_ledger').values[0].profit - 0.1) < 1e-9);
 });
 

@@ -20,7 +20,9 @@ const end = source.indexOf('\n  const selected = useMemo', start);
 const releaseControls = source.slice(start, end);
 
 test('releasing E-STOP opens a modal and starts a ten-second countdown', () => {
-  assert.match(releaseControls, /settings\.emergency_stop === true/);
+  assert.match(source, /const emergencyStopActive\s*=\s*emergencyStopKnown\s*&&\s*settings\.emergency_stop\s*===\s*true/);
+  assert.match(releaseControls, /if \(emergencyStopActive\)/);
+  assert.match(releaseControls, /if \(!emergencyStopKnown\)/);
   assert.match(releaseControls, /setShowEstopReleaseConfirmation\(true\)/);
   assert.match(releaseControls, /JSON\.stringify\(\{ requestEmergencyStopRelease: true \}\)/);
   assert.match(releaseControls, /setEstopReleaseCountdownEndsAt\(availableAt\)/);

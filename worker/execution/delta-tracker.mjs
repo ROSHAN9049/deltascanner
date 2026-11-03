@@ -594,9 +594,12 @@ export class DeltaTestnetTracker {
         const orderId = explicitEntryOrderId || stringValue(position?.order_id);
         const entryClientOrderId = stringValue(position?.client_order_id);
         const qty = numberOrNull(position?.qty);
-        const realizedPnl = numberOrNull(position?.realized_pnl);
-        const realizedPnlVerified = position?.close_source === 'private_websocket' &&
-          position?.realized_pnl_verified === true && realizedPnl !== null;
+        let realizedPnl = numberOrNull(position?.realized_pnl);
+        let realizedPnlVerified = position?.realized_pnl_verified === true && realizedPnl !== null;
+        let exitReason = deltaCloseFields({}, {
+          exit_reason: position?.exit_reason,
+          close_order_id: position?.close_order_id
+        }).exit_reason;
         const openedMs = Date.parse(position?.opened_at || '');
         const closedMs = Date.parse(position?.closed_at || '');
         if (!position?.id || !symbol || !['BUY', 'SELL'].includes(side) ||
@@ -652,6 +655,61 @@ export class DeltaTestnetTracker {
         });
         const exit = weightedFillAverage(exitFills);
         if (!exit || Math.abs(exit.size - entry.size) > Math.max(1e-8, entry.size * 1e-8)) continue;
+
+        // Backfill realized P&L from Delta's persisted raw flat-position fill.
+        const flatCloseFills = exitFills.filter(fill => {
+          const raw = fill?.raw && typeof fill.raw === 'object' ? fill.raw : {};
+          const next = raw?.meta_data?.new_position ?? raw?.metadata?.new_position;
+          return numberOrNull(next?.size) === 0;
+        }).sort((a, b) => Date.parse(a?.created_at || '') - Date.parse(b?.created_at || ''));
+        const flatCloseFill = flatCloseFills[flatCloseFills.length - 1] || null;
+        const rawClose = flatCloseFill?.raw && typeof flatCloseFill.raw === 'object' ? flatCloseFill.raw : {};
+        const nextPosition = rawClose?.meta_data?.new_position ?? rawClose?.metadata?.new_position ?? {};
+        const fillRealizedPnl = numberOrNull(nextPosition.realized_pnl ?? rawClose.realized_pnl);
+        if (fillRealizedPnl !== null && !realizedPnlVerified && typeof this.database.update === 'function') {
+          const fillReason = deltaCloseFields({}, { ...rawClose, close_order_id: flatCloseFill?.order_id ?? null }).exit_reason;
+          const patch = { realized_pnl: fillRealizedPnl, realized_pnl_verified: true,
+            close_source: position.close_source || 'rest_fill_ledger', updated_at: nowIso() };
+          if (flatCloseFill?.order_id != null) patch.close_order_id = String(flatCloseFill.order_id);
+          if (fillReason !== 'UNKNOWN') patch.exit_reason = fillReason;
+          await this.database.update('dd_delta_positions', 'id=eq.' + encodeURIComponent(String(position.id)), patch);
+          Object.assign(position, patch);
+          realizedPnl = fillRealizedPnl;
+          realizedPnlVerified = true;
+          if (fillReason !== 'UNKNOWN') exitReason = fillReason;
+        }
+        if ((!realizedPnlVerified || exitReason === 'UNKNOWN') &&
+            typeof this.executor.getRecentCloseDetails === 'function' &&
+            typeof this.database.update === 'function') {
+          try {
+            const details = await this.executor.getRecentCloseDetails(symbol, position.opened_at, position);
+            if (details?.close_fill_history_complete === true) {
+              const close = deltaCloseFields({}, details);
+              const patch = { updated_at: nowIso() };
+              if (close.exit_price !== null) patch.exit_price = close.exit_price;
+              if (close.fees !== null) patch.fees = close.fees;
+              if (close.fee_currency) patch.fee_currency = close.fee_currency;
+              if (close.close_order_id) patch.close_order_id = close.close_order_id;
+              if (close.exit_reason !== 'UNKNOWN') patch.exit_reason = close.exit_reason;
+              if (close.realized_pnl !== null) {
+                patch.realized_pnl = close.realized_pnl;
+                patch.realized_pnl_verified = true;
+                patch.close_source = position.close_source || 'rest_fill_backfill';
+              }
+              if (Object.keys(patch).length > 1) {
+                await this.database.update('dd_delta_positions', 'id=eq.' + encodeURIComponent(String(position.id)), patch);
+                Object.assign(position, patch);
+                if (close.realized_pnl !== null) { realizedPnl = close.realized_pnl; realizedPnlVerified = true; }
+                if (close.exit_reason !== 'UNKNOWN') exitReason = close.exit_reason;
+              }
+            }
+          } catch (error) {
+            await this.logSocketWarning('Historical Delta close-fill backfill failed; P&L remains unverified', {
+              symbol, positionId: position.id, error: String(error?.message || error).slice(0, 200)
+            }, 'WARN');
+          }
+        }
+
         // Position qty can already reflect an earlier partial reduction. Use the
         // full fill-matched entry quantity once the aggregate exit fills match it.
         const tradeQty = entry.size;
@@ -680,12 +738,10 @@ export class DeltaTestnetTracker {
         const grossPnl = vanilla && contractValue > 0
           ? (side === 'BUY' ? exit.price - entry.price : entry.price - exit.price) * tradeQty * contractValue
           : null;
-        // Delta's reported realized P&L is not fee-adjusted. Publish net P&L
-        // only when both exchange-reported realized P&L and complete fill fees
-        // are verified; never silently treat missing commissions as zero.
-        const netPnl = realizedPnlVerified && fees !== null
-          ? realizedPnl - fees
-          : null;
+        // Delta documents position/fill realized_pnl as net realized P&L.
+        // Keep commissions as a separately reported fee field; subtracting them
+        // again would double-count costs and understate the exchange result.
+        const netPnl = realizedPnlVerified ? realizedPnl : null;
         const pnlPct = netPnl !== null && entryNotional > 0 ? netPnl / entryNotional * 100 : null;
         const result = netPnl !== null
           ? netPnl > 0 ? 'WIN' : netPnl < 0 ? 'LOSS' : 'FLAT'
@@ -713,7 +769,7 @@ export class DeltaTestnetTracker {
           net_pnl_verified: netPnl !== null,
           pnl_pct: pnlPct,
           r_multiple: null,
-          exit_reason: null,
+          exit_reason: exitReason,
           result,
           entry_fill_ids: entry.ids,
           exit_fill_ids: exit.ids,
@@ -879,11 +935,11 @@ async syncBracketMetadataOnce(key) {
         action: envelope?.action ?? rawRow?.action,
         reason: envelope?.reason ?? rawRow?.reason
       }, details);
-      const botManagedExit = [
-        'bot-exit', 'stop_loss_order', 'take_profit_order'
-      ].includes(close.exit_reason);
+      const botManagedExit = ['BOT', 'SL', 'TP'].includes(close.exit_reason);
       const closeSource = stringValue(envelope?.source).toLowerCase() || 'private_websocket';
-      const realizedPnlVerified = closeSource === 'private_websocket' && close.realized_pnl !== null;
+      const closeDetailsVerified = details?.close_fill_history_complete === true && close.realized_pnl !== null;
+      const realizedPnlVerified = close.realized_pnl !== null &&
+        (closeSource === 'private_websocket' || closeDetailsVerified);
       const closedAt = nowIso();
       await this.database.update('dd_delta_positions', 'id=eq.' + encodeURIComponent(active.id), {
         status: botManagedExit ? 'CLOSED' : 'CLOSED_EXTERNALLY',
