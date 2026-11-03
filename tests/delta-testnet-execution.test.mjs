@@ -320,6 +320,7 @@ test('close-fill lookup correlates to this entry and ignores later same-symbol c
   assert.equal(details.realized_pnl, 4.5);
   assert.equal(details.close_order_id, '9001');
   assert.equal(details.stop_order_type, 'stop_loss_order');
+  assert.equal(details.close_fill_history_complete, true);
 
   const fillCall = runtime.httpCalls.find(call => new URL(call.url).pathname === '/v2/fills');
   const params = new URL(fillCall.url).searchParams;
