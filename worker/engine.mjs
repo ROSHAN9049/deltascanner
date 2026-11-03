@@ -255,6 +255,9 @@ export class DeltaEngine {
     this.lastAccount = 0;
     this.lastGridCandleRefresh = 0;
     this.gridCandleSymbol = '';
+    this.lastGridTestnetDiagnostics = null;
+    this.testnetGridDiagnosticState = createGridState();
+    this.lastOptionsTestnetDiagnostics = null;
     this.lastSignals = [];
     this.lastOptionSignals = [];
     this.optionTickerMap = new Map();
@@ -583,17 +586,149 @@ export class DeltaEngine {
     }
   }
 
-  async manageGridStrategy(settings, account) {
-    // Grid remains explicitly out of scope for this futures execution phase.
-    // Its separate Testnet order path must not be enabled by the Momentum/Scalping switch.
-    if (CONFIG.deltaExecutionMode === 'testnet') {
-      if (settings.grid_enabled === true && !this.testnetGridLockedLogEmitted) {
-        this.testnetGridLockedLogEmitted = true;
-        await this.log('WARN', 'Delta Testnet Grid execution remains hard-locked; only allowlisted Momentum/Scalping futures entries are supported', {
-          symbol: settings.grid_symbol || null,
-          executionBlocked: true
-        });
+  async runTestnetGridDiagnostics(settings = {}, account = {}) {
+    const safeLog = async (level, message, data = {}) => {
+      try {
+        await this.log(level, message, data);
+      } catch (error) {
+        console.warn('[GridDiagnostics] Could not persist diagnostic log:', safeMaintenanceError(error));
       }
+    };
+    const requestedSymbol = String(settings.grid_symbol || 'ETHUSD').trim().toUpperCase();
+    const symbol = ['BTCUSD', 'ETHUSD'].includes(requestedSymbol) ? requestedSymbol : 'ETHUSD';
+    const marketProduct = this.productMap.get(symbol) || null;
+    const ticker = this.tickerMap.get(symbol) || null;
+    const mark = n(ticker?.mark_price || ticker?.close || ticker?.price);
+    const testnetProductAvailable = marketProduct?.executionProductAvailable === true &&
+      isAllowedDeltaTestnetFutureSymbol(symbol);
+    const warningKey = 'GRID-TESTNET-PRODUCT:' + symbol;
+
+    if (!testnetProductAvailable && !this.unsupportedBridgeWarnings.has(warningKey)) {
+      this.unsupportedBridgeWarnings.add(warningKey);
+      await safeLog('WARN', 'Grid skipped: ' + symbol + ' not available on Delta Testnet; market-only diagnostics continue', {
+        symbol,
+        testnetAllowlisted: isAllowedDeltaTestnetFutureSymbol(symbol),
+        testnetProductAvailable: false,
+        executionBlocked: true,
+        orderRoutingAttempted: false
+      });
+    }
+
+    if (!(mark > 0)) {
+      this.lastGridTestnetDiagnostics = {
+        symbol, executionMode: 'testnet', enabled: settings.grid_enabled === true,
+        marketDataAvailable: false, testnetProductAvailable, executionLocked: true,
+        status: 'WAITING_FOR_MARKET_DATA', candidateEntries: 0, updatedAt: iso()
+      };
+      await safeLog('WARN', 'Grid diagnostics skipped: no public market price for ' + symbol, {
+        symbol, executionBlocked: true, orderRoutingAttempted: false
+      });
+      return this.lastGridTestnetDiagnostics;
+    }
+
+    try {
+      const needsRefresh = this.gridCandleSymbol !== symbol ||
+        Date.now() - this.lastGridCandleRefresh >= 15000;
+      if (needsRefresh) {
+        await this.refreshCandle(symbol, '1m');
+        this.gridCandleSymbol = symbol;
+        this.lastGridCandleRefresh = Date.now();
+      }
+    } catch (error) {
+      await safeLog('WARN', 'Grid diagnostic candle refresh failed; main futures scan continues', {
+        symbol, error: String(error?.message || error).slice(0, 200),
+        executionBlocked: true, orderRoutingAttempted: false
+      });
+    }
+
+    const candles = this.getCandles(symbol, '1m');
+    const dataFresh = this.gridCandleSymbol === symbol &&
+      Date.now() - this.lastGridCandleRefresh < 60000 &&
+      Array.isArray(candles) && candles.length >= 6;
+
+    try {
+      // This is a memory-only dry run. It may report hypothetical level crossings,
+      // but it never persists positions/reservations or calls an execution adapter.
+      const prior = this.testnetGridDiagnosticState || createGridState();
+      const isolatedState = {
+        ...prior,
+        positions: [],
+        trades: [],
+        events: Array.isArray(prior.events) ? prior.events.slice(-20) : []
+      };
+      const result = evaluateGridTick({
+        settings: {
+          ...settings,
+          grid_symbol: symbol,
+          grid_enabled: settings.grid_enabled === true
+        },
+        state: isolatedState,
+        price: mark,
+        equity: n(account?.equity),
+        available: n(account?.available),
+        contractValue: n(marketProduct?.contract_value) || 1,
+        makerFeeRate: Number.isFinite(Number(marketProduct?.maker_commission_rate))
+          ? Number(marketProduct.maker_commission_rate) : 0.0002,
+        slippagePct: 0.02,
+        candles: Array.isArray(candles) ? candles : [],
+        dataFresh,
+        emergencyStop: settings.emergency_stop === true,
+        timestamp: Date.now(),
+        maxLeverage: n(settings.max_leverage) || 3
+      });
+      this.testnetGridDiagnosticState = {
+        ...result.state,
+        positions: [],
+        trades: [],
+        openRiskUsd: 0,
+        events: (result.state.events || []).slice(-20)
+      };
+      this.lastGridTestnetDiagnostics = {
+        symbol,
+        executionMode: 'testnet',
+        enabled: settings.grid_enabled === true,
+        marketDataAvailable: true,
+        testnetProductAvailable,
+        executionLocked: true,
+        status: testnetProductAvailable ? 'DIAGNOSTICS_ONLY' : 'WAITING_FOR_TESTNET_PRODUCTS',
+        markPrice: mark,
+        candlesAvailable: Array.isArray(candles) ? candles.length : 0,
+        candlesFresh: dataFresh,
+        candidateEntries: result.entered.length,
+        candidateExits: result.exited.length,
+        orderRoutingAttempted: false,
+        updatedAt: iso()
+      };
+      await safeLog(testnetProductAvailable ? 'INFO' : 'WARN',
+        testnetProductAvailable
+          ? 'Grid Testnet diagnostics evaluated; execution remains hard-locked'
+          : 'Grid skipped: ' + symbol + ' not available on Testnet; diagnostic evaluation only',
+        {
+          ...this.lastGridTestnetDiagnostics,
+          note: 'Memory-only dry run. Hypothetical entries are not exchange orders or open positions.'
+        });
+      return this.lastGridTestnetDiagnostics;
+    } catch (error) {
+      this.lastGridTestnetDiagnostics = {
+        symbol, executionMode: 'testnet', enabled: settings.grid_enabled === true,
+        marketDataAvailable: true, testnetProductAvailable, executionLocked: true,
+        status: 'DIAGNOSTICS_ERROR', error: String(error?.message || error).slice(0, 200),
+        candidateEntries: 0, orderRoutingAttempted: false, updatedAt: iso()
+      };
+      await safeLog('WARN', 'Grid diagnostic evaluation failed; Momentum/Scalping processing continues', {
+        symbol, error: String(error?.message || error).slice(0, 200),
+        executionBlocked: true, orderRoutingAttempted: false
+      });
+      return this.lastGridTestnetDiagnostics;
+    }
+  }
+
+  async manageGridStrategy(settings, account) {
+    // Testnet Grid is evaluated only through an isolated in-memory dry run.
+    // It never submits orders, writes position reservations, or changes the
+    // existing single-slot Grid execution invariant.
+    if (CONFIG.deltaExecutionMode === 'testnet') {
+      await this.runTestnetGridDiagnostics(settings, account);
       return;
     }
     let priorState = settings.grid_state;
@@ -1850,15 +1985,63 @@ export class DeltaEngine {
     return { reasons: [...new Set(reasons)], size };
   }
 
+  async refreshOptionDiagnosticsSafely(settings = {}) {
+    try {
+      await this.refreshOptionTickers(settings);
+      return true;
+    } catch (error) {
+      this.optionProductMap.clear();
+      this.optionTickerMap.clear();
+      this.lastOptionsTestnetDiagnostics = {
+        executionMode: CONFIG.deltaExecutionMode,
+        enabled: settings.options_enabled !== false,
+        status: 'DIAGNOSTICS_ERROR',
+        testnetProductsAvailable: 0,
+        optionTickersAvailable: 0,
+        executionLocked: true,
+        error: String(error?.message || error).slice(0, 240),
+        updatedAt: iso()
+      };
+      try {
+        await this.log('WARN', 'Options diagnostics skipped after product/quote refresh failure; Momentum/Scalping scan continues', {
+          error: String(error?.message || error).slice(0, 240),
+          executionBlocked: true,
+          orderRoutingAttempted: false
+        });
+      } catch (logError) {
+        console.warn('[OptionsDiagnostics] Could not persist refresh warning:', safeMaintenanceError(logError));
+      }
+      return false;
+    }
+  }
+
+  async analyseOptionsSafely(futuresItems, account, settings, openPositions) {
+    try {
+      return await this.analyseOptions(futuresItems, account, settings, openPositions);
+    } catch (error) {
+      this.lastOptionSignals = [];
+      try {
+        await this.log('WARN', 'Options analysis skipped after diagnostic error; Momentum/Scalping scan continues', {
+          error: String(error?.message || error).slice(0, 240),
+          executionBlocked: true,
+          orderRoutingAttempted: false
+        });
+      } catch (logError) {
+        console.warn('[OptionsDiagnostics] Could not persist analysis warning:', safeMaintenanceError(logError));
+      }
+      return [];
+    }
+  }
+
   async refreshOptionTickers(settings = {}) {
     // Public India tickers supply quotes/Greeks. In Testnet mode every symbol
     // must first match a LIVE product from the Testnet catalogue so a public
     // production product_id can never leak into a future Testnet order.
     const testnetMode = CONFIG.deltaExecutionMode === 'testnet';
-    const underlyings = testnetMode
-      ? OPTION_UNDERLYINGS.filter(asset => ['BTC', 'ETH'].includes(asset))
-      : [...OPTION_UNDERLYINGS];
+    const underlyings = [...OPTION_UNDERLYINGS];
     const now = Date.now();
+    const productCountsByUnderlying = Object.fromEntries(underlyings.map(asset => [asset, 0]));
+    let productCatalogueError = null;
 
     if (testnetMode && (
       !this.lastOptionProductFetch ||
@@ -1871,7 +2054,7 @@ export class DeltaEngine {
           const symbol = String(product?.symbol || '').toUpperCase();
           const contractType = String(product?.contract_type || '').toLowerCase();
           const match = symbol.match(/^[CP]-([A-Z0-9]+)-/);
-          if (!match || !['BTC', 'ETH'].includes(match[1]) ||
+          if (!match || !OPTION_UNDERLYINGS.includes(match[1]) ||
               !['call_options', 'put_options'].includes(contractType)) continue;
           if (product.state && String(product.state).toLowerCase() !== 'live') continue;
 
@@ -1893,15 +2076,19 @@ export class DeltaEngine {
             state: product.state || 'live',
             testnet_product_verified: true
           });
+          productCountsByUnderlying[match[1]] += 1;
         }
         this.optionProductMap = productMap;
         this.lastOptionProductFetch = now;
       } catch (error) {
         this.optionProductMap.clear();
         this.lastOptionProductFetch = now;
+        productCatalogueError = String(error?.message || error).slice(0, 240);
         await this.log('WARN', 'Testnet option product catalogue unavailable; Options remain analysis-blocked', {
-          error: String(error?.message || error).slice(0, 240)
-        });
+          error: productCatalogueError,
+          executionBlocked: true,
+          orderRoutingAttempted: false
+        }).catch(() => {});
       }
     }
 
@@ -1956,12 +2143,49 @@ export class DeltaEngine {
 
     this.optionTickerMap = next;
     this.lastOptionTickerFetch = now;
+    const testnetProductsAvailable = testnetMode ? this.optionProductMap.size : null;
+    const missingUnderlyings = testnetMode
+      ? underlyings.filter(asset => productCountsByUnderlying[asset] === 0)
+      : [];
+    this.lastOptionsTestnetDiagnostics = {
+      executionMode: testnetMode ? 'testnet' : CONFIG.deltaExecutionMode,
+      enabled: settings.options_enabled !== false,
+      supportedUnderlyings: underlyings,
+      productCountsByUnderlying,
+      quoteCountsByUnderlying: counts,
+      testnetProductsAvailable,
+      optionTickersAvailable: next.size,
+      missingUnderlyings,
+      productCatalogueError,
+      executionLocked: true,
+      status: !testnetMode ? 'ANALYSIS_ACTIVE'
+        : testnetProductsAvailable === 0 ? 'WAITING_FOR_TESTNET_PRODUCTS'
+          : next.size === 0 ? 'WAITING_FOR_TESTNET_QUOTES' : 'DIAGNOSTICS_ACTIVE',
+      updatedAt: iso()
+    };
+    if (testnetMode && testnetProductsAvailable === 0) {
+      await this.log('WARN', 'Options skipped: BTC/ETH/XAUT option contracts are not available on Delta Testnet; Momentum/Scalping futures scan continues', {
+        supportedUnderlyings: underlyings,
+        missingUnderlyings,
+        productCatalogueError,
+        executionBlocked: true,
+        orderRoutingAttempted: false
+      }).catch(() => {});
+    } else if (testnetMode && missingUnderlyings.length) {
+      await this.log('WARN', 'Options partially skipped: one or more underlyings have no eligible Delta Testnet option contracts', {
+        missingUnderlyings,
+        productCountsByUnderlying,
+        executionBlocked: true,
+        orderRoutingAttempted: false
+      }).catch(() => {});
+    }
     await this.log('INFO', 'Bounded option universe refreshed', {
       contracts: next.size,
       underlyings,
       counts,
       maxContractsPerUnderlying: 24,
-      testnetProductCatalogueMatched: testnetMode
+      testnetProductCatalogueMatched: testnetMode,
+      executionLocked: true
     });
   }
 
@@ -2841,7 +3065,7 @@ export class DeltaEngine {
     // Persist compact stage history in one request before caching/routing.
     // Unchanged observations (including WATCH) are filtered by the dedup cache.
     await this.persistSignalHistorySafely(signalHistoryRows);
-    const optionSignals = await this.analyseOptions(out, account, settings, openPositions || []);
+    const optionSignals = await this.analyseOptionsSafely(out, account, settings, openPositions || []);
     const byUnderlying = new Map();
     for (const s of optionSignals) {
       const key = String(s.underlyingSymbol || '').toUpperCase();
@@ -4260,9 +4484,18 @@ export class DeltaEngine {
     await this.refreshCandleWarmup();
     if (settings.options_enabled !== false &&
         (!this.lastOptionTickerFetch || Date.now() - this.lastOptionTickerFetch >= 60000)) {
-      await this.refreshOptionTickers(settings);
+      await this.refreshOptionDiagnosticsSafely(settings);
     } else if (settings.options_enabled === false) {
       this.optionTickerMap.clear();
+      this.lastOptionsTestnetDiagnostics = {
+        executionMode: CONFIG.deltaExecutionMode,
+        enabled: false,
+        status: 'DISABLED_BY_SETTING',
+        testnetProductsAvailable: 0,
+        optionTickersAvailable: 0,
+        executionLocked: true,
+        updatedAt: iso()
+      };
     }
 
     const account = await this.accountSnapshot(settings);
@@ -4460,7 +4693,9 @@ export class DeltaEngine {
       positions: (positions || []).filter(position =>
         Math.abs(n(position?.qty ?? position?.size)) > 0
       ).length,
-      gridEntrySafety: this.lastGridEntrySafety || null
+      gridEntrySafety: this.lastGridEntrySafety || null,
+      gridTestnetDiagnostics: this.lastGridTestnetDiagnostics || null,
+      optionsTestnetDiagnostics: this.lastOptionsTestnetDiagnostics || null
     });
   }
   async recordMemoryUsage(reason = 'periodic') {
