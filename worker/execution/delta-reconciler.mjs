@@ -231,17 +231,18 @@ export function createDeltaPositionReconciler({
           if (close.realized_pnl === null && existingRealizedPnl !== null) {
             close.realized_pnl = existingRealizedPnl;
           }
-          const botManagedExit = [
-            'bot-exit', 'stop_loss_order', 'take_profit_order'
-          ].includes(close.exit_reason);
+          const botManagedExit = ['BOT', 'SL', 'TP'].includes(close.exit_reason);
           const closeStatus = botManagedExit ? 'CLOSED' : 'CLOSED_EXTERNALLY';
+          const closeDetailsVerified = details?.close_fill_history_complete === true &&
+            close.realized_pnl !== null;
           const changed = await updateOpenRow(row.id, {
             status: closeStatus,
             closed_at: timestamp,
             updated_at: timestamp,
             unrealized_pnl: 0,
             close_source: 'rest_reconcile',
-            realized_pnl_verified: false,
+            realized_pnl_verified: closeDetailsVerified ||
+              (row.realized_pnl_verified === true && existingRealizedPnl !== null),
             ...close
           });
           if (changed && closeStatus === 'CLOSED_EXTERNALLY') markedClosedExternally += 1;
