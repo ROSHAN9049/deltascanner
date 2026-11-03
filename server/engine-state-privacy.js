@@ -118,6 +118,16 @@ function publicHeartbeatRows(logs) {
   }];
 }
 
+/** Normalize Postgres boolean representations before the UI consumes engine state. */
+export function normalizeEmergencyStopValue(value) {
+  if (value === true || value === false) return value;
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  if (['true', 't', '1', 'yes', 'on'].includes(normalized)) return true;
+  if (['false', 'f', '0', 'no', 'off'].includes(normalized)) return false;
+  return null;
+}
+
 /** Hide private account ledgers and sizing unless the engine session is authenticated. */
 export function protectEngineState(payload, authorized) {
   const state = { ...payload, accountDataProtected: !authorized };
