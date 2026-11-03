@@ -4,11 +4,13 @@ import { readFile } from 'node:fs/promises';
 
 const source = await readFile(new URL('../src/GridStrategy.jsx', import.meta.url), 'utf8');
 
-test('Grid UI uses direct Delta Testnet execution labels after worker migration', () => {
-  assert.match(source, /gridEntrySafety\?\.executionMode\s*===\s*'testnet'/);
-  assert.match(source, /Start Grid \(Delta Testnet\)/);
-  assert.match(source, /Direct Delta Testnet market entries with exchange-attached SL\/TP/);
-  assert.match(source, /LIVE remains hard-locked/);
+test('Grid UI labels Testnet as active diagnostics while keeping order routing disabled', () => {
+  assert.match(source, /executionMode\s*===\s*'testnet'/);
+  assert.match(source, /ACTIVE \(WAITING FOR TESTNET PRODUCTS\)/);
+  assert.match(source, /TESTNET ORDER ROUTE LOCKED/);
+  assert.match(source, /Testnet Diagnostics Only · Orders Locked/);
+  assert.match(source, /no exchange orders or positions are created/);
+  assert.doesNotMatch(source, /Start Grid \(Delta Testnet\)/);
 });
 
 test('Grid P&L distinguishes verified Testnet net P&L from simulator estimates', () => {
