@@ -3,11 +3,15 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const source = await readFile(new URL('../src/GridStrategy.jsx', import.meta.url), 'utf8');
+const sharedStatusSource = await readFile(new URL('../shared/grid-settings.js', import.meta.url), 'utf8');
 
-test('Grid UI labels Testnet as active diagnostics while keeping order routing disabled', () => {
+test('Grid UI separates diagnostic activity from persisted halt and keeps Testnet orders locked', () => {
   assert.match(source, /executionMode\s*===\s*'testnet'/);
-  assert.match(source, /ACTIVE \(WAITING FOR TESTNET PRODUCTS\)/);
+  assert.match(sharedStatusSource, /DIAGNOSTICS ACTIVE · WAITING FOR TESTNET PRODUCTS/);
+  assert.match(sharedStatusSource, /DIAGNOSTICS ACTIVE · GRID HALTED/);
+  assert.match(source, /getGridDisplayStatus/);
   assert.match(source, /TESTNET ORDER ROUTE LOCKED/);
+  assert.match(source, /LOCKED · NO ORDER/);
   assert.match(source, /Testnet Diagnostics Only · Orders Locked/);
   assert.match(source, /no exchange orders or positions are created/);
   assert.doesNotMatch(source, /Start Grid \(Delta Testnet\)/);
