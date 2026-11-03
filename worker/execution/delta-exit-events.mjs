@@ -17,29 +17,31 @@ export function normalizeDeltaExitReason(event = {}) {
     value.toLowerCase().replace(/[\s-]+/g, '_')
   );
 
-  if (tokens.some(value => value.includes('liquidation'))) return 'liquidation';
-  if (tokens.some(value => value === 'adl' || value.includes('auto_deleveraging'))) return 'adl';
-  if (tokens.some(value => value.includes('settlement'))) return 'settlement';
-  if (tokens.some(value => value.includes('stop_loss'))) return 'stop_loss_order';
-  if (tokens.some(value => value.includes('take_profit'))) return 'take_profit_order';
+  if (tokens.some(value => value.includes('liquidation'))) return 'LIQUIDATION';
+  if (tokens.some(value => value === 'adl' || value.includes('auto_deleveraging'))) return 'ADL';
+  if (tokens.some(value => value.includes('settlement'))) return 'SETTLEMENT';
+  if (tokens.some(value => value === 'sl' || value.includes('stop_loss'))) return 'SL';
+  if (tokens.some(value => value === 'tp' || value.includes('take_profit'))) return 'TP';
+  if (tokens.some(value => value === 'manual' || value.includes('manual_or_external'))) return 'MANUAL';
+  if (tokens.some(value => value === 'bot' || value.includes('bot_exit'))) return 'BOT';
 
   const clientOrderId = stringValue(event.client_order_id ?? event.clientOrderId);
-  if (/^DDX-X(?:-|$)/i.test(clientOrderId)) return 'bot-exit';
+  if (/^DDX-X(?:-|$)/i.test(clientOrderId)) return 'BOT';
 
   if (clientOrderId) {
     if (/^DD[MSG]-/i.test(clientOrderId) || /^DDX(?:-|$)/i.test(clientOrderId)) {
-      return 'unknown';
+      return 'UNKNOWN';
     }
-    return 'manual-or-external';
+    return 'MANUAL';
   }
 
   if (event.close_order_history_found === true ||
       event.closeOrderHistoryFound === true ||
       event.reduce_only === true || event.reduceOnly === true) {
-    return 'manual-or-external';
+    return 'MANUAL';
   }
 
-  return 'unknown';
+  return 'UNKNOWN';
 }
 
 function firstNumber(sources, keys) {
