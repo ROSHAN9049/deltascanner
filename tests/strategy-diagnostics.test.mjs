@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 
 process.env.DELTA_ENVIRONMENT = 'TESTNET';
 process.env.DELTA_EXECUTION_MODE = 'testnet';
-process.env.DELTA_TESTNET_API_KEY = '';
-process.env.DELTA_TESTNET_API_SECRET = '';
+process.env.DELTA_TESTNET_API_KEY = 'unit-test-key';
+process.env.DELTA_TESTNET_API_SECRET = 'unit-test-secret';
 
 const { DeltaEngine } = await import('../worker/engine.mjs');
 const { OPTIONS_EXECUTION_ALLOWED, isOptionsExecutionAllowed } = await import('../worker/options-execution-lock.mjs');
