@@ -11,7 +11,7 @@ import { buildRiskGovernorGates, buildNormalizedScoreDiagnostic } from './risk-g
 import { normalizedScoreFromView as normalizedScoreFrom, visibleScoreFrom, passesScoreFilter, normalizedScoreTooltip, showAllPreferenceKey, readShowAllPreference, writeShowAllPreference } from './normalized-score-view.js';
 import { resolveDashboardRouteContext } from './dashboard-route-state.js';
 import { summarizeRotationLedger } from './rotation-ledger-state.js';
-import { assessOptionsCacheFreshness } from './options-cache-freshness.js';
+import { assessOptionsCacheFreshness, selectCurrentOptionsCacheRows } from './options-cache-freshness.js';
 import { formatHealthAge, formatLeaseRemaining, formatRetentionLastRun, getEmergencyStopTooltip, getGlobalPositionCapDisplay, getWorkerStatusDisplay, getExchangeHealthDisplay } from './worker-status-display.js';
 
 const tabs = [
@@ -381,7 +381,7 @@ function App() {
     {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" strategy="MOMENTUM" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'scalping' && <EngineView engine="SCALPING" signals={signals} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols} />}
     {tab === 'grid' && <GridStrategy settings={settings} market={market} busy={busy} mutate={mutate} accountDataProtected={accountDataProtected} gridEntrySafety={executionCoverage?.gridEntrySafety || null} executionMode={executionCoverage?.deltaExecutionMode || 'disabled'} testnetDiagnostics={executionCoverage?.gridTestnetDiagnostics || null} />}
-    {tab === 'options' && <OptionsView signals={signals} settings={settings} optionCache={optionCache} executionCoverage={state?.executionCoverage || null} />}
+    {tab === 'options' && <OptionsView settings={settings} optionCache={optionCache} executionCoverage={state?.executionCoverage || null} />}
     {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" strategy="SCALPING" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'positions' && <Positions rows={positions} accountDataProtected={accountDataProtected} />}
     {tab === 'delta-testnet-positions' && <DeltaTestnetPositions rows={state?.deltaTestnetPositions || []} accountDataProtected={accountDataProtected} mode={executionCoverage?.deltaExecutionMode || 'disabled'} />}
@@ -693,10 +693,10 @@ function EngineView({ engine, signals, entrySafetyBlocked = false, entrySafetyRe
   })}{!rows.length ? <tr><td colSpan={14}>{showAllSignals ? 'No signal rows are available for this engine.' : 'No signals have a normalized score or original-score fallback ≥80. Signals without either score cannot pass this filter.'}</td></tr> : null}</tbody></table></div></Panel>;
 }
 
-function OptionsView({ signals, settings, optionCache = [], executionCoverage = null }) {
-  const sourceRows = optionCache.length
-    ? optionCache
-    : signals.filter(x => x.strategy === 'OPTIONS_BUY' || x.strategy === 'OPTIONS_SELL');
+function OptionsView({ settings, optionCache = [], executionCoverage = null }) {
+  // Only the dedicated cache represents the latest complete candidate snapshot.
+  // Never fall back to historical dd_signals after an intentionally empty refresh.
+  const sourceRows = selectCurrentOptionsCacheRows(optionCache);
   const freshness = assessOptionsCacheFreshness(sourceRows);
   const rows = (freshness.fresh ? [...sourceRows] : [])
     .sort((a,b) => num(b.score) - num(a.score));
