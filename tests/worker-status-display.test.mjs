@@ -80,6 +80,17 @@ test('auto off keeps the scanner active while disabling automatic entries', () =
   assert.equal(status.autoTradeSubtitle, 'Scanner remains active. Auto Trade is OFF, so no automatic entries are routed.');
 });
 
+test('unknown emergency-stop state is explicit and fail-closed', () => {
+  const status = getWorkerStatusDisplay({
+    autoTrade: true, continuousMode: true, emergencyStop: null,
+    currentOpenPositions: 0, maxOpenPositions: 20
+  });
+  assert.equal(status.emergencyStopKnown, false);
+  assert.equal(status.continuousValue, 'STATUS UNKNOWN');
+  assert.match(status.autoTradeSubtitle, /state unavailable/i);
+  assert.match(status.continuousSubtitle, /entries are blocked/i);
+});
+
 test('emergency stop overrides auto trade and cap subtitles', () => {
   const status = getWorkerStatusDisplay({
     autoTrade: true, continuousMode: true, emergencyStop: true,
