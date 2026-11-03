@@ -492,7 +492,8 @@ export function createDeltaExecutor({
       order_type: orderHistory?.order_type ?? closeFill?.meta_data?.order_type ?? null,
       fill_type: closeFill?.fill_type ?? null,
       reduce_only: orderHistory?.reduce_only ?? null,
-      close_order_history_found: Boolean(orderHistory)
+      close_order_history_found: Boolean(orderHistory),
+      close_fill_history_complete: true
     };
   }
 
