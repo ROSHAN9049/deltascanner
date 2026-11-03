@@ -1193,10 +1193,6 @@ export class DeltaEngine {
   async refreshTickers() {
     const raw = await this.adapter.tickers();
     const all = (Array.isArray(raw) ? raw : []).filter(x => x.contract_type === 'perpetual_futures');
-    // The catalogue is cached for five minutes, but diagnostics refresh each
-    // minute. Recompute per-underlying counts from the retained Map every cycle.
-    const productCountsByUnderlying = countOptionProductsByUnderlying(this.optionProductMap, underlyings);
-
     const next = new Map();
     for (const t of all) {
       const symbol = String(t.symbol || '').toUpperCase();
@@ -1247,7 +1243,7 @@ export class DeltaEngine {
           position_notional_limit: n(p.position_notional_limit || p.position_limit_notional),
           market_rank: index + 1,
           active: true,
-          cached_at: optionSnapshotAt,
+          cached_at: iso(),
           details: {
             description: p.description || null,
             shortDescription: p.short_description || null,
@@ -2100,6 +2096,10 @@ export class DeltaEngine {
         }).catch(() => {});
       }
     }
+
+    // The catalogue is cached for five minutes, but diagnostics refresh each
+    // minute. Recompute per-underlying counts from the retained Map every cycle.
+    const productCountsByUnderlying = countOptionProductsByUnderlying(this.optionProductMap, underlyings);
 
     const next = new Map();
     const counts = {};
@@ -3127,7 +3127,7 @@ export class DeltaEngine {
       side: s.side,
       ready: s.ready,
       blocked_reasons: s.blocked || [],
-      cached_at: iso(),
+      cached_at: optionSnapshotAt,
       details: {
         optionType: s.optionType,
         strike: s.strike,
