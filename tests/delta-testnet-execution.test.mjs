@@ -992,7 +992,7 @@ test('E-STOP blocks entries but permits closePosition to submit a reduce-only ex
 });
 
 
-test('closed trade projection withholds net P&L when fill commissions are incomplete', async () => {
+test('uses exchange-reported net P&L while keeping incomplete commission data unverified', async () => {
   const closedPosition = {
     id: 46, symbol: 'BTCUSD', status: 'CLOSED', close_source: 'private_websocket',
     realized_pnl_verified: true, strategy: 'MOMENTUM', side: 'BUY',
@@ -1026,16 +1026,16 @@ test('closed trade projection withholds net P&L when fill commissions are incomp
   assert.equal(trade.fees_verified, false);
   assert.ok(Math.abs(trade.gross_pnl - 0.1) < 1e-9);
   assert.equal(trade.gross_pnl_verified, true);
-  assert.equal(trade.net_pnl, null);
-  assert.equal(trade.net_pnl_verified, false);
-  assert.equal(trade.pnl_pct, null);
-  assert.equal(trade.result, 'GROSS WIN · NET UNVERIFIED');
-  assert.ok(!materialized.some(row => row.table === 'dd_rotation_ledger'));
+  assert.ok(Math.abs(trade.net_pnl - 0.1) < 1e-9);
+  assert.equal(trade.net_pnl_verified, true);
+  assert.ok(Math.abs(trade.pnl_pct - (0.1 / 60 * 100)) < 1e-9);
+  assert.equal(trade.result, 'WIN');
+  assert.ok(Math.abs(materialized.find(row => row.table === 'dd_rotation_ledger').values[0].profit - 0.1) < 1e-9);
 });
 
 
 
-test('closed trade projection withholds fee-adjusted net P&L when settlement currency is unknown', async () => {
+test('uses exchange-reported net P&L when fill settlement currency is unknown', async () => {
   const closedPosition = {
     id: 47, symbol: 'BTCUSD', status: 'CLOSED', close_source: 'private_websocket',
     realized_pnl_verified: true, strategy: 'MOMENTUM', side: 'BUY',
@@ -1067,9 +1067,9 @@ test('closed trade projection withholds fee-adjusted net P&L when settlement cur
   const trade = materialized.find(row => row.table === 'dd_trades').values[0];
   assert.equal(trade.fees, null);
   assert.equal(trade.fees_verified, false);
-  assert.equal(trade.net_pnl, null);
-  assert.equal(trade.net_pnl_verified, false);
-  assert.equal(trade.result, 'GROSS WIN · NET UNVERIFIED');
-  assert.ok(!materialized.some(row => row.table === 'dd_rotation_ledger'));
+  assert.ok(Math.abs(trade.net_pnl - 0.1) < 1e-9);
+  assert.equal(trade.net_pnl_verified, true);
+  assert.equal(trade.result, 'WIN');
+  assert.ok(Math.abs(materialized.find(row => row.table === 'dd_rotation_ledger').values[0].profit - 0.1) < 1e-9);
 });
 

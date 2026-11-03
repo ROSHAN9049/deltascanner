@@ -207,7 +207,8 @@ test('REST reconciliation persists close-fill details only when they are verifia
     close_order_id: '9001',
     stop_order_type: 'take_profit_order',
     client_order_id: 'DDM-BTCUSD-entry',
-    close_order_history_found: true
+    close_order_history_found: true,
+    close_fill_history_complete: true
   });
 
   const reconciler = createDeltaPositionReconciler({
