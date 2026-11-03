@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { protectEngineState } from '../server/engine-state-privacy.js';
+import { protectEngineState, normalizeEmergencyStopValue } from '../server/engine-state-privacy.js';
 
 function sampleState() {
   return {
@@ -115,4 +115,15 @@ test('authenticated response preserves Delta Testnet ledgers and settings', () =
   assert.deepEqual(state.deltaTestnetFillSyncState, input.deltaTestnetFillSyncState);
   assert.equal(state.deltaTestnetFillCount, input.deltaTestnetFillCount);
   assert.deepEqual(state.logs, input.logs);
+});
+
+test('database emergency-stop values normalize to an explicit boolean or unknown', () => {
+  assert.equal(normalizeEmergencyStopValue(true), true);
+  assert.equal(normalizeEmergencyStopValue(false), false);
+  assert.equal(normalizeEmergencyStopValue('true'), true);
+  assert.equal(normalizeEmergencyStopValue(' FALSE '), false);
+  assert.equal(normalizeEmergencyStopValue('t'), true);
+  assert.equal(normalizeEmergencyStopValue('f'), false);
+  assert.equal(normalizeEmergencyStopValue(null), null);
+  assert.equal(normalizeEmergencyStopValue('unknown'), null);
 });
