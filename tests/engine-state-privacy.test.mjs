@@ -30,7 +30,21 @@ function sampleState() {
     executionCoverage: {
       directDeltaExecutionEnabled: false, deltaExecutionMode: 'testnet',
       deltaExecutionModeSource: 'supabase-worker-heartbeat',
-      gridEntrySafety: { configured: false, trusted: null, blocked: true, reason: 'GRID_NOT_MIGRATED_TO_DELTA_TESTNET' }
+      gridEntrySafety: { configured: false, trusted: null, blocked: true, reason: 'GRID_NOT_MIGRATED_TO_DELTA_TESTNET' },
+      gridTestnetDiagnostics: {
+        symbol: 'BTCUSD', executionMode: 'testnet', enabled: true, marketDataAvailable: true,
+        testnetProductAvailable: false, executionLocked: false, status: 'WAITING_FOR_TESTNET_PRODUCTS',
+        candidateEntries: 2, candidateExits: 1, orderRoutingAttempted: true,
+        error: 'private diagnostic text must not leak'
+      },
+      optionsTestnetDiagnostics: {
+        executionMode: 'testnet', enabled: true, supportedUnderlyings: ['BTC', 'ETH', 'XAUT', 'PRIVATE'],
+        productCountsByUnderlying: { BTC: 0, ETH: 1, XAUT: 0, PRIVATE: 999 },
+        quoteCountsByUnderlying: { BTC: 0, ETH: 3, XAUT: 0 },
+        testnetProductsAvailable: 1, optionTickersAvailable: 3,
+        missingUnderlyings: ['BTC', 'XAUT'], executionLocked: false,
+        status: 'DIAGNOSTICS_ACTIVE', error: 'private option error must not leak'
+      }
     },
     deltaTestnetPositions: [{ symbol: 'ETHUSD', qty: 2 }],
     deltaTestnetOpenPositionCount: 2,
@@ -77,6 +91,15 @@ test('unauthenticated response redacts account ledgers while keeping public mark
   assert.equal(state.logs[0].message, 'Worker heartbeat scan');
   assert.equal(state.logs[0].data.deltaExecutionMode, 'testnet');
   assert.equal('blockingQty' in state.logs[0].data.gridEntrySafety, false);
+  assert.equal(state.executionCoverage.gridTestnetDiagnostics.status, 'WAITING_FOR_TESTNET_PRODUCTS');
+  assert.equal(state.executionCoverage.gridTestnetDiagnostics.executionLocked, true);
+  assert.equal(state.executionCoverage.gridTestnetDiagnostics.orderRoutingAttempted, false);
+  assert.deepEqual(state.executionCoverage.optionsTestnetDiagnostics.supportedUnderlyings, ['BTC', 'ETH', 'XAUT']);
+  assert.deepEqual(state.executionCoverage.optionsTestnetDiagnostics.missingUnderlyings, ['BTC', 'XAUT']);
+  assert.equal(state.executionCoverage.optionsTestnetDiagnostics.executionLocked, true);
+  assert.equal('PRIVATE' in state.executionCoverage.optionsTestnetDiagnostics.productCountsByUnderlying, false);
+  assert.equal(JSON.stringify(state).includes('private diagnostic text must not leak'), false);
+  assert.equal(JSON.stringify(state).includes('private option error must not leak'), false);
   assert.equal(JSON.stringify(state).includes('must-not-leak'), false);
   assert.equal(JSON.stringify(state).includes('private-detail'), false);
 });
