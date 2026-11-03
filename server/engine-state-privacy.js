@@ -25,6 +25,72 @@ export function normalizeWorkerExecutionMode(row) {
   return ['testnet', 'disabled'].includes(mode) ? mode : 'unknown';
 }
 
+const safeDiagnosticCount = value => {
+  const count = Number(value);
+  return Number.isSafeInteger(count) && count >= 0 ? count : null;
+};
+
+const SAFE_OPTION_UNDERLYINGS = new Set(['BTC', 'ETH', 'XAUT']);
+const SAFE_GRID_DIAGNOSTIC_STATUSES = new Set([
+  'WAITING_FOR_MARKET_DATA', 'WAITING_FOR_TESTNET_PRODUCTS',
+  'DIAGNOSTICS_ONLY', 'DIAGNOSTICS_ERROR'
+]);
+const SAFE_OPTIONS_DIAGNOSTIC_STATUSES = new Set([
+  'DISABLED_BY_SETTING', 'DIAGNOSTICS_ERROR', 'WAITING_FOR_TESTNET_PRODUCTS',
+  'WAITING_FOR_TESTNET_QUOTES', 'DIAGNOSTICS_ACTIVE', 'ANALYSIS_ACTIVE'
+]);
+
+function publicGridTestnetDiagnostics(value) {
+  if (!value || typeof value !== 'object') return null;
+  const symbol = ['BTCUSD', 'ETHUSD'].includes(String(value.symbol || '').toUpperCase())
+    ? String(value.symbol).toUpperCase() : null;
+  const status = SAFE_GRID_DIAGNOSTIC_STATUSES.has(String(value.status || ''))
+    ? String(value.status) : 'WAITING_FOR_TESTNET_PRODUCTS';
+  return {
+    symbol,
+    executionMode: String(value.executionMode || '').toLowerCase() === 'testnet' ? 'testnet' : 'unknown',
+    enabled: value.enabled === true,
+    marketDataAvailable: value.marketDataAvailable === true,
+    testnetProductAvailable: value.testnetProductAvailable === true,
+    executionLocked: true,
+    status,
+    candlesAvailable: safeDiagnosticCount(value.candlesAvailable),
+    candlesFresh: value.candlesFresh === true,
+    candidateEntries: safeDiagnosticCount(value.candidateEntries) ?? 0,
+    candidateExits: safeDiagnosticCount(value.candidateExits) ?? 0,
+    orderRoutingAttempted: false,
+    updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt.slice(0, 40) : null
+  };
+}
+
+function publicOptionsTestnetDiagnostics(value) {
+  if (!value || typeof value !== 'object') return null;
+  const safeCounts = source => {
+    if (!source || typeof source !== 'object' || Array.isArray(source)) return {};
+    return Object.fromEntries(Object.entries(source)
+      .filter(([key]) => SAFE_OPTION_UNDERLYINGS.has(String(key).toUpperCase()))
+      .map(([key, count]) => [String(key).toUpperCase(), safeDiagnosticCount(count) ?? 0]));
+  };
+  const safeUnderlyings = source => Array.isArray(source)
+    ? source.map(item => String(item).toUpperCase()).filter(item => SAFE_OPTION_UNDERLYINGS.has(item))
+    : [];
+  const status = SAFE_OPTIONS_DIAGNOSTIC_STATUSES.has(String(value.status || ''))
+    ? String(value.status) : 'DIAGNOSTICS_ERROR';
+  return {
+    executionMode: String(value.executionMode || '').toLowerCase() === 'testnet' ? 'testnet' : 'unknown',
+    enabled: value.enabled === true,
+    supportedUnderlyings: safeUnderlyings(value.supportedUnderlyings),
+    productCountsByUnderlying: safeCounts(value.productCountsByUnderlying),
+    quoteCountsByUnderlying: safeCounts(value.quoteCountsByUnderlying),
+    testnetProductsAvailable: safeDiagnosticCount(value.testnetProductsAvailable),
+    optionTickersAvailable: safeDiagnosticCount(value.optionTickersAvailable),
+    missingUnderlyings: safeUnderlyings(value.missingUnderlyings),
+    executionLocked: true,
+    status,
+    updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt.slice(0, 40) : null
+  };
+}
+
 function publicHeartbeatRows(logs) {
   const row = findWorkerHeartbeatRow(logs);
   if (!row) return [];
@@ -45,7 +111,9 @@ function publicHeartbeatRows(logs) {
         trusted: typeof grid.trusted === 'boolean' ? grid.trusted : null,
         blocked: grid.blocked === true,
         reason: String(grid.reason || '').slice(0, 100) || null
-      } : null
+      } : null,
+      gridTestnetDiagnostics: publicGridTestnetDiagnostics(row?.data?.gridTestnetDiagnostics),
+      optionsTestnetDiagnostics: publicOptionsTestnetDiagnostics(row?.data?.optionsTestnetDiagnostics)
     }
   }];
 }
@@ -88,7 +156,9 @@ export function protectEngineState(payload, authorized) {
       directDeltaExecutionEnabled: false,
       deltaExecutionMode: payload?.executionCoverage?.deltaExecutionMode || 'unknown',
       deltaExecutionModeSource: payload?.executionCoverage?.deltaExecutionModeSource || 'unavailable',
-      gridEntrySafety: null
+      gridEntrySafety: null,
+      gridTestnetDiagnostics: publicGridTestnetDiagnostics(payload?.executionCoverage?.gridTestnetDiagnostics),
+      optionsTestnetDiagnostics: publicOptionsTestnetDiagnostics(payload?.executionCoverage?.optionsTestnetDiagnostics)
     },
     deltaTestnetPositions: [],
     deltaTestnetOpenPositionCount: null,
