@@ -285,7 +285,8 @@ function App() {
         body: JSON.stringify({
           symbol: candidate?.symbol,
           strategy: candidate?.strategy,
-          qty: 1
+          qty: 1,
+          manualOverride: candidate?.manualTestOverride === true
         })
       });
       const data = await response.json();
@@ -316,7 +317,8 @@ function App() {
           symbol: optionsPreview.symbol,
           strategy: optionsPreview.strategy,
           qty: optionsPreview.qty,
-          quoteToken: optionsPreview.quoteToken
+          quoteToken: optionsPreview.quoteToken,
+          manualOverride: optionsPreview.manualTestOverride === true
         })
       });
       const data = await response.json();
@@ -480,6 +482,7 @@ function App() {
       <div className="confirmDialog" role="dialog" aria-modal="true" aria-labelledby="optionsConfirmTitle">
         <h3 id="optionsConfirmTitle">Confirm Options Trade · Delta Testnet</h3>
         <p><b>{optionsPreview.side} {optionsPreview.qty} · {optionsPreview.symbol}</b></p>
+        {optionsPreview.manualTestOverride === true ? <p role="alert" className="warn">TEST OVERRIDE: Worker confirmation, score and liquidity qualification are bypassed for this one fresh cached contract. Delta band, DTE, exact Testnet product and live quote checks, verified balance, configured Options risk budget, the 0.5% hard maximum-loss cap, E-STOP, fresh tick, duplicate/position limits, and the SELL protective-hedge lifecycle still apply.</p> : null}
         <p>Limit premium: USD {Number(optionsPreview.premium).toFixed(8)}</p>
         {optionsPreview.hedgeSymbol ? <p>Protective BUY first: {optionsPreview.hedgeSymbol} at USD {Number(optionsPreview.hedgePremium).toFixed(8)}. The short leg is not submitted unless the protective leg is fully filled.</p> : null}
         <p>Maximum loss (including fee allowance): <b>USD {Number(optionsPreview.maxLossUsd).toFixed(6)}</b></p>
@@ -822,6 +825,9 @@ function OptionsView({
   const testnetMode = executionCoverage?.deltaExecutionMode === 'testnet';
   const optionsDiagnostics = executionCoverage?.optionsTestnetDiagnostics || null;
   const optionsExecutionGate = apiHealth?.optionsExecutionGate || null;
+  const optionsManualTestOverride = apiHealth?.optionsManualTestOverride || null;
+  const manualOverrideAllowed = optionsManualTestOverride?.allowed === true &&
+    optionsExecutionGate?.allowed === true;
   const optionsEngineStatus = !testnetMode ? 'ANALYSIS ONLY'
     : !optionsDiagnostics ? 'ACTIVE (WAITING FOR TESTNET PRODUCTS)'
       : optionsDiagnostics.status === 'WAITING_FOR_TESTNET_PRODUCTS' ? 'ACTIVE (WAITING FOR TESTNET PRODUCTS)'
@@ -851,6 +857,8 @@ function OptionsView({
   const buyMaxDelta = safeNum(settings.options_buy_max_delta) || 0.65;
   const sellMinDelta = safeNum(settings.options_sell_min_delta) || 0.20;
   const sellMaxDelta = safeNum(settings.options_sell_max_delta) || 0.35;
+  const dteMin = safeNum(settings.options_min_days_to_expiry) ?? 2;
+  const dteMax = safeNum(settings.options_max_days_to_expiry) ?? 14;
   const actionDisabled = !testnetMode || !freshness.fresh || accountDataProtected || optionsBusy;
   return <>
     <section className="cards">
@@ -880,14 +888,17 @@ function OptionsView({
             : 'API Options execution gate: STATUS UNKNOWN — /api/health has not confirmed allowed=true; final confirmation must remain disabled.'}
         {' '}Production/live order routing is not supported.
       </p>
+      {manualOverrideAllowed ? <p className="warn" role="status"><b>TEST-ONLY MANUAL OVERRIDE ENABLED.</b> TEST EXECUTE bypasses Worker confirmation, score and liquidity qualification only. It still enforces the configured Delta/DTE bands, live Testnet product/quote, account checks, existing risk budgets, the 0.5% hard loss cap, E-STOP, duplicate/position caps and the protected SELL hedge. Turn ALLOW_MANUAL_OVERRIDE_FOR_TEST off immediately after the planned test.</p> : null}
     </div>
     <Panel title="Options BUY · Testnet Candidate Review">
       <OptionTable rows={buys} type="BUY" deltaMin={buyMinDelta} deltaMax={buyMaxDelta}
+        dteMin={dteMin} dteMax={dteMax} manualOverrideAllowed={manualOverrideAllowed}
         actionDisabled={actionDisabled} onPreview={onPreview}
         emptyMessage={freshness.fresh ? 'No option BUY candidates for the latest snapshot.' : 'Stale or unverified candidates are hidden.'}/>
     </Panel>
     <Panel title="Options SELL · Defined-Risk Spread Review">
       <OptionTable rows={sells} type="SELL" deltaMin={sellMinDelta} deltaMax={sellMaxDelta}
+        dteMin={dteMin} dteMax={dteMax} manualOverrideAllowed={manualOverrideAllowed}
         actionDisabled={actionDisabled} onPreview={onPreview}
         emptyMessage={freshness.fresh ? 'No option SELL candidates for the latest snapshot.' : 'Stale or unverified candidates are hidden.'}/>
     </Panel>
@@ -895,7 +906,8 @@ function OptionsView({
 }
 
 function OptionTable({
-  rows, type, deltaMin, deltaMax, actionDisabled = true, onPreview = () => {},
+  rows, type, deltaMin, deltaMax, dteMin = 2, dteMax = 14,
+  manualOverrideAllowed = false, actionDisabled = true, onPreview = () => {},
   emptyMessage = 'No option candidates returned for the current market snapshot.'
 }) {
   const hasSellRiskColumns = type === 'SELL';
@@ -909,6 +921,11 @@ function OptionTable({
     const deltaValue = safeNum(deltaRaw);
     const deltaMissing = deltaRaw === null || deltaRaw === undefined || (typeof deltaRaw === 'string' && deltaRaw.trim() === '');
     const deltaAssessment = assessDeltaRange(deltaRaw, deltaMin, deltaMax);
+    const manualDeltaQualified = deltaValue !== null &&
+      Math.abs(deltaValue) >= deltaMin && Math.abs(deltaValue) <= deltaMax;
+    const candidateDte = safeNum(d.dte);
+    const manualDteQualified = candidateDte !== null &&
+      candidateDte >= dteMin && candidateDte <= dteMax;
     const hedgeStrike = safeNum(d.hedgeStrike);
     const hedgeDelta = safeNum(d.hedgeDelta);
     const protectiveLegConfirmed = Boolean(
@@ -919,6 +936,8 @@ function OptionTable({
     const maxLossAvailable = protectiveLegConfirmed && rawMaxLoss !== null && rawMaxLoss > 0;
     const candidateVerified = s.stage === 'CONFIRMED' && d.analysisReady === true &&
       (!hasSellRiskColumns || protectiveLegConfirmed);
+    const manualOverrideCandidate = manualOverrideAllowed && manualDeltaQualified &&
+      manualDteQualified && (!hasSellRiskColumns || protectiveLegConfirmed);
     const reasonText = fmtReasons(s.blocked_reasons);
     const statusLocked = String(reasonText).toLowerCase().includes('execution') ||
       String(reasonText).toLowerCase().includes('route unavailable') ||
@@ -944,7 +963,11 @@ function OptionTable({
         <td>{maxLossAvailable ? fmtRawPrice(rawMaxLoss, 2) : 'MAX LOSS: NOT AVAILABLE — SPREAD NOT CONFIRMED'}</td>
       </> : null}
       <td className={statusLocked ? 'warn' : s.ready ? 'up' : 'muted'}>{statusLocked ? 'REVIEW REQUIRED' : s.ready ? 'READY' : 'ANALYSIS ONLY'}</td>
-      <td><button className="action" type="button" disabled={actionDisabled || !candidateVerified || !s.symbol} onClick={() => onPreview(s)}>{candidateVerified ? 'PREVIEW TESTNET' : 'NOT VERIFIED'}</button></td>
+      <td><button className="action" type="button"
+        disabled={actionDisabled || (!candidateVerified && !manualOverrideCandidate) || !s.symbol}
+        onClick={() => onPreview(manualOverrideCandidate && !candidateVerified ? { ...s, manualTestOverride: true } : s)}>
+        {candidateVerified ? 'PREVIEW TESTNET' : manualOverrideCandidate ? 'TEST EXECUTE' : 'NOT VERIFIED'}
+      </button></td>
     </tr>;
   })}{!rows.length ? <tr><td colSpan={columnCount}>{emptyMessage} No missing values are substituted with zero.</td></tr> : null}</tbody></table></div>;
 }
