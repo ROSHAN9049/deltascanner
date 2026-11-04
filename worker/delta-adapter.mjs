@@ -234,7 +234,7 @@ export class DeltaAdapter {
   }
   optionTicker(symbol) {
     const contract = String(symbol || '').trim().toUpperCase();
-    if (!/^[CP]-(BTC|ETH)-[0-9]+(?:\\.[0-9]+)?-\\d{6}$/.test(contract)) {
+    if (!/^[CP]-(BTC|ETH)-[0-9]+(?:\.[0-9]+)?-\d{6}$/.test(contract)) {
       throw new Error('Invalid BTC/ETH Delta option contract symbol');
     }
     return this.request(

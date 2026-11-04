@@ -1,5 +1,4 @@
 import { resolveMinimumStopDistancePct, roundStopLossAwayFromEntry } from '../shared/delta-risk-policy.js';
-import { optionGreeksFromTicker } from './options-greeks.mjs';
 const n = v => Number.isFinite(+v) ? +v : 0;
 const optionalNumber = value => {
   if (value === null || value === undefined || (typeof value === 'string' && value.trim() === '')) return null;
@@ -283,13 +282,13 @@ function optionTypeFromTicker(ticker) {
 }
 
 function optionGreeks(ticker) {
-  const greeks = optionGreeksFromTicker(ticker);
+  const g = ticker?.greeks && typeof ticker.greeks === 'object' ? ticker.greeks : {};
   return {
-    delta: greeks.delta,
-    gamma: greeks.gamma ?? 0,
-    theta: greeks.theta ?? 0,
-    vega: greeks.vega ?? 0,
-    rho: greeks.rho ?? 0
+    delta: optionalNumber(g.delta ?? ticker.delta),
+    gamma: n(g.gamma ?? ticker.gamma),
+    theta: n(g.theta ?? ticker.theta),
+    vega: n(g.vega ?? ticker.vega),
+    rho: n(g.rho ?? ticker.rho)
   };
 }
 

@@ -44,15 +44,3 @@ test('a genuine zero option Delta is preserved but fails the configured band', (
   assert.equal(signal.ready, false);
   assert.ok(signal.blocked.includes('Delta outside target band'));
 });
-
-
-test('a JSON-encoded nested Delta Greeks object is parsed and can pass the configured BUY delta band', () => {
-  const signal = analyseOption({
-    ...baseTicker,
-    greeks: JSON.stringify({ delta: '0.55', gamma: '0.01', theta: '-0.2', vega: '3.5' })
-  }, underlying, 'OPTIONS_BUY', config);
-  assert.equal(signal.delta, 0.55);
-  assert.equal(signal.gamma, 0.01);
-  assert.equal(signal.ready, true);
-  assert.equal(signal.stage, 'CONFIRMED');
-});

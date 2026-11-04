@@ -1,5 +1,3 @@
-import { optionGreeksFromTicker } from '../options-greeks.mjs';
-
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function finitePositive(value) {
@@ -21,8 +19,9 @@ function tickerAsk(ticker) {
 }
 
 function tickerDelta(ticker) {
-  const delta = optionGreeksFromTicker(ticker).delta;
-  return delta === null ? null : Math.abs(delta);
+  const value = ticker?.greeks?.delta ?? ticker?.delta;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.abs(parsed) : null;
 }
 
 function contractQuality(row, now) {

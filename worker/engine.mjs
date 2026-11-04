@@ -17,7 +17,6 @@ import { detectAtrSpike, replaceOutlierCandleWithPrevious } from './atr-spike-gu
 import { shouldEmitThrottledLog, websocketReconnectDelay, WS_ERROR_LOG_COOLDOWN_MS } from './ws-resilience.mjs';
 import { isOptionsExecutionAllowed, OPTIONS_EXECUTION_LOCK_REASON } from './options-execution-lock.mjs';
 import { countOptionProductsByUnderlying, replaceOptionCacheSnapshot } from './options-cache-snapshot.mjs';
-import { hydrateOptionTickersWithGreeks } from './options-greeks.mjs';
 import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from './signal-failure-diagnostics.mjs';
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
 import { buildApiDerivedTrackingPlan, strategyForDerivedTrade } from './tradetron-derived-trades.mjs';
@@ -2042,9 +2041,9 @@ export class DeltaEngine {
   }
 
   async refreshOptionTickers(settings = {}) {
-    // In Testnet mode, option quotes and Greeks must also come from Delta
-    // Testnet. The exact-symbol product join below preserves the Testnet
-    // product_id and contract metadata used by the separately gated executor.
+    // Public India tickers supply quotes/Greeks. In Testnet mode every symbol
+    // must first match a LIVE product from the Testnet catalogue so a public
+    // production product_id can never leak into a future Testnet order.
     const testnetMode = CONFIG.deltaExecutionMode === 'testnet';
     const underlyings = [...OPTION_UNDERLYINGS];
     const now = Date.now();
@@ -2130,7 +2129,7 @@ export class DeltaEngine {
           });
         }
 
-        let selected = selectOptionContractsForScan({
+        const selected = selectOptionContractsForScan({
           rows: joined,
           underlying,
           spotPrice: spot,
@@ -2140,30 +2139,6 @@ export class DeltaEngine {
           maxContracts: 24,
           maxMoneynessPct: 20
         });
-        if (testnetMode && selected.length) {
-          const greekHydration = await hydrateOptionTickersWithGreeks(
-            selected,
-            symbol => this.adapter.optionTicker(symbol),
-            4
-          );
-          selected = greekHydration.rows;
-          if (greekHydration.attempted > 0) {
-            await this.log(
-              greekHydration.missingSymbols.length ? 'WARN' : 'INFO',
-              'Delta Testnet option Greeks hydration completed',
-              {
-                underlying,
-                requested: greekHydration.attempted,
-                enriched: greekHydration.enriched,
-                stillMissing: greekHydration.missingSymbols.length,
-                missingSymbols: greekHydration.missingSymbols.slice(0, 8),
-                detailEndpoint: 'GET /v2/tickers/{symbol}',
-                executionBlocked: greekHydration.missingSymbols.length > 0,
-                orderRoutingAttempted: false
-              }
-            );
-          }
-        }
         counts[underlying] = selected.length;
         for (const ticker of selected) next.set(ticker.symbol, ticker);
       } catch (error) {
