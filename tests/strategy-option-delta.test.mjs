@@ -52,7 +52,7 @@ test('Delta option Greeks returned as numeric strings are parsed and pass the BU
     greeks: { delta: '0.55', gamma: '0.01', theta: '-0.02', vega: '0.12' }
   }, underlying, 'OPTIONS_BUY', config);
   assert.equal(signal.delta, 0.55);
-  assert.equal(signal.ready, true);
+  assert.equal(signal.ready, true, JSON.stringify(signal));
   assert.equal(signal.stage, 'CONFIRMED');
 });
 
