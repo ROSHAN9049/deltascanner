@@ -3154,6 +3154,12 @@ export class DeltaEngine {
         ask: s.ask,
         volume: s.volume,
         openInterest: s.oi,
+        // Keep cached detail fields aligned with the top-level Greek columns so
+        // the dashboard and any detail-based consumers read the same values.
+        delta: s.delta,
+        gamma: s.gamma,
+        theta: s.theta,
+        vega: s.vega,
         fullMarketScan: true,
         goldOptionSettlement: String(s.underlyingSymbol || '').toUpperCase().startsWith('XAUT'),
         analysisReady: s.analysisReady === true,
