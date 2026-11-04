@@ -53,7 +53,6 @@ export function createDeltaOptionsExecution({
   isMarketTickFresh = () => false
 } = {}) {
   if (typeof request !== 'function' || typeof database?.select !== 'function' ||
-      typeof database?.upsert !== 'function' || typeof database?.update !== 'function' ||
       typeof getAccountSnapshot !== 'function' || typeof buildClientOrderId !== 'function') {
     throw new Error('Delta Options executor dependencies are incomplete');
   }
@@ -442,6 +441,9 @@ export function createDeltaOptionsExecution({
       'DDO',
       product.symbol
     );
+    if (typeof database.insertIgnore !== 'function' || typeof database.update !== 'function') {
+      throw new Error('Atomic Options reservation and update support is unavailable; order blocked');
+    }
     const prior = await database.select(
       'dd_orders',
       'client_order_id=eq.' + encodeURIComponent(clientOrderId) + '&select=id,client_order_id&limit=1'
