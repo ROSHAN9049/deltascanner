@@ -2103,6 +2103,12 @@ export class DeltaEngine {
 
     const next = new Map();
     const counts = {};
+    const greeksAvailableByUnderlying = {};
+    const greeksMissingByUnderlying = {};
+    const hasValidOptionDelta = ticker => {
+      const value = ticker?.greeks?.delta ?? ticker?.delta;
+      return value !== undefined && value !== null && value !== '' && Number.isFinite(Number(value));
+    };
     // Fetch one underlying at a time and retain only a small, near-the-money
     // 2–14 DTE chain so the Hostless 256 MB worker does not cache full chains.
     for (const underlying of underlyings) {
@@ -2140,6 +2146,8 @@ export class DeltaEngine {
           maxMoneynessPct: 20
         });
         counts[underlying] = selected.length;
+        greeksAvailableByUnderlying[underlying] = selected.filter(hasValidOptionDelta).length;
+        greeksMissingByUnderlying[underlying] = selected.length - greeksAvailableByUnderlying[underlying];
         for (const ticker of selected) next.set(ticker.symbol, ticker);
       } catch (error) {
         counts[underlying] = 0;
@@ -2164,12 +2172,16 @@ export class DeltaEngine {
       quoteCountsByUnderlying: counts,
       testnetProductsAvailable,
       optionTickersAvailable: next.size,
+      greeksAvailableByUnderlying,
+      greeksMissingByUnderlying,
       missingUnderlyings,
       productCatalogueError,
       executionLocked: true,
       status: !testnetMode ? 'ANALYSIS_ACTIVE'
         : testnetProductsAvailable === 0 ? 'WAITING_FOR_TESTNET_PRODUCTS'
-          : next.size === 0 ? 'WAITING_FOR_TESTNET_QUOTES' : 'DIAGNOSTICS_ACTIVE',
+          : next.size === 0 ? 'WAITING_FOR_TESTNET_QUOTES'
+            : Object.values(greeksAvailableByUnderlying).reduce((sum, count) => sum + count, 0) === 0
+              ? 'WAITING_FOR_TESTNET_GREEKS' : 'DIAGNOSTICS_ACTIVE',
       updatedAt: iso()
     };
     if (testnetMode && testnetProductsAvailable === 0) {
