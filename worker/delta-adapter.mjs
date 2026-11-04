@@ -221,10 +221,16 @@ export class DeltaAdapter {
   optionTickers(underlying) {
     const asset = String(underlying || '').trim().toUpperCase();
     if (!/^[A-Z0-9]+$/.test(asset)) throw new Error('Invalid option underlying');
+    // Options quotes and Greeks must come from the same environment as the
+    // verified option product catalogue. In Testnet mode the product IDs and
+    // Greeks are both sourced from Delta India Testnet, never production.
+    const marketDataRoute = CONFIG.deltaExecutionMode === 'testnet'
+      ? { productCatalog: true }
+      : { marketData: true };
     return this.request('GET', '/v2/tickers', {
       contract_types: 'call_options,put_options',
       underlying_asset_symbols: asset
-    }, null, false, { marketData: true });
+    }, null, false, marketDataRoute);
   }
   candles(symbol, resolution, limit) {
     // Resolution → seconds per candle. Unknown resolutions fall back
