@@ -22,7 +22,8 @@ export default async function handler(req, res) {
       symbol: body.symbol,
       strategy: body.strategy,
       qty: body.qty,
-      quoteToken: body.quoteToken
+      quoteToken: body.quoteToken,
+      manualTestOverride: body.manualOverride === true
     });
     return res.status(result?.success ? 200 : 409).json({
       success: result?.success === true,
