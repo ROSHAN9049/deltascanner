@@ -6,11 +6,15 @@ const NOW = Date.UTC(2026, 10, 4, 4, 0, 0);
 const SHORT = 'C-BTC-80000-311226';
 const HEDGE = 'C-BTC-82000-311226';
 
-function harness({ enabled = true, shortState = 'open', hedgeFilled = true, hedgePartial = false, strategy = 'OPTIONS_SELL' } = {}) {
+function harness({
+  enabled = true, shortState = 'open', hedgeFilled = true, hedgePartial = false,
+  strategy = 'OPTIONS_SELL', manualOverrideEnabled = false, candidatePatch = {}, settingsPatch = {}
+} = {}) {
   const env = {
     DELTA_EXECUTION_MODE: 'testnet',
     DELTA_ENVIRONMENT: 'TESTNET',
     OPTIONS_EXECUTION_ALLOWED: enabled ? 'true' : 'false',
+    ALLOW_MANUAL_OVERRIDE_FOR_TEST: manualOverrideEnabled ? 'true' : 'false',
     DELTA_TESTNET_API_SECRET: 'testnet-secret'
   };
   const products = [
@@ -24,9 +28,15 @@ function harness({ enabled = true, shortState = 'open', hedgeFilled = true, hedg
     cached_at: new Date(NOW).toISOString(),
     details: {
       analysisReady: true, optionType: 'CALL', strike: 80000,
+      delta: strategy === 'OPTIONS_BUY' ? 0.55 : 0.30,
+      dte: 57, underlyingSymbol: 'BTCUSD',
       hedgeSymbol: HEDGE, hedgeStrike: 82000, hedgeDelta: 0.1
     }
   };
+  const baselineDetails = { ...candidate.details };
+  const patchDetails = candidatePatch.details || {};
+  Object.assign(candidate, candidatePatch);
+  candidate.details = { ...baselineDetails, ...patchDetails };
   const storedOrders = [];
   const apiCalls = [];
   let hedgeCanceled = false;
@@ -38,9 +48,16 @@ function harness({ enabled = true, shortState = 'open', hedgeFilled = true, hedg
       if (table === 'dd_settings') return [{
         options_max_risk_pct: 0.30,
         max_options_positions: 4,
+        options_buy_min_delta: 0.45,
+        options_buy_max_delta: 0.65,
+        options_sell_min_delta: 0.20,
+        options_sell_max_delta: 0.35,
+        options_min_days_to_expiry: 2,
+        options_max_days_to_expiry: 120,
         enabled: true,
         emergency_stop: false,
-        last_tick_at: new Date(NOW).toISOString()
+        last_tick_at: new Date(NOW).toISOString(),
+        ...settingsPatch
       }];
       if (table === 'dd_delta_positions') return [];
       if (table === 'dd_orders') {
@@ -217,6 +234,138 @@ test('mock Delta Testnet API keeps OPTIONS execution disabled when the env flag 
       symbol: SHORT, strategy: 'OPTIONS_SELL', qty: 1, quoteToken: preview.quoteToken
     }),
     /Options execution remains locked/
+  );
+  assert.equal(apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
+});
+
+test('manual Testnet override previews and executes a low-score unconfirmed BUY without changing risk gates', async () => {
+  const { executor, apiCalls, storedOrders } = harness({
+    strategy: 'OPTIONS_BUY',
+    manualOverrideEnabled: true,
+    candidatePatch: { stage: 'SETUP', score: 42, details: { analysisReady: false } }
+  });
+  const preview = await executor.previewOptionsOrder({
+    symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1, manualTestOverride: true
+  });
+  assert.equal(preview.manualTestOverride, true);
+  assert.equal(preview.executionAllowed, true);
+  assert.ok(preview.maxLossUsd <= preview.maxAllowedLossUsd);
+  const result = await executor.placeOptionsOrder({
+    symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1,
+    quoteToken: preview.quoteToken, manualTestOverride: true
+  });
+  assert.equal(result.success, true);
+  assert.equal(apiCalls.filter(call => call.method === 'POST' && call.path === '/v2/orders').length, 1);
+  assert.equal(storedOrders[0].raw.manual_test_override, true);
+});
+
+test('manual Testnet override remains blocked when the dedicated flag is off', async () => {
+  const { executor, apiCalls } = harness({
+    strategy: 'OPTIONS_BUY',
+    candidatePatch: { stage: 'SETUP', score: 42, details: { analysisReady: false } }
+  });
+  await assert.rejects(
+    executor.previewOptionsOrder({
+      symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1, manualTestOverride: true
+    }),
+    /ALLOW_MANUAL_OVERRIDE_FOR_TEST=true/
+  );
+  assert.equal(apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
+});
+
+test('manual Testnet override keeps Delta and expiry qualification mandatory', async () => {
+  const deltaCase = harness({
+    strategy: 'OPTIONS_BUY',
+    manualOverrideEnabled: true,
+    candidatePatch: { stage: 'SETUP', score: 20, details: { analysisReady: false, delta: 0.90 } }
+  });
+  await assert.rejects(
+    deltaCase.executor.previewOptionsOrder({
+      symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1, manualTestOverride: true
+    }),
+    /Delta is outside the configured BUY band/
+  );
+  const dteCase = harness({
+    strategy: 'OPTIONS_BUY',
+    manualOverrideEnabled: true,
+    candidatePatch: { stage: 'SETUP', score: 20, details: { analysisReady: false } },
+    settingsPatch: { options_max_days_to_expiry: 30 }
+  });
+  await assert.rejects(
+    dteCase.executor.previewOptionsOrder({
+      symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1, manualTestOverride: true
+    }),
+    /expiry is outside the configured DTE range/
+  );
+  assert.equal(deltaCase.apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
+  assert.equal(dteCase.apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
+});
+
+test('manual Testnet override still enforces the configured maximum-loss budget', async () => {
+  const { executor, apiCalls } = harness({
+    strategy: 'OPTIONS_BUY',
+    manualOverrideEnabled: true,
+    candidatePatch: { stage: 'SETUP', score: 20, details: { analysisReady: false } },
+    settingsPatch: { options_max_risk_pct: 0.001 }
+  });
+  await assert.rejects(
+    executor.previewOptionsOrder({
+      symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1, manualTestOverride: true
+    }),
+    /exceeds the permitted/
+  );
+  assert.equal(apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
+});
+
+test('manual Testnet SELL override still requires and executes its protective hedge first', async () => {
+  const { executor, apiCalls, storedOrders } = harness({
+    manualOverrideEnabled: true,
+    candidatePatch: { stage: 'SETUP', score: 25, details: { analysisReady: false } }
+  });
+  const preview = await executor.previewOptionsOrder({
+    symbol: SHORT, strategy: 'OPTIONS_SELL', qty: 1, manualTestOverride: true
+  });
+  assert.equal(preview.manualTestOverride, true);
+  assert.equal(preview.hedgeSymbol, HEDGE);
+  const result = await executor.placeOptionsOrder({
+    symbol: SHORT, strategy: 'OPTIONS_SELL', qty: 1,
+    quoteToken: preview.quoteToken, manualTestOverride: true
+  });
+  assert.equal(result.success, true);
+  const orders = apiCalls.filter(call => call.method === 'POST' && call.path === '/v2/orders');
+  assert.deepEqual(orders.map(call => call.body.side), ['buy', 'sell']);
+  assert.ok(storedOrders.every(row => row.raw.manual_test_override === true));
+});
+
+test('manual Testnet SELL override rejects a missing protective hedge', async () => {
+  const { executor, apiCalls } = harness({
+    manualOverrideEnabled: true,
+    candidatePatch: { stage: 'SETUP', score: 25, details: { analysisReady: false, hedgeSymbol: '' } }
+  });
+  await assert.rejects(
+    executor.previewOptionsOrder({
+      symbol: SHORT, strategy: 'OPTIONS_SELL', qty: 1, manualTestOverride: true
+    }),
+    /protective hedge/
+  );
+  assert.equal(apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
+});
+
+test('manual override mode is cryptographically bound to the preview confirmation', async () => {
+  const { executor, apiCalls } = harness({
+    strategy: 'OPTIONS_BUY',
+    manualOverrideEnabled: true,
+    candidatePatch: { stage: 'SETUP', score: 25, details: { analysisReady: false } }
+  });
+  const preview = await executor.previewOptionsOrder({
+    symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1, manualTestOverride: true
+  });
+  await assert.rejects(
+    executor.placeOptionsOrder({
+      symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1,
+      quoteToken: preview.quoteToken, manualTestOverride: false
+    }),
+    /manual-test mode/
   );
   assert.equal(apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
 });

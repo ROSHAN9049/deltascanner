@@ -38,3 +38,38 @@ export function assertOptionsExecutionAllowed(env = process.env) {
   }
   return gate;
 }
+
+
+/**
+ * Narrow override for one manually selected Options candidate during a
+ * controlled Delta Testnet plumbing test. This gate never enables execution
+ * by itself and is independent of OPTIONS_EXECUTION_ALLOWED.
+ */
+export const OPTIONS_MANUAL_TEST_OVERRIDE_LOCK_REASON =
+  'Manual Options test override requires DELTA_EXECUTION_MODE=testnet, DELTA_ENVIRONMENT=TESTNET and ALLOW_MANUAL_OVERRIDE_FOR_TEST=true.';
+
+export function getOptionsManualTestOverrideGate(env = process.env) {
+  const mode = String(env?.DELTA_EXECUTION_MODE ?? '').trim().toLowerCase();
+  const environment = String(env?.DELTA_ENVIRONMENT ?? '').trim().toUpperCase();
+  const flag = String(env?.ALLOW_MANUAL_OVERRIDE_FOR_TEST ?? '').trim().toLowerCase();
+  const testnetProfile = mode === 'testnet' && environment === 'TESTNET';
+  const allowed = testnetProfile && flag === 'true';
+  return Object.freeze({
+    allowed,
+    mode,
+    environment,
+    flagEnabled: flag === 'true',
+    reason: allowed ? null : OPTIONS_MANUAL_TEST_OVERRIDE_LOCK_REASON
+  });
+}
+
+export function assertOptionsManualTestOverrideAllowed(env = process.env) {
+  const gate = getOptionsManualTestOverrideGate(env);
+  if (!gate.allowed) {
+    const error = new Error(gate.reason);
+    error.code = 'OPTIONS_MANUAL_TEST_OVERRIDE_LOCKED';
+    error.statusCode = 423;
+    throw error;
+  }
+  return gate;
+}

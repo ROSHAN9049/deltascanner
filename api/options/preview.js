@@ -21,7 +21,8 @@ export default async function handler(req, res) {
     const preview = await deltaExecutor.previewOptionsOrder({
       symbol: body.symbol,
       strategy: body.strategy,
-      qty: body.qty ?? 1
+      qty: body.qty ?? 1,
+      manualTestOverride: body.manualOverride === true
     });
     return res.status(200).json({ success: true, preview });
   } catch (error) {

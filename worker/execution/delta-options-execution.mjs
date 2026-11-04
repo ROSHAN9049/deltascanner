@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { parseDeltaOptionSymbol } from './delta-options-policy.mjs';
-import { assertOptionsExecutionAllowed, getOptionsExecutionGate } from '../options-execution-lock.mjs';
+import { assertOptionsExecutionAllowed, getOptionsExecutionGate, assertOptionsManualTestOverrideAllowed } from '../options-execution-lock.mjs';
 import {
   calculateLongOptionMaxLoss,
   calculateDefinedRiskSpreadMaxLoss,
@@ -67,6 +67,10 @@ export function createDeltaOptionsExecution({
     if (mode !== 'testnet' || environment !== 'TESTNET') {
       throw new Error('Delta Options operations require DELTA_EXECUTION_MODE=testnet and DELTA_ENVIRONMENT=TESTNET');
     }
+  }
+
+  function requireManualTestOverride() {
+    return assertOptionsManualTestOverrideAllowed(env);
   }
 
   async function getProducts() {
@@ -140,7 +144,7 @@ export function createDeltaOptionsExecution({
     return { bid, ask, mark: positive(ticker.mark_price ?? ticker.close) ?? (bid + ask) / 2 };
   }
 
-  async function getCandidate(symbol, strategy) {
+  async function getCandidate(symbol, strategy, { manualTestOverride = false } = {}) {
     const rows = await database.select(
       'dd_option_cache',
       'symbol=eq.' + encodeURIComponent(symbol) +
@@ -156,11 +160,56 @@ export function createDeltaOptionsExecution({
       throw new Error('Options candidate snapshot is stale or its timestamp is untrusted');
     }
     const details = parseDetails(row.details);
-    if (clean(row.stage).toUpperCase() !== 'CONFIRMED' ||
-        !(number(row.score) >= 80) || details.analysisReady !== true) {
+    if (!manualTestOverride &&
+        (clean(row.stage).toUpperCase() !== 'CONFIRMED' ||
+         !(number(row.score) >= 80) || details.analysisReady !== true)) {
       throw new Error('Options candidate is not confirmed by the worker analysis gates');
     }
-    return { ...row, details, cachedAt: new Date(cachedAtMs).toISOString() };
+    return {
+      ...row, details, cachedAt: new Date(cachedAtMs).toISOString(),
+      manualTestOverride: manualTestOverride === true
+    };
+  }
+
+  function assertManualCandidateQualification(candidate, product, settings, strategyKey) {
+    const parsed = product?.parsed;
+    if (!parsed) throw new Error('Manual test override requires a verified parsed Testnet option contract');
+
+    const optionType = clean(candidate.details.optionType).toUpperCase();
+    const strike = number(candidate.details.strike);
+    const underlying = clean(candidate.details.underlyingSymbol || parsed.underlying)
+      .toUpperCase().replace(/USD$/, '');
+    if (optionType !== parsed.optionType || strike !== parsed.strike || underlying !== parsed.underlying) {
+      throw new Error('Manual test override blocked: cached option identity does not match the exact Testnet contract');
+    }
+
+    const delta = number(candidate.details.delta ?? candidate.delta);
+    if (delta === null || Math.abs(delta) <= 0 || Math.abs(delta) > 1) {
+      throw new Error('Manual test override blocked: a valid cached option Delta is required');
+    }
+    const isBuy = strategyKey === 'OPTIONS_BUY';
+    const deltaMin = number(isBuy ? settings.options_buy_min_delta : settings.options_sell_min_delta);
+    const deltaMax = number(isBuy ? settings.options_buy_max_delta : settings.options_sell_max_delta);
+    if (deltaMin === null || deltaMax === null || deltaMin <= 0 || deltaMax < deltaMin ||
+        Math.abs(delta) < deltaMin || Math.abs(delta) > deltaMax) {
+      throw new Error('Manual test override blocked: option Delta is outside the configured ' +
+        (isBuy ? 'BUY' : 'SELL') + ' band');
+    }
+
+    const minDays = number(settings.options_min_days_to_expiry);
+    const maxDays = number(settings.options_max_days_to_expiry);
+    if (minDays === null || maxDays === null || minDays < 0 || maxDays < minDays ||
+        parsed.dte < minDays || parsed.dte > maxDays) {
+      throw new Error('Manual test override blocked: option expiry is outside the configured DTE range');
+    }
+
+    if (!isBuy) {
+      const hedgeDelta = number(candidate.details.hedgeDelta);
+      if (!candidate.details.hedgeSymbol || hedgeDelta === null ||
+          Math.abs(hedgeDelta) < 0.05 || Math.abs(hedgeDelta) > 0.15) {
+        throw new Error('Manual test override blocked: SELL requires a verified 0.05–0.15 Delta protective hedge');
+      }
+    }
   }
 
   function signQuoteToken(payload) {
@@ -225,8 +274,10 @@ export function createDeltaOptionsExecution({
     return balances.reduce((sum, value) => sum + value, 0);
   }
 
-  async function previewOptionsOrder({ symbol, strategy, qty = 1 } = {}) {
+  async function previewOptionsOrder({ symbol, strategy, qty = 1, manualTestOverride = false } = {}) {
     assertTestnetProfile();
+    const useManualTestOverride = manualTestOverride === true;
+    if (useManualTestOverride) requireManualTestOverride();
     const contract = clean(symbol).toUpperCase();
     const strategyKey = clean(strategy).toUpperCase();
     const quantity = number(qty);
@@ -238,14 +289,17 @@ export function createDeltaOptionsExecution({
     }
 
     const [candidate, product, quote, account, settingsRows] = await Promise.all([
-      getCandidate(contract, strategyKey),
+      getCandidate(contract, strategyKey, { manualTestOverride: useManualTestOverride }),
       resolveProduct(contract),
       getQuote(contract),
       getAccountSnapshot(),
-      database.select('dd_settings', 'id=eq.1&select=options_max_risk_pct,max_options_positions,enabled,emergency_stop,last_tick_at')
+      database.select('dd_settings', 'id=eq.1&select=options_max_risk_pct,max_options_positions,enabled,emergency_stop,last_tick_at,options_buy_min_delta,options_buy_max_delta,options_sell_min_delta,options_sell_max_delta,options_min_days_to_expiry,options_max_days_to_expiry')
     ]);
     const settings = Array.isArray(settingsRows) && settingsRows.length === 1 ? settingsRows[0] : null;
     if (!settings) throw new Error('Options risk settings are unavailable; preview blocked');
+    if (useManualTestOverride) {
+      assertManualCandidateQualification(candidate, product, settings, strategyKey);
+    }
     const trustedEquity = verifiedAccountEquity(account?.raw);
     if (trustedEquity === null || Math.abs(trustedEquity - Number(account?.equity)) > 1e-8) {
       throw new Error('Verified Delta Testnet account equity is unavailable; Options preview blocked');
@@ -325,6 +379,7 @@ export function createDeltaOptionsExecution({
       hedgePremium,
       maxLossUsd: loss.maxLossUsd,
       equity: account.equity,
+      manualTestOverride: useManualTestOverride,
       issuedAt
     });
     const preview = {
@@ -348,6 +403,7 @@ export function createDeltaOptionsExecution({
       maxAllowedLossUsd: riskGate.maxAllowedLossUsd,
       hardCapPctOfEquity: 0.5,
       cachedAt: candidate.cachedAt,
+      manualTestOverride: useManualTestOverride,
       executionAllowed: false,
       executionLockReason: gate.reason,
       quoteToken: token
@@ -432,7 +488,8 @@ export function createDeltaOptionsExecution({
   }
 
   async function submitLeg(product, side, qty, price, {
-    strategy, role, maxLossUsd, hedgeOrderId = null, reduceOnly = false, executionKey = null
+    strategy, role, maxLossUsd, hedgeOrderId = null, reduceOnly = false, executionKey = null,
+    manualTestOverride = false
   } = {}) {
     const roleSuffix = role === 'PROTECTIVE_HEDGE' ? 'H' :
       role === 'UNWIND' ? 'U' : role === 'SHORT' ? 'S' : 'B';
@@ -483,6 +540,7 @@ export function createDeltaOptionsExecution({
         max_loss: maxLossUsd,
         hedge_order_id: hedgeOrderId,
         options_execution_key: executionKey,
+        manual_test_override: manualTestOverride === true,
         contract_id: product.id,
         reduce_only: reduceOnly
       }
@@ -656,7 +714,8 @@ export function createDeltaOptionsExecution({
       maxLossUsd: preview.maxLossUsd,
       hedgeOrderId: originalHedgeOrder?.id ?? null,
       reduceOnly: true,
-      executionKey
+      executionKey,
+      manualTestOverride: preview.manualTestOverride === true
     });
     const unwindFill = await waitForProtectiveFill(unwindOrder, filledQty);
     if (unwindFill?.fullyFilled !== true || Number(unwindFill.filledQty) !== filledQty) {
@@ -667,8 +726,10 @@ export function createDeltaOptionsExecution({
     return { ...unwindOrder, confirmedFilledQty: unwindFill.filledQty };
   }
 
-  async function placeOptionsOrder({ symbol, strategy, qty = 1, quoteToken } = {}) {
+  async function placeOptionsOrder({ symbol, strategy, qty = 1, quoteToken, manualTestOverride = false } = {}) {
     assertOptionsExecutionAllowed(env);
+    const useManualTestOverride = manualTestOverride === true;
+    if (useManualTestOverride) requireManualTestOverride();
     const requestedSymbol = clean(symbol).toUpperCase();
     const requestedStrategy = clean(strategy).toUpperCase();
     const quantity = Number(qty);
@@ -683,10 +744,14 @@ export function createDeltaOptionsExecution({
       const expected = verifyQuoteToken(quoteToken);
       const executionKey = crypto.createHash('sha256').update(String(quoteToken)).digest('hex').slice(0, 18);
       if (expected.symbol !== requestedSymbol || expected.strategy !== requestedStrategy ||
-          Number(expected.qty) !== quantity) {
-        throw new Error('Options confirmation does not match the reviewed candidate');
+          Number(expected.qty) !== quantity ||
+          Boolean(expected.manualTestOverride) !== useManualTestOverride) {
+        throw new Error('Options confirmation does not match the reviewed candidate or manual-test mode');
       }
-      const preview = await previewOptionsOrder({ symbol: requestedSymbol, strategy: requestedStrategy, qty: quantity });
+      const preview = await previewOptionsOrder({
+        symbol: requestedSymbol, strategy: requestedStrategy, qty: quantity,
+        manualTestOverride: useManualTestOverride
+      });
       const tolerance = Math.max(1e-10, Number(preview.tickSize) / 2);
       if (expected.contractId !== preview.contractId ||
           expected.hedgeContractId !== preview.hedgeContractId ||
@@ -702,11 +767,13 @@ export function createDeltaOptionsExecution({
       const product = await resolveProduct(preview.symbol);
       if (preview.strategy === 'OPTIONS_BUY') {
         const order = await submitLeg(product, 'BUY', preview.qty, preview.premium, {
-          strategy: 'OPTIONS_BUY', role: 'ENTRY', maxLossUsd: preview.maxLossUsd, executionKey
+          strategy: 'OPTIONS_BUY', role: 'ENTRY', maxLossUsd: preview.maxLossUsd, executionKey,
+          manualTestOverride: preview.manualTestOverride === true
         });
         await logExecutor('INFO', '[OptionsExecutor] Long Options Testnet order submitted', {
           symbol: preview.symbol, contract_id: product.id,
           hedge_order_id: null, max_loss: preview.maxLossUsd,
+          manual_test_override: preview.manualTestOverride === true,
           order_id: order.id ?? null
         });
         return {
@@ -722,7 +789,8 @@ export function createDeltaOptionsExecution({
         placeProtectiveBuy: () => submitLeg(
           hedgeProduct, 'BUY', preview.qty, preview.hedgePremium, {
             strategy: 'OPTIONS_SELL', role: 'PROTECTIVE_HEDGE',
-            maxLossUsd: preview.maxLossUsd, executionKey
+            maxLossUsd: preview.maxLossUsd, executionKey,
+            manualTestOverride: preview.manualTestOverride === true
           }
         ),
         waitForProtectiveFill,
@@ -733,7 +801,7 @@ export function createDeltaOptionsExecution({
           product, 'SELL', preview.qty, preview.premium, {
             strategy: 'OPTIONS_SELL', role: 'SHORT',
             maxLossUsd: preview.maxLossUsd, hedgeOrderId: hedgeOrder?.id ?? null,
-            executionKey
+            executionKey, manualTestOverride: preview.manualTestOverride === true
           }
         )
       });
@@ -747,6 +815,7 @@ export function createDeltaOptionsExecution({
           hedge_order_id: hedgeOrderId,
           short_order_id: lifecycle.shortOrder?.id ?? null,
           max_loss: preview.maxLossUsd,
+          manual_test_override: preview.manualTestOverride === true,
           state: lifecycle.state,
           short_submitted: lifecycle.shortSubmitted === true,
           hedge_exposure_remains: lifecycle.hedgeExposureRemains === true,

@@ -1,5 +1,8 @@
 import { CONFIG } from '../server/config.js';
-import { getOptionsExecutionGate } from '../worker/options-execution-lock.mjs';
+import {
+  getOptionsExecutionGate,
+  getOptionsManualTestOverrideGate
+} from '../worker/options-execution-lock.mjs';
 import { select } from '../server/db.js';
 import { summarizeRetentionHealth } from '../src/retention-health.js';
 import { getDeltaTestnetHealth } from '../server/delta-testnet-health.js';
@@ -13,6 +16,12 @@ export default async function handler(req, res) {
     flagEnabled: optionsGate.flagEnabled,
     allowed: optionsGate.allowed,
     reason: optionsGate.reason
+  };
+  const manualOverrideGate = getOptionsManualTestOverrideGate(process.env);
+  const optionsManualTestOverride = {
+    allowed: manualOverrideGate.allowed,
+    flagEnabled: manualOverrideGate.flagEnabled,
+    reason: manualOverrideGate.reason
   };
   try {
     // Exchange health is an independent, cached probe of Delta TESTNET's public
@@ -54,6 +63,7 @@ export default async function handler(req, res) {
       success: true,
       environment: CONFIG.environment,
       optionsExecutionGate,
+      optionsManualTestOverride,
       exchange: CONFIG.signalOnly ? 'Delta Exchange India · Production Market Feed' : 'Delta Exchange India Demo',
       exchangeHealthy,
       exchangeProbeAt: exchangeProbe?.checkedAt || null,
@@ -81,6 +91,7 @@ export default async function handler(req, res) {
       success: false,
       environment: CONFIG.environment,
       optionsExecutionGate,
+      optionsManualTestOverride,
       exchangeHealthy: false,
       exchangeProbeAt: null,
       exchangeProbeStatus: null,
