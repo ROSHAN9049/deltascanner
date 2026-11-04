@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import * as defaultDb from '../../server/db.js';
 import { indiaDateKey } from '../../src/date-utils.js';
 import { isAllowedDeltaTestnetFutureSymbol, isEligibleDeltaTestnetPerpetualProduct, isMarketTickFresh } from './execution-route-policy.mjs';
+import { createDeltaOptionsExecution } from './delta-options-execution.mjs';
 
 export const DELTA_TESTNET_REST_BASE = 'https://cdn-ind.testnet.deltaex.org';
 export const DELTA_TESTNET_PRIVATE_WS_URL = 'wss://socket-ind.testnet.deltaex.org';
@@ -1088,9 +1089,30 @@ export function createDeltaExecutor({
     });
   }
 
+  const optionsExecution = createDeltaOptionsExecution({
+    env,
+    request,
+    database,
+    getAccountSnapshot,
+    logExecutor,
+    buildClientOrderId,
+    now,
+    isMarketTickFresh
+  });
+
+  async function previewOptionsOrder(input) {
+    return optionsExecution.previewOptionsOrder(input);
+  }
+
+  async function placeOptionsOrder(input) {
+    return optionsExecution.placeOptionsOrder(input);
+  }
+
   return Object.freeze({
     placeOrder,
     placeBracketOrder,
+    previewOptionsOrder,
+    placeOptionsOrder,
     closePosition,
     getOpenPositions,
     getOpenOrders,
