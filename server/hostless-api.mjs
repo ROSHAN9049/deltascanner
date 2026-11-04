@@ -5,13 +5,17 @@ import marketHandler from '../api/market.js';
 import engineStateHandler from '../api/engine/state.js';
 import engineSessionHandler from '../api/engine/session.js';
 import engineToggleHandler from '../api/engine/toggle.js';
+import optionsPreviewHandler from '../api/options/preview.js';
+import optionsExecuteHandler from '../api/options/execute.js';
 
 export const HOSTLESS_API_ROUTES = Object.freeze({
   '/api/health': healthHandler,
   '/api/market': marketHandler,
   '/api/engine/state': engineStateHandler,
   '/api/engine/session': engineSessionHandler,
-  '/api/engine/toggle': engineToggleHandler
+  '/api/engine/toggle': engineToggleHandler,
+  '/api/options/preview': optionsPreviewHandler,
+  '/api/options/execute': optionsExecuteHandler
 });
 
 function normalizeOrigins(input) {

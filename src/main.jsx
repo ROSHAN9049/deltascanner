@@ -89,6 +89,9 @@ function App() {
   const [estopReleaseCountdownEndsAt, setEstopReleaseCountdownEndsAt] = useState(0);
   const [estopReleaseToken, setEstopReleaseToken] = useState('');
   const [inspect, setInspect] = useState('');
+  const [optionsPreview, setOptionsPreview] = useState(null);
+  const [optionsBusy, setOptionsBusy] = useState(false);
+  const [optionsExecutionResult, setOptionsExecutionResult] = useState(null);
 
   const load = useCallback(async () => {
     const cacheBust = '?t=' + Date.now();
@@ -264,6 +267,74 @@ function App() {
     }
   };
 
+  const requestOptionsPreview = async candidate => {
+    if (!state || state.accountDataProtected === true) {
+      setTab('settings');
+      setError('Unlock the private dashboard session before reviewing an Options order.');
+      return;
+    }
+    setOptionsBusy(true);
+    setOptionsExecutionResult(null);
+    setError('');
+    try {
+      const response = await fetch(apiUrl('/api/options/preview'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        cache: 'no-store',
+        body: JSON.stringify({
+          symbol: candidate?.symbol,
+          strategy: candidate?.strategy,
+          qty: 1
+        })
+      });
+      const data = await response.json();
+      if (!response.ok || data?.success !== true || !data.preview) {
+        throw new Error(data?.error || 'Options preview is unavailable');
+      }
+      setOptionsPreview(data.preview);
+    } catch (e) {
+      setError(e.message || 'Options preview is unavailable');
+    } finally {
+      setOptionsBusy(false);
+    }
+  };
+
+  const executeOptionsPreview = async () => {
+    if (!optionsPreview || optionsPreview.executionAllowed !== true ||
+        state?.accountDataProtected !== false) return;
+    setOptionsBusy(true);
+    setOptionsExecutionResult(null);
+    setError('');
+    try {
+      const response = await fetch(apiUrl('/api/options/execute'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        cache: 'no-store',
+        body: JSON.stringify({
+          symbol: optionsPreview.symbol,
+          strategy: optionsPreview.strategy,
+          qty: optionsPreview.qty,
+          quoteToken: optionsPreview.quoteToken
+        })
+      });
+      const data = await response.json();
+      if (!data?.result) throw new Error(data?.error || 'Options execution response is incomplete');
+      setOptionsExecutionResult(data.result);
+      if (data.success === true && data.result.success === true) {
+        setOptionsPreview(null);
+        await load();
+      } else {
+        setError(data.error || data.result.reason || 'Options execution did not complete. Check Testnet orders before retrying.');
+      }
+    } catch (e) {
+      setError(e.message || 'Options execution failed. Reconcile Testnet orders before retrying.');
+    } finally {
+      setOptionsBusy(false);
+    }
+  };
+
   const estopReleaseCountdown = Math.max(
     0,
     Math.ceil((estopReleaseCountdownEndsAt - clock) / 1000)
@@ -393,7 +464,7 @@ function App() {
     {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" strategy="MOMENTUM" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'scalping' && <EngineView engine="SCALPING" signals={signals} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols} />}
     {tab === 'grid' && <GridStrategy settings={settings} market={market} busy={busy} mutate={mutate} accountDataProtected={accountDataProtected} gridEntrySafety={executionCoverage?.gridEntrySafety || null} executionMode={executionCoverage?.deltaExecutionMode || 'disabled'} testnetDiagnostics={executionCoverage?.gridTestnetDiagnostics || null} />}
-    {tab === 'options' && <OptionsView settings={settings} optionCache={optionCache} executionCoverage={state?.executionCoverage || null} />}
+    {tab === 'options' && <OptionsView settings={settings} optionCache={optionCache} executionCoverage={state?.executionCoverage || null} accountDataProtected={accountDataProtected} optionsBusy={optionsBusy} onPreview={requestOptionsPreview} />}
     {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" strategy="SCALPING" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'positions' && <Positions rows={positions} accountDataProtected={accountDataProtected} />}
     {tab === 'delta-testnet-positions' && <DeltaTestnetPositions rows={state?.deltaTestnetPositions || []} accountDataProtected={accountDataProtected} mode={executionCoverage?.deltaExecutionMode || 'disabled'} />}
@@ -405,6 +476,26 @@ function App() {
     {tab === 'analytics' && <Analytics trades={trades} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.deltaTestnetTradeRowCount ?? null} />}
     {tab === 'settings' && <Settings settings={settings} currentOpenPositions={state?.deltaTestnetOpenPositionCount ?? null} secret={secret} setSecret={v => { secretRef.current = v; setSecret(v); }} busy={busy} mutate={mutate} onUnlock={unlockSession} onLock={lockSession} authenticated={state?.accountDataProtected === false} />}
     <footer>Delta Exchange India · public market feed · direct execution is Testnet-only when enabled · live orders hard-locked</footer>
+    {optionsPreview ? <div className="confirmOverlay">
+      <div className="confirmDialog" role="dialog" aria-modal="true" aria-labelledby="optionsConfirmTitle">
+        <h3 id="optionsConfirmTitle">Confirm Options Trade · Delta Testnet</h3>
+        <p><b>{optionsPreview.side} {optionsPreview.qty} · {optionsPreview.symbol}</b></p>
+        <p>Limit premium: USD {Number(optionsPreview.premium).toFixed(8)}</p>
+        {optionsPreview.hedgeSymbol ? <p>Protective BUY first: {optionsPreview.hedgeSymbol} at USD {Number(optionsPreview.hedgePremium).toFixed(8)}. The short leg is not submitted unless the protective leg is fully filled.</p> : null}
+        <p>Maximum loss (including fee allowance): <b>USD {Number(optionsPreview.maxLossUsd).toFixed(6)}</b></p>
+        <p>Permitted maximum: USD {Number(optionsPreview.maxAllowedLossUsd).toFixed(6)} · hard cap 0.5% of verified equity</p>
+        <p>Testnet product ID: {optionsPreview.contractId}{optionsPreview.hedgeContractId ? ' · Hedge product ID: ' + optionsPreview.hedgeContractId : ''}</p>
+        <p>Quote timestamp: {optionsPreview.cachedAt ? new Date(optionsPreview.cachedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '—'} · confirmation token expires after 60 seconds.</p>
+        {optionsPreview.executionAllowed === true
+          ? <p role="status">Execution gate is enabled for Delta Testnet. Review the values before submitting.</p>
+          : <p role="alert" className="warn">Execution remains LOCKED: {optionsPreview.executionLockReason || 'OPTIONS_EXECUTION_ALLOWED is false or Testnet profile is not confirmed.'}</p>}
+        {optionsExecutionResult ? <p role="status">Last result: {optionsExecutionResult.state || 'UNKNOWN'} · {optionsExecutionResult.reason || 'See Testnet order and worker logs before any retry.'}</p> : null}
+        <div className="confirmActions">
+          <button className="action" type="button" disabled={optionsBusy} onClick={() => { setOptionsPreview(null); setOptionsExecutionResult(null); }}>Cancel</button>
+          <button className="action" type="button" disabled={optionsBusy || optionsPreview.executionAllowed !== true || accountDataProtected} onClick={executeOptionsPreview}>{optionsBusy ? 'SUBMITTING…' : 'EXECUTE OPTIONS TRADE (TESTNET)'}</button>
+        </div>
+      </div>
+    </div> : null}
     {showEstopReleaseConfirmation ? <div className="confirmOverlay">
       <div className="confirmDialog" role="dialog" aria-modal="true" aria-labelledby="estopReleaseTitle">
         <h3 id="estopReleaseTitle">Confirm E-STOP release</h3>
@@ -705,20 +796,18 @@ function EngineView({ engine, signals, entrySafetyBlocked = false, entrySafetyRe
   })}{!rows.length ? <tr><td colSpan={14}>{showAllSignals ? 'No signal rows are available for this engine.' : 'No signals have a normalized score or original-score fallback ≥80. Signals without either score cannot pass this filter.'}</td></tr> : null}</tbody></table></div></Panel>;
 }
 
-function OptionsView({ settings, optionCache = [], executionCoverage = null }) {
-  // Only the dedicated cache represents the latest complete candidate snapshot.
-  // Never fall back to historical dd_signals after an intentionally empty refresh.
+function OptionsView({
+  settings, optionCache = [], executionCoverage = null,
+  accountDataProtected = false, optionsBusy = false, onPreview = () => {}
+}) {
   const sourceRows = selectCurrentOptionsCacheRows(optionCache);
   const freshness = assessOptionsCacheFreshness(sourceRows);
-  const rows = (freshness.fresh ? [...sourceRows] : [])
-    .sort((a,b) => num(b.score) - num(a.score));
+  const rows = (freshness.fresh ? [...sourceRows] : []).sort((a,b) => num(b.score) - num(a.score));
   const ageMinutes = freshness.ageMs === null ? null : Math.max(0, Math.floor(freshness.ageMs / 60000));
   const capturedAt = freshness.newestAt
-    ? new Date(freshness.newestAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
-    : null;
+    ? new Date(freshness.newestAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : null;
   const oldestCapturedAt = freshness.oldestAt
-    ? new Date(freshness.oldestAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
-    : null;
+    ? new Date(freshness.oldestAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : null;
   const freshnessMessage = freshness.status === 'STALE'
     ? 'The oldest cached option row is ' + (ageMinutes >= 60 ? (ageMinutes / 60).toFixed(1) + ' hours old' : ageMinutes + ' minutes old') + '; the entire mixed-age batch is hidden even if newer rows exist.'
     : freshness.status === 'UNKNOWN_TIMESTAMP'
@@ -727,9 +816,7 @@ function OptionsView({ settings, optionCache = [], executionCoverage = null }) {
         ? 'Candidate timestamps are in the future; cached rows are hidden until the source clock is verified.'
         : freshness.status === 'UNKNOWN_TIME'
           ? 'Dashboard time is unavailable; cached rows are hidden until freshness can be verified.'
-          : freshness.status === 'NO_DATA'
-            ? 'No current option candidate snapshot is available.'
-            : '';
+          : freshness.status === 'NO_DATA' ? 'No current option candidate snapshot is available.' : '';
   const buys = rows.filter(x => x.strategy === 'OPTIONS_BUY');
   const sells = rows.filter(x => x.strategy === 'OPTIONS_SELL');
   const testnetMode = executionCoverage?.deltaExecutionMode === 'testnet';
@@ -742,30 +829,28 @@ function OptionsView({ settings, optionCache = [], executionCoverage = null }) {
             : optionsDiagnostics.status === 'DISABLED_BY_SETTING' ? 'DISABLED IN SETTINGS'
               : 'ACTIVE (DIAGNOSTICS ONLY)';
   const diagnosticRefreshAt = optionsDiagnostics?.updatedAt
-    ? new Date(optionsDiagnostics.updatedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
-    : null;
+    ? new Date(optionsDiagnostics.updatedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : null;
   const productCounts = optionsDiagnostics?.productCountsByUnderlying || {};
   const quoteCounts = optionsDiagnostics?.quoteCountsByUnderlying || {};
   const underlyingCounts = ['BTC', 'ETH', 'XAUT']
     .map(asset => asset + ' products ' + (productCounts[asset] ?? '—') + ' / quotes ' + (quoteCounts[asset] ?? '—'))
     .join(' · ');
-  const missingUnderlyings = Array.isArray(optionsDiagnostics?.missingUnderlyings)
-    ? optionsDiagnostics.missingUnderlyings
-    : [];
+  const missingUnderlyings = Array.isArray(optionsDiagnostics?.missingUnderlyings) ? optionsDiagnostics.missingUnderlyings : [];
   const optionsEngineDetail = !testnetMode
-    ? 'Options order routing remains locked.'
+    ? 'Options order routing is restricted to Delta Testnet.'
     : optionsDiagnostics
       ? (diagnosticRefreshAt ? 'Diagnostics refreshed ' + diagnosticRefreshAt + ' IST · ' : '') +
         'Testnet products: ' + (optionsDiagnostics.testnetProductsAvailable ?? 0) +
         ' · quote candidates: ' + (optionsDiagnostics.optionTickersAvailable ?? 0) +
         ' · ' + underlyingCounts +
         (missingUnderlyings.length ? ' · no eligible products: ' + missingUnderlyings.join(', ') : '') +
-        ' · order routing remains hard-locked.'
-      : 'Waiting for the Worker product-catalogue check. Order routing remains hard-locked.';
+        ' · manual execution requires its separate environment gate.'
+      : 'Waiting for the Worker product-catalogue check. Execution remains disabled unless the API gate is explicitly enabled.';
   const buyMinDelta = safeNum(settings.options_buy_min_delta) || 0.45;
   const buyMaxDelta = safeNum(settings.options_buy_max_delta) || 0.65;
   const sellMinDelta = safeNum(settings.options_sell_min_delta) || 0.20;
   const sellMaxDelta = safeNum(settings.options_sell_max_delta) || 0.35;
+  const actionDisabled = !testnetMode || !freshness.fresh || accountDataProtected || optionsBusy;
   return <>
     <section className="cards">
       <Card label="OPTIONS ENGINE" value={optionsEngineStatus} sub={optionsEngineDetail}/>
@@ -781,31 +866,34 @@ function OptionsView({ settings, optionCache = [], executionCoverage = null }) {
       <p>{freshnessMessage}</p>
       {oldestCapturedAt ? <p>Oldest cached row: {oldestCapturedAt} IST · age about {ageMinutes >= 60 ? (ageMinutes / 60).toFixed(1) + ' hours' : ageMinutes + ' minutes'}.</p> : null}
       {capturedAt && capturedAt !== oldestCapturedAt ? <p>Newest cached row: {capturedAt} IST. Newer rows do not make an older mixed batch trustworthy.</p> : null}
-      <p className="muted">Fresh option quotes and Greeks must be independently verified before reviewing candidates. No stale row is presented as current.</p>
+      <p className="muted">Fresh option quotes and Greeks must be independently verified before reviewing candidates.</p>
     </div> : null}
     <div className="lockedText">
-      <b className="warn">{testnetMode ? '⚠ OPTIONS DIAGNOSTICS ACTIVE — EXECUTION LOCKED' : '⚠ OPTIONS EXECUTION LOCKED — ANALYSIS ONLY'}</b>
-      <p>{testnetMode
-        ? 'The Worker checks BTC, ETH, and XAUT Testnet option catalogues and quotes. Missing contracts or quotes are skipped and logged; no Options order route is called.'
-        : 'Entries remain hard-locked until spread legs, defined maximum loss, dedicated credentials, and contract mappings are independently verified.'}</p>
-      <p className="muted">The execution lock remains in force. Product availability and diagnostic signals do not authorize an order.</p>
+      <b className="warn">{testnetMode ? '⚠ OPTIONS TESTNET ROUTE · MANUAL CONFIRMATION ONLY' : '⚠ OPTIONS EXECUTION · TESTNET ONLY'}</b>
+      <p>Preview is read-only. The API re-resolves the Testnet product ID and quote, checks current equity and the 0.5% maximum-loss ceiling, and requires a fresh confirmation. A SELL spread submits the protective BUY first and will not submit the short leg until that BUY is fully filled.</p>
+      <p className="muted">When OPTIONS_EXECUTION_ALLOWED is false or absent, the final confirmation remains disabled. Production/live order routing is not supported.</p>
     </div>
-    <Panel title="Options BUY · Analysis Only">
-      <OptionTable rows={buys} type="BUY" deltaMin={buyMinDelta} deltaMax={buyMaxDelta} emptyMessage={freshness.fresh ? 'No option BUY candidates for the latest snapshot.' : 'Stale or unverified candidates are hidden; no current BUY candidates are shown.'} />
+    <Panel title="Options BUY · Testnet Candidate Review">
+      <OptionTable rows={buys} type="BUY" deltaMin={buyMinDelta} deltaMax={buyMaxDelta}
+        actionDisabled={actionDisabled} onPreview={onPreview}
+        emptyMessage={freshness.fresh ? 'No option BUY candidates for the latest snapshot.' : 'Stale or unverified candidates are hidden.'}/>
     </Panel>
-    <Panel title="Options SELL · Defined-Risk Review Only">
-      <OptionTable rows={sells} type="SELL" deltaMin={sellMinDelta} deltaMax={sellMaxDelta} emptyMessage={freshness.fresh ? 'No option SELL candidates for the latest snapshot.' : 'Stale or unverified candidates are hidden; no current SELL candidates are shown.'} />
+    <Panel title="Options SELL · Defined-Risk Spread Review">
+      <OptionTable rows={sells} type="SELL" deltaMin={sellMinDelta} deltaMax={sellMaxDelta}
+        actionDisabled={actionDisabled} onPreview={onPreview}
+        emptyMessage={freshness.fresh ? 'No option SELL candidates for the latest snapshot.' : 'Stale or unverified candidates are hidden.'}/>
     </Panel>
   </>;
 }
 
-function OptionTable({ rows, type, deltaMin, deltaMax, emptyMessage = 'No option candidates returned for the current market snapshot.' }) {
+function OptionTable({
+  rows, type, deltaMin, deltaMax, actionDisabled = true, onPreview = () => {},
+  emptyMessage = 'No option candidates returned for the current market snapshot.'
+}) {
   const hasSellRiskColumns = type === 'SELL';
-  // Never render a stale cached candidate as executable while the backend hard lock is active.
-  const optionsExecutionLocked = true;
-  const columnCount = hasSellRiskColumns ? 18 : 16;
+  const columnCount = hasSellRiskColumns ? 19 : 17;
   return <div className="tablewrap"><table><thead><tr>
-    <th>TIME</th><th>UNDERLYING</th><th>CONTRACT</th><th>TYPE</th><th>STRIKE</th><th>DTE</th><th>Δ</th><th>DELTA RANGE CHECK</th><th>BID</th><th>ASK</th><th>SPREAD</th><th>OI</th><th>VOL</th><th>SCORE</th><th>STAGE</th>{hasSellRiskColumns ? <><th>PROTECTIVE LEG</th><th>MAX LOSS / SPREAD (RAW)</th></> : null}<th>STATUS</th>
+    <th>TIME</th><th>UNDERLYING</th><th>CONTRACT</th><th>TYPE</th><th>STRIKE</th><th>DTE</th><th>Δ</th><th>DELTA RANGE CHECK</th><th>BID</th><th>ASK</th><th>SPREAD</th><th>OI</th><th>VOL</th><th>SCORE</th><th>STAGE</th>{hasSellRiskColumns ? <><th>PROTECTIVE LEG</th><th>MAX LOSS / SPREAD (RAW)</th></> : null}<th>STATUS</th><th>ACTION</th>
   </tr></thead><tbody>{rows.slice(0,30).map(s => {
     let d = s.details || {};
     if (typeof d === 'string') { try { d = JSON.parse(d); } catch { d = {}; } }
@@ -820,6 +908,8 @@ function OptionTable({ rows, type, deltaMin, deltaMax, emptyMessage = 'No option
     );
     const rawMaxLoss = safeNum(d.maxRiskPerSpread);
     const maxLossAvailable = protectiveLegConfirmed && rawMaxLoss !== null && rawMaxLoss > 0;
+    const candidateVerified = s.stage === 'CONFIRMED' && d.analysisReady === true &&
+      (!hasSellRiskColumns || protectiveLegConfirmed);
     const reasonText = fmtReasons(s.blocked_reasons);
     const statusLocked = String(reasonText).toLowerCase().includes('execution') ||
       String(reasonText).toLowerCase().includes('route unavailable') ||
@@ -844,7 +934,8 @@ function OptionTable({ rows, type, deltaMin, deltaMax, emptyMessage = 'No option
         <td className="warn">{protectiveLegConfirmed ? 'SPREAD LEG: ' + d.hedgeSymbol + ' · STRIKE ' + hedgeStrike : 'PROTECTIVE LEG: NOT CONFIRMED'}</td>
         <td>{maxLossAvailable ? fmtRawPrice(rawMaxLoss, 2) : 'MAX LOSS: NOT AVAILABLE — SPREAD NOT CONFIRMED'}</td>
       </> : null}
-      <td className={optionsExecutionLocked || statusLocked ? 'warn' : s.ready ? 'up' : 'muted'}>{optionsExecutionLocked || statusLocked ? 'LOCKED' : s.ready ? 'READY' : 'WAIT'}</td>
+      <td className={statusLocked ? 'warn' : s.ready ? 'up' : 'muted'}>{statusLocked ? 'REVIEW REQUIRED' : s.ready ? 'READY' : 'ANALYSIS ONLY'}</td>
+      <td><button className="action" type="button" disabled={actionDisabled || !candidateVerified || !s.symbol} onClick={() => onPreview(s)}>{candidateVerified ? 'PREVIEW TESTNET' : 'NOT VERIFIED'}</button></td>
     </tr>;
   })}{!rows.length ? <tr><td colSpan={columnCount}>{emptyMessage} No missing values are substituted with zero.</td></tr> : null}</tbody></table></div>;
 }

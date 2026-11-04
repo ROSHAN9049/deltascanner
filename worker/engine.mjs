@@ -2771,7 +2771,7 @@ export class DeltaEngine {
             : 'Tradetron option signal route unavailable');
           if (executionLocked) blocked.push(OPTIONS_EXECUTION_LOCK_REASON);
           const ready = s.ready && q >= 1 && !duplicate && routeConfigured && !executionLocked;
-          const row = { ...s, ticker: best.ticker, strategy: 'OPTIONS_BUY', qty: q,
+          const row = { ...s, analysisReady: s.ready === true, ticker: best.ticker, strategy: 'OPTIONS_BUY', qty: q,
             notional: sizing.premiumNotional,
             risk: sizing.totalRisk,
             blocked, executionLocked, ready };
@@ -2833,7 +2833,7 @@ export class DeltaEngine {
             : 'Tradetron option signal route unavailable');
           if (executionLocked) blocked.push(OPTIONS_EXECUTION_LOCK_REASON);
           const ready = s.ready && q >= 1 && !!hedge && credit > 0 && optionRouteReady && !executionLocked;
-          const row = { ...s, ticker: best.ticker, strategy: 'OPTIONS_SELL', qty: q,
+          const row = { ...s, analysisReady: s.ready === true, ticker: best.ticker, strategy: 'OPTIONS_SELL', qty: q,
             hedgeSymbol: hedge?.symbol || '', hedgeStrike: hedge?.strike || 0, hedgeDelta: hedge?.delta || 0,
             credit, maxRiskPerSpread, notional: Math.max(0, credit * q), risk: maxRiskPerSpread * q,
             blocked, executionLocked, ready, optionRouteReady };
@@ -3143,7 +3143,13 @@ export class DeltaEngine {
         volume: s.volume,
         openInterest: s.oi,
         fullMarketScan: true,
-        goldOptionSettlement: String(s.underlyingSymbol || '').toUpperCase().startsWith('XAUT')
+        goldOptionSettlement: String(s.underlyingSymbol || '').toUpperCase().startsWith('XAUT'),
+        analysisReady: s.analysisReady === true,
+        hedgeSymbol: s.hedgeSymbol || null,
+        hedgeStrike: s.hedgeStrike || null,
+        hedgeDelta: s.hedgeDelta || null,
+        credit: s.credit ?? null,
+        maxRiskPerSpread: s.maxRiskPerSpread ?? null
       }
     }));
     try {
