@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { CONFIG } from '../server/config.js';
-import { resolveDeltaRequestBase } from '../worker/delta-adapter.mjs';
+import { resolveDeltaRequestBase, optionTickerRequestOptions } from '../worker/delta-adapter.mjs';
 
 const PRODUCTION_REST = 'https://api.india.delta.exchange';
 const TESTNET_REST = 'https://cdn-ind.testnet.deltaex.org';
@@ -46,4 +46,20 @@ test('production signal-only mode continues to use production REST for both base
   const config = { base: PRODUCTION_REST, marketDataBase: PRODUCTION_REST };
   assert.equal(resolveDeltaRequestBase({}, config), PRODUCTION_REST);
   assert.equal(resolveDeltaRequestBase({ marketData: true }, config), PRODUCTION_REST);
+});
+
+
+test('Testnet option ticker and single-contract Greek requests use the Testnet REST host', () => {
+  const config = {
+    base: TESTNET_REST,
+    marketDataBase: PRODUCTION_REST,
+    productCatalogBase: TESTNET_REST
+  };
+  const testnetOptions = optionTickerRequestOptions('testnet');
+  assert.deepEqual(testnetOptions, { productCatalog: true });
+  assert.equal(resolveDeltaRequestBase(testnetOptions, config), TESTNET_REST);
+
+  const signalOnlyOptions = optionTickerRequestOptions('disabled');
+  assert.deepEqual(signalOnlyOptions, { marketData: true });
+  assert.equal(resolveDeltaRequestBase(signalOnlyOptions, config), PRODUCTION_REST);
 });
