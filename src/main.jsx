@@ -464,7 +464,7 @@ function App() {
     {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" strategy="MOMENTUM" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'scalping' && <EngineView engine="SCALPING" signals={signals} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols} />}
     {tab === 'grid' && <GridStrategy settings={settings} market={market} busy={busy} mutate={mutate} accountDataProtected={accountDataProtected} gridEntrySafety={executionCoverage?.gridEntrySafety || null} executionMode={executionCoverage?.deltaExecutionMode || 'disabled'} testnetDiagnostics={executionCoverage?.gridTestnetDiagnostics || null} />}
-    {tab === 'options' && <OptionsView settings={settings} optionCache={optionCache} executionCoverage={state?.executionCoverage || null} accountDataProtected={accountDataProtected} optionsBusy={optionsBusy} onPreview={requestOptionsPreview} />}
+    {tab === 'options' && <OptionsView settings={settings} optionCache={optionCache} executionCoverage={state?.executionCoverage || null} apiHealth={health} accountDataProtected={accountDataProtected} optionsBusy={optionsBusy} onPreview={requestOptionsPreview} />}
     {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" strategy="SCALPING" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'positions' && <Positions rows={positions} accountDataProtected={accountDataProtected} />}
     {tab === 'delta-testnet-positions' && <DeltaTestnetPositions rows={state?.deltaTestnetPositions || []} accountDataProtected={accountDataProtected} mode={executionCoverage?.deltaExecutionMode || 'disabled'} />}
@@ -797,7 +797,7 @@ function EngineView({ engine, signals, entrySafetyBlocked = false, entrySafetyRe
 }
 
 function OptionsView({
-  settings, optionCache = [], executionCoverage = null,
+  settings, optionCache = [], executionCoverage = null, apiHealth = null,
   accountDataProtected = false, optionsBusy = false, onPreview = () => {}
 }) {
   const sourceRows = selectCurrentOptionsCacheRows(optionCache);
@@ -821,6 +821,7 @@ function OptionsView({
   const sells = rows.filter(x => x.strategy === 'OPTIONS_SELL');
   const testnetMode = executionCoverage?.deltaExecutionMode === 'testnet';
   const optionsDiagnostics = executionCoverage?.optionsTestnetDiagnostics || null;
+  const optionsExecutionGate = apiHealth?.optionsExecutionGate || null;
   const optionsEngineStatus = !testnetMode ? 'ANALYSIS ONLY'
     : !optionsDiagnostics ? 'ACTIVE (WAITING FOR TESTNET PRODUCTS)'
       : optionsDiagnostics.status === 'WAITING_FOR_TESTNET_PRODUCTS' ? 'ACTIVE (WAITING FOR TESTNET PRODUCTS)'
@@ -871,7 +872,14 @@ function OptionsView({
     <div className="lockedText">
       <b className="warn">{testnetMode ? '⚠ OPTIONS TESTNET ROUTE · MANUAL CONFIRMATION ONLY' : '⚠ OPTIONS EXECUTION · TESTNET ONLY'}</b>
       <p>Preview is read-only. The API re-resolves the Testnet product ID and quote, checks current equity and the 0.5% maximum-loss ceiling, and requires a fresh confirmation. A SELL spread submits the protective BUY first and will not submit the short leg until that BUY is fully filled.</p>
-      <p className="muted">When OPTIONS_EXECUTION_ALLOWED is false or absent, the final confirmation remains disabled. Production/live order routing is not supported.</p>
+      <p className={optionsExecutionGate?.allowed === true ? 'up' : 'warn'} role="status">
+        {optionsExecutionGate?.allowed === true
+          ? 'API Options execution gate: ENABLED for Delta Testnet. Candidate analysis, account checks, Worker safety checks and fresh quote validation still apply; Preview does not submit an order.'
+          : optionsExecutionGate?.allowed === false
+            ? 'API Options execution gate: LOCKED — ' + (optionsExecutionGate.reason || 'Testnet execution configuration is incomplete.')
+            : 'API Options execution gate: STATUS UNKNOWN — /api/health has not confirmed allowed=true; final confirmation must remain disabled.'}
+        {' '}Production/live order routing is not supported.
+      </p>
     </div>
     <Panel title="Options BUY · Testnet Candidate Review">
       <OptionTable rows={buys} type="BUY" deltaMin={buyMinDelta} deltaMax={buyMaxDelta}
@@ -897,9 +905,10 @@ function OptionTable({
   </tr></thead><tbody>{rows.slice(0,30).map(s => {
     let d = s.details || {};
     if (typeof d === 'string') { try { d = JSON.parse(d); } catch { d = {}; } }
-    const deltaValue = safeNum(d.delta);
-    const deltaMissing = d.delta === null || d.delta === undefined || (typeof d.delta === 'string' && d.delta.trim() === '');
-    const deltaAssessment = assessDeltaRange(d.delta, deltaMin, deltaMax);
+    const deltaRaw = d.delta ?? s.delta;
+    const deltaValue = safeNum(deltaRaw);
+    const deltaMissing = deltaRaw === null || deltaRaw === undefined || (typeof deltaRaw === 'string' && deltaRaw.trim() === '');
+    const deltaAssessment = assessDeltaRange(deltaRaw, deltaMin, deltaMax);
     const hedgeStrike = safeNum(d.hedgeStrike);
     const hedgeDelta = safeNum(d.hedgeDelta);
     const protectiveLegConfirmed = Boolean(
