@@ -908,6 +908,8 @@ function OptionTable({
     );
     const rawMaxLoss = safeNum(d.maxRiskPerSpread);
     const maxLossAvailable = protectiveLegConfirmed && rawMaxLoss !== null && rawMaxLoss > 0;
+    const candidateVerified = s.stage === 'CONFIRMED' && d.analysisReady === true &&
+      (!hasSellRiskColumns || protectiveLegConfirmed);
     const reasonText = fmtReasons(s.blocked_reasons);
     const statusLocked = String(reasonText).toLowerCase().includes('execution') ||
       String(reasonText).toLowerCase().includes('route unavailable') ||
@@ -933,7 +935,7 @@ function OptionTable({
         <td>{maxLossAvailable ? fmtRawPrice(rawMaxLoss, 2) : 'MAX LOSS: NOT AVAILABLE — SPREAD NOT CONFIRMED'}</td>
       </> : null}
       <td className={statusLocked ? 'warn' : s.ready ? 'up' : 'muted'}>{statusLocked ? 'REVIEW REQUIRED' : s.ready ? 'READY' : 'ANALYSIS ONLY'}</td>
-      <td><button className="action" type="button" disabled={actionDisabled || !s.symbol} onClick={() => onPreview(s)}>PREVIEW TESTNET</button></td>
+      <td><button className="action" type="button" disabled={actionDisabled || !candidateVerified || !s.symbol} onClick={() => onPreview(s)}>{candidateVerified ? 'PREVIEW TESTNET' : 'NOT VERIFIED'}</button></td>
     </tr>;
   })}{!rows.length ? <tr><td colSpan={columnCount}>{emptyMessage} No missing values are substituted with zero.</td></tr> : null}</tbody></table></div>;
 }
