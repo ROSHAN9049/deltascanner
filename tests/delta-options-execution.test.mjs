@@ -4,7 +4,9 @@ import {
   OPTIONS_MAX_LOSS_EQUITY_PCT,
   OPTIONS_EXECUTION_ALLOWED,
   getOptionsExecutionGate,
-  isOptionsExecutionAllowed
+  isOptionsExecutionAllowed,
+  getOptionsManualTestOverrideGate,
+  assertOptionsManualTestOverrideAllowed
 } from '../worker/options-execution-lock.mjs';
 import {
   calculateLongOptionMaxLoss,
@@ -32,6 +34,26 @@ test('Options execution gate is default-off and requires both Testnet profile gu
     DELTA_EXECUTION_MODE: 'testnet', DELTA_ENVIRONMENT: 'TESTNET',
     OPTIONS_EXECUTION_ALLOWED: 'true'
   }).allowed, true);
+});
+
+test('manual Options override is default-off and requires an explicit Testnet-only flag', () => {
+  assert.equal(getOptionsManualTestOverrideGate({}).allowed, false);
+  assert.equal(getOptionsManualTestOverrideGate({
+    DELTA_EXECUTION_MODE: 'live',
+    DELTA_ENVIRONMENT: 'TESTNET',
+    ALLOW_MANUAL_OVERRIDE_FOR_TEST: 'true'
+  }).allowed, false);
+  assert.equal(getOptionsManualTestOverrideGate({
+    DELTA_EXECUTION_MODE: 'testnet',
+    DELTA_ENVIRONMENT: 'SIGNAL_ONLY',
+    ALLOW_MANUAL_OVERRIDE_FOR_TEST: 'true'
+  }).allowed, false);
+  assert.equal(getOptionsManualTestOverrideGate({
+    DELTA_EXECUTION_MODE: 'testnet',
+    DELTA_ENVIRONMENT: 'TESTNET',
+    ALLOW_MANUAL_OVERRIDE_FOR_TEST: 'TRUE'
+  }).allowed, true);
+  assert.throws(() => assertOptionsManualTestOverrideAllowed({}), /ALLOW_MANUAL_OVERRIDE_FOR_TEST=true/);
 });
 
 test('long-option maximum loss includes full premium and conservative fees', () => {
