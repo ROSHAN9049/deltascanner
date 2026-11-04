@@ -33,8 +33,10 @@ function harness({
       hedgeSymbol: HEDGE, hedgeStrike: 82000, hedgeDelta: 0.1
     }
   };
+  const baselineDetails = { ...candidate.details };
+  const patchDetails = candidatePatch.details || {};
   Object.assign(candidate, candidatePatch);
-  candidate.details = { ...candidate.details, ...(candidatePatch.details || {}) };
+  candidate.details = { ...baselineDetails, ...patchDetails };
   const storedOrders = [];
   const apiCalls = [];
   let hedgeCanceled = false;
