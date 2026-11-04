@@ -45,7 +45,7 @@ test('hydrates only missing Greeks using the exact-symbol ticker and preserves T
   assert.equal(result.rows[0].product_id, 181001);
   assert.equal(result.rows[0].greeks.delta, 0.55);
   assert.equal(result.rows[0].greeks.gamma, 0.02);
-  assert.equal(result.rows[1].greeks.delta, -0.22);
+  assert.equal(optionGreeksFromTicker(result.rows[1]).delta, -0.22);
 });
 
 test('does not attach Greeks from a mismatched single-contract response', async () => {
