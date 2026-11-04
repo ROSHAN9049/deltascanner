@@ -12,6 +12,7 @@ import { normalizedScoreFromView as normalizedScoreFrom, visibleScoreFrom, passe
 import { resolveDashboardRouteContext } from './dashboard-route-state.js';
 import { summarizeRotationLedger } from './rotation-ledger-state.js';
 import { assessOptionsCacheFreshness, selectCurrentOptionsCacheRows } from './options-cache-freshness.js';
+import { isManualOverrideAllowed, isManualOverrideOptionCandidate } from './options-manual-override.js';
 import { formatHealthAge, formatLeaseRemaining, formatRetentionLastRun, getEmergencyStopTooltip, getGlobalPositionCapDisplay, getWorkerStatusDisplay, getExchangeHealthDisplay } from './worker-status-display.js';
 
 const tabs = [
@@ -826,8 +827,7 @@ function OptionsView({
   const optionsDiagnostics = executionCoverage?.optionsTestnetDiagnostics || null;
   const optionsExecutionGate = apiHealth?.optionsExecutionGate || null;
   const optionsManualTestOverride = apiHealth?.optionsManualTestOverride || null;
-  const manualOverrideAllowed = optionsManualTestOverride?.allowed === true &&
-    optionsExecutionGate?.allowed === true;
+  const manualOverrideAllowed = isManualOverrideAllowed(apiHealth);
   const optionsEngineStatus = !testnetMode ? 'ANALYSIS ONLY'
     : !optionsDiagnostics ? 'ACTIVE (WAITING FOR TESTNET PRODUCTS)'
       : optionsDiagnostics.status === 'WAITING_FOR_TESTNET_PRODUCTS' ? 'ACTIVE (WAITING FOR TESTNET PRODUCTS)'
@@ -921,11 +921,10 @@ function OptionTable({
     const deltaValue = safeNum(deltaRaw);
     const deltaMissing = deltaRaw === null || deltaRaw === undefined || (typeof deltaRaw === 'string' && deltaRaw.trim() === '');
     const deltaAssessment = assessDeltaRange(deltaRaw, deltaMin, deltaMax);
-    const manualDeltaQualified = deltaValue !== null &&
-      Math.abs(deltaValue) >= deltaMin && Math.abs(deltaValue) <= deltaMax;
-    const candidateDte = safeNum(d.dte);
-    const manualDteQualified = candidateDte !== null &&
-      candidateDte >= dteMin && candidateDte <= dteMax;
+    // Cache rows expose DTE at the top level; older cache payloads may also
+    // include it in details. Resolve both so the manual Testnet path does not
+    // incorrectly show NOT VERIFIED for an otherwise eligible cached row.
+    const candidateDte = safeNum(d.dte ?? s.dte);
     const hedgeStrike = safeNum(d.hedgeStrike);
     const hedgeDelta = safeNum(d.hedgeDelta);
     const protectiveLegConfirmed = Boolean(
@@ -936,8 +935,16 @@ function OptionTable({
     const maxLossAvailable = protectiveLegConfirmed && rawMaxLoss !== null && rawMaxLoss > 0;
     const candidateVerified = s.stage === 'CONFIRMED' && d.analysisReady === true &&
       (!hasSellRiskColumns || protectiveLegConfirmed);
-    const manualOverrideCandidate = manualOverrideAllowed && manualDeltaQualified &&
-      manualDteQualified && (!hasSellRiskColumns || protectiveLegConfirmed);
+    const manualOverrideCandidate = isManualOverrideOptionCandidate({
+      row: s,
+      details: d,
+      manualOverrideAllowed,
+      deltaMin,
+      deltaMax,
+      dteMin,
+      dteMax,
+      requiresHedge: hasSellRiskColumns
+    });
     const reasonText = fmtReasons(s.blocked_reasons);
     const statusLocked = String(reasonText).toLowerCase().includes('execution') ||
       String(reasonText).toLowerCase().includes('route unavailable') ||
@@ -948,7 +955,7 @@ function OptionTable({
       <td className="symbol">{s.symbol || '—'}</td>
       <td>{d.optionType || '—'} / {type}</td>
       <td>{safeNum(d.strike) === null ? '—' : safeNum(d.strike).toLocaleString('en-IN',{maximumFractionDigits:2})}</td>
-      <td>{safeNum(d.dte) === null ? '—' : safeNum(d.dte).toFixed(1)}</td>
+      <td>{candidateDte === null ? '—' : candidateDte.toFixed(1)}</td>
       <td>{deltaMissing ? 'NO DATA' : deltaValue === null ? 'INVALID' : deltaValue.toFixed(2)}</td>
       <td className={deltaAssessment.status === 'IN_RANGE' ? 'up' : 'warn'} title={deltaAssessment.label}>{deltaAssessment.label}</td>
       <td>{fmtRawPrice(d.bid)}</td>
