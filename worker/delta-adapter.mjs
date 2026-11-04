@@ -39,6 +39,12 @@ export function resolveDeltaRequestBase({
   return base;
 }
 
+export function optionTickerRequestOptions(executionMode = CONFIG.deltaExecutionMode) {
+  return String(executionMode || '').trim().toLowerCase() === 'testnet'
+    ? { productCatalog: true }
+    : { marketData: true };
+}
+
 export class DeltaAdapter {
   constructor() {
     if (!['TESTNET', 'SIGNAL_ONLY'].includes(CONFIG.environment)) throw new Error('Unsupported scanner environment');
@@ -224,7 +230,21 @@ export class DeltaAdapter {
     return this.request('GET', '/v2/tickers', {
       contract_types: 'call_options,put_options',
       underlying_asset_symbols: asset
-    }, null, false, { marketData: true });
+    }, null, false, optionTickerRequestOptions());
+  }
+  optionTicker(symbol) {
+    const contract = String(symbol || '').trim().toUpperCase();
+    if (!/^[CP]-(BTC|ETH)-[0-9]+(?:\.[0-9]+)?-\d{6}$/.test(contract)) {
+      throw new Error('Invalid BTC/ETH Delta option contract symbol');
+    }
+    return this.request(
+      'GET',
+      '/v2/tickers/' + encodeURIComponent(contract),
+      {},
+      null,
+      false,
+      optionTickerRequestOptions()
+    );
   }
   candles(symbol, resolution, limit) {
     // Resolution → seconds per candle. Unknown resolutions fall back
