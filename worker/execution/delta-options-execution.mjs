@@ -53,7 +53,7 @@ export function createDeltaOptionsExecution({
   isMarketTickFresh = () => false
 } = {}) {
   if (typeof request !== 'function' || typeof database?.select !== 'function' ||
-      typeof database?.upsert !== 'function' || typeof database?.insertIgnore !== 'function' || typeof database?.update !== 'function' ||
+      typeof database?.upsert !== 'function' || typeof database?.update !== 'function' ||
       typeof getAccountSnapshot !== 'function' || typeof buildClientOrderId !== 'function') {
     throw new Error('Delta Options executor dependencies are incomplete');
   }
@@ -485,6 +485,9 @@ export function createDeltaOptionsExecution({
         reduce_only: reduceOnly
       }
     };
+    if (typeof database.insertIgnore !== 'function') {
+      throw new Error('Atomic Options reservation support is unavailable; order blocked');
+    }
     const inserted = await database.insertIgnore('dd_orders', reservation, 'client_order_id');
     if (!Array.isArray(inserted) || inserted.length !== 1) {
       const replay = new Error('Options confirmation reservation already exists or could not be acquired; reconcile before retrying');
@@ -612,12 +615,20 @@ export function createDeltaOptionsExecution({
     for (let attempt = 0; attempt < 8; attempt += 1) {
       latest = await getOrderDetail(order);
       const status = fillStatus(latest);
-      if (status.fullyFilled || ['rejected','failed','cancelled','canceled','expired'].includes(status.state)) {
-        return status;
+      const fullyFilledForRequestedQty = status.fullyFilled &&
+        Number.isSafeInteger(Number(qty)) && status.filledQty === Number(qty);
+      if (fullyFilledForRequestedQty ||
+          ['rejected','failed','cancelled','canceled','expired'].includes(status.state)) {
+        return { ...status, fullyFilled: fullyFilledForRequestedQty };
       }
       if (attempt < 7) await new Promise(resolve => setTimeout(resolve, 350));
     }
-    return fillStatus(latest);
+    const finalStatus = fillStatus(latest);
+    return {
+      ...finalStatus,
+      fullyFilled: finalStatus.fullyFilled &&
+        Number.isSafeInteger(Number(qty)) && finalStatus.filledQty === Number(qty)
+    };
   }
 
   async function cancelProtective(order) {
