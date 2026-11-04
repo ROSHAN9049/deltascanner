@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DeltaAdapter } from '../worker/delta-adapter.mjs';
+import { DeltaAdapter, optionTickerRequestOptions } from '../worker/delta-adapter.mjs';
 
 function captureRequest(adapter) {
   let captured = null;
-  adapter.request = async (method, path, params, body, auth) => {
-    captured = { method, path, params, body, auth };
+  adapter.request = async (method, path, params, body, auth, options) => {
+    captured = { method, path, params, body, auth, options };
     return [];
   };
   return () => captured;
@@ -69,4 +69,32 @@ test('optionProducts() requests live call and put option contracts from the conf
   assert.equal(request.params.states, 'live');
   assert.equal(request.params.page_size, 100);
   assert.equal(request.auth, false);
+});
+
+
+test('optionTickers() requests the filtered option chain using the mode-specific market-data host', async () => {
+  const adapter = new DeltaAdapter();
+  const getRequest = captureRequest(adapter);
+  await adapter.optionTickers('BTC');
+  const request = getRequest();
+  assert.equal(request.method, 'GET');
+  assert.equal(request.path, '/v2/tickers');
+  assert.deepEqual(request.params, {
+    contract_types: 'call_options,put_options',
+    underlying_asset_symbols: 'BTC'
+  });
+  assert.equal(request.auth, false);
+  assert.deepEqual(request.options, optionTickerRequestOptions());
+});
+
+test('optionTicker() requests a single BTC/ETH option contract and rejects unsupported symbols', async () => {
+  const adapter = new DeltaAdapter();
+  const getRequest = captureRequest(adapter);
+  await adapter.optionTicker('C-BTC-80000-311226');
+  const request = getRequest();
+  assert.equal(request.method, 'GET');
+  assert.equal(request.path, '/v2/tickers/C-BTC-80000-311226');
+  assert.equal(request.auth, false);
+  assert.deepEqual(request.options, optionTickerRequestOptions());
+  assert.throws(() => adapter.optionTicker('C-XAUT-4000-311226'), /Invalid BTC\/ETH Delta option contract symbol/);
 });
