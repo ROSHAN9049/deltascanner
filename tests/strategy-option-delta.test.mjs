@@ -44,3 +44,28 @@ test('a genuine zero option Delta is preserved but fails the configured band', (
   assert.equal(signal.ready, false);
   assert.ok(signal.blocked.includes('Delta outside target band'));
 });
+
+
+test('Delta option Greeks returned as numeric strings are parsed and pass the BUY Delta band', () => {
+  const signal = analyseOption({
+    ...baseTicker,
+    greeks: { delta: '0.55', gamma: '0.01', theta: '-0.02', vega: '0.12' }
+  }, underlying, 'OPTIONS_BUY', config);
+  assert.equal(signal.delta, 0.55);
+  assert.equal(signal.ready, true);
+  assert.equal(signal.stage, 'CONFIRMED');
+});
+
+test('Delta option Greeks returned as numeric strings are parsed and pass the SELL Delta band', () => {
+  const signal = analyseOption({
+    ...baseTicker,
+    greeks: { delta: '0.28', gamma: '0.01', theta: '-0.02', vega: '0.12' }
+  }, underlying, 'OPTIONS_SELL', {
+    ...config,
+    sellMinDelta: 0.20,
+    sellMaxDelta: 0.35
+  });
+  assert.equal(signal.delta, 0.28);
+  assert.equal(signal.ready, true);
+  assert.equal(signal.stage, 'CONFIRMED');
+});
