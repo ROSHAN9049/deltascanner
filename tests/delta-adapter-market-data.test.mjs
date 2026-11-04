@@ -30,6 +30,18 @@ test('production scanner catalogue and public data stay on production while Test
   assert.equal(resolveDeltaRequestBase({}, config), PRODUCTION_REST);
 });
 
+test('Testnet option ticker/Greeks requests use the Testnet product-catalogue host', () => {
+  const config = {
+    base: TESTNET_REST,
+    marketDataBase: PRODUCTION_REST,
+    productCatalogBase: TESTNET_REST
+  };
+  // optionTickers uses productCatalog routing in Testnet mode, while the
+  // perpetual scanner ticker/candle stream remains production-sourced.
+  assert.equal(resolveDeltaRequestBase({ productCatalog: true }, config), TESTNET_REST);
+  assert.notEqual(resolveDeltaRequestBase({ productCatalog: true }, config), PRODUCTION_REST);
+});
+
 test('authenticated account/order requests keep their execution base', () => {
   const config = {
     base: TESTNET_REST,

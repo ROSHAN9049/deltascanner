@@ -1,10 +1,19 @@
 import { CONFIG } from '../server/config.js';
+import { getOptionsExecutionGate } from '../worker/options-execution-lock.mjs';
 import { select } from '../server/db.js';
 import { summarizeRetentionHealth } from '../src/retention-health.js';
 import { getDeltaTestnetHealth } from '../server/delta-testnet-health.js';
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate');
+  const optionsGate = getOptionsExecutionGate(process.env);
+  const optionsExecutionGate = {
+    deltaExecutionMode: optionsGate.mode,
+    deltaEnvironment: optionsGate.environment,
+    flagEnabled: optionsGate.flagEnabled,
+    allowed: optionsGate.allowed,
+    reason: optionsGate.reason
+  };
   try {
     // Exchange health is an independent, cached probe of Delta TESTNET's public
     // products endpoint. Lease and heartbeat fields remain separate worker-health
@@ -44,6 +53,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       success: true,
       environment: CONFIG.environment,
+      optionsExecutionGate,
       exchange: CONFIG.signalOnly ? 'Delta Exchange India · Production Market Feed' : 'Delta Exchange India Demo',
       exchangeHealthy,
       exchangeProbeAt: exchangeProbe?.checkedAt || null,
@@ -69,7 +79,8 @@ export default async function handler(req, res) {
   } catch (e) {
     return res.status(503).json({
       success: false,
-      environment: 'TESTNET',
+      environment: CONFIG.environment,
+      optionsExecutionGate,
       exchangeHealthy: false,
       exchangeProbeAt: null,
       exchangeProbeStatus: null,

@@ -37,7 +37,8 @@ const SAFE_GRID_DIAGNOSTIC_STATUSES = new Set([
 ]);
 const SAFE_OPTIONS_DIAGNOSTIC_STATUSES = new Set([
   'DISABLED_BY_SETTING', 'DIAGNOSTICS_ERROR', 'WAITING_FOR_TESTNET_PRODUCTS',
-  'WAITING_FOR_TESTNET_QUOTES', 'DIAGNOSTICS_ACTIVE', 'ANALYSIS_ACTIVE'
+  'WAITING_FOR_TESTNET_QUOTES', 'WAITING_FOR_TESTNET_GREEKS',
+  'DIAGNOSTICS_ACTIVE', 'ANALYSIS_ACTIVE'
 ]);
 
 function publicGridTestnetDiagnostics(value) {
@@ -82,6 +83,8 @@ function publicOptionsTestnetDiagnostics(value) {
     supportedUnderlyings: safeUnderlyings(value.supportedUnderlyings),
     productCountsByUnderlying: safeCounts(value.productCountsByUnderlying),
     quoteCountsByUnderlying: safeCounts(value.quoteCountsByUnderlying),
+    greeksAvailableByUnderlying: safeCounts(value.greeksAvailableByUnderlying),
+    greeksMissingByUnderlying: safeCounts(value.greeksMissingByUnderlying),
     testnetProductsAvailable: safeDiagnosticCount(value.testnetProductsAvailable),
     optionTickersAvailable: safeDiagnosticCount(value.optionTickersAvailable),
     missingUnderlyings: safeUnderlyings(value.missingUnderlyings),
