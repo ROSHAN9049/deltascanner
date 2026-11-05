@@ -9,6 +9,7 @@ export const DELTA_TESTNET_REST_BASE = 'https://cdn-ind.testnet.deltaex.org';
 export const DELTA_TESTNET_PRIVATE_WS_URL = 'wss://socket-ind.testnet.deltaex.org';
 export const MAX_DELTA_TESTNET_OPEN_POSITIONS = 20;
 export const DELTA_TESTNET_DAILY_LOSS_LIMIT = 0.05;
+export const DELTA_ENTRY_ORDER_LOOKUP_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 
 const numberOrNull = value => {
   if (value === undefined || value === null || value === '') return null;
@@ -354,7 +355,9 @@ export function createDeltaExecutor({
     const normalizedSymbol = stringOrEmpty(symbol).toUpperCase();
     const product = await resolveProduct(normalizedSymbol, { entryOnly: false });
     const clockMs = now();
-    const openedMs = timestampMs(openedAt);
+    const openedMs = timestampMs(openedAt ?? position?.opened_at);
+    const entryOrderLookupTooOld = () =>
+      openedMs !== null && now() - openedMs > DELTA_ENTRY_ORDER_LOOKUP_MAX_AGE_MS;
     // Include a short pre-open buffer because the exchange fill can precede
     // the worker's first persisted position event by a few seconds. A fixed
     // 24-hour cap can exclude the entry fill of a longer-held position.
@@ -443,8 +446,10 @@ export function createDeltaExecutor({
     // Some historical REST /v2/fills rows omit client_order_id. When the
     // position lacks its dedicated entry_order_id, resolve the exchange order
     // through Delta's client-order-ID endpoint, then match fills by order_id.
-    // Never fall back to symbol/time-only guesses.
-    if (!entryOrderId && !matchingEntryFills.length && entryClientOrderId) {
+    // Never fall back to symbol/time-only guesses. Delta's client-order endpoint
+    // is only useful for recent backfills; older IDs may have expired from the API.
+    let historicalOrderNotFound = false;
+    if (!entryOrderId && !matchingEntryFills.length && entryClientOrderId && !entryOrderLookupTooOld()) {
       try {
         const entryOrder = await getOrderByClientOrderId(entryClientOrderId);
         const lookupProductId = numberOrNull(entryOrder?.product_id);
@@ -473,20 +478,46 @@ export function createDeltaExecutor({
           }
         }
       } catch (error) {
-        await logExecutor('WARN', '[Executor] Entry order lookup by client ID failed; close details remain unverified', {
-          symbol: normalizedSymbol,
-          hasClientOrderId: true,
-          error: String(error?.message || error).slice(0, 200)
-        });
+        const errorMessage = String(error?.message || error);
+        const errorCode = String(error?.code || '').trim().toLowerCase();
+        const isOrderNotFound = errorCode === 'order_not_found' || /\border_not_found\b/i.test(errorMessage);
+        const historicalMissingOrder = isOrderNotFound && entryOrderLookupTooOld();
+        if (historicalMissingOrder) {
+          historicalOrderNotFound = true;
+          await logExecutor('INFO', '[Executor] Historical entry order not found; fill identity remains UNRESOLVED', {
+            symbol: normalizedSymbol,
+            hasClientOrderId: true,
+            fillResolution: 'UNRESOLVED',
+            lookupAgeMs: Math.max(0, now() - openedMs)
+          });
+        } else {
+          await logExecutor('WARN', '[Executor] Entry order lookup by client ID failed; close details remain unverified', {
+            symbol: normalizedSymbol,
+            hasClientOrderId: true,
+            error: errorMessage.slice(0, 200)
+          });
+        }
       }
     }
 
     if (hasEntryIdentity && !matchingEntryFills.length) {
-      await logExecutor('WARN', '[Executor] Entry fill identity was not found; close details remain unverified', {
-        symbol: normalizedSymbol,
-        entryOrderId: resolvedEntryOrderId || null,
-        hasClientOrderId: Boolean(entryClientOrderId)
-      });
+      if (!historicalOrderNotFound) {
+        const historicalLookupSkipped = entryOrderLookupTooOld();
+        await logExecutor(
+          historicalLookupSkipped ? 'INFO' : 'WARN',
+          historicalLookupSkipped
+            ? '[Executor] Historical entry fill identity remains UNRESOLVED; client-order lookup skipped after 3 days'
+            : '[Executor] Entry fill identity was not found; close details remain unverified',
+          {
+            symbol: normalizedSymbol,
+            entryOrderId: resolvedEntryOrderId || null,
+            hasClientOrderId: Boolean(entryClientOrderId),
+            fillResolution: 'UNRESOLVED',
+            clientOrderLookupSkipped: historicalLookupSkipped,
+            ...(openedMs === null ? {} : { lookupAgeMs: Math.max(0, now() - openedMs) })
+          }
+        );
+      }
       return null;
     }
     const entryLastMs = matchingEntryFills.length
