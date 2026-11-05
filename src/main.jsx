@@ -828,19 +828,26 @@ function OptionsView({
   const optionsExecutionGate = apiHealth?.optionsExecutionGate || null;
   const optionsManualTestOverride = apiHealth?.optionsManualTestOverride || null;
   const optionsAutoTrigger = apiHealth?.optionsAutoTrigger || null;
+  const optionsAutoTriggerFresh = optionsAutoTrigger?.heartbeatFresh === true;
+  const optionsAutoTriggerEnabled = optionsAutoTriggerFresh && optionsAutoTrigger?.enabled === true;
+  const optionsAutoTriggerStatus = typeof optionsAutoTrigger?.status === 'string' ? optionsAutoTrigger.status : 'UNKNOWN';
+  const optionsAutoTriggerReadyStatus = ['READY', 'CANDIDATE_READY'].includes(optionsAutoTriggerStatus);
+  const optionsAutoTriggerBlocked = optionsAutoTriggerStatus.startsWith('BLOCKED') ||
+    ['ERROR', 'EXECUTION_ERROR'].includes(optionsAutoTriggerStatus);
+  const optionsFullAutoExecuteEnabled = optionsAutoTriggerEnabled && optionsAutoTrigger?.fullAutoExecute === true;
   const optionsAutoTriggerReady = testnetMode &&
     settings.auto_trade === true && settings.emergency_stop === false &&
-    optionsAutoTrigger?.enabled === true && optionsAutoTrigger?.heartbeatFresh === true &&
-    optionsAutoTrigger?.mode === 'PREVIEW_ONLY' &&
-    ['READY', 'CANDIDATE_READY'].includes(optionsAutoTrigger?.status);
+    optionsAutoTriggerEnabled && optionsAutoTrigger?.fullAutoExecute === false &&
+    optionsAutoTrigger?.mode === 'PREVIEW_ONLY' && optionsAutoTriggerReadyStatus;
   const manualOverrideAllowed = isManualOverrideAllowed(apiHealth);
-  const optionsEngineStatus = optionsAutoTriggerReady ? 'AUTO-TRIGGER READY (PREVIEW ONLY)' : !testnetMode ? 'ANALYSIS ONLY'
-    : !optionsDiagnostics ? 'ACTIVE (WAITING FOR TESTNET PRODUCTS)'
-      : optionsDiagnostics.status === 'WAITING_FOR_TESTNET_PRODUCTS' ? 'ACTIVE (WAITING FOR TESTNET PRODUCTS)'
-        : optionsDiagnostics.status === 'WAITING_FOR_TESTNET_QUOTES' ? 'ACTIVE (WAITING FOR TESTNET QUOTES)'
-          : optionsDiagnostics.status === 'DIAGNOSTICS_ERROR' ? 'ACTIVE (DIAGNOSTICS DEGRADED)'
-            : optionsDiagnostics.status === 'DISABLED_BY_SETTING' ? 'DISABLED IN SETTINGS'
-              : 'ACTIVE (DIAGNOSTICS ONLY)';
+  const optionsEngineStatus = !testnetMode ? 'ANALYSIS ONLY'
+    : !optionsAutoTriggerFresh ? 'AUTO-TRIGGER HEARTBEAT STALE'
+      : !optionsAutoTriggerEnabled ? 'AUTO-TRIGGER DISABLED'
+        : optionsFullAutoExecuteEnabled ? 'FULL AUTO-EXECUTE CONFIGURED (TESTNET)'
+          : optionsAutoTrigger?.fullAutoExecute === false
+            ? optionsAutoTriggerReady ? 'AUTO-TRIGGER READY (PREVIEW ONLY)'
+              : optionsAutoTriggerBlocked ? 'PREVIEW POLLER BLOCKED' : 'PREVIEW POLLER ACTIVE'
+            : 'EXECUTION MODE UNKNOWN';
   const diagnosticRefreshAt = optionsDiagnostics?.updatedAt
     ? new Date(optionsDiagnostics.updatedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : null;
   const productCounts = optionsDiagnostics?.productCountsByUnderlying || {};
@@ -849,18 +856,30 @@ function OptionsView({
     .map(asset => asset + ' products ' + (productCounts[asset] ?? '—') + ' / quotes ' + (quoteCounts[asset] ?? '—'))
     .join(' · ');
   const missingUnderlyings = Array.isArray(optionsDiagnostics?.missingUnderlyings) ? optionsDiagnostics.missingUnderlyings : [];
-  const optionsEngineDetail = optionsAutoTriggerReady
-    ? 'Worker preview-only poller heartbeat is fresh. It checks candidates every 60 seconds and obtains a read-only quote token; you must still review and execute manually. The Worker does not submit orders.'
-    : !testnetMode
-      ? 'Options order routing is restricted to Delta Testnet.'
-      : optionsDiagnostics
-        ? (diagnosticRefreshAt ? 'Diagnostics refreshed ' + diagnosticRefreshAt + ' IST · ' : '') +
-          'Testnet products: ' + (optionsDiagnostics.testnetProductsAvailable ?? 0) +
-          ' · quote candidates: ' + (optionsDiagnostics.optionTickersAvailable ?? 0) +
-          ' · ' + underlyingCounts +
-          (missingUnderlyings.length ? ' · no eligible products: ' + missingUnderlyings.join(', ') : '') +
-          ' · manual execution requires its separate environment gate.'
-        : 'Waiting for the Worker product-catalogue check. Execution remains disabled unless the API gate is explicitly enabled.';
+  const optionsEngineDetail = !testnetMode
+    ? 'Options order routing is restricted to Delta Testnet.'
+    : !optionsAutoTriggerFresh
+      ? 'No Options Auto-Trigger heartbeat is fresh within the 150-second health window. A live Futures scan or lease does not prove that the Options poller started.'
+      : !optionsAutoTriggerEnabled
+        ? 'The latest Worker heartbeat reports enabled=false. AUTO_EXECUTE_OPTIONS must be true in the Hostless Worker environment; this flag is sampled when the Worker starts.'
+        : optionsFullAutoExecuteEnabled
+          ? 'FULL_AUTO_EXECUTE=true is reported by the fresh Worker heartbeat. The Worker may submit Delta Testnet Options orders without an in-dashboard confirmation when candidate, account, E-STOP, quote and API risk gates all pass. Latest poller status: ' + optionsAutoTriggerStatus + '.'
+          : optionsAutoTrigger?.fullAutoExecute === false
+            ? optionsAutoTriggerReady
+              ? 'The fresh Worker heartbeat confirms preview-only mode. It polls candidates every 60 seconds and obtains a read-only quote token; you must still review and execute manually. The Worker does not submit orders.'
+              : 'FULL_AUTO_EXECUTE=false. The Worker cannot submit orders automatically; the preview poller is not currently in a ready state. Latest poller status: ' + optionsAutoTriggerStatus + '.'
+            : 'The heartbeat is fresh, but FULL_AUTO_EXECUTE was not reported. Execution mode is unknown; do not treat the Options worker as verified preview-only or automated.';
+  const optionsAutomationBanner = !testnetMode
+    ? '⚠ OPTIONS EXECUTION · DELTA TESTNET ONLY'
+    : !optionsAutoTriggerFresh
+      ? '⚠ OPTIONS AUTO-TRIGGER STATUS UNKNOWN · NO FRESH HEARTBEAT'
+      : !optionsAutoTriggerEnabled
+        ? '⚠ OPTIONS AUTO-TRIGGER DISABLED · MANUAL CONFIRMATION ONLY'
+        : optionsFullAutoExecuteEnabled
+          ? '⚠ FULL AUTO-EXECUTE ENABLED · TESTNET ORDERS MAY BE SUBMITTED AUTOMATICALLY'
+          : optionsAutoTrigger?.fullAutoExecute === false
+            ? '⚠ OPTIONS TESTNET ROUTE · MANUAL CONFIRMATION ONLY'
+            : '⚠ OPTIONS EXECUTION MODE UNKNOWN · MANUAL CONFIRMATION REQUIRED';
   const buyMinDelta = safeNum(settings.options_buy_min_delta) || 0.45;
   const buyMaxDelta = safeNum(settings.options_buy_max_delta) || 0.65;
   const sellMinDelta = safeNum(settings.options_sell_min_delta) || 0.20;
@@ -886,8 +905,8 @@ function OptionsView({
       <p className="muted">Fresh option quotes and Greeks must be independently verified before reviewing candidates.</p>
     </div> : null}
     <div className="lockedText">
-      <b className="warn">{testnetMode ? '⚠ OPTIONS TESTNET ROUTE · MANUAL CONFIRMATION ONLY' : '⚠ OPTIONS EXECUTION · TESTNET ONLY'}</b>
-      <p>Preview is read-only. The API re-resolves the Testnet product ID and quote, checks current equity and the 0.5% maximum-loss ceiling, and requires a fresh confirmation. A SELL spread submits the protective BUY first and will not submit the short leg until that BUY is fully filled.</p>
+      <b className="warn">{optionsAutomationBanner}</b>
+      <p>{optionsEngineDetail} The API re-resolves the Testnet product ID and quote, checks current equity and the 0.5% maximum-loss ceiling, and enforces its risk gates. A SELL spread submits the protective BUY first and will not submit the short leg until that BUY is fully filled.</p>
       <p className={optionsExecutionGate?.allowed === true ? 'up' : 'warn'} role="status">
         {optionsExecutionGate?.allowed === true
           ? 'API Options execution gate: ENABLED for Delta Testnet. Candidate analysis, account checks, Worker safety checks and fresh quote validation still apply; Preview does not submit an order.'

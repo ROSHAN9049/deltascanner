@@ -19,11 +19,15 @@ export function summarizeOptionsAutoTriggerHealth(rows, {
   const heartbeatFresh = Number.isFinite(timestamp) &&
     timestamp <= now + 5000 &&
     Math.max(0, now - timestamp) <= freshnessMs;
-  const mode = data.mode === 'PREVIEW_ONLY' ? 'PREVIEW_ONLY' : 'UNKNOWN';
+  const mode = ['PREVIEW_ONLY', 'AUTO_EXECUTE'].includes(data.mode) ? data.mode : 'UNKNOWN';
+  const fullAutoExecute = heartbeatFresh && typeof data.fullAutoExecute === 'boolean'
+    ? data.fullAutoExecute
+    : null;
 
   return {
     enabled: heartbeatFresh && data.enabled === true,
     mode,
+    fullAutoExecute,
     status: heartbeatFresh && typeof data.status === 'string' ? data.status : 'STALE',
     candidateReady: heartbeatFresh && data.candidateReady === true,
     heartbeatAt: Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null,

@@ -32,6 +32,7 @@ function harness({
   const cleared = [];
   const env = {
     AUTO_EXECUTE_OPTIONS: 'true',
+    FULL_AUTO_EXECUTE: 'false',
     DELTA_EXECUTION_MODE: 'testnet',
     ENGINE_SECRET: 'worker-secret',
     OPTIONS_AUTO_TRIGGER_API_URL: 'https://deltascanner-api-v2.hostless.app',
@@ -97,7 +98,24 @@ test('preview-only poller requests the API preview with ENGINE_SECRET and never 
   });
   assert.ok(logs.some(args => args[1] === '[AUTO-TRIGGER] Candidate ready for execution. Token acquired. Waiting for manual execution.'));
   assert.ok(logs.every(args => !String(args[1]).includes('/api/options/execute')));
+  const heartbeat = logs.find(args => args[1] === '[AUTO-TRIGGER] Worker heartbeat');
+  assert.equal(heartbeat?.[2]?.fullAutoExecute, false);
+  assert.equal(heartbeat?.[2]?.mode, 'PREVIEW_ONLY');
   assert.equal(requests.length, 1);
+});
+
+test('disabled poller heartbeat still reports the separate full-auto flag without executing', async () => {
+  const { worker, calls, logs } = harness({
+    envPatch: { AUTO_EXECUTE_OPTIONS: 'false', FULL_AUTO_EXECUTE: 'true' },
+    cacheRows: []
+  });
+  const result = await worker.runOnce();
+  assert.equal(result.status, 'DISABLED');
+  assert.equal(calls.some(call => call.kind === 'fetch'), false);
+  const heartbeat = logs.find(args => args[1] === '[AUTO-TRIGGER] Worker heartbeat');
+  assert.equal(heartbeat?.[2]?.enabled, false);
+  assert.equal(heartbeat?.[2]?.fullAutoExecute, true);
+  assert.equal(heartbeat?.[2]?.mode, 'AUTO_EXECUTE');
 });
 
 test('auto-trade false blocks the preview poller before any HTTP request', async () => {
@@ -172,17 +190,26 @@ test('preview failures remain preview-only and are reported as a blocked worker 
 test('Options auto-trigger health only reports fresh, enabled preview-only heartbeats as ready', () => {
   const row = {
     created_at: new Date(NOW).toISOString(),
-    data: { enabled: true, mode: 'PREVIEW_ONLY', status: 'CANDIDATE_READY', candidateReady: true }
+    data: { enabled: true, mode: 'PREVIEW_ONLY', fullAutoExecute: false, status: 'CANDIDATE_READY', candidateReady: true }
   };
   const fresh = summarizeOptionsAutoTriggerHealth([row], { now: NOW });
   assert.equal(fresh.enabled, true);
   assert.equal(fresh.heartbeatFresh, true);
   assert.equal(fresh.mode, 'PREVIEW_ONLY');
+  assert.equal(fresh.fullAutoExecute, false);
   assert.equal(fresh.status, 'CANDIDATE_READY');
   assert.equal(fresh.candidateReady, true);
 
   const stale = summarizeOptionsAutoTriggerHealth([row], { now: NOW + 300_000 });
   assert.equal(stale.enabled, false);
   assert.equal(stale.heartbeatFresh, false);
+  assert.equal(stale.fullAutoExecute, null);
   assert.equal(stale.status, 'STALE');
+
+  const autoExecute = summarizeOptionsAutoTriggerHealth([{
+    ...row,
+    data: { ...row.data, mode: 'AUTO_EXECUTE', fullAutoExecute: true }
+  }], { now: NOW });
+  assert.equal(autoExecute.mode, 'AUTO_EXECUTE');
+  assert.equal(autoExecute.fullAutoExecute, true);
 });

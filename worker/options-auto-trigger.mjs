@@ -59,6 +59,7 @@ export function createOptionsAutoTrigger({
   }
 
   const enabled = isEnabled(env.AUTO_EXECUTE_OPTIONS);
+  const fullAutoExecute = isEnabled(env.FULL_AUTO_EXECUTE);
   let timer = null;
   let started = false;
   let inFlight = null;
@@ -66,7 +67,8 @@ export function createOptionsAutoTrigger({
   async function writeHeartbeat(status, extra = {}) {
     await logger('INFO', '[AUTO-TRIGGER] Worker heartbeat', {
       enabled,
-      mode: 'PREVIEW_ONLY',
+      mode: fullAutoExecute ? 'AUTO_EXECUTE' : 'PREVIEW_ONLY',
+      fullAutoExecute,
       status,
       candidateReady: false,
       lastScanAt: new Date(now()).toISOString(),
