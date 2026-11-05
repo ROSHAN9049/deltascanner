@@ -7,6 +7,17 @@ export const OPTIONS_MAX_LOSS_EQUITY_PCT = 0.5;
 export const OPTIONS_EXECUTION_LOCK_REASON =
   'Options execution remains locked unless DELTA_EXECUTION_MODE=testnet, DELTA_ENVIRONMENT=TESTNET and OPTIONS_EXECUTION_ALLOWED=true; maximum loss must also be verified.';
 
+export const OPTIONS_DATABASE_EXECUTION_LOCK_REASON =
+  'Options execution is disabled in public.dd_settings.options_execution_enabled.';
+
+export function getOptionsDatabaseExecutionGate(settings = {}) {
+  const allowed = settings?.options_execution_enabled === true;
+  return Object.freeze({
+    allowed,
+    reason: allowed ? null : OPTIONS_DATABASE_EXECUTION_LOCK_REASON
+  });
+}
+
 export function getOptionsExecutionGate(env = process.env) {
   const mode = String(env?.DELTA_EXECUTION_MODE ?? '').trim().toLowerCase();
   const environment = String(env?.DELTA_ENVIRONMENT ?? '').trim().toUpperCase();
