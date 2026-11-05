@@ -44,6 +44,7 @@ function fakeRuntime({
   const updates = [];
   const persistedPositions = [];
   let hasPostedOrder = false;
+  let latestOrder = null;
 
   const database = {
     async select(table, query) {
@@ -93,6 +94,8 @@ function fakeRuntime({
     if (parsed.pathname === '/v2/products') {
       return response({ success: true, result: [
         { id: 181689, symbol: 'XAUTUSD', contract_type: 'perpetual_futures', state: 'live', trading_status: 'operational', only_reduce_only_orders_allowed: false },
+        { id: 182001, symbol: 'PAXGUSD', contract_type: 'perpetual_futures', state: 'live', trading_status: 'operational', only_reduce_only_orders_allowed: false },
+        { id: 182002, symbol: 'NVDAXUSD', contract_type: 'perpetual_futures', state: 'live', trading_status: 'operational', only_reduce_only_orders_allowed: false },
         { id: 27, symbol: 'BTCUSD', contract_type: 'perpetual_futures', state: 'live', trading_status: 'operational', only_reduce_only_orders_allowed: false }
       ], meta: {} });
     }
@@ -111,20 +114,32 @@ function fakeRuntime({
     }
     if (parsed.pathname === '/v2/orders/history') return response({ success: true, result: orderHistory, meta: {} });
     if (parsed.pathname === '/v2/orders' && init.method === 'GET') return response({ success: true, result: [] });
+    if (/^\/v2\/orders\/\d+$/.test(parsed.pathname) && init.method === 'GET') {
+      return latestOrder ? response({ success: true, result: latestOrder }) : response({ success: false }, 404);
+    }
     if (parsed.pathname === '/v2/wallet/balances') {
       return response({ success: true, result: [], meta: { net_equity: String(equity), available_balance: String(available) } });
     }
     if (parsed.pathname === '/v2/orders' && init.method === 'POST') {
       hasPostedOrder = true;
       const clientOrderId = JSON.parse(init.body).client_order_id;
-      const order = { id: 123, state: orderState, client_order_id: clientOrderId };
+      const requestBody = JSON.parse(init.body);
+      const order = {
+        id: 123, state: orderState, client_order_id: clientOrderId,
+        bracket_stop_loss_price: requestBody.bracket_stop_loss_price,
+        bracket_take_profit_price: requestBody.bracket_take_profit_price
+      };
       if (['closed', 'filled'].includes(String(orderState).toLowerCase())) {
         order.unfilled_size = 0;
         order.average_fill_price = String(orderAverageFillPrice);
+      } else {
+        order.unfilled_size = 1;
       }
+      latestOrder = order;
       return response({ success: true, result: order });
     }
     if (parsed.pathname === '/v2/orders' && init.method === 'DELETE') {
+      if (latestOrder) latestOrder = { ...latestOrder, state: 'cancelled', unfilled_size: 0 };
       return response({ success: true, result: { id: JSON.parse(init.body).id, state: 'cancelled' } });
     }
     return response({ success: false, error: { code: 'unexpected_test_request' } }, 400);
@@ -190,6 +205,46 @@ test('bracket entry is a Testnet market order with exchange-side SL/TP and signe
   assert.equal(post.body.client_order_id, 'DDM-XAUTUSD-TEST-1');
   assert.match(post.init.headers.signature, /^[0-9a-f]{64}$/);
   assert.equal(post.init.headers.timestamp, '1770000000');
+});
+
+test('Grid bracket entry uses a GTC non-reduce-only limit order with exchange-side SL/TP', async () => {
+  const runtime = fakeRuntime({ orderState: 'open', markPrice: 2500 });
+  const executor = createDeltaExecutor({
+    env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database
+  });
+  const order = await executor.placeBracketOrder('PAXGUSD', 'BUY', 1, 2500, 2462.5, 2575, {
+    strategy: 'GRID', clientOrderId: 'DDG-PAXGUSD-G07-TEST', orderType: 'limit_order'
+  });
+  assert.equal(order.id, 123);
+  const post = runtime.httpCalls.find(call =>
+    new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST'
+  );
+  assert.equal(post.body.order_type, 'limit_order');
+  assert.equal(post.body.time_in_force, 'gtc');
+  assert.equal(post.body.reduce_only, false);
+  assert.equal(post.body.limit_price, '2500');
+  assert.equal(post.body.bracket_stop_loss_price, '2462.5');
+  assert.equal(post.body.bracket_take_profit_price, '2575');
+  assert.equal(post.body.bracket_stop_trigger_method, 'mark_price');
+});
+
+test('pending Testnet Grid order cancellation is confirmed by a follow-up order lookup', async () => {
+  const runtime = fakeRuntime({ orderState: 'open' });
+  const executor = createDeltaExecutor({
+    env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database
+  });
+  await executor.placeBracketOrder('XAUTUSD', 'BUY', 1, 60000, 59000, 62000, {
+    strategy: 'GRID', clientOrderId: 'DDG-XAUTUSD-G07-CANCEL', orderType: 'limit_order'
+  });
+  const cancelled = await executor.cancelOrderById(123);
+  assert.equal(cancelled.id, 123);
+  assert.equal(cancelled.state, 'cancelled');
+  assert.ok(runtime.httpCalls.some(call =>
+    new URL(call.url).pathname === '/v2/orders' && call.init.method === 'DELETE'
+  ));
+  assert.ok(runtime.httpCalls.some(call =>
+    new URL(call.url).pathname === '/v2/orders/123' && call.init.method === 'GET'
+  ));
 });
 
 test('bracket entry fails closed on invalid SL or TP before making any API request', async () => {

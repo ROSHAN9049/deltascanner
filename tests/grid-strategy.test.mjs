@@ -18,6 +18,13 @@ const baseSettings = {
   grid_reduce_after_losses: true
 };
 
+test('Grid Testnet symbols are normalized from the Delta allowlist without removing simulator defaults', () => {
+  assert.equal(normalizeGridConfig({ ...baseSettings, grid_symbol: 'PAXGUSD' }).symbol, 'PAXGUSD');
+  assert.equal(normalizeGridConfig({ ...baseSettings, grid_symbol: 'NVDAXUSD' }).symbol, 'NVDAXUSD');
+  assert.equal(normalizeGridConfig({ ...baseSettings, grid_symbol: 'NOTREALUSD' }).symbol, 'ETHUSD');
+  assert.equal(normalizeGridConfig({ ...baseSettings, grid_daily_loss_pct: 2.5 }).dailyLossPct, 2);
+});
+
 test('grid levels include bounds with equal spacing and only lower levels are entry-enabled', () => {
   const levels = buildGridLevels(80, 110, 8);
   assert.equal(levels.length, 8);

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { resolveDirectDeltaExecutionEnabled } from '../worker/execution/execution-route-policy.mjs';
+import { parseDeltaTestnetGridSymbols, resolveDirectDeltaExecutionEnabled } from '../worker/execution/execution-route-policy.mjs';
 
 // Support local .env for non-Railway use without overwriting injected environment values.
 function loadLocalEnvFile() {
@@ -52,6 +52,17 @@ const requested = String(process.env.DELTA_ENVIRONMENT || 'SIGNAL_ONLY').toUpper
 const environment = requested === 'TESTNET' ? 'TESTNET' : 'SIGNAL_ONLY';
 const signalOnly = environment === 'SIGNAL_ONLY';
 
+const gridSymbols = parseDeltaTestnetGridSymbols(process.env.GRID_SYMBOLS);
+const gridExecutionRequested = String(process.env.GRID_EXECUTION_ALLOWED || '').trim().toLowerCase() === 'true';
+const directDeltaExecutionEnabled = resolveDirectDeltaExecutionEnabled(environment, deltaExecutionMode);
+// Grid has an additional explicit opt-in, and can never run outside the
+// worker's already-locked Delta India TESTNET execution profile.
+const gridExecutionAllowed = gridExecutionRequested &&
+  directDeltaExecutionEnabled === true &&
+  deltaExecutionMode === 'testnet' &&
+  environment === 'TESTNET' &&
+  gridSymbols.length === 2;
+
 function parseTradetronBridgeRoutes() {
   const raw = String(process.env.TRADETRON_BRIDGES_JSON || '').trim();
   if (!raw) return [];
@@ -96,7 +107,9 @@ export const CONFIG = Object.freeze({
   deltaTestnetWsUrl,
   marketDataRestBase,
   // Direct order routing is enabled only in the explicit Demo/Testnet profile.
-  directDeltaExecutionEnabled: resolveDirectDeltaExecutionEnabled(environment, deltaExecutionMode),
+  directDeltaExecutionEnabled,
+  gridExecutionAllowed,
+  gridSymbols,
   // Keep private REST operations on the environment-specific API base. Public
   // scanner data has an explicit production feed, independent of execution mode.
   restBase: signalOnly ? 'https://api.india.delta.exchange' : 'https://cdn-ind.testnet.deltaex.org',

@@ -11,6 +11,7 @@ import {
 } from '../../shared/delta-risk-policy.js';
 import { indiaDateKey } from '../../src/date-utils.js';
 import { assessStrategyPositionCap } from '../../shared/strategy-position-limits.js';
+import { isAllowedDeltaTestnetFutureSymbol } from './execution-route-policy.mjs';
 
 const n = value => Number.isFinite(Number(value)) ? Number(value) : 0;
 const DELTA_GRID_MAX_AVAILABLE_MARGIN_FRACTION = 0.25;
@@ -280,8 +281,7 @@ export async function manageDeltaTestnetGrid({
 } = {}) {
   const timestamp = now();
   const at = new Date(timestamp).toISOString();
-  const symbol = ['BTCUSD', 'ETHUSD'].includes(text(settings.grid_symbol).toUpperCase())
-    ? text(settings.grid_symbol).toUpperCase() : 'ETHUSD';
+  const symbol = text(settings.grid_symbol).toUpperCase();
   const safety = {
     executionMode: 'testnet',
     configured: account.privateApiAvailable === true,
@@ -316,6 +316,11 @@ export async function manageDeltaTestnetGrid({
     await persist();
     return { state, safety };
   };
+
+  if (!isAllowedDeltaTestnetFutureSymbol(symbol)) {
+    state.status = 'BLOCKED';
+    return block('GRID_SYMBOL_NOT_IN_DELTA_TESTNET_ALLOWLIST');
+  }
 
   if (account.privateApiAvailable !== true || !(n(account.equity) > 0) || !(n(account.available) > 0)) {
     state.status = 'SCAN_ONLY';
@@ -397,45 +402,137 @@ export async function manageDeltaTestnetGrid({
     return block('GRID_EXCHANGE_RECONCILIATION_UNAVAILABLE');
   }
 
+  const configuredGridSymbols = Array.isArray(settings.gridSymbols)
+    ? settings.gridSymbols.map(value => text(value).toUpperCase()) : [symbol];
+  const exchangeGridPositions = exchangePositions.filter(row => {
+    const rowSymbol = text(row?.symbol).toUpperCase();
+    return n(row?.qty) > 0 && (
+      text(row?.client_order_id).toUpperCase().startsWith('DDG-') ||
+      dbOpenGridRows.some(position => text(position?.symbol).toUpperCase() === rowSymbol)
+    );
+  });
+  const capOpenPositions = [
+    ...dbOpenGridRows,
+    ...exchangeGridPositions.filter(exchangePosition =>
+      !dbOpenGridRows.some(dbPosition => text(dbPosition?.symbol).toUpperCase() === text(exchangePosition?.symbol).toUpperCase())
+    ).map(position => {
+      const rowSymbol = text(position.symbol).toUpperCase();
+      const matchingOrder = gridOrders.find(order =>
+        text(order?.symbol).toUpperCase() === rowSymbol &&
+        text(order?.strategy).toUpperCase() === 'GRID' &&
+        text(order?.client_order_id).toUpperCase().startsWith('DDG-')
+      );
+      let raw = matchingOrder?.raw;
+      if (typeof raw === 'string') {
+        try { raw = JSON.parse(raw); } catch { raw = null; }
+      }
+      return {
+        symbol: rowSymbol,
+        status: 'OPEN',
+        strategy: 'GRID',
+        client_order_id: position.client_order_id || matchingOrder?.client_order_id || null,
+        entry_order_id: raw?.testnet_order_id || null
+      };
+    })
+  ];
   const gridPositionCap = assessStrategyPositionCap({
     strategy: 'GRID',
     settings,
-    openPositions: dbOpenGridRows,
+    openPositions: capOpenPositions,
     pendingOrders: gridOrders,
     now: timestamp
   });
-  if (gridPositionCap.status !== 'PASS') {
-    state.status = 'BLOCKED';
-    await database.log('WARN', 'Delta Testnet Grid entry blocked by per-strategy position cap', {
+  const gridPositionCapBlocked = gridPositionCap.status !== 'PASS';
+  if (gridPositionCapBlocked) {
+    await database.log('WARN', 'Delta Testnet Grid new entry blocked by per-strategy position cap; existing positions remain managed', {
       symbol,
       exposure: gridPositionCap.exposure,
       maxGridPositions: gridPositionCap.limit,
       reason: gridPositionCap.reason,
       executionBlocked: true
     }).catch(() => {});
-    return block(gridPositionCap.reason || 'GRID_STRATEGY_POSITION_CAP_UNAVAILABLE');
   }
 
-  const exchangeGridPositions = exchangePositions.filter(row =>
-    text(row?.client_order_id).toUpperCase().startsWith('DDG-') && n(row?.qty) > 0
-  );
-  if (exchangeGridPositions.length > 1 || dbOpenGridRows.length > 1 ||
-      exchangeGridPositions.some(row => text(row.symbol).toUpperCase() !== symbol) ||
-      dbOpenGridRows.some(row => text(row.symbol).toUpperCase() !== symbol)) {
+  const unexpectedGridSymbol = [...exchangeGridPositions, ...dbOpenGridRows]
+    .map(row => text(row?.symbol).toUpperCase())
+    .find(rowSymbol => !configuredGridSymbols.includes(rowSymbol) ||
+      !isAllowedDeltaTestnetFutureSymbol(rowSymbol));
+  const exchangeSameSymbolCount = exchangeGridPositions.filter(row =>
+    text(row?.symbol).toUpperCase() === symbol
+  ).length;
+  const dbSameSymbolCount = dbOpenGridRows.filter(row =>
+    text(row?.symbol).toUpperCase() === symbol
+  ).length;
+  if (unexpectedGridSymbol || exchangeSameSymbolCount > 1 || dbSameSymbolCount > 1 ||
+      dbOpenGridRows.some(row => !exchangePositions.some(position =>
+        text(position?.symbol).toUpperCase() === text(row?.symbol).toUpperCase() &&
+        n(position?.qty) > 0
+      ))) {
     state.status = 'HALTED';
-    state.pausedReason = 'GRID_SINGLE_POSITION_INVARIANT_BROKEN';
-    return block('GRID_SINGLE_POSITION_INVARIANT_BROKEN');
+    state.pausedReason = 'GRID_MULTI_SYMBOL_RECONCILIATION_FAILED';
+    return block('GRID_MULTI_SYMBOL_RECONCILIATION_FAILED');
   }
+  const totalGridUnrealizedPnl = exchangeGridPositions.reduce((sum, position) => {
+    const value = numberOrNull(position?.unrealized_pnl);
+    return value === null ? null : sum + value;
+  }, 0);
+  if (totalGridUnrealizedPnl === null) {
+    state.status = 'BLOCKED';
+    return block('GRID_COMBINED_UNREALIZED_PNL_UNAVAILABLE');
+  }
+  const sharedRealizedPnl = pnl.complete ? pnl.realizedPnl : null;
+  const sharedDayPnl = pnl.complete ? pnl.dayPnl : null;
+  const sharedCurrentEquity = sharedRealizedPnl !== null && n(state.strategyStartEquity) > 0
+    ? n(state.strategyStartEquity) + sharedRealizedPnl + totalGridUnrealizedPnl : null;
+  if (sharedCurrentEquity !== null) {
+    state.highWaterEquity = Math.max(n(state.highWaterEquity), sharedCurrentEquity);
+    state.currentEquity = sharedCurrentEquity;
+    state.unrealizedPnl = totalGridUnrealizedPnl;
+    state.drawdownPct = state.highWaterEquity > 0
+      ? Math.max(0, (state.highWaterEquity - sharedCurrentEquity) / state.highWaterEquity * 100) : 0;
+  }
+  const sharedDailyCap = n(state.dayStartEquity) * config.dailyLossPct / 100;
+  const sharedDailyLossBreach = sharedDayPnl !== null && state.dayStartEquity > 0 &&
+    sharedDayPnl + totalGridUnrealizedPnl <= -sharedDailyCap;
+  const sharedDrawdownBreach = sharedCurrentEquity !== null &&
+    state.highWaterEquity > 0 && state.drawdownPct >= config.maxDrawdownPct;
+  const sharedGridStopReason = sharedDailyLossBreach ? 'DAILY_LOSS_LIMIT'
+    : sharedDrawdownBreach ? 'OVERALL_DRAWDOWN_STOP' : null;
 
   const exchangeSymbolPosition = exchangePositions.find(row =>
     text(row?.symbol).toUpperCase() === symbol && n(row?.qty) > 0
   ) || null;
   const dbGridPosition = dbOpenGridRows.find(row => text(row?.symbol).toUpperCase() === symbol) || null;
   const dbSymbolPosition = dbOpenSameSymbolRows[0] || null;
-  const clientOrderId = text(exchangeSymbolPosition?.client_order_id || dbGridPosition?.client_order_id);
+  const matchingGridOrder = gridOrders.find(row =>
+    text(row?.symbol).toUpperCase() === symbol &&
+    text(row?.strategy).toUpperCase() === 'GRID' &&
+    text(row?.client_order_id).toUpperCase().startsWith('DDG-')
+  ) || null;
+  const clientOrderId = text(
+    exchangeSymbolPosition?.client_order_id ||
+    dbGridPosition?.client_order_id ||
+    matchingGridOrder?.client_order_id
+  );
   const exchangeLooksGrid = clientOrderId.toUpperCase().startsWith('DDG-') ||
     text(dbGridPosition?.strategy).toUpperCase() === 'GRID';
-  const activeGridReservation = gridOrders.find(row =>
+  const symbolGridOrders = gridOrders.filter(row =>
+    text(row?.symbol).toUpperCase() === symbol &&
+    text(row?.strategy).toUpperCase() === 'GRID'
+  );
+  const pendingState = Array.isArray(state.pendingEntries)
+    ? state.pendingEntries.find(row => text(row?.symbol).toUpperCase() === symbol) : null;
+  const ambiguousGridOrder = symbolGridOrders.find(row =>
+    pendingState && text(row?.client_order_id) === text(pendingState.clientOrderId) &&
+    ['FAILED', 'UNKNOWN', 'REJECTED'].includes(text(row?.state).toUpperCase())
+  ) || null;
+  if (!exchangeSymbolPosition && ambiguousGridOrder) {
+    state.status = 'HALTED';
+    state.pausedReason = 'GRID_ORDER_ERROR_REQUIRES_MANUAL_REVIEW';
+    return block('GRID_ORDER_ERROR_REQUIRES_MANUAL_REVIEW');
+  }
+  const activeGridReservation = symbolGridOrders.find(row =>
+    text(row?.role).toUpperCase() === 'ENTRY' &&
     !terminalOrderStates.has(text(row?.state).toUpperCase())
   ) || null;
 
@@ -454,10 +551,134 @@ export async function manageDeltaTestnetGrid({
     state.lastPrice = mark;
     return block('SAME_SYMBOL_POSITION_NOT_OWNED_BY_GRID');
   }
-  if (!exchangeSymbolPosition && activeGridReservation) {
-    state.status = 'RECONCILING';
-    state.lastPrice = mark;
-    return block('GRID_ORDER_RESERVATION_PENDING');
+  if (!activeGridReservation && !exchangeSymbolPosition && pendingState) {
+    const pendingOrderId = numberOrNull(pendingState.exchangeOrderId);
+    if (!pendingOrderId || typeof executor.getOrderById !== 'function') {
+      state.status = 'HALTED';
+      state.pausedReason = 'GRID_ORDER_RECONCILIATION_UNAVAILABLE';
+      return block('GRID_ORDER_RECONCILIATION_UNAVAILABLE');
+    }
+    try {
+      const pendingOrder = await executor.getOrderById(pendingOrderId);
+      const pendingOrderState = text(pendingOrder?.state).toUpperCase();
+      if (!terminalOrderStates.has(pendingOrderState)) {
+        state.pendingEntries = [{
+          ...pendingState,
+          unfilledSize: numberOrNull(pendingOrder?.unfilled_size),
+          state: pendingOrderState || 'UNKNOWN'
+        }];
+        state.status = 'ENTRY_PENDING';
+        await persist();
+        return { state, safety };
+      }
+      state.status = 'HALTED';
+      state.pausedReason = ['FAILED', 'REJECTED', 'EXPIRED'].includes(pendingOrderState)
+        ? 'GRID_ORDER_ERROR_REQUIRES_MANUAL_REVIEW'
+        : 'GRID_FILLED_ORDER_WITHOUT_POSITION';
+      return block(state.pausedReason);
+    } catch (error) {
+      state.status = 'HALTED';
+      state.pausedReason = 'GRID_ORDER_RECONCILIATION_UNAVAILABLE';
+      await database.log('ERROR', 'Persisted Grid entry could not be reconciled with Delta; no retry will be attempted', {
+        symbol, pendingOrderId,
+        error: String(error?.message || error).slice(0, 220)
+      }).catch(() => {});
+      return block('GRID_ORDER_RECONCILIATION_UNAVAILABLE');
+    }
+  }
+
+  if (activeGridReservation && !exchangeSymbolPosition) {
+    let raw = activeGridReservation.raw;
+    if (typeof raw === 'string') {
+      try { raw = JSON.parse(raw); } catch { raw = null; }
+    }
+    const exchangeOrderId = numberOrNull(raw?.testnet_order_id);
+    if (!exchangeOrderId || typeof executor.getOrderById !== 'function') {
+      state.status = 'HALTED';
+      state.pausedReason = 'GRID_ORDER_RECONCILIATION_UNAVAILABLE';
+      return block('GRID_ORDER_RECONCILIATION_UNAVAILABLE');
+    }
+    let exchangeOrder;
+    try {
+      exchangeOrder = await executor.getOrderById(exchangeOrderId);
+    } catch (error) {
+      state.status = 'HALTED';
+      state.pausedReason = 'GRID_ORDER_RECONCILIATION_UNAVAILABLE';
+      await database.log('ERROR', 'Delta Testnet Grid pending order could not be reconciled; no retry will be attempted', {
+        symbol, exchangeOrderId,
+        error: String(error?.message || error).slice(0, 220)
+      }).catch(() => {});
+      return block('GRID_ORDER_RECONCILIATION_UNAVAILABLE');
+    }
+    const exchangeOrderState = text(exchangeOrder?.state).toUpperCase();
+    const terminalState = terminalOrderStates.has(exchangeOrderState);
+    if (!terminalState && (settings.emergency_stop === true || settings.grid_enabled !== true ||
+        settings.auto_trade !== true || settings.enabled === false || settings.continuous_mode === false)) {
+      try {
+        if (typeof executor.cancelOrderById !== 'function') {
+          throw new Error('Cancel-and-verify is unavailable');
+        }
+        const cancelled = await executor.cancelOrderById(exchangeOrderId);
+        const cancelledState = text(cancelled?.state).toUpperCase();
+        if (!terminalOrderStates.has(cancelledState)) {
+          throw new Error('Exchange order did not reach a terminal cancelled state');
+        }
+        await database.update('dd_orders',
+          'client_order_id=eq.' + encodeURIComponent(text(activeGridReservation.client_order_id)),
+          {
+            state: cancelledState,
+            updated_at: new Date(now()).toISOString(),
+            raw: { ...raw, reservation: false, accepted: true, exchange_state: cancelledState, cancelledByGridSafety: true }
+          });
+        state.pendingEntries = (Array.isArray(state.pendingEntries) ? state.pendingEntries : [])
+          .filter(row => text(row?.symbol).toUpperCase() !== symbol);
+        if (settings.emergency_stop === true) {
+          state.pausedReason = 'EMERGENCY_STOP';
+          state.status = 'HALTED';
+          pushEvent(state, { type: 'HALT', reason: 'EMERGENCY_STOP', symbol, price: mark }, at);
+          await persist();
+          return block('EMERGENCY_STOP');
+        }
+        state.status = 'PAUSED';
+        state.lastTickAt = at;
+        await persist();
+        return block(settings.grid_enabled !== true ? 'GRID_DISABLED'
+          : 'AUTO_TRADE_DISABLED');
+      } catch (error) {
+        state.status = 'HALTED';
+        state.pausedReason = 'GRID_ORDER_CANCEL_UNCONFIRMED';
+        await database.log('ERROR', 'Delta Testnet Grid entry cancellation is unconfirmed; Grid halted with no retry', {
+          symbol, exchangeOrderId,
+          error: String(error?.message || error).slice(0, 220),
+          doNotBlindlyRetry: true
+        }).catch(() => {});
+        return block('GRID_ORDER_CANCEL_UNCONFIRMED');
+      }
+    }
+    if (terminalState) {
+      if (['FAILED', 'REJECTED', 'EXPIRED'].includes(exchangeOrderState)) {
+        state.status = 'HALTED';
+        state.pausedReason = 'GRID_ORDER_ERROR_REQUIRES_MANUAL_REVIEW';
+        return block('GRID_ORDER_ERROR_REQUIRES_MANUAL_REVIEW');
+      }
+      if (!exchangeSymbolPosition) {
+        state.status = 'RECONCILING';
+        state.pausedReason = 'GRID_FILLED_ORDER_WITHOUT_POSITION';
+        return block('GRID_FILLED_ORDER_WITHOUT_POSITION');
+      }
+    } else if (!exchangeSymbolPosition) {
+      state.pendingEntries = [{
+        ...(pendingState || {}),
+        symbol, exchangeOrderId: String(exchangeOrderId),
+        clientOrderId: text(activeGridReservation.client_order_id),
+        unfilledSize: numberOrNull(exchangeOrder?.unfilled_size),
+        state: exchangeOrderState || 'UNKNOWN'
+      }];
+      state.status = 'ENTRY_PENDING';
+      state.lastPrice = mark;
+      await persist();
+      return { state, safety };
+    }
   }
 
   let livePosition = null;
@@ -539,8 +760,10 @@ export async function manageDeltaTestnetGrid({
       exchangeOrderId: String(parentOrderId)
     };
     state.positions = [livePosition];
+    state.pendingEntries = (Array.isArray(state.pendingEntries) ? state.pendingEntries : [])
+      .filter(row => text(row?.symbol).toUpperCase() !== symbol);
     state.openRiskUsd = riskUsd;
-    state.unrealizedPnl = numberOrNull(exchangeSymbolPosition.unrealized_pnl);
+    state.unrealizedPnl = totalGridUnrealizedPnl;
     state.currentEquity = pnl.complete && state.unrealizedPnl !== null
       ? n(state.strategyStartEquity) + n(pnl.realizedPnl) + state.unrealizedPnl : null;
     if (state.currentEquity !== null) {
@@ -558,9 +781,11 @@ export async function manageDeltaTestnetGrid({
       mark > config.upperPrice * (1 + config.breakoutExitPct / 100)
     );
     const exitReason = settings.emergency_stop === true ? 'EMERGENCY_STOP'
-      : rangeBreak ? 'GRID_RANGE_BREAK'
-        : dailyBreach ? 'DAILY_LOSS_LIMIT'
-          : drawdownBreach ? 'OVERALL_DRAWDOWN_STOP' : null;
+      : settings.gridGlobalHardStopReason || sharedGridStopReason
+        ? (settings.gridGlobalHardStopReason || sharedGridStopReason)
+        : rangeBreak ? 'GRID_RANGE_BREAK'
+          : dailyBreach ? 'DAILY_LOSS_LIMIT'
+            : drawdownBreach ? 'OVERALL_DRAWDOWN_STOP' : null;
 
     if (exitReason) {
       try {
@@ -602,13 +827,15 @@ export async function manageDeltaTestnetGrid({
 
   state.positions = [];
   state.openRiskUsd = 0;
-  state.unrealizedPnl = 0;
+  state.unrealizedPnl = totalGridUnrealizedPnl;
   state.realizedPnl = pnl.complete ? pnl.realizedPnl : null;
   state.dayPnl = pnl.complete ? pnl.dayPnl : null;
   state.trades = pnl.complete ? pnl.trades : [];
-  state.currentEquity = pnl.complete
-    ? (n(state.strategyStartEquity) > 0 ? n(state.strategyStartEquity) + n(pnl.realizedPnl) : n(account.equity))
-    : null;
+  state.currentEquity = sharedCurrentEquity !== null
+    ? sharedCurrentEquity
+    : (pnl.complete
+      ? (n(state.strategyStartEquity) > 0 ? n(state.strategyStartEquity) + n(pnl.realizedPnl) : n(account.equity))
+      : null);
   if (state.currentEquity !== null) {
     state.highWaterEquity = Math.max(n(state.highWaterEquity), state.currentEquity);
     state.drawdownPct = state.highWaterEquity > 0
@@ -632,6 +859,14 @@ export async function manageDeltaTestnetGrid({
     pushEvent(state, { type: 'HALT', reason: state.pausedReason, symbol, price: mark }, at);
     await persist();
     return block('EMERGENCY_STOP');
+  }
+  if (sharedGridStopReason || settings.gridGlobalPauseReason) {
+    const reason = settings.gridGlobalPauseReason || sharedGridStopReason;
+    state.pausedReason = reason;
+    state.status = 'HALTED';
+    pushEvent(state, { type: 'HALT', reason, symbol, price: mark }, at);
+    await persist();
+    return block(reason);
   }
   if (!settings.grid_enabled) {
     state.status = state.pausedReason ? 'HALTED' : 'OFF';
@@ -700,8 +935,20 @@ export async function manageDeltaTestnetGrid({
   state.trades = pnl.trades;
   state.positions = [];
   state.openRiskUsd = 0;
+  state.unrealizedPnl = totalGridUnrealizedPnl;
+  state.currentEquity = sharedCurrentEquity;
+  if (state.currentEquity !== null) {
+    state.highWaterEquity = Math.max(n(state.highWaterEquity), state.currentEquity);
+    state.drawdownPct = state.highWaterEquity > 0
+      ? Math.max(0, (state.highWaterEquity - state.currentEquity) / state.highWaterEquity * 100) : 0;
+  }
 
   const candidate = evaluation.entered[0];
+  if (candidate && gridPositionCapBlocked) {
+    state.status = 'BLOCKED';
+    await persist();
+    return block(gridPositionCap.reason || 'GRID_STRATEGY_POSITION_CAP_UNAVAILABLE');
+  }
   if (!candidate) {
     await persist();
     return { state, safety };
@@ -713,7 +960,10 @@ export async function manageDeltaTestnetGrid({
     product,
     riskEquity: n(state.dayStartEquity) || n(account.equity),
     remainingDailyRisk: Math.max(0,
-      n(state.dayStartEquity) * config.dailyLossPct / 100 - Math.max(0, -n(pnl.dayPnl))),
+      n(state.dayStartEquity) * config.dailyLossPct / 100 -
+      Math.max(0, -n(pnl.dayPnl)) -
+      Math.max(0, -n(totalGridUnrealizedPnl)) -
+      Math.max(0, n(settings.gridGlobalOpenRiskUsd))),
     consecutiveLosses: pnl.consecutiveLosses,
     minStopDistancePct: resolveMinimumStopDistancePct(process.env.DELTA_MIN_SL_DISTANCE_PCT)
   });
@@ -731,12 +981,11 @@ export async function manageDeltaTestnetGrid({
     const order = await executor.placeBracketOrder(
       symbol, 'BUY', adjusted.qty, adjusted.entryPrice,
       adjusted.stopPrice, adjusted.targetPrice,
-      { strategy: 'GRID', clientOrderId: executionClientId }
+      { strategy: 'GRID', clientOrderId: executionClientId, orderType: 'limit_order' }
     );
     const orderId = order?.id ?? order?.order_id;
-    if (!(numberOrNull(orderId) > 0) || !['CLOSED', 'FILLED'].includes(text(order?.state).toUpperCase()) ||
-        numberOrNull(order?.unfilled_size) !== 0) {
-      throw new Error('Grid market entry did not return a fully filled exchange order; outcome remains reserved');
+    if (!(numberOrNull(orderId) > 0)) {
+      throw new Error('Grid limit entry did not return an exchange order identity; outcome remains reserved');
     }
     if (typeof executor.getOrderById !== 'function') throw new Error('Exchange order detail lookup is unavailable for bracket verification');
     const detail = await executor.getOrderById(orderId);
@@ -745,6 +994,29 @@ export async function manageDeltaTestnetGrid({
     if (!samePrice(verifiedStop, adjusted.stopPrice, product.tick_size) ||
         !samePrice(verifiedTarget, adjusted.targetPrice, product.tick_size)) {
       throw new Error('Exchange order detail did not confirm both attached Grid bracket prices');
+    }
+    const orderState = text(order?.state || detail?.state).toUpperCase();
+    const unfilledSize = numberOrNull(order?.unfilled_size ?? detail?.unfilled_size);
+    if (['OPEN', 'PENDING', 'NEW', 'PARTIALLY_FILLED'].includes(orderState) &&
+        unfilledSize !== null && unfilledSize > 0) {
+      state.pendingEntries = [{
+        symbol, levelIndex: n(candidate.levelIndex), qty: adjusted.qty,
+        limitPrice: adjusted.entryPrice, stopPrice: verifiedStop, targetPrice: verifiedTarget,
+        exchangeOrderId: String(orderId), clientOrderId: executionClientId,
+        unfilledSize, riskUsd: n(adjusted.riskUsd), state: orderState, createdAt: at
+      }];
+      state.status = 'ENTRY_PENDING';
+      state.wasEnabled = true;
+      state.lastPrice = mark;
+      pushEvent(state, {
+        type: 'ENTRY_PENDING', symbol, levelIndex: n(candidate.levelIndex),
+        price: adjusted.entryPrice, qty: adjusted.qty, orderId: String(orderId)
+      }, at);
+      await persist();
+      return { state, safety };
+    }
+    if (!['CLOSED', 'FILLED'].includes(orderState) || unfilledSize !== 0) {
+      throw new Error('Grid limit order acknowledgement is ambiguous; reservation retained and Grid halted');
     }
     const filledPosition = await findOpenPosition(executor, symbol);
     if (!filledPosition || filledPosition.side !== 'BUY' || !(n(filledPosition.qty) > 0)) {

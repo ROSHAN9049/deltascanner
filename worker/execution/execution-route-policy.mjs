@@ -32,6 +32,27 @@ export function isAllowedDeltaTestnetFutureSymbol(symbol) {
   return allowedSymbols.has(normalizeDeltaSymbol(symbol));
 }
 
+/**
+ * Parse the two independent Testnet Grid instruments. Any configured symbol
+ * outside the fixed Delta Testnet allowlist is a configuration error.
+ */
+export function parseDeltaTestnetGridSymbols(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return Object.freeze([]);
+  const symbols = raw.split(',').map(normalizeDeltaSymbol);
+  if (symbols.length !== 2 || symbols.some(symbol => !symbol)) {
+    throw new Error('GRID_SYMBOLS must contain exactly two comma-separated Delta Testnet symbols');
+  }
+  if (new Set(symbols).size !== symbols.length) {
+    throw new Error('GRID_SYMBOLS must contain two distinct symbols');
+  }
+  const invalid = symbols.find(symbol => !isAllowedDeltaTestnetFutureSymbol(symbol));
+  if (invalid) {
+    throw new Error('GRID_SYMBOLS contains a symbol outside the Delta Testnet allowlist: ' + invalid);
+  }
+  return Object.freeze(symbols);
+}
+
 export function isEligibleDeltaTestnetPerpetualProduct(product) {
   const symbol = normalizeDeltaSymbol(product?.symbol || product?.product_symbol);
   const id = Number(product?.id ?? product?.product_id);

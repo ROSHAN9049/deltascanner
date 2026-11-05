@@ -1,6 +1,8 @@
+import { DELTA_TESTNET_FUTURES_ALLOWLIST } from './execution/execution-route-policy.mjs';
+
 const n = value => Number.isFinite(Number(value)) ? Number(value) : 0;
 const clamp = (value, min, max) => Math.max(min, Math.min(max, n(value)));
-export const GRID_SYMBOLS = Object.freeze(['BTCUSD', 'ETHUSD']);
+export const GRID_SYMBOLS = Object.freeze([...new Set(['BTCUSD', 'ETHUSD', ...DELTA_TESTNET_FUTURES_ALLOWLIST])]);
 
 export function buildGridLevels(lowerPrice, upperPrice, levelCount) {
   const lower = n(lowerPrice), upper = n(upperPrice), count = Math.round(n(levelCount));
@@ -23,7 +25,7 @@ export function normalizeGridConfig(settings = {}) {
   const levelCount = Math.round(clamp(settings.grid_levels_count || 10, 8, 12));
   const maxPositions = Math.round(clamp(settings.grid_max_positions || 1, 1, 4));
   const riskPerTradePct = clamp(settings.grid_risk_per_trade_pct ?? 0.3, 0.3, 1.5);
-  const dailyLossPct = clamp(settings.grid_daily_loss_pct || 2, 2, 2.5);
+  const dailyLossPct = 2;
   const maxDrawdownPct = clamp(settings.grid_max_drawdown_pct || 5, 0.5, 5);
   const breakoutExitPct = 1.2;
   const momentumPausePct = clamp(settings.grid_momentum_pause_pct || 2.5, 2.5, 3);

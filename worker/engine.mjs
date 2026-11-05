@@ -21,6 +21,7 @@ import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from '
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
 import { buildApiDerivedTrackingPlan, strategyForDerivedTrade } from './tradetron-derived-trades.mjs';
 import { deltaExecutor } from './execution/delta-executor.mjs';
+import { manageDeltaTestnetMultiGrid } from './execution/delta-multi-grid-engine.mjs';
 import { assertDirectDeltaExecutionMode, getExecutionRouteBlockReason, DELTA_TESTNET_FUTURES_ALLOWLIST, isAllowedDeltaTestnetFutureSymbol, isEligibleDeltaTestnetPerpetualProduct, isMarketTickFresh, canStartWorkerInExecutionProfile } from './execution/execution-route-policy.mjs';
 import { canExecuteDeltaTestnetOrders, checkDeltaTestnetPrivateApi, isPrivateApiConnectivityError } from './execution/testnet-private-api-health.mjs';
 import {
@@ -256,6 +257,7 @@ export class DeltaEngine {
     this.lastAccount = 0;
     this.lastGridCandleRefresh = 0;
     this.gridCandleSymbol = '';
+    this.gridCandleRefreshBySymbol = new Map();
     this.lastGridTestnetDiagnostics = null;
     this.testnetGridDiagnosticState = createGridState();
     this.lastOptionsTestnetDiagnostics = null;
@@ -730,12 +732,122 @@ export class DeltaEngine {
     }
   }
 
+  async runTestnetGridExecution(settings = {}, account = {}) {
+    const symbols = Array.isArray(CONFIG.gridSymbols) ? CONFIG.gridSymbols : [];
+    if (CONFIG.gridExecutionAllowed !== true || CONFIG.directDeltaExecutionEnabled !== true ||
+        CONFIG.deltaExecutionMode !== 'testnet' || CONFIG.environment !== 'TESTNET' ||
+        symbols.length !== 2 || account.privateApiAvailable !== true) {
+      this.lastGridTestnetDiagnostics = {
+        executionMode: 'testnet',
+        gridExecutionAllowed: false,
+        symbols,
+        executionLocked: true,
+        status: account.privateApiAvailable === true ? 'GRID_EXECUTION_DISABLED' : 'WAITING_FOR_PRIVATE_API',
+        orderRoutingAttempted: false,
+        updatedAt: iso()
+      };
+      return this.lastGridTestnetDiagnostics;
+    }
+
+    const tickers = {};
+    const products = {};
+    const candlesBySymbol = {};
+    const freshnessBySymbol = {};
+    const nowMs = Date.now();
+    for (const symbol of symbols) {
+      tickers[symbol] = this.tickerMap.get(symbol) || {};
+      // Explicit Grid symbols must be admitted to the candle cache even when
+      // they are outside the scanner's top-volume candle warm-up universe.
+      this.candleCacheSymbols.add(symbol);
+      const lastRefresh = this.gridCandleRefreshBySymbol.get(symbol) || 0;
+      if (nowMs - lastRefresh >= 15_000) {
+        try {
+          await this.refreshCandle(symbol, '1m');
+          this.gridCandleRefreshBySymbol.set(symbol, Date.now());
+        } catch (error) {
+          await this.log('WARN', 'Grid candle refresh failed; new entries remain blocked for this symbol', {
+            symbol, error: String(error?.message || error).slice(0, 200),
+            executionBlocked: true
+          }).catch(() => {});
+        }
+      }
+      candlesBySymbol[symbol] = this.getCandles(symbol, '1m');
+      freshnessBySymbol[symbol] = Date.now() - (this.gridCandleRefreshBySymbol.get(symbol) || 0) < 60_000 &&
+        Array.isArray(candlesBySymbol[symbol]) && candlesBySymbol[symbol].length >= 6 &&
+        n(tickers[symbol]?.mark_price || tickers[symbol]?.close || tickers[symbol]?.price) > 0;
+      try {
+        products[symbol] = await deltaExecutor.getProductMetadata(symbol);
+        if (!isEligibleDeltaTestnetPerpetualProduct(products[symbol])) {
+          throw new Error('Delta Testnet product is not live, operational, and order eligible');
+        }
+      } catch (error) {
+        freshnessBySymbol[symbol] = false;
+        await this.log('WARN', 'Grid symbol failed Testnet product verification; entries remain blocked for this symbol', {
+          symbol, error: String(error?.message || error).slice(0, 200),
+          allowlisted: isAllowedDeltaTestnetFutureSymbol(symbol),
+          executionBlocked: true
+        }).catch(() => {});
+      }
+    }
+
+    const result = await manageDeltaTestnetMultiGrid({
+      settings,
+      account,
+      symbols,
+      tickers,
+      products,
+      candlesBySymbol,
+      freshnessBySymbol,
+      database: db,
+      executor: deltaExecutor,
+      now: () => Date.now()
+    });
+    this.lastGridEntrySafety = result.safety || null;
+    const recentEvents = (Array.isArray(result.state?.events) ? result.state.events : [])
+      .filter(event => event.at === result.state.lastTickAt ||
+        (Date.now() - Date.parse(String(event.at || '')) >= 0 &&
+          Date.now() - Date.parse(String(event.at || '')) < 60_000));
+    const orderRoutingAttempted = recentEvents.some(event =>
+      ['ENTRY', 'ENTRY_PENDING', 'HALT'].includes(String(event.type || '').toUpperCase()) &&
+      String(event.reason || '').toUpperCase() !== 'EMERGENCY_STOP'
+    );
+    this.lastGridTestnetDiagnostics = {
+      executionMode: 'testnet',
+      gridExecutionAllowed: true,
+      symbols,
+      enabled: settings.grid_enabled === true,
+      executionLocked: result.safety?.blocked === true,
+      status: result.state?.status || 'UNKNOWN',
+      orderRoutingAttempted,
+      safety: result.safety || null,
+      symbolSummaries: result.state?.symbolSummaries || {},
+      openPositions: Array.isArray(result.state?.positions) ? result.state.positions.length : 0,
+      pendingEntries: Array.isArray(result.state?.pendingEntries) ? result.state.pendingEntries.length : 0,
+      updatedAt: iso()
+    };
+    await this.log(
+      result.safety?.blocked ? 'WARN' : 'INFO',
+      'Delta Testnet multi-symbol Grid cycle completed',
+      this.lastGridTestnetDiagnostics
+    ).catch(() => {});
+    return this.lastGridTestnetDiagnostics;
+  }
+
   async manageGridStrategy(settings, account) {
-    // Testnet Grid is evaluated only through an isolated in-memory dry run.
-    // It never submits orders, writes position reservations, or changes the
-    // existing single-slot Grid execution invariant.
     if (CONFIG.deltaExecutionMode === 'testnet') {
-      await this.runTestnetGridDiagnostics(settings, account);
+      if (CONFIG.gridExecutionAllowed === true) {
+        await this.runTestnetGridExecution(settings, account);
+      } else {
+        this.lastGridTestnetDiagnostics = {
+          executionMode: 'testnet',
+          gridExecutionAllowed: false,
+          symbols: CONFIG.gridSymbols || [],
+          executionLocked: true,
+          status: 'GRID_EXECUTION_DISABLED',
+          orderRoutingAttempted: false,
+          updatedAt: iso()
+        };
+      }
       return;
     }
     let priorState = settings.grid_state;

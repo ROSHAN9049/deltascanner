@@ -4,6 +4,7 @@ import { insert, select, updateReturning } from '../../server/db.js';
 import { buildSettingsAuditEntry } from '../../server/settings-audit.js';
 import { createEmergencyStopReleaseChallenge, hashEmergencyStopReleaseToken, matchesEmergencyStopReleaseToken, verifyEmergencyStopReleaseChallenge } from '../../server/estop-release-confirmation.js';
 import { GRID_MAX_POSITION_CHOICES, GRID_RISK_PER_TRADE_CHOICES, GRID_DAILY_LOSS_CHOICES, GRID_MOMENTUM_PAUSE_CHOICES } from '../../shared/grid-settings.js';
+import { isAllowedDeltaTestnetFutureSymbol } from '../../worker/execution/execution-route-policy.mjs';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ success: false, error: 'POST only' });
@@ -151,19 +152,27 @@ export default async function handler(req, res) {
       };
     }
     const gridPositions = Array.isArray(gridState.positions) ? gridState.positions : [];
-    // Grid is single-slot in the direct Delta architecture. Query the exchange-backed
-    // ledger unconditionally because the dashboard API may not carry the Hostless
-    // worker's execution-mode environment variable.
+    const pendingEntries = Array.isArray(gridState.pendingEntries) ? gridState.pendingEntries : [];
     const testnetOpenGridPositions = await select(
       'dd_delta_positions',
       'strategy=eq.GRID&status=eq.OPEN&select=id,symbol,qty&limit=10'
     );
-    const effectiveGridPositionCount = Math.max(gridPositions.length, Array.isArray(testnetOpenGridPositions) ? testnetOpenGridPositions.length : 0);
+    const testnetPendingGridOrders = await select(
+      'dd_orders',
+      'strategy=eq.GRID&role=eq.ENTRY&state=in.(PENDING,UNKNOWN,NEW,OPEN,PARTIALLY_FILLED)&select=id,symbol,state&limit=10'
+    );
+    const activeGridSymbols = new Set([
+      ...gridPositions.map(row => String(row.symbol || '').toUpperCase()),
+      ...pendingEntries.map(row => String(row.symbol || '').toUpperCase()),
+      ...(Array.isArray(testnetOpenGridPositions) ? testnetOpenGridPositions : []).map(row => String(row.symbol || '').toUpperCase()),
+      ...(Array.isArray(testnetPendingGridOrders) ? testnetPendingGridOrders : []).map(row => String(row.symbol || '').toUpperCase())
+    ].filter(Boolean));
+    const effectiveGridPositionCount = activeGridSymbols.size;
     const gridRangeOrInstrumentChanged = [
-      'gridSymbol', 'gridLowerPrice', 'gridUpperPrice', 'gridLevelsCount'
+      'gridSymbol', 'gridLowerPrice', 'gridUpperPrice', 'gridLevelsCount', 'gridSymbolConfigs'
     ].some(key => body[key] !== undefined);
     if (gridRangeOrInstrumentChanged && effectiveGridPositionCount > 0) {
-      return res.status(409).json({ success: false, error: 'Grid instrument/range/levels cannot change while a grid position is open.' });
+      return res.status(409).json({ success: false, error: 'Grid symbol ranges cannot change while an exchange position or entry order is open.' });
     }
     if (body.gridReset === true) {
       if (effectiveGridPositionCount > 0) {
@@ -196,10 +205,42 @@ export default async function handler(req, res) {
         }].slice(-80)
       };
     } else {
+      if (body.gridSymbolConfigs !== undefined) {
+        const configs = body.gridSymbolConfigs;
+        if (!configs || typeof configs !== 'object' || Array.isArray(configs)) {
+          return res.status(400).json({ success: false, error: 'Grid symbol configurations must be an object keyed by Testnet symbol.' });
+        }
+        const entries = Object.entries(configs);
+        const configuredSymbols = Array.isArray(CONFIG.gridSymbols) ? CONFIG.gridSymbols : [];
+        const requestedSymbols = entries.map(([symbol]) => String(symbol).trim().toUpperCase());
+        if (configuredSymbols.length !== 2 || requestedSymbols.length !== 2 ||
+            requestedSymbols.some(symbol => !isAllowedDeltaTestnetFutureSymbol(symbol)) ||
+            [...requestedSymbols].sort().join(',') !== [...configuredSymbols].sort().join(',')) {
+          return res.status(400).json({ success: false, error: 'Grid configurations must match the two GRID_SYMBOLS configured in the Testnet worker.' });
+        }
+        const normalized = {};
+        for (const [rawSymbol, config] of entries) {
+          const symbol = String(rawSymbol).trim().toUpperCase();
+          const lowerPrice = Number(config?.lowerPrice ?? config?.grid_lower_price);
+          const upperPrice = Number(config?.upperPrice ?? config?.grid_upper_price);
+          const levelsCount = Number(config?.levelsCount ?? config?.grid_levels_count ?? 10);
+          if (!Number.isFinite(lowerPrice) || lowerPrice <= 0 ||
+              !Number.isFinite(upperPrice) || upperPrice <= lowerPrice ||
+              !Number.isInteger(levelsCount) || levelsCount < 8 || levelsCount > 12) {
+            return res.status(400).json({ success: false, error: 'Each Grid symbol needs valid lower/upper prices and 8–12 levels.' });
+          }
+          normalized[symbol] = { lowerPrice, upperPrice, levelsCount };
+        }
+        patch.grid_symbol_configs = normalized;
+        patch.grid_symbol = configuredSymbols[0];
+        patch.grid_lower_price = normalized[configuredSymbols[0]].lowerPrice;
+        patch.grid_upper_price = normalized[configuredSymbols[0]].upperPrice;
+        patch.grid_levels_count = normalized[configuredSymbols[0]].levelsCount;
+      }
       if (body.gridSymbol !== undefined) {
         const symbol = String(body.gridSymbol || '').trim().toUpperCase();
-        if (!['BTCUSD', 'ETHUSD'].includes(symbol)) {
-          return res.status(400).json({ success: false, error: 'Grid instrument must be BTCUSD or ETHUSD.' });
+        if (!isAllowedDeltaTestnetFutureSymbol(symbol)) {
+          return res.status(400).json({ success: false, error: 'Grid instrument must be in the Delta Testnet futures allowlist.' });
         }
         patch.grid_symbol = symbol;
       }
@@ -226,16 +267,14 @@ export default async function handler(req, res) {
       }
       if (body.gridMaxPositions !== undefined) {
         const value = Number(body.gridMaxPositions);
-        if (value !== 1) {
-          return res.status(400).json({ success: false, error: 'Grid supports exactly one open position in the direct Delta execution architecture.' });
+        if (value !== 2 || !GRID_MAX_POSITION_CHOICES.includes(value)) {
+          return res.status(400).json({ success: false, error: 'Two-symbol Grid supports a maximum of exactly two independently protected positions.' });
         }
-        if (!GRID_MAX_POSITION_CHOICES.includes(value)) {
-          return res.status(400).json({ success: false, error: 'Grid max positions must be 1, 3 or 4. Tradetron bridge mode still limits the live simulation to one net position.' });
-        }
-        if (gridPositions.length > value) {
-          return res.status(409).json({ success: false, error: 'Grid max positions cannot be lower than the current open position count.' });
+        if (effectiveGridPositionCount > value) {
+          return res.status(409).json({ success: false, error: 'Grid max positions cannot be lower than the active symbol count.' });
         }
         patch.grid_max_positions = value;
+        patch.max_grid_positions = value;
       }
       if (body.gridRiskPerTradePct !== undefined) {
         const value = Number(body.gridRiskPerTradePct);
@@ -247,7 +286,7 @@ export default async function handler(req, res) {
       if (body.gridDailyLossPct !== undefined) {
         const value = Number(body.gridDailyLossPct);
         if (!GRID_DAILY_LOSS_CHOICES.includes(value)) {
-          return res.status(400).json({ success: false, error: 'Grid daily loss limit must be 2%, 2.25% or 2.5%.' });
+          return res.status(400).json({ success: false, error: 'Grid daily loss limit is fixed at 2%.' });
         }
         patch.grid_daily_loss_pct = value;
       }
@@ -266,13 +305,35 @@ export default async function handler(req, res) {
         return res.status(400).json({ success: false, error: 'Grid upper price must be greater than lower price.' });
       }
       if (body.gridEnabled === true) {
-        if (!(lower > 0 && upper > lower)) {
-          return res.status(400).json({ success: false, error: 'Set a valid grid lower and upper price before starting.' });
+        if (CONFIG.gridExecutionAllowed !== true || CONFIG.directDeltaExecutionEnabled !== true ||
+            CONFIG.deltaExecutionMode !== 'testnet' || CONFIG.environment !== 'TESTNET') {
+          return res.status(409).json({ success: false, error: 'Grid Testnet execution is locked. Set GRID_EXECUTION_ALLOWED=true only in the Delta TESTNET profile and verify the worker/API environment.' });
+        }
+        if (current.emergency_stop === true) {
+          return res.status(409).json({ success: false, error: 'Global Emergency Stop is active. Grid cannot start while E-STOP is active.' });
+        }
+        if (current.auto_trade !== true || current.enabled !== true || current.continuous_mode === false) {
+          return res.status(409).json({ success: false, error: 'Global Auto Trade / engine enable is off. Grid cannot bypass global execution controls.' });
+        }
+        const configs = patch.grid_symbol_configs || current.grid_symbol_configs || {};
+        const symbols = Array.isArray(CONFIG.gridSymbols) ? CONFIG.gridSymbols : [];
+        if (symbols.length !== 2 || symbols.some(symbol => {
+          const config = configs?.[symbol];
+          const lowerPrice = Number(config?.lowerPrice ?? config?.grid_lower_price);
+          const upperPrice = Number(config?.upperPrice ?? config?.grid_upper_price);
+          const levelsCount = Number(config?.levelsCount ?? config?.grid_levels_count);
+          return !(Number.isFinite(lowerPrice) && lowerPrice > 0 &&
+            Number.isFinite(upperPrice) && upperPrice > lowerPrice &&
+            Number.isInteger(levelsCount) && levelsCount >= 8 && levelsCount <= 12);
+        })) {
+          return res.status(400).json({ success: false, error: 'Configure a valid range and 8–12 Grid levels for both Testnet symbols before starting.' });
         }
         if (gridState.pausedReason) {
-          return res.status(409).json({ success: false, error: 'Reset the grid hard stop before starting again.' });
+          return res.status(409).json({ success: false, error: 'Reset the Grid hard stop before starting again.' });
         }
         patch.grid_enabled = true;
+        patch.grid_max_positions = 2;
+        patch.max_grid_positions = 2;
       } else if (body.gridEnabled === false) {
         patch.grid_enabled = false;
       }

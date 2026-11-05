@@ -313,6 +313,25 @@ export function createDeltaExecutor({
     return order;
   }
 
+  async function cancelOrderById(orderId) {
+    const id = numberOrNull(orderId);
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      throw new Error('Delta Testnet cancellation requires a positive exchange order id');
+    }
+    const terminalStates = new Set([
+      'CLOSED', 'FILLED', 'CANCELLED', 'CANCELED', 'REJECTED', 'FAILED', 'EXPIRED', 'EXITED'
+    ]);
+    const current = await getOrderById(id);
+    if (terminalStates.has(stringOrEmpty(current.state).toUpperCase())) return current;
+    await request('DELETE', '/v2/orders', {}, { id });
+    const verified = await getOrderById(id);
+    const state = stringOrEmpty(verified.state).toUpperCase();
+    if (!terminalStates.has(state)) {
+      throw new Error('Delta Testnet order cancellation is unconfirmed; exchange state remains ' + (state || 'UNKNOWN'));
+    }
+    return verified;
+  }
+
   function timestampMs(value) {
     if (value === undefined || value === null || value === '') return null;
     if (typeof value === 'number' || /^\d+(?:\.\d+)?$/.test(String(value).trim())) {
@@ -1080,20 +1099,27 @@ export function createDeltaExecutor({
 
       const strategy = strategyValue(options?.strategy);
       const prefix = strategy === 'MOMENTUM' ? 'DDM' : strategy === 'SCALPING' ? 'DDS' : 'DDG';
+      const requestedOrderType = String(options?.orderType || 'market_order').trim().toLowerCase();
+      if (!['market_order', 'limit_order'].includes(requestedOrderType)) {
+        throw new Error('Grid bracket order type must be market_order or limit_order');
+      }
       const body = {
         product_id: product.id,
         size: quantity,
         side: direction.toLowerCase(),
-        order_type: 'market_order',
+        order_type: requestedOrderType,
         client_order_id: buildClientOrderId(options?.clientOrderId, prefix, normalizedSymbol),
         bracket_stop_loss_price: String(stop),
         bracket_take_profit_price: String(target),
-        bracket_stop_trigger_method: 'mark_price'
+        bracket_stop_trigger_method: 'mark_price',
+        ...(requestedOrderType === 'limit_order'
+          ? { limit_price: String(entry), time_in_force: 'gtc', reduce_only: false }
+          : {})
       };
 
       await logExecutor(
         'INFO',
-        '[Executor] Preparing Testnet market bracket order',
+        '[Executor] Preparing Testnet ' + requestedOrderType.replace('_', ' ') + ' bracket order',
         {
           environment: 'testnet',
           symbol: normalizedSymbol,
@@ -1179,6 +1205,7 @@ export function createDeltaExecutor({
     getOpenOrders,
     getOrderById,
     getOrderByClientOrderId,
+    cancelOrderById,
     getFillsPage,
     getAccountSnapshot,
     getRecentCloseDetails,

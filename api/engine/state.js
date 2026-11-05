@@ -142,6 +142,8 @@ export default async function handler(req, res) {
       executionCoverage: {
         directDeltaExecutionEnabled: false,
         deltaExecutionMode,
+        gridExecutionAllowed: CONFIG.gridExecutionAllowed === true,
+        gridSymbols: CONFIG.gridSymbols || [],
         deltaExecutionModeSource,
         gridEntrySafety: privateDataAuthorized ? heartbeatLog?.data?.gridEntrySafety || null : null,
         gridTestnetDiagnostics: heartbeatLog?.data?.gridTestnetDiagnostics || null,
