@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import {
   OPTIONS_EXECUTION_ALLOWED,
   OPTIONS_EXECUTION_LOCK_REASON,
-  isOptionsExecutionAllowed
+  isOptionsExecutionAllowed,
+  OPTIONS_DATABASE_EXECUTION_LOCK_REASON,
+  getOptionsDatabaseExecutionGate
 } from '../worker/options-execution-lock.mjs';
 import { DeltaEngine } from '../worker/engine.mjs';
 
@@ -11,6 +13,13 @@ test('Options entry hard-lock is false independent of route configuration', () =
   assert.equal(OPTIONS_EXECUTION_ALLOWED, false);
   assert.equal(isOptionsExecutionAllowed(), false);
   assert.match(OPTIONS_EXECUTION_LOCK_REASON, /maximum loss/i);
+});
+
+test('database Options execution flag is a strict default-off gate', () => {
+  assert.equal(getOptionsDatabaseExecutionGate({}).allowed, false);
+  assert.equal(getOptionsDatabaseExecutionGate({ options_execution_enabled: false }).allowed, false);
+  assert.equal(getOptionsDatabaseExecutionGate({ options_execution_enabled: true }).allowed, true);
+  assert.match(OPTIONS_DATABASE_EXECUTION_LOCK_REASON, /dd_settings\.options_execution_enabled/);
 });
 
 test('actual engine refuses BUY and SELL Options through the only supported entry method', async () => {
