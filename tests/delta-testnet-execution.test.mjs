@@ -208,7 +208,7 @@ test('bracket entry is a Testnet market order with exchange-side SL/TP and signe
 });
 
 test('Grid bracket entry uses a GTC non-reduce-only limit order with exchange-side SL/TP', async () => {
-  const runtime = fakeRuntime({ orderState: 'open' });
+  const runtime = fakeRuntime({ orderState: 'open', markPrice: 2500 });
   const executor = createDeltaExecutor({
     env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database
   });
