@@ -140,7 +140,7 @@ export default async function handler(req, res) {
       success: true,
       environment: CONFIG.environment,
       executionCoverage: {
-        directDeltaExecutionEnabled: CONFIG.directDeltaExecutionEnabled === true,
+        directDeltaExecutionEnabled: false,
         deltaExecutionMode,
         gridExecutionAllowed: CONFIG.gridExecutionAllowed === true,
         gridSymbols: CONFIG.gridSymbols || [],
