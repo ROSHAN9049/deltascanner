@@ -6,7 +6,7 @@ const source = await readFile(new URL('../src/GridStrategy.jsx', import.meta.url
 const sharedStatusSource = await readFile(new URL('../shared/grid-settings.js', import.meta.url), 'utf8');
 
 test('Grid UI exposes two allowlisted Testnet symbols and keeps execution behind the explicit opt-in', () => {
-  assert.match(source, /executionMode\\s*===\\s*'testnet'/);
+  assert.match(source, /executionMode\s*===\s*'testnet'/);
   assert.match(sharedStatusSource, /TESTNET GRID · EXECUTION DISABLED/);
   assert.match(sharedStatusSource, /TESTNET GRID · ACTIVE/);
   assert.match(source, /getGridDisplayStatus/);
@@ -14,8 +14,8 @@ test('Grid UI exposes two allowlisted Testnet symbols and keeps execution behind
   assert.match(source, /gridExecutionAllowed/);
   assert.match(source, /PAXGUSD/);
   assert.match(source, /NVDAXUSD/);
-  assert.match(source, /Start Grid \\(Delta Testnet\\)/);
-  assert.match(source, /Independent exchange-side SL\\/TP/);
+  assert.match(source, /Start Grid \(Delta Testnet\)/);
+  assert.match(source, /Independent exchange-side SL\/TP/);
   assert.doesNotMatch(source, /BTCUSD|ETHUSD/);
 });
 test('Grid P&L distinguishes verified Testnet net P&L from simulator estimates', () => {
