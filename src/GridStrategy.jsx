@@ -104,7 +104,7 @@ export default function GridStrategy({
 
   const openRisk = safeNum(gridState.openRiskUsd);
   const dayStartEquity = safeNum(gridState.dayStartEquity);
-  const dailyLossPct = safeNum(settings.grid_daily_loss_pct) ?? 2;
+  const dailyLossPct = 2;
   const dailyCap = dayStartEquity === null ? null : dayStartEquity * dailyLossPct / 100;
   const realizedGridPnl = safeNum(gridState.realizedPnl);
   const dayPnl = safeNum(gridState.dayPnl);
@@ -187,7 +187,7 @@ export default function GridStrategy({
       <div className="card"><small>CONFIGURED TESTNET SYMBOLS</small><strong>{gridSymbols.join(' · ')}</strong><span>Each symbol has its own range and Independent exchange-side SL/TP.</span></div>
       <div className="card"><small>OPEN GRID SYMBOLS</small><strong>{activeSlots} / {GRID_BRIDGE_MAX_POSITIONS}</strong><span>{positions.length} open position(s) · {pendingEntries.length} pending limit entry(ies) · {usd(openRisk === null && positions.length === 0 ? 0 : openRisk)} estimated open risk.</span></div>
       <div className="card"><small>{deltaTestnetGrid ? 'DELTA TESTNET NET P&L' : 'SIMULATED GRID P&amp;L'}</small><strong className={realizedGridPnl === null ? 'muted' : realizedGridPnl >= 0 ? 'up' : 'down'}>{usd(realizedGridPnl)}</strong><span>{deltaTestnetGrid ? 'Only fully fill-matched trades with verified commissions; otherwise P&L is unverified.' : 'Offline estimate after estimated fees and slippage; not exchange-reported P&amp;L.'}</span></div>
-      <div className="card"><small>DAY PNL</small><strong className={totalDayPnl === null ? 'muted' : totalDayPnl >= 0 ? 'up' : 'down'}>{usd(totalDayPnl)}</strong><span>Realized + combined mark-to-market · daily stop {Number(settings.grid_daily_loss_pct || 2).toFixed(1)}%.</span></div>
+      <div className="card"><small>DAY PNL</small><strong className={totalDayPnl === null ? 'muted' : totalDayPnl >= 0 ? 'up' : 'down'}>{usd(totalDayPnl)}</strong><span>Realized + combined mark-to-market · daily stop fixed at 2.0%.</span></div>
       <div className="card"><small>STRATEGY EQUITY</small><strong>{usd(currentEquity)}</strong><span>Delta Testnet account equity at Grid start · drawdown {drawdownPct === null ? 'NO DATA' : drawdownPct.toFixed(2) + '%'} · hard stop 5%.</span></div>
       <div className="card"><small>EXECUTION GATE</small><strong>{deltaTestnetGrid ? (gridExecutionAllowed ? 'TESTNET LIMIT ORDERS ENABLED' : 'TESTNET ORDERS LOCKED') : 'SIMULATOR'}</strong><span>{deltaTestnetGrid ? (gridExecutionAllowed ? 'Runtime opt-in verified. Entries still require fresh market data, an available Testnet product, global safety checks and a free symbol slot.' : 'Set GRID_EXECUTION_ALLOWED=true in the Delta TESTNET worker and API environments. The default is false.') : 'Offline simulator; no exchange orders are sent.'}</span></div>
     </section>
