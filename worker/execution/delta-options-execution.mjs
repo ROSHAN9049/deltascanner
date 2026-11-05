@@ -423,13 +423,14 @@ export function createDeltaOptionsExecution({
     assertTestnetProfile();
     const settingsRows = await database.select(
       'dd_settings',
-      'id=eq.1&select=id,enabled,emergency_stop,last_tick_at,max_options_positions'
+      'id=eq.1&select=id,enabled,auto_trade,emergency_stop,last_tick_at,max_options_positions'
     );
     if (!Array.isArray(settingsRows) || settingsRows.length !== 1) {
       throw new Error('Options entry settings are unavailable; order blocked');
     }
     const settings = settingsRows[0];
     if (settings.enabled !== true) throw new Error('Trading engine is disabled; Options entry blocked');
+    if (settings.auto_trade !== true) throw new Error('Auto Trade is off or unknown; Options entry blocked');
     if (settings.emergency_stop !== false) throw new Error('Emergency Stop is active or unknown; Options entry blocked');
     if (!isMarketTickFresh(settings.last_tick_at, now())) {
       throw new Error('Persisted market tick is stale or unavailable; Options entry blocked');

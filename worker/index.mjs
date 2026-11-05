@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { DeltaEngine } from './engine.mjs';
+import { createOptionsAutoTrigger } from './options-auto-trigger.mjs';
 import { CONFIG } from '../server/config.js';
 import * as db from '../server/db.js';
 import { log } from '../server/db.js';
@@ -25,6 +26,7 @@ if (!CONFIG.engineSecret) throw new Error('ENGINE_SECRET is required.');
 if (!CONFIG.supabaseUrl || !CONFIG.supabaseAdminKey) throw new Error('SUPABASE_URL / Supabase server key is required.');
 
 const engine = new DeltaEngine();
+let optionsAutoTriggerWorker = null;
 let btcHourlyWarmupTimer = null;
 let deltaTestnetTracker = null;
 let deltaPositionReconciler = null;
@@ -292,7 +294,10 @@ async function shutdownWorker(signal) {
     if (privateApiRetryTimer) clearInterval(privateApiRetryTimer);
     const reconcilerToStop = deltaPositionReconciler;
     deltaPositionReconciler = null;
+    const autoTriggerToStop = optionsAutoTriggerWorker;
+    optionsAutoTriggerWorker = null;
     const results = await Promise.allSettled([
+      Promise.resolve().then(() => autoTriggerToStop?.stop()),
       Promise.resolve().then(() => reconcilerToStop?.stop()),
       Promise.resolve().then(() => deltaTestnetTracker?.stop()),
       Promise.resolve().then(() => engine.stop())
@@ -383,6 +388,11 @@ process.on('uncaughtException', (error, origin) => {
       console.error('[DeltaScanner] Could not persist uncaught exception:', String(logError?.message || logError));
     }
 
+    const autoTriggerToStop = optionsAutoTriggerWorker;
+    optionsAutoTriggerWorker = null;
+    try { await autoTriggerToStop?.stop(); } catch (stopError) {
+      console.error('[DeltaScanner] Options auto-trigger cleanup after uncaught exception failed:', String(stopError?.message || stopError));
+    }
     try { await deltaTestnetTracker?.stop(); } catch (stopError) {
       console.error('[DeltaScanner] Private tracker cleanup after uncaught exception failed:', String(stopError?.message || stopError));
     }
@@ -400,6 +410,15 @@ process.on('uncaughtException', (error, origin) => {
 
 const preflightOk = await startupPreflightWithRetry();
 if (preflightOk && !workerHalted) {
+
+optionsAutoTriggerWorker = createOptionsAutoTrigger({
+  env: process.env,
+  database: db,
+  logger: log
+});
+void optionsAutoTriggerWorker.start().catch(error => {
+  console.error('[DeltaScanner] Options preview-only auto-trigger startup failed:', String(error?.message || error));
+});
 
 if (CONFIG.deltaExecutionMode === 'testnet') {
   privateApiRetryTimer = setInterval(() => {

@@ -6,6 +6,7 @@ import {
 import { select } from '../server/db.js';
 import { summarizeRetentionHealth } from '../src/retention-health.js';
 import { getDeltaTestnetHealth } from '../server/delta-testnet-health.js';
+import { summarizeOptionsAutoTriggerHealth } from '../src/options-auto-trigger-health.js';
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate');
@@ -27,7 +28,7 @@ export default async function handler(req, res) {
     // Exchange health is an independent, cached probe of Delta TESTNET's public
     // products endpoint. Lease and heartbeat fields remain separate worker-health
     // observations so lease expiry cannot masquerade as exchange unavailability.
-    const [settingsRows, leaseRows, retentionLogs, exchangeProbe] = await Promise.all([
+    const [settingsRows, leaseRows, retentionLogs, exchangeProbe, optionsAutoTriggerLogs] = await Promise.all([
       select('dd_settings', 'id=eq.1&select=last_tick_at,worker_started_at,updated_at'),
       select('dd_engine_lease', 'id=eq.1&select=worker_id,expires_at,heartbeat_at'),
       select(
@@ -37,11 +38,19 @@ export default async function handler(req, res) {
         console.error('[health] Retention telemetry unavailable:', error.message);
         return [];
       }),
-      getDeltaTestnetHealth()
+      getDeltaTestnetHealth(),
+      select(
+        'dd_engine_logs',
+        'message=eq.%5BAUTO-TRIGGER%5D%20Worker%20heartbeat&select=created_at,data&order=created_at.desc&limit=1'
+      ).catch(error => {
+        console.error('[health] Options auto-trigger telemetry unavailable:', error.message);
+        return [];
+      })
     ]);
     const settings = settingsRows?.[0] || {};
     const lease = leaseRows?.[0] || {};
     const retention = summarizeRetentionHealth(retentionLogs, { defaultConfigDays: 1 });
+    const optionsAutoTrigger = summarizeOptionsAutoTriggerHealth(optionsAutoTriggerLogs);
 
     const nowMs = Date.now();
     const workerTickMs = settings.last_tick_at ? Date.parse(settings.last_tick_at) : null;
@@ -65,6 +74,7 @@ export default async function handler(req, res) {
       optionsExecutionGate,
       optionsManualTestOverride,
       optionsManualTestOverrideAllowed: manualOverrideGate.allowed,
+      optionsAutoTrigger,
       exchange: CONFIG.signalOnly ? 'Delta Exchange India · Production Market Feed' : 'Delta Exchange India Demo',
       exchangeHealthy,
       exchangeProbeAt: exchangeProbe?.checkedAt || null,
@@ -94,6 +104,7 @@ export default async function handler(req, res) {
       optionsExecutionGate,
       optionsManualTestOverride,
       optionsManualTestOverrideAllowed: manualOverrideGate.allowed,
+      optionsAutoTrigger: summarizeOptionsAutoTriggerHealth([]),
       exchangeHealthy: false,
       exchangeProbeAt: null,
       exchangeProbeStatus: null,

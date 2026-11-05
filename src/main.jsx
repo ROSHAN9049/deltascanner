@@ -827,8 +827,14 @@ function OptionsView({
   const optionsDiagnostics = executionCoverage?.optionsTestnetDiagnostics || null;
   const optionsExecutionGate = apiHealth?.optionsExecutionGate || null;
   const optionsManualTestOverride = apiHealth?.optionsManualTestOverride || null;
+  const optionsAutoTrigger = apiHealth?.optionsAutoTrigger || null;
+  const optionsAutoTriggerReady = testnetMode &&
+    settings.auto_trade === true && settings.emergency_stop === false &&
+    optionsAutoTrigger?.enabled === true && optionsAutoTrigger?.heartbeatFresh === true &&
+    optionsAutoTrigger?.mode === 'PREVIEW_ONLY' &&
+    ['READY', 'CANDIDATE_READY'].includes(optionsAutoTrigger?.status);
   const manualOverrideAllowed = isManualOverrideAllowed(apiHealth);
-  const optionsEngineStatus = !testnetMode ? 'ANALYSIS ONLY'
+  const optionsEngineStatus = optionsAutoTriggerReady ? 'AUTO-TRIGGER READY (PREVIEW ONLY)' : !testnetMode ? 'ANALYSIS ONLY'
     : !optionsDiagnostics ? 'ACTIVE (WAITING FOR TESTNET PRODUCTS)'
       : optionsDiagnostics.status === 'WAITING_FOR_TESTNET_PRODUCTS' ? 'ACTIVE (WAITING FOR TESTNET PRODUCTS)'
         : optionsDiagnostics.status === 'WAITING_FOR_TESTNET_QUOTES' ? 'ACTIVE (WAITING FOR TESTNET QUOTES)'
@@ -843,16 +849,18 @@ function OptionsView({
     .map(asset => asset + ' products ' + (productCounts[asset] ?? '—') + ' / quotes ' + (quoteCounts[asset] ?? '—'))
     .join(' · ');
   const missingUnderlyings = Array.isArray(optionsDiagnostics?.missingUnderlyings) ? optionsDiagnostics.missingUnderlyings : [];
-  const optionsEngineDetail = !testnetMode
-    ? 'Options order routing is restricted to Delta Testnet.'
-    : optionsDiagnostics
-      ? (diagnosticRefreshAt ? 'Diagnostics refreshed ' + diagnosticRefreshAt + ' IST · ' : '') +
-        'Testnet products: ' + (optionsDiagnostics.testnetProductsAvailable ?? 0) +
-        ' · quote candidates: ' + (optionsDiagnostics.optionTickersAvailable ?? 0) +
-        ' · ' + underlyingCounts +
-        (missingUnderlyings.length ? ' · no eligible products: ' + missingUnderlyings.join(', ') : '') +
-        ' · manual execution requires its separate environment gate.'
-      : 'Waiting for the Worker product-catalogue check. Execution remains disabled unless the API gate is explicitly enabled.';
+  const optionsEngineDetail = optionsAutoTriggerReady
+    ? 'Worker preview-only poller heartbeat is fresh. It checks candidates every 60 seconds and obtains a read-only quote token; you must still review and execute manually. The Worker does not submit orders.'
+    : !testnetMode
+      ? 'Options order routing is restricted to Delta Testnet.'
+      : optionsDiagnostics
+        ? (diagnosticRefreshAt ? 'Diagnostics refreshed ' + diagnosticRefreshAt + ' IST · ' : '') +
+          'Testnet products: ' + (optionsDiagnostics.testnetProductsAvailable ?? 0) +
+          ' · quote candidates: ' + (optionsDiagnostics.optionTickersAvailable ?? 0) +
+          ' · ' + underlyingCounts +
+          (missingUnderlyings.length ? ' · no eligible products: ' + missingUnderlyings.join(', ') : '') +
+          ' · manual execution requires its separate environment gate.'
+        : 'Waiting for the Worker product-catalogue check. Execution remains disabled unless the API gate is explicitly enabled.';
   const buyMinDelta = safeNum(settings.options_buy_min_delta) || 0.45;
   const buyMaxDelta = safeNum(settings.options_buy_max_delta) || 0.65;
   const sellMinDelta = safeNum(settings.options_sell_min_delta) || 0.20;
