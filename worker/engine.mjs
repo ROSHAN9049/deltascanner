@@ -756,6 +756,9 @@ export class DeltaEngine {
     const nowMs = Date.now();
     for (const symbol of symbols) {
       tickers[symbol] = this.tickerMap.get(symbol) || {};
+      // Explicit Grid symbols must be admitted to the candle cache even when
+      // they are outside the scanner's top-volume candle warm-up universe.
+      this.candleCacheSymbols.add(symbol);
       const lastRefresh = this.gridCandleRefreshBySymbol.get(symbol) || 0;
       if (nowMs - lastRefresh >= 15_000) {
         try {
