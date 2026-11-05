@@ -206,7 +206,7 @@ export default function GridStrategy({
       <div className="gridConfig">
         <label>Maximum Open Positions<select value={GRID_BRIDGE_MAX_POSITIONS} disabled><option value={GRID_BRIDGE_MAX_POSITIONS}>2 positions · one per symbol</option></select></label>
         <label>Target Risk / Trade<select value={draft.gridRiskPerTradePct} onChange={event => updateGlobal('gridRiskPerTradePct', Number(event.target.value))}>{GRID_RISK_PER_TRADE_CHOICES.map(value => <option key={value} value={value}>{value.toFixed(2)}%{value === 0.3 ? ' · conservative default' : ' target'}</option>)}</select></label>
-        <label>Daily Loss Limit<select value={draft.gridDailyLossPct} onChange={event => updateGlobal('gridDailyLossPct', Number(event.target.value))}><option value={2}>2.0%</option><option value={2.25}>2.25%</option><option value={2.5}>2.5%</option></select></label>
+        <label>Daily Loss Limit<select value={2} disabled><option value={2}>2.0% · fixed safety limit</option></select></label>
         <label>Momentum Pause<select value={draft.gridMomentumPausePct} onChange={event => updateGlobal('gridMomentumPausePct', Number(event.target.value))}><option value={2.5}>2.5% one-way move</option><option value={2.75}>2.75% one-way move</option><option value={3}>3.0% one-way move</option></select></label>
       </div>
       <label className="gridCheck"><input type="checkbox" checked={draft.gridReduceAfterLosses} onChange={event => updateGlobal('gridReduceAfterLosses', event.target.checked)}/> Reduce position sizing by 50% after 2 consecutive losses</label>
