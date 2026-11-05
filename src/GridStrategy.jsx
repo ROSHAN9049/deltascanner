@@ -49,7 +49,7 @@ function parseDraft(settings, symbols) {
     gridSymbolConfigs,
     gridMaxPositions: GRID_BRIDGE_MAX_POSITIONS,
     gridRiskPerTradePct: normalizeGridRiskPerTradePct(settings.grid_risk_per_trade_pct ?? 0.3),
-    gridDailyLossPct: Number(settings.grid_daily_loss_pct || 2),
+    gridDailyLossPct: 2,
     gridMomentumPausePct: Number(settings.grid_momentum_pause_pct || 2.5),
     gridReduceAfterLosses: settings.grid_reduce_after_losses !== false
   };
@@ -63,11 +63,15 @@ export default function GridStrategy({
   accountDataProtected = false,
   gridEntrySafety = null,
   executionMode = 'disabled',
-  testnetDiagnostics = null
+  testnetDiagnostics = null,
+  apiGridExecutionAllowed = false,
+  apiGridSymbols = []
 }) {
-  const gridSymbols = useMemo(() => resolveSymbols(settings, testnetDiagnostics), [
-    testnetDiagnostics?.symbols?.join(','), settings.grid_symbol_configs
-  ]);
+  const gridSymbols = useMemo(() => {
+    const apiSymbols = Array.isArray(apiGridSymbols) ? apiGridSymbols : [];
+    if (apiSymbols.length === 2) return apiSymbols.map(value => String(value).toUpperCase());
+    return resolveSymbols(settings, testnetDiagnostics);
+  }, [apiGridSymbols.join(','), testnetDiagnostics?.symbols?.join(','), settings.grid_symbol_configs]);
   const [draft, setDraft] = useState(() => parseDraft(settings, gridSymbols));
   const gridState = settings.grid_state && typeof settings.grid_state === 'object' ? settings.grid_state : {};
   const positions = Array.isArray(gridState.positions) ? gridState.positions : [];
@@ -118,7 +122,7 @@ export default function GridStrategy({
   const gridNotMigratedToDelta = gridEntrySafety?.reason === 'GRID_NOT_MIGRATED_TO_DELTA_TESTNET';
   const deltaTestnetGrid = executionMode === 'testnet' ||
     gridEntrySafety?.executionMode === 'testnet' || gridState.executionMode === 'DELTA_TESTNET';
-  const gridExecutionAllowed = testnetDiagnostics?.gridExecutionAllowed === true;
+  const gridExecutionAllowed = apiGridExecutionAllowed === true && testnetDiagnostics?.gridExecutionAllowed === true;
   const { label: visibleGridStatus, detail: visibleGridStatusDetail } = getGridDisplayStatus({
     executionMode,
     gridEntrySafety,
@@ -152,7 +156,7 @@ export default function GridStrategy({
     })),
     gridMaxPositions: GRID_BRIDGE_MAX_POSITIONS,
     gridRiskPerTradePct: draft.gridRiskPerTradePct,
-    gridDailyLossPct: draft.gridDailyLossPct,
+    gridDailyLossPct: 2,
     gridMomentumPausePct: draft.gridMomentumPausePct,
     gridReduceAfterLosses: draft.gridReduceAfterLosses
   };
