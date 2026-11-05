@@ -11,9 +11,9 @@ import {
   normalizeGridRiskPerTradePct
 } from '../shared/grid-settings.js';
 
-test('Grid simulator respects the single-slot netting limit', () => {
-  assert.equal(GRID_BRIDGE_MAX_POSITIONS, 1);
-  assert.ok(GRID_MAX_POSITION_CHOICES.includes(GRID_BRIDGE_MAX_POSITIONS));
+test('two-symbol Testnet Grid permits at most one position per symbol and two total', () => {
+  assert.equal(GRID_BRIDGE_MAX_POSITIONS, 2);
+  assert.deepEqual(GRID_MAX_POSITION_CHOICES, [2]);
 });
 
 test('all visible Grid risk choices are accepted by shared validation', () => {
@@ -31,54 +31,39 @@ test('legacy Grid risk values normalize to a supported option', () => {
 });
 
 
-test('Testnet diagnostics remain visible while the persisted Grid strategy is hard-halted', () => {
-  const status = getGridDisplayStatus({
-    executionMode: 'testnet',
-    gridEnabled: true,
-    gridState: {
-      status: 'HALTED',
-      pausedReason: 'EMERGENCY_STOP',
-      executionMode: 'DELTA_TESTNET'
-    },
-    testnetDiagnostics: { testnetProductAvailable: false }
-  });
-
-  assert.equal(status.label, 'DIAGNOSTICS ACTIVE · GRID HALTED');
-  assert.match(status.detail, /EMERGENCY STOP/);
-  assert.match(status.detail, /order routing remains locked/i);
-  assert.match(status.detail, /no exchange orders or reservations/i);
-});
-
-test('Testnet diagnostics do not label an enabled strategy ACTIVE while waiting for products', () => {
+test('Testnet Grid stays execution-disabled unless the explicit opt-in is present', () => {
   const status = getGridDisplayStatus({
     executionMode: 'testnet',
     gridEnabled: true,
     gridState: { status: 'ACTIVE', executionMode: 'DELTA_TESTNET' },
-    testnetDiagnostics: { testnetProductAvailable: false }
+    testnetDiagnostics: { gridExecutionAllowed: false }
   });
-
-  assert.equal(status.label, 'DIAGNOSTICS ACTIVE · WAITING FOR TESTNET PRODUCTS');
+  assert.equal(status.label, 'TESTNET GRID · EXECUTION DISABLED');
+  assert.match(status.detail, /GRID_EXECUTION_ALLOWED/);
 });
 
-test('Testnet diagnostics distinguish a disabled persisted Grid strategy', () => {
-  const status = getGridDisplayStatus({
-    executionMode: 'testnet',
-    gridEnabled: false,
-    gridState: { status: 'OFF', executionMode: 'DELTA_TESTNET' },
-    testnetDiagnostics: { testnetProductAvailable: false }
-  });
-
-  assert.equal(status.label, 'DIAGNOSTICS ACTIVE · GRID OFF');
-});
-
-test('Testnet diagnostics keep order routing locked even when a product is reported available', () => {
+test('enabled two-symbol Grid status reports independent exchange protection', () => {
   const status = getGridDisplayStatus({
     executionMode: 'testnet',
     gridEnabled: true,
+    gridExecutionAllowed: true,
     gridState: { status: 'ACTIVE', executionMode: 'DELTA_TESTNET' },
-    testnetDiagnostics: { testnetProductAvailable: true }
+    testnetDiagnostics: { gridExecutionAllowed: true }
   });
+  assert.equal(status.label, 'TESTNET GRID · ACTIVE');
+  assert.match(status.detail, /independent exchange-side SL\/TP/);
+});
 
-  assert.equal(status.label, 'DIAGNOSTICS ACTIVE · ORDERS LOCKED');
-  assert.match(status.detail, /reviewed execution lifecycle/i);
+test('Testnet Grid shows pending limit entries and halted state distinctly', () => {
+  const pending = getGridDisplayStatus({
+    executionMode: 'testnet', gridExecutionAllowed: true, gridEnabled: true,
+    gridState: { status: 'ENTRY_PENDING', executionMode: 'DELTA_TESTNET' }
+  });
+  assert.equal(pending.label, 'TESTNET GRID · LIMIT ENTRY PENDING');
+  const halted = getGridDisplayStatus({
+    executionMode: 'testnet', gridExecutionAllowed: true, gridEnabled: true,
+    gridState: { status: 'HALTED', pausedReason: 'EMERGENCY_STOP', executionMode: 'DELTA_TESTNET' }
+  });
+  assert.equal(halted.label, 'TESTNET GRID · HALTED');
+  assert.match(halted.detail, /no new entries/i);
 });
