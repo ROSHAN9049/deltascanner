@@ -1,4 +1,5 @@
 import { manageDeltaTestnetGrid } from './delta-grid-engine.mjs';
+import { isAllowedDeltaTestnetFutureSymbol } from './execution-route-policy.mjs';
 
 const n = value => Number.isFinite(Number(value)) ? Number(value) : 0;
 const text = value => String(value ?? '').trim();
@@ -70,7 +71,7 @@ function aggregateGridState(symbolStates, symbols, previous = {}) {
     currentEquity: latest.currentEquity ?? null,
     unrealizedPnl: latest.unrealizedPnl ?? null,
     drawdownPct: latest.drawdownPct ?? null,
-    openRiskUsd: positions.reduce((sum, position) => sum + Math.max(0, n(position.riskUsd)), 0),
+    openRiskUsd: [...positions, ...pendingEntries].reduce((sum, position) => sum + Math.max(0, n(position.riskUsd)), 0),
     pausedReason: paused?.pausedReason || null,
     lastPrice: n(latest.lastPrice),
     currentPrice: n(latest.currentPrice),
@@ -100,7 +101,7 @@ export async function manageDeltaTestnetMultiGrid({
 } = {}) {
   const configuredSymbols = [...new Set((Array.isArray(symbols) ? symbols : [])
     .map(value => text(value).toUpperCase()))];
-  if (configuredSymbols.length !== 2 || configuredSymbols.some(symbol => !/^[A-Z0-9]+USD$/.test(symbol))) {
+  if (configuredSymbols.length !== 2 || configuredSymbols.some(symbol => !/^[A-Z0-9]+USD$/.test(symbol) || !isAllowedDeltaTestnetFutureSymbol(symbol))) {
     return {
       state: parseState(settings.grid_state),
       safety: { executionMode: 'testnet', configured: false, trusted: false, blocked: true, reason: 'GRID_SYMBOL_CONFIGURATION_INVALID' }
@@ -120,13 +121,18 @@ export async function manageDeltaTestnetMultiGrid({
     ? { ...previousRoot.symbolStates } : {};
   let root = aggregateGridState(symbolStates, configuredSymbols, previousRoot);
   const results = [];
-  const haltAllReasons = new Set([
+  const globalPauseReasons = new Set([
     'EMERGENCY_STOP', 'DAILY_LOSS_LIMIT', 'OVERALL_DRAWDOWN_STOP',
     'GRID_ENTRY_UNCONFIRMED', 'GRID_ORDER_ERROR_REQUIRES_MANUAL_REVIEW',
+    'GRID_ORDER_RECONCILIATION_UNAVAILABLE', 'GRID_ORDER_CANCEL_UNCONFIRMED',
     'GRID_PROTECTION_UNVERIFIED', 'GRID_PROTECTION_UNVERIFIED_EXIT_FAILED',
     'GRID_EXIT_UNCONFIRMED', 'GRID_PNL_UNVERIFIED',
     'GRID_COMBINED_UNREALIZED_PNL_UNAVAILABLE',
-    'GRID_MULTI_SYMBOL_RECONCILIATION_FAILED'
+    'GRID_MULTI_SYMBOL_RECONCILIATION_FAILED',
+    'GRID_FILLED_ORDER_WITHOUT_POSITION', 'GRID_SYMBOL_CYCLE_ERROR'
+  ]);
+  const globalHardStopReasons = new Set([
+    'EMERGENCY_STOP', 'DAILY_LOSS_LIMIT', 'OVERALL_DRAWDOWN_STOP'
   ]);
 
   const persistRoot = async () => {
@@ -141,6 +147,16 @@ export async function manageDeltaTestnetMultiGrid({
     const levelsCount = Number(config.levelsCount ?? config.grid_levels_count ?? settings.grid_levels_count ?? 10);
     const symbolState = symbolStates[symbol] || null;
     const gridGlobalOpenRiskUsd = root.openRiskUsd || 0;
+    const priorGlobalPause = results.find(result =>
+      result.blocked === true && globalPauseReasons.has(String(result.reason || ''))
+    )?.reason || configuredSymbols
+      .map(configured => symbolStates[configured]?.pausedReason)
+      .find(reason => globalPauseReasons.has(String(reason || ''))) || null;
+    const gridGlobalHardStopReason = results.find(result =>
+      globalHardStopReasons.has(String(result.reason || ''))
+    )?.reason || configuredSymbols
+      .map(configured => symbolStates[configured]?.pausedReason)
+      .find(reason => globalHardStopReasons.has(String(reason || ''))) || null;
     const symbolSettings = {
       ...settings,
       grid_symbol: symbol,
@@ -151,7 +167,9 @@ export async function manageDeltaTestnetMultiGrid({
       grid_upper_price: upperPrice,
       grid_levels_count: levelsCount,
       grid_max_positions: 1,
-      gridGlobalOpenRiskUsd
+      gridGlobalOpenRiskUsd,
+      gridGlobalPauseReason: priorGlobalPause,
+      gridGlobalHardStopReason
     };
 
     const scopedDatabase = Object.create(database);
@@ -179,7 +197,6 @@ export async function manageDeltaTestnetMultiGrid({
       symbolStates[symbol] = result.state;
       results.push({ symbol, ...result.safety });
       await persistRoot();
-      if (result.safety?.blocked === true && haltAllReasons.has(String(result.safety.reason || ''))) break;
     } catch (error) {
       const existing = symbolStates[symbol] || {};
       symbolStates[symbol] = {
@@ -197,7 +214,6 @@ export async function manageDeltaTestnetMultiGrid({
         error: String(error?.message || error).slice(0, 220)
       });
       await persistRoot();
-      break;
     }
   }
 
