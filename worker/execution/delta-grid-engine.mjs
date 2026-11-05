@@ -402,10 +402,29 @@ export async function manageDeltaTestnetGrid({
     return block('GRID_EXCHANGE_RECONCILIATION_UNAVAILABLE');
   }
 
+  const configuredGridSymbols = Array.isArray(settings.gridSymbols)
+    ? settings.gridSymbols.map(value => text(value).toUpperCase()) : [symbol];
+  const exchangeGridPositions = exchangePositions.filter(row => {
+    const rowSymbol = text(row?.symbol).toUpperCase();
+    return n(row?.qty) > 0 && (
+      text(row?.client_order_id).toUpperCase().startsWith('DDG-') ||
+      dbOpenGridRows.some(position => text(position?.symbol).toUpperCase() === rowSymbol)
+    );
+  });
+  const capOpenPositions = [
+    ...dbOpenGridRows,
+    ...exchangeGridPositions.filter(exchangePosition =>
+      !dbOpenGridRows.some(dbPosition => text(dbPosition?.symbol).toUpperCase() === text(exchangePosition?.symbol).toUpperCase())
+    ).map(position => ({
+      symbol: text(position.symbol).toUpperCase(),
+      status: 'OPEN',
+      strategy: 'GRID'
+    }))
+  ];
   const gridPositionCap = assessStrategyPositionCap({
     strategy: 'GRID',
     settings,
-    openPositions: dbOpenGridRows,
+    openPositions: capOpenPositions,
     pendingOrders: gridOrders,
     now: timestamp
   });
@@ -420,15 +439,6 @@ export async function manageDeltaTestnetGrid({
     }).catch(() => {});
   }
 
-  const configuredGridSymbols = Array.isArray(settings.gridSymbols)
-    ? settings.gridSymbols.map(value => text(value).toUpperCase()) : [symbol];
-  const exchangeGridPositions = exchangePositions.filter(row => {
-    const rowSymbol = text(row?.symbol).toUpperCase();
-    return n(row?.qty) > 0 && (
-      text(row?.client_order_id).toUpperCase().startsWith('DDG-') ||
-      dbOpenGridRows.some(position => text(position?.symbol).toUpperCase() === rowSymbol)
-    );
-  });
   const unexpectedGridSymbol = [...exchangeGridPositions, ...dbOpenGridRows]
     .map(row => text(row?.symbol).toUpperCase())
     .find(rowSymbol => !configuredGridSymbols.includes(rowSymbol) ||
@@ -456,6 +466,24 @@ export async function manageDeltaTestnetGrid({
     state.status = 'BLOCKED';
     return block('GRID_COMBINED_UNREALIZED_PNL_UNAVAILABLE');
   }
+  const sharedRealizedPnl = pnl.complete ? pnl.realizedPnl : null;
+  const sharedDayPnl = pnl.complete ? pnl.dayPnl : null;
+  const sharedCurrentEquity = sharedRealizedPnl !== null && n(state.strategyStartEquity) > 0
+    ? n(state.strategyStartEquity) + sharedRealizedPnl + totalGridUnrealizedPnl : null;
+  if (sharedCurrentEquity !== null) {
+    state.highWaterEquity = Math.max(n(state.highWaterEquity), sharedCurrentEquity);
+    state.currentEquity = sharedCurrentEquity;
+    state.unrealizedPnl = totalGridUnrealizedPnl;
+    state.drawdownPct = state.highWaterEquity > 0
+      ? Math.max(0, (state.highWaterEquity - sharedCurrentEquity) / state.highWaterEquity * 100) : 0;
+  }
+  const sharedDailyCap = n(state.dayStartEquity) * config.dailyLossPct / 100;
+  const sharedDailyLossBreach = sharedDayPnl !== null && state.dayStartEquity > 0 &&
+    sharedDayPnl + totalGridUnrealizedPnl <= -sharedDailyCap;
+  const sharedDrawdownBreach = sharedCurrentEquity !== null &&
+    state.highWaterEquity > 0 && state.drawdownPct >= config.maxDrawdownPct;
+  const sharedGridStopReason = sharedDailyLossBreach ? 'DAILY_LOSS_LIMIT'
+    : sharedDrawdownBreach ? 'OVERALL_DRAWDOWN_STOP' : null;
 
   const exchangeSymbolPosition = exchangePositions.find(row =>
     text(row?.symbol).toUpperCase() === symbol && n(row?.qty) > 0
@@ -610,9 +638,11 @@ export async function manageDeltaTestnetGrid({
       mark > config.upperPrice * (1 + config.breakoutExitPct / 100)
     );
     const exitReason = settings.emergency_stop === true ? 'EMERGENCY_STOP'
-      : rangeBreak ? 'GRID_RANGE_BREAK'
-        : dailyBreach ? 'DAILY_LOSS_LIMIT'
-          : drawdownBreach ? 'OVERALL_DRAWDOWN_STOP' : null;
+      : settings.gridGlobalPauseReason || sharedGridStopReason
+        ? (settings.gridGlobalPauseReason || sharedGridStopReason)
+        : rangeBreak ? 'GRID_RANGE_BREAK'
+          : dailyBreach ? 'DAILY_LOSS_LIMIT'
+            : drawdownBreach ? 'OVERALL_DRAWDOWN_STOP' : null;
 
     if (exitReason) {
       try {
@@ -658,9 +688,11 @@ export async function manageDeltaTestnetGrid({
   state.realizedPnl = pnl.complete ? pnl.realizedPnl : null;
   state.dayPnl = pnl.complete ? pnl.dayPnl : null;
   state.trades = pnl.complete ? pnl.trades : [];
-  state.currentEquity = pnl.complete
-    ? (n(state.strategyStartEquity) > 0 ? n(state.strategyStartEquity) + n(pnl.realizedPnl) : n(account.equity))
-    : null;
+  state.currentEquity = sharedCurrentEquity !== null
+    ? sharedCurrentEquity
+    : (pnl.complete
+      ? (n(state.strategyStartEquity) > 0 ? n(state.strategyStartEquity) + n(pnl.realizedPnl) : n(account.equity))
+      : null);
   if (state.currentEquity !== null) {
     state.highWaterEquity = Math.max(n(state.highWaterEquity), state.currentEquity);
     state.drawdownPct = state.highWaterEquity > 0
@@ -684,6 +716,14 @@ export async function manageDeltaTestnetGrid({
     pushEvent(state, { type: 'HALT', reason: state.pausedReason, symbol, price: mark }, at);
     await persist();
     return block('EMERGENCY_STOP');
+  }
+  if (sharedGridStopReason || settings.gridGlobalPauseReason) {
+    const reason = settings.gridGlobalPauseReason || sharedGridStopReason;
+    state.pausedReason = reason;
+    state.status = 'HALTED';
+    pushEvent(state, { type: 'HALT', reason, symbol, price: mark }, at);
+    await persist();
+    return block(reason);
   }
   if (!settings.grid_enabled) {
     state.status = state.pausedReason ? 'HALTED' : 'OFF';
