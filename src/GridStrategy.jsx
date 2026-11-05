@@ -156,7 +156,8 @@ export default function GridStrategy({
     gridMomentumPausePct: draft.gridMomentumPausePct,
     gridReduceAfterLosses: draft.gridReduceAfterLosses
   };
-  const readyToStart = allRangesValid && (!deltaTestnetGrid || gridExecutionAllowed);
+  const globalSafetyAllowsStart = settings.emergency_stop !== true && settings.auto_trade === true && settings.enabled === true && settings.continuous_mode !== false;
+  const readyToStart = allRangesValid && (!deltaTestnetGrid || gridExecutionAllowed) && globalSafetyAllowsStart;
   const save = () => {
     if (!allRangesValid) return;
     mutate({ ...payload, gridEnabled: settings.grid_enabled === true });
@@ -179,7 +180,7 @@ export default function GridStrategy({
   return <>
     <section className="cards">
       <div className="card"><small>GRID STRATEGY STATUS</small><strong>{visibleGridStatus}</strong><span>{visibleGridStatusDetail}</span></div>
-      <div className="card"><small>CONFIGURED TESTNET SYMBOLS</small><strong>{gridSymbols.join(' · ')}</strong><span>Each symbol has its own range and independent exchange-side SL/TP.</span></div>
+      <div className="card"><small>CONFIGURED TESTNET SYMBOLS</small><strong>{gridSymbols.join(' · ')}</strong><span>Each symbol has its own range and Independent exchange-side SL/TP.</span></div>
       <div className="card"><small>OPEN GRID SYMBOLS</small><strong>{activeSlots} / {GRID_BRIDGE_MAX_POSITIONS}</strong><span>{positions.length} open position(s) · {pendingEntries.length} pending limit entry(ies) · {usd(openRisk === null && positions.length === 0 ? 0 : openRisk)} estimated open risk.</span></div>
       <div className="card"><small>{deltaTestnetGrid ? 'DELTA TESTNET NET P&L' : 'SIMULATED GRID P&amp;L'}</small><strong className={realizedGridPnl === null ? 'muted' : realizedGridPnl >= 0 ? 'up' : 'down'}>{usd(realizedGridPnl)}</strong><span>{deltaTestnetGrid ? 'Only fully fill-matched trades with verified commissions; otherwise P&L is unverified.' : 'Offline estimate after estimated fees and slippage; not exchange-reported P&amp;L.'}</span></div>
       <div className="card"><small>DAY PNL</small><strong className={totalDayPnl === null ? 'muted' : totalDayPnl >= 0 ? 'up' : 'down'}>{usd(totalDayPnl)}</strong><span>Realized + combined mark-to-market · daily stop {Number(settings.grid_daily_loss_pct || 2).toFixed(1)}%.</span></div>
@@ -212,10 +213,11 @@ export default function GridStrategy({
       <div className="gridButtons">
         {gridSafetyBlocked ? <div className="errorText">Grid entries are blocked by worker safety ({gridSafetyReason}). Review the latest heartbeat and exchange position reconciliation before restarting. Existing positions remain protected by exchange-side SL/TP.</div> : null}
         <button className="action" disabled={busy || !allRangesValid || lockedConfig} onClick={save}>Save Configuration</button>
-        <button className="action gridStart" disabled={busy || !readyToStart || settings.grid_enabled === true || !!gridState.pausedReason || gridSafetyBlocked || gridNotMigratedToDelta} onClick={start}>{deltaTestnetGrid ? (gridExecutionAllowed ? 'Start Grid (Delta Testnet)' : 'Testnet Execution Disabled') : 'Start Grid (Simulator)'}</button>
+        <button className="action gridStart" disabled={busy || !readyToStart || settings.grid_enabled === true || !!gridState.pausedReason || gridSafetyBlocked || gridNotMigratedToDelta || !globalSafetyAllowsStart} onClick={start}>{deltaTestnetGrid ? (gridExecutionAllowed ? 'Start Grid (Delta Testnet)' : 'Testnet Execution Disabled') : 'Start Grid (Simulator)'}</button>
         <button className="action" title="New entries stop. Existing positions remain protected by exchange-side SL/TP." disabled={busy || settings.grid_enabled !== true} onClick={pause}>Pause Grid (Exit Only)</button>
         <button className="dangerBtn" title="Resets Grid state. Does NOT trigger global Emergency Stop." disabled={busy || lockedConfig || !gridState.pausedReason || settings.emergency_stop === true || ['DAILY_LOSS_LIMIT','OVERALL_DRAWDOWN_STOP'].includes(gridState.pausedReason)} onClick={reset}>Reset Grid State</button>
       </div>
+      {!globalSafetyAllowsStart ? <div className="errorText">Grid cannot start while global E-STOP is active, Auto Trade is off, or the engine is disabled. Existing exchange-side brackets remain in place.</div> : null}
       {!allRangesValid ? <div className="errorText">Set a valid range and choose 8–12 levels for both symbols before starting. Each upper bound must be greater than its lower bound.</div> : null}
       {lockedConfig ? <div className="lockedText">Symbol ranges are locked while an exchange position or pending entry exists. Let exchange-side SL/TP complete the position or close it before changing ranges.</div> : null}
       {gridState.pausedReason === 'DAILY_LOSS_LIMIT' ? <div className="errorText">The shared 2% daily-loss guard is active. It cannot be reset during the same India trading day.</div> : null}
