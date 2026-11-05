@@ -944,7 +944,7 @@ export async function manageDeltaTestnetGrid({
         symbol, levelIndex: n(candidate.levelIndex), qty: adjusted.qty,
         limitPrice: adjusted.entryPrice, stopPrice: verifiedStop, targetPrice: verifiedTarget,
         exchangeOrderId: String(orderId), clientOrderId: executionClientId,
-        unfilledSize, riskUsd: n(adjusted?.riskUsd), state: orderState, createdAt: at
+        unfilledSize, riskUsd: n(pendingState?.riskUsd), state: orderState, createdAt: at
       }];
       state.status = 'ENTRY_PENDING';
       state.wasEnabled = true;
