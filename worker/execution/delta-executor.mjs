@@ -295,6 +295,24 @@ export function createDeltaExecutor({
     return order;
   }
 
+  async function getOrderByClientOrderId(clientOrderId) {
+    const clientId = stringOrEmpty(clientOrderId);
+    if (!clientId) throw new Error('Delta Testnet client order id is required');
+    const response = await request(
+      'GET',
+      '/v2/orders/client_order_id/' + encodeURIComponent(clientId)
+    );
+    const order = response?.result ?? response;
+    const id = numberOrNull(order?.id);
+    const returnedClientId = stringOrEmpty(order?.client_order_id);
+    if (!order || typeof order !== 'object' || Array.isArray(order) ||
+        !Number.isSafeInteger(id) || id <= 0 ||
+        (returnedClientId && returnedClientId !== clientId)) {
+      throw new Error('Delta Testnet client-order lookup did not return the requested order');
+    }
+    return order;
+  }
+
   function timestampMs(value) {
     if (value === undefined || value === null || value === '') return null;
     if (typeof value === 'number' || /^\d+(?:\.\d+)?$/.test(String(value).trim())) {
@@ -394,17 +412,60 @@ export function createDeltaExecutor({
       });
       return null;
     }
-    const matchingEntryFills = hasEntryIdentity
+    let matchingEntryFills = hasEntryIdentity
       ? matchingFills.filter(fill =>
           ((entryOrderId && String(fill?.order_id ?? '') === entryOrderId) ||
             (entryClientOrderId && stringOrEmpty(fill?.client_order_id) === entryClientOrderId)) &&
           (!positionSide || stringOrEmpty(fill?.side).toUpperCase() === positionSide)
         )
       : [];
+    let resolvedEntryOrderId = entryOrderId;
+
+    // Some historical REST /v2/fills rows omit client_order_id. When the
+    // position lacks its dedicated entry_order_id, resolve the exchange order
+    // through Delta's client-order-ID endpoint, then match fills by order_id.
+    // Never fall back to symbol/time-only guesses.
+    if (!entryOrderId && !matchingEntryFills.length && entryClientOrderId) {
+      try {
+        const entryOrder = await getOrderByClientOrderId(entryClientOrderId);
+        const lookupProductId = numberOrNull(entryOrder?.product_id);
+        const lookupSymbol = stringOrEmpty(entryOrder?.product_symbol || entryOrder?.symbol).toUpperCase();
+        const lookupSide = stringOrEmpty(entryOrder?.side).toUpperCase();
+        const lookupClientOrderId = stringOrEmpty(entryOrder?.client_order_id);
+        const lookupContextMatches =
+          (!lookupProductId || lookupProductId === product.id) &&
+          (!lookupSymbol || lookupSymbol === normalizedSymbol) &&
+          (!lookupSide || lookupSide === positionSide) &&
+          (!lookupClientOrderId || lookupClientOrderId === entryClientOrderId);
+
+        if (lookupContextMatches) {
+          resolvedEntryOrderId = String(entryOrder.id);
+          matchingEntryFills = matchingFills.filter(fill =>
+            String(fill?.order_id ?? '') === resolvedEntryOrderId &&
+            (!positionSide || stringOrEmpty(fill?.side).toUpperCase() === positionSide)
+          );
+          if (matchingEntryFills.length) {
+            await logExecutor('INFO', '[Executor] Entry fill identity recovered from client order ID', {
+              symbol: normalizedSymbol,
+              entryOrderId: resolvedEntryOrderId,
+              hasClientOrderId: true,
+              matchedFillCount: matchingEntryFills.length
+            });
+          }
+        }
+      } catch (error) {
+        await logExecutor('WARN', '[Executor] Entry order lookup by client ID failed; close details remain unverified', {
+          symbol: normalizedSymbol,
+          hasClientOrderId: true,
+          error: String(error?.message || error).slice(0, 200)
+        });
+      }
+    }
+
     if (hasEntryIdentity && !matchingEntryFills.length) {
       await logExecutor('WARN', '[Executor] Entry fill identity was not found; close details remain unverified', {
         symbol: normalizedSymbol,
-        entryOrderId: entryOrderId || null,
+        entryOrderId: resolvedEntryOrderId || null,
         hasClientOrderId: Boolean(entryClientOrderId)
       });
       return null;
@@ -1117,6 +1178,7 @@ export function createDeltaExecutor({
     getOpenPositions,
     getOpenOrders,
     getOrderById,
+    getOrderByClientOrderId,
     getFillsPage,
     getAccountSnapshot,
     getRecentCloseDetails,
