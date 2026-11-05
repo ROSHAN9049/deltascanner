@@ -35,7 +35,6 @@ function resolveSymbols(settings, diagnostics) {
 function parseDraft(settings, symbols) {
   const saved = settings.grid_symbol_configs && typeof settings.grid_symbol_configs === 'object'
     ? settings.grid_symbol_configs : {};
-  const first = symbols[0];
   const gridSymbolConfigs = Object.fromEntries(symbols.map((symbol, index) => {
     const config = saved[symbol] || {};
     const legacyLower = index === 0 ? settings.grid_lower_price : null;
@@ -109,7 +108,6 @@ export default function GridStrategy({
   const totalDayPnl = dayPnl !== null && unrealizedPnl !== null ? dayPnl + unrealizedPnl : null;
   const currentEquity = safeNum(gridState.currentEquity);
   const drawdownPct = safeNum(gridState.drawdownPct);
-  const momentumBySymbol = gridState.momentumBySymbol || {};
   const momentum = gridState.momentum || {};
   const allRangesValid = views.length === 2 && views.every(view => view.valid);
   const activeSlots = new Set([
@@ -181,7 +179,7 @@ export default function GridStrategy({
   return <>
     <section className="cards">
       <div className="card"><small>GRID STRATEGY STATUS</small><strong>{visibleGridStatus}</strong><span>{visibleGridStatusDetail}</span></div>
-      <div className="card"><small>CONFIGURED TESTNET SYMBOLS</small><strong>{gridSymbols.join(' · ')}</strong><span>Each symbol has its own range, limit entries and exchange-side stop/target bracket.</span></div>
+      <div className="card"><small>CONFIGURED TESTNET SYMBOLS</small><strong>{gridSymbols.join(' · ')}</strong><span>Each symbol has its own range and independent exchange-side SL/TP.</span></div>
       <div className="card"><small>OPEN GRID SYMBOLS</small><strong>{activeSlots} / {GRID_BRIDGE_MAX_POSITIONS}</strong><span>{positions.length} open position(s) · {pendingEntries.length} pending limit entry(ies) · {usd(openRisk === null && positions.length === 0 ? 0 : openRisk)} estimated open risk.</span></div>
       <div className="card"><small>{deltaTestnetGrid ? 'DELTA TESTNET NET P&L' : 'SIMULATED GRID P&amp;L'}</small><strong className={realizedGridPnl === null ? 'muted' : realizedGridPnl >= 0 ? 'up' : 'down'}>{usd(realizedGridPnl)}</strong><span>{deltaTestnetGrid ? 'Only fully fill-matched trades with verified commissions; otherwise P&L is unverified.' : 'Offline estimate after estimated fees and slippage; not exchange-reported P&amp;L.'}</span></div>
       <div className="card"><small>DAY PNL</small><strong className={totalDayPnl === null ? 'muted' : totalDayPnl >= 0 ? 'up' : 'down'}>{usd(totalDayPnl)}</strong><span>Realized + combined mark-to-market · daily stop {Number(settings.grid_daily_loss_pct || 2).toFixed(1)}%.</span></div>
@@ -227,7 +225,6 @@ export default function GridStrategy({
 
     <Panel title="Grid Levels and Open Positions · Per Symbol">
       {views.map(view => {
-        const openLevelSet = new Set(view.symbolPositions.map(position => Number(position.levelIndex)));
         const targetLevelSet = new Set(view.symbolPositions.map(position => Number(position.levelIndex) + 1));
         return <div key={view.symbol} className="gridSymbolPanel">
           <div className="gridMeta">
