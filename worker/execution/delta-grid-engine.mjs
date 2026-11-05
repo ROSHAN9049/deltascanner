@@ -731,8 +731,8 @@ export async function manageDeltaTestnetGrid({
       mark > config.upperPrice * (1 + config.breakoutExitPct / 100)
     );
     const exitReason = settings.emergency_stop === true ? 'EMERGENCY_STOP'
-      : settings.gridGlobalPauseReason || sharedGridStopReason
-        ? (settings.gridGlobalPauseReason || sharedGridStopReason)
+      : settings.gridGlobalHardStopReason || sharedGridStopReason
+        ? (settings.gridGlobalHardStopReason || sharedGridStopReason)
         : rangeBreak ? 'GRID_RANGE_BREAK'
           : dailyBreach ? 'DAILY_LOSS_LIMIT'
             : drawdownBreach ? 'OVERALL_DRAWDOWN_STOP' : null;
@@ -944,7 +944,7 @@ export async function manageDeltaTestnetGrid({
         symbol, levelIndex: n(candidate.levelIndex), qty: adjusted.qty,
         limitPrice: adjusted.entryPrice, stopPrice: verifiedStop, targetPrice: verifiedTarget,
         exchangeOrderId: String(orderId), clientOrderId: executionClientId,
-        unfilledSize, riskUsd: n(pendingState?.riskUsd), state: orderState, createdAt: at
+        unfilledSize, riskUsd: n(adjusted.riskUsd), state: orderState, createdAt: at
       }];
       state.status = 'ENTRY_PENDING';
       state.wasEnabled = true;
