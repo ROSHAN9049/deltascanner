@@ -1,5 +1,5 @@
-export const GRID_MAX_POSITION_CHOICES = Object.freeze([1, 3, 4]);
-export const GRID_BRIDGE_MAX_POSITIONS = 1;
+export const GRID_MAX_POSITION_CHOICES = Object.freeze([2]);
+export const GRID_BRIDGE_MAX_POSITIONS = 2;
 export const GRID_RISK_PER_TRADE_CHOICES = Object.freeze([0.3, 0.5, 0.75, 1]);
 export const GRID_DAILY_LOSS_CHOICES = Object.freeze([2, 2.25, 2.5]);
 export const GRID_MOMENTUM_PAUSE_CHOICES = Object.freeze([2.5, 2.75, 3]);
@@ -29,7 +29,8 @@ export function getGridDisplayStatus({
   gridEntrySafety = null,
   gridState = {},
   gridEnabled = false,
-  testnetDiagnostics = null
+  testnetDiagnostics = null,
+  gridExecutionAllowed = false
 } = {}) {
   const state = gridState && typeof gridState === 'object' ? gridState : {};
   const stateStatus = String(state.status || (gridEnabled ? 'ACTIVE' : 'OFF')).toUpperCase();
@@ -37,41 +38,57 @@ export function getGridDisplayStatus({
   const deltaTestnetGrid = executionMode === 'testnet' ||
     gridEntrySafety?.executionMode === 'testnet' || state.executionMode === 'DELTA_TESTNET';
   const gridNotMigratedToDelta = gridEntrySafety?.reason === 'GRID_NOT_MIGRATED_TO_DELTA_TESTNET';
+  const executionGateOpen = gridExecutionAllowed === true ||
+    testnetDiagnostics?.gridExecutionAllowed === true;
 
   if (deltaTestnetGrid) {
+    if (!executionGateOpen) {
+      return {
+        label: 'TESTNET GRID · EXECUTION DISABLED',
+        detail: 'Grid market data can be inspected, but order routing is off. GRID_EXECUTION_ALLOWED must be true in the explicit Delta TESTNET profile; no exchange orders are submitted.'
+      };
+    }
+
     if (pausedReason || stateStatus === 'HALTED') {
       const reason = pausedReason ? ': ' + pausedReason.replaceAll('_', ' ') : '';
       return {
-        label: 'DIAGNOSTICS ACTIVE · GRID HALTED',
-        detail: 'Diagnostic market evaluation continues in dry-run mode. Persisted Grid strategy is halted' +
-          reason + '. Testnet order routing remains locked; no exchange orders or reservations are created.'
+        label: 'TESTNET GRID · HALTED',
+        detail: 'Grid execution is opted in for Delta Testnet, but the strategy is halted' +
+          reason + '. Existing exchange-side SL/TP remains authoritative; no new entries are allowed.'
       };
     }
 
     if (stateStatus === 'MOMENTUM_PAUSE') {
       return {
-        label: 'DIAGNOSTICS ACTIVE · MOMENTUM PAUSED',
-        detail: 'Diagnostic market evaluation continues in dry-run mode. Grid entries are paused by the momentum filter; Testnet order routing remains locked.'
+        label: 'TESTNET GRID · MOMENTUM PAUSED',
+        detail: 'New Grid entries are paused by the momentum filter. Existing exchange-side SL/TP protection remains active.'
+      };
+    }
+
+    if (stateStatus === 'ENTRY_PENDING') {
+      return {
+        label: 'TESTNET GRID · LIMIT ENTRY PENDING',
+        detail: 'A bracket-protected Testnet limit entry is awaiting exchange fill confirmation; the symbol remains reserved and will not be blindly retried.'
       };
     }
 
     if (!gridEnabled || stateStatus === 'OFF') {
       return {
-        label: 'DIAGNOSTICS ACTIVE · GRID OFF',
-        detail: 'The diagnostic worker may inspect market data, but the persisted Grid strategy is off. Testnet order routing remains locked.'
+        label: 'TESTNET GRID · GRID OFF',
+        detail: 'Testnet execution is permitted by configuration, but the Grid strategy is off. Starting still requires valid ranges for both configured symbols and all worker safety checks.'
       };
     }
 
-    if (testnetDiagnostics?.testnetProductAvailable !== true) {
+    if (testnetDiagnostics?.executionLocked === true) {
       return {
-        label: 'DIAGNOSTICS ACTIVE · WAITING FOR TESTNET PRODUCTS',
-        detail: 'Grid market data is evaluated in an isolated dry run. The selected instrument has no verified Testnet product; no exchange orders or positions are created.'
+        label: 'TESTNET GRID · SAFETY BLOCKED',
+        detail: 'A Testnet execution or reconciliation check is blocking new entries. Review the worker heartbeat and symbol-specific reason before restarting.'
       };
     }
 
     return {
-      label: 'DIAGNOSTICS ACTIVE · ORDERS LOCKED',
-      detail: 'Grid diagnostics are active in dry-run mode. A verified product alone does not enable Grid execution; order routing remains locked pending a reviewed execution lifecycle.'
+      label: 'TESTNET GRID · ACTIVE',
+      detail: 'Two-symbol Testnet Grid is running with independent exchange-side SL/TP per instrument and shared daily-loss and 5% drawdown controls.'
     };
   }
 
