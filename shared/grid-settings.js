@@ -1,7 +1,7 @@
 export const GRID_MAX_POSITION_CHOICES = Object.freeze([2]);
 export const GRID_BRIDGE_MAX_POSITIONS = 2;
 export const GRID_RISK_PER_TRADE_CHOICES = Object.freeze([0.3, 0.5, 0.75, 1]);
-export const GRID_DAILY_LOSS_CHOICES = Object.freeze([2, 2.25, 2.5]);
+export const GRID_DAILY_LOSS_CHOICES = Object.freeze([2]);
 export const GRID_MOMENTUM_PAUSE_CHOICES = Object.freeze([2.5, 2.75, 3]);
 
 export function isAllowedGridRiskPerTradePct(value) {
