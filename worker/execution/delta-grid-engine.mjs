@@ -409,16 +409,15 @@ export async function manageDeltaTestnetGrid({
     pendingOrders: gridOrders,
     now: timestamp
   });
-  if (gridPositionCap.status !== 'PASS') {
-    state.status = 'BLOCKED';
-    await database.log('WARN', 'Delta Testnet Grid entry blocked by per-strategy position cap', {
+  const gridPositionCapBlocked = gridPositionCap.status !== 'PASS';
+  if (gridPositionCapBlocked) {
+    await database.log('WARN', 'Delta Testnet Grid new entry blocked by per-strategy position cap; existing positions remain managed', {
       symbol,
       exposure: gridPositionCap.exposure,
       maxGridPositions: gridPositionCap.limit,
       reason: gridPositionCap.reason,
       executionBlocked: true
     }).catch(() => {});
-    return block(gridPositionCap.reason || 'GRID_STRATEGY_POSITION_CAP_UNAVAILABLE');
   }
 
   const configuredGridSymbols = Array.isArray(settings.gridSymbols)
@@ -755,6 +754,11 @@ export async function manageDeltaTestnetGrid({
   state.openRiskUsd = 0;
 
   const candidate = evaluation.entered[0];
+  if (candidate && gridPositionCapBlocked) {
+    state.status = 'BLOCKED';
+    await persist();
+    return block(gridPositionCap.reason || 'GRID_STRATEGY_POSITION_CAP_UNAVAILABLE');
+  }
   if (!candidate) {
     await persist();
     return { state, safety };
