@@ -5,6 +5,7 @@ import {
   DELTA_TESTNET_MARKET_TICK_MAX_AGE_MS,
   canStartWorkerInExecutionProfile,
   isAllowedDeltaTestnetFutureSymbol,
+  parseDeltaTestnetGridSymbols,
   isEligibleDeltaTestnetPerpetualProduct,
   isMarketTickFresh,
   resolveDirectDeltaExecutionEnabled
@@ -49,6 +50,15 @@ test('the Testnet futures allowlist contains only the nine explicitly approved s
   assert.equal(isAllowedDeltaTestnetFutureSymbol('BTCUSD'), false);
   assert.equal(isAllowedDeltaTestnetFutureSymbol('ETHUSD'), false);
   assert.equal(isAllowedDeltaTestnetFutureSymbol('SOLUSD'), false);
+});
+
+test('Grid symbol parser accepts exactly two distinct allowlisted Testnet symbols and fails closed otherwise', () => {
+  assert.deepEqual(parseDeltaTestnetGridSymbols('PAXGUSD,NVDAXUSD'), ['PAXGUSD', 'NVDAXUSD']);
+  assert.deepEqual(parseDeltaTestnetGridSymbols(' NVDAXUSD, PAXGUSD '), ['NVDAXUSD', 'PAXGUSD']);
+  assert.deepEqual(parseDeltaTestnetGridSymbols(''), []);
+  assert.throws(() => parseDeltaTestnetGridSymbols('BTCUSD,NVDAXUSD'), /outside the Delta Testnet allowlist/);
+  assert.throws(() => parseDeltaTestnetGridSymbols('PAXGUSD,PAXGUSD'), /distinct symbols/);
+  assert.throws(() => parseDeltaTestnetGridSymbols('PAXGUSD'), /exactly two/);
 });
 
 test('Testnet route requires exact allowlisted, live operational and non-reduce-only perpetual product metadata', () => {
