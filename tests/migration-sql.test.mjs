@@ -92,8 +92,8 @@ test('multi-symbol Grid settings migration is registered and adds per-symbol con
   assert.match(migration, /ADD COLUMN IF NOT EXISTS grid_symbol_configs JSONB NOT NULL DEFAULT '\{\}'::jsonb/i);
   assert.match(migration, /NOTIFY pgrst/i);
   assert.match(migration, /COMMIT;/);
-  assert.ok(migrationRunner.indexOf('20261105000100_enable_testnet_multi_symbol_grid.sql') >
-    migrationRunner.indexOf('20261103000100_add_per_strategy_position_limits.sql'));
+  assert.ok(deltaMigrationRunner.indexOf('20261105000100_enable_testnet_multi_symbol_grid.sql') >
+    deltaMigrationRunner.indexOf('20261103000100_add_per_strategy_position_limits.sql'));
 });
 
 test('Delta position-close migration stays between worker lease and E-STOP safety migrations', () => {
