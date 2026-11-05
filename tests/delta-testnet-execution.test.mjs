@@ -452,6 +452,101 @@ test('close-fill lookup resolves a missing entry order ID through the Delta clie
   ));
 });
 
+
+test('historical close-fill backfill skips client-order lookup after three days and records unresolved identity at INFO', async () => {
+  const clockMs = Date.parse('2026-11-06T00:00:00.000Z');
+  const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
+  const openedAt = new Date(clockMs - threeDaysMs - 1000).toISOString();
+  const clientOrderId = 'DDS-BTCUSD-historical-entry';
+  const runtime = fakeRuntime({ timestamp: clockMs, fills: [] });
+  const executor = createDeltaExecutor({
+    env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database,
+    now: () => clockMs
+  });
+
+  const details = await executor.getRecentCloseDetails('BTCUSD', openedAt, {
+    entry_order_id: null,
+    client_order_id: clientOrderId,
+    side: 'BUY'
+  });
+
+  assert.equal(details, null);
+  assert.ok(runtime.httpCalls.some(call => new URL(call.url).pathname === '/v2/fills'));
+  assert.ok(!runtime.httpCalls.some(call =>
+    new URL(call.url).pathname === '/v2/orders/client_order_id/' + clientOrderId
+  ));
+  assert.ok(runtime.logs.some(row =>
+    row.level === 'INFO' &&
+    row.data?.fillResolution === 'UNRESOLVED' &&
+    row.data?.clientOrderLookupSkipped === true
+  ));
+  assert.ok(!runtime.logs.some(row =>
+    row.level === 'WARN' && /Entry fill identity was not found|Entry order lookup by client ID failed/.test(row.message)
+  ));
+});
+
+test('order_not_found returned after the position crosses the three-day cutoff is INFO and UNRESOLVED', async () => {
+  let clockMs = Date.parse('2026-11-06T00:00:00.000Z');
+  const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
+  const openedAtMs = clockMs - threeDaysMs + 1000;
+  const openedAt = new Date(openedAtMs).toISOString();
+  const clientOrderId = 'DDS-BTCUSD-crossed-cutoff';
+  const runtime = fakeRuntime({ timestamp: clockMs, fills: [] });
+  const fetchImpl = async (url, init) => {
+    if (new URL(url).pathname.startsWith('/v2/orders/client_order_id/')) {
+      clockMs = openedAtMs + threeDaysMs + 1000;
+    }
+    return runtime.fetchImpl(url, init);
+  };
+  const executor = createDeltaExecutor({
+    env: demoEnv(), fetchImpl, database: runtime.database,
+    now: () => clockMs
+  });
+
+  const details = await executor.getRecentCloseDetails('BTCUSD', openedAt, {
+    entry_order_id: null,
+    client_order_id: clientOrderId,
+    side: 'BUY'
+  });
+
+  assert.equal(details, null);
+  assert.ok(runtime.httpCalls.some(call =>
+    new URL(call.url).pathname === '/v2/orders/client_order_id/' + clientOrderId
+  ));
+  assert.ok(runtime.logs.some(row =>
+    row.level === 'INFO' &&
+    row.message.includes('Historical entry order not found') &&
+    row.data?.fillResolution === 'UNRESOLVED'
+  ));
+  assert.ok(!runtime.logs.some(row =>
+    row.level === 'WARN' && row.message.includes('Entry order lookup by client ID failed')
+  ));
+});
+
+test('recent order_not_found remains a warning for investigation', async () => {
+  const clockMs = Date.parse('2026-11-06T00:00:00.000Z');
+  const openedAt = new Date(clockMs - 60 * 60 * 1000).toISOString();
+  const clientOrderId = 'DDS-BTCUSD-recent-entry';
+  const runtime = fakeRuntime({ timestamp: clockMs, fills: [] });
+  const executor = createDeltaExecutor({
+    env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database,
+    now: () => clockMs
+  });
+
+  const details = await executor.getRecentCloseDetails('BTCUSD', openedAt, {
+    entry_order_id: null,
+    client_order_id: clientOrderId,
+    side: 'BUY'
+  });
+
+  assert.equal(details, null);
+  assert.ok(runtime.logs.some(row =>
+    row.level === 'WARN' &&
+    row.message === '[Executor] Entry order lookup by client ID failed; close details remain unverified' &&
+    /order_not_found/.test(row.data?.error || '')
+  ));
+});
+
 test('WebSocket close persists confirmed close details and does not substitute mark price', async () => {
   const position = {
     id: 17, symbol: 'XAUTUSD', side: 'BUY', qty: 37, status: 'OPEN',
