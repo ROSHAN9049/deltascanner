@@ -309,6 +309,12 @@ export default async function handler(req, res) {
             CONFIG.deltaExecutionMode !== 'testnet' || CONFIG.environment !== 'TESTNET') {
           return res.status(409).json({ success: false, error: 'Grid Testnet execution is locked. Set GRID_EXECUTION_ALLOWED=true only in the Delta TESTNET profile and verify the worker/API environment.' });
         }
+        if (current.emergency_stop === true) {
+          return res.status(409).json({ success: false, error: 'Global Emergency Stop is active. Grid cannot start while E-STOP is active.' });
+        }
+        if (current.auto_trade !== true || current.enabled !== true || current.continuous_mode === false) {
+          return res.status(409).json({ success: false, error: 'Global Auto Trade / engine enable is off. Grid cannot bypass global execution controls.' });
+        }
         const configs = patch.grid_symbol_configs || current.grid_symbol_configs || {};
         const symbols = Array.isArray(CONFIG.gridSymbols) ? CONFIG.gridSymbols : [];
         if (symbols.length !== 2 || symbols.some(symbol => {
