@@ -1,6 +1,8 @@
+import { DELTA_TESTNET_FUTURES_ALLOWLIST } from './execution/execution-route-policy.mjs';
+
 const n = value => Number.isFinite(Number(value)) ? Number(value) : 0;
 const clamp = (value, min, max) => Math.max(min, Math.min(max, n(value)));
-export const GRID_SYMBOLS = Object.freeze(['BTCUSD', 'ETHUSD']);
+export const GRID_SYMBOLS = Object.freeze([...new Set(['BTCUSD', 'ETHUSD', ...DELTA_TESTNET_FUTURES_ALLOWLIST])]);
 
 export function buildGridLevels(lowerPrice, upperPrice, levelCount) {
   const lower = n(lowerPrice), upper = n(upperPrice), count = Math.round(n(levelCount));
