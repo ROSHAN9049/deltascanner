@@ -5,18 +5,19 @@ import { readFile } from 'node:fs/promises';
 const source = await readFile(new URL('../src/GridStrategy.jsx', import.meta.url), 'utf8');
 const sharedStatusSource = await readFile(new URL('../shared/grid-settings.js', import.meta.url), 'utf8');
 
-test('Grid UI separates diagnostic activity from persisted halt and keeps Testnet orders locked', () => {
-  assert.match(source, /executionMode\s*===\s*'testnet'/);
-  assert.match(sharedStatusSource, /DIAGNOSTICS ACTIVE · WAITING FOR TESTNET PRODUCTS/);
-  assert.match(sharedStatusSource, /DIAGNOSTICS ACTIVE · GRID HALTED/);
+test('Grid UI exposes two allowlisted Testnet symbols and keeps execution behind the explicit opt-in', () => {
+  assert.match(source, /executionMode\\s*===\\s*'testnet'/);
+  assert.match(sharedStatusSource, /TESTNET GRID · EXECUTION DISABLED/);
+  assert.match(sharedStatusSource, /TESTNET GRID · ACTIVE/);
   assert.match(source, /getGridDisplayStatus/);
-  assert.match(source, /TESTNET ORDER ROUTE LOCKED/);
-  assert.match(source, /LOCKED · NO ORDER/);
-  assert.match(source, /Testnet Diagnostics Only · Orders Locked/);
-  assert.match(sharedStatusSource, /no exchange orders or reservations are created/);
-  assert.doesNotMatch(source, /Start Grid \(Delta Testnet\)/);
+  assert.match(source, /gridSymbolConfigs/);
+  assert.match(source, /gridExecutionAllowed/);
+  assert.match(source, /PAXGUSD/);
+  assert.match(source, /NVDAXUSD/);
+  assert.match(source, /Start Grid \\(Delta Testnet\\)/);
+  assert.match(source, /Independent exchange-side SL\\/TP/);
+  assert.doesNotMatch(source, /BTCUSD|ETHUSD/);
 });
-
 test('Grid P&L distinguishes verified Testnet net P&L from simulator estimates', () => {
   assert.match(source, /DELTA TESTNET NET P&L/);
   assert.match(source, /Only fully fill-matched trades with verified commissions/);
