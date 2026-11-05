@@ -506,7 +506,10 @@ export async function manageDeltaTestnetGrid({
     text(row?.symbol).toUpperCase() === symbol &&
     text(row?.strategy).toUpperCase() === 'GRID'
   );
+  const pendingState = Array.isArray(state.pendingEntries)
+    ? state.pendingEntries.find(row => text(row?.symbol).toUpperCase() === symbol) : null;
   const ambiguousGridOrder = symbolGridOrders.find(row =>
+    pendingState && text(row?.client_order_id) === text(pendingState.clientOrderId) &&
     ['FAILED', 'UNKNOWN', 'REJECTED'].includes(text(row?.state).toUpperCase())
   ) || null;
   if (!exchangeSymbolPosition && ambiguousGridOrder) {
@@ -534,10 +537,98 @@ export async function manageDeltaTestnetGrid({
     state.lastPrice = mark;
     return block('SAME_SYMBOL_POSITION_NOT_OWNED_BY_GRID');
   }
-  if (!exchangeSymbolPosition && activeGridReservation) {
-    state.status = 'RECONCILING';
-    state.lastPrice = mark;
-    return block('GRID_ORDER_RESERVATION_PENDING');
+  if (activeGridReservation) {
+    let raw = activeGridReservation.raw;
+    if (typeof raw === 'string') {
+      try { raw = JSON.parse(raw); } catch { raw = null; }
+    }
+    const exchangeOrderId = numberOrNull(raw?.testnet_order_id);
+    if (!exchangeOrderId || typeof executor.getOrderById !== 'function') {
+      state.status = 'HALTED';
+      state.pausedReason = 'GRID_ORDER_RECONCILIATION_UNAVAILABLE';
+      return block('GRID_ORDER_RECONCILIATION_UNAVAILABLE');
+    }
+    let exchangeOrder;
+    try {
+      exchangeOrder = await executor.getOrderById(exchangeOrderId);
+    } catch (error) {
+      state.status = 'HALTED';
+      state.pausedReason = 'GRID_ORDER_RECONCILIATION_UNAVAILABLE';
+      await database.log('ERROR', 'Delta Testnet Grid pending order could not be reconciled; no retry will be attempted', {
+        symbol, exchangeOrderId,
+        error: String(error?.message || error).slice(0, 220)
+      }).catch(() => {});
+      return block('GRID_ORDER_RECONCILIATION_UNAVAILABLE');
+    }
+    const exchangeOrderState = text(exchangeOrder?.state).toUpperCase();
+    const terminalState = terminalOrderStates.has(exchangeOrderState);
+    if (!terminalState && (settings.emergency_stop === true || settings.grid_enabled !== true ||
+        settings.auto_trade !== true || settings.enabled === false || settings.continuous_mode === false)) {
+      try {
+        if (typeof executor.cancelOrderById !== 'function') {
+          throw new Error('Cancel-and-verify is unavailable');
+        }
+        const cancelled = await executor.cancelOrderById(exchangeOrderId);
+        const cancelledState = text(cancelled?.state).toUpperCase();
+        if (!terminalOrderStates.has(cancelledState)) {
+          throw new Error('Exchange order did not reach a terminal cancelled state');
+        }
+        await database.update('dd_orders',
+          'client_order_id=eq.' + encodeURIComponent(text(activeGridReservation.client_order_id)),
+          {
+            state: cancelledState,
+            updated_at: new Date(now()).toISOString(),
+            raw: { ...raw, reservation: false, accepted: true, exchange_state: cancelledState, cancelledByGridSafety: true }
+          });
+        state.pendingEntries = (Array.isArray(state.pendingEntries) ? state.pendingEntries : [])
+          .filter(row => text(row?.symbol).toUpperCase() !== symbol);
+        if (settings.emergency_stop === true) {
+          state.pausedReason = 'EMERGENCY_STOP';
+          state.status = 'HALTED';
+          pushEvent(state, { type: 'HALT', reason: 'EMERGENCY_STOP', symbol, price: mark }, at);
+          await persist();
+          return block('EMERGENCY_STOP');
+        }
+        state.status = 'PAUSED';
+        state.lastTickAt = at;
+        await persist();
+        return block(settings.grid_enabled !== true ? 'GRID_DISABLED'
+          : 'AUTO_TRADE_DISABLED');
+      } catch (error) {
+        state.status = 'HALTED';
+        state.pausedReason = 'GRID_ORDER_CANCEL_UNCONFIRMED';
+        await database.log('ERROR', 'Delta Testnet Grid entry cancellation is unconfirmed; Grid halted with no retry', {
+          symbol, exchangeOrderId,
+          error: String(error?.message || error).slice(0, 220),
+          doNotBlindlyRetry: true
+        }).catch(() => {});
+        return block('GRID_ORDER_CANCEL_UNCONFIRMED');
+      }
+    }
+    if (terminalState) {
+      if (['FAILED', 'REJECTED', 'EXPIRED'].includes(exchangeOrderState)) {
+        state.status = 'HALTED';
+        state.pausedReason = 'GRID_ORDER_ERROR_REQUIRES_MANUAL_REVIEW';
+        return block('GRID_ORDER_ERROR_REQUIRES_MANUAL_REVIEW');
+      }
+      if (!exchangeSymbolPosition) {
+        state.status = 'RECONCILING';
+        state.pausedReason = 'GRID_FILLED_ORDER_WITHOUT_POSITION';
+        return block('GRID_FILLED_ORDER_WITHOUT_POSITION');
+      }
+    } else if (!exchangeSymbolPosition) {
+      state.pendingEntries = [{
+        ...(pendingState || {}),
+        symbol, exchangeOrderId: String(exchangeOrderId),
+        clientOrderId: text(activeGridReservation.client_order_id),
+        unfilledSize: numberOrNull(exchangeOrder?.unfilled_size),
+        state: exchangeOrderState || 'UNKNOWN'
+      }];
+      state.status = 'ENTRY_PENDING';
+      state.lastPrice = mark;
+      await persist();
+      return { state, safety };
+    }
   }
 
   let livePosition = null;
@@ -619,6 +710,8 @@ export async function manageDeltaTestnetGrid({
       exchangeOrderId: String(parentOrderId)
     };
     state.positions = [livePosition];
+    state.pendingEntries = (Array.isArray(state.pendingEntries) ? state.pendingEntries : [])
+      .filter(row => text(row?.symbol).toUpperCase() !== symbol);
     state.openRiskUsd = riskUsd;
     state.unrealizedPnl = totalGridUnrealizedPnl;
     state.currentEquity = pnl.complete && state.unrealizedPnl !== null
