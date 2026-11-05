@@ -415,11 +415,25 @@ export async function manageDeltaTestnetGrid({
     ...dbOpenGridRows,
     ...exchangeGridPositions.filter(exchangePosition =>
       !dbOpenGridRows.some(dbPosition => text(dbPosition?.symbol).toUpperCase() === text(exchangePosition?.symbol).toUpperCase())
-    ).map(position => ({
-      symbol: text(position.symbol).toUpperCase(),
-      status: 'OPEN',
-      strategy: 'GRID'
-    }))
+    ).map(position => {
+      const rowSymbol = text(position.symbol).toUpperCase();
+      const matchingOrder = gridOrders.find(order =>
+        text(order?.symbol).toUpperCase() === rowSymbol &&
+        text(order?.strategy).toUpperCase() === 'GRID' &&
+        text(order?.client_order_id).toUpperCase().startsWith('DDG-')
+      );
+      let raw = matchingOrder?.raw;
+      if (typeof raw === 'string') {
+        try { raw = JSON.parse(raw); } catch { raw = null; }
+      }
+      return {
+        symbol: rowSymbol,
+        status: 'OPEN',
+        strategy: 'GRID',
+        client_order_id: position.client_order_id || matchingOrder?.client_order_id || null,
+        entry_order_id: raw?.testnet_order_id || null
+      };
+    })
   ];
   const gridPositionCap = assessStrategyPositionCap({
     strategy: 'GRID',
@@ -537,6 +551,42 @@ export async function manageDeltaTestnetGrid({
     state.lastPrice = mark;
     return block('SAME_SYMBOL_POSITION_NOT_OWNED_BY_GRID');
   }
+  if (!activeGridReservation && !exchangeSymbolPosition && pendingState) {
+    const pendingOrderId = numberOrNull(pendingState.exchangeOrderId);
+    if (!pendingOrderId || typeof executor.getOrderById !== 'function') {
+      state.status = 'HALTED';
+      state.pausedReason = 'GRID_ORDER_RECONCILIATION_UNAVAILABLE';
+      return block('GRID_ORDER_RECONCILIATION_UNAVAILABLE');
+    }
+    try {
+      const pendingOrder = await executor.getOrderById(pendingOrderId);
+      const pendingOrderState = text(pendingOrder?.state).toUpperCase();
+      if (!terminalOrderStates.has(pendingOrderState)) {
+        state.pendingEntries = [{
+          ...pendingState,
+          unfilledSize: numberOrNull(pendingOrder?.unfilled_size),
+          state: pendingOrderState || 'UNKNOWN'
+        }];
+        state.status = 'ENTRY_PENDING';
+        await persist();
+        return { state, safety };
+      }
+      state.status = 'HALTED';
+      state.pausedReason = ['FAILED', 'REJECTED', 'EXPIRED'].includes(pendingOrderState)
+        ? 'GRID_ORDER_ERROR_REQUIRES_MANUAL_REVIEW'
+        : 'GRID_FILLED_ORDER_WITHOUT_POSITION';
+      return block(state.pausedReason);
+    } catch (error) {
+      state.status = 'HALTED';
+      state.pausedReason = 'GRID_ORDER_RECONCILIATION_UNAVAILABLE';
+      await database.log('ERROR', 'Persisted Grid entry could not be reconciled with Delta; no retry will be attempted', {
+        symbol, pendingOrderId,
+        error: String(error?.message || error).slice(0, 220)
+      }).catch(() => {});
+      return block('GRID_ORDER_RECONCILIATION_UNAVAILABLE');
+    }
+  }
+
   if (activeGridReservation && !exchangeSymbolPosition) {
     let raw = activeGridReservation.raw;
     if (typeof raw === 'string') {
@@ -885,6 +935,13 @@ export async function manageDeltaTestnetGrid({
   state.trades = pnl.trades;
   state.positions = [];
   state.openRiskUsd = 0;
+  state.unrealizedPnl = totalGridUnrealizedPnl;
+  state.currentEquity = sharedCurrentEquity;
+  if (state.currentEquity !== null) {
+    state.highWaterEquity = Math.max(n(state.highWaterEquity), state.currentEquity);
+    state.drawdownPct = state.highWaterEquity > 0
+      ? Math.max(0, (state.highWaterEquity - state.currentEquity) / state.highWaterEquity * 100) : 0;
+  }
 
   const candidate = evaluation.entered[0];
   if (candidate && gridPositionCapBlocked) {
@@ -903,7 +960,9 @@ export async function manageDeltaTestnetGrid({
     product,
     riskEquity: n(state.dayStartEquity) || n(account.equity),
     remainingDailyRisk: Math.max(0,
-      n(state.dayStartEquity) * config.dailyLossPct / 100 - Math.max(0, -n(pnl.dayPnl)) -
+      n(state.dayStartEquity) * config.dailyLossPct / 100 -
+      Math.max(0, -n(pnl.dayPnl)) -
+      Math.max(0, -n(totalGridUnrealizedPnl)) -
       Math.max(0, n(settings.gridGlobalOpenRiskUsd))),
     consecutiveLosses: pnl.consecutiveLosses,
     minStopDistancePct: resolveMinimumStopDistancePct(process.env.DELTA_MIN_SL_DISTANCE_PCT)
