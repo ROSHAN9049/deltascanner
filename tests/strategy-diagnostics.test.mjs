@@ -9,7 +9,7 @@ process.env.DELTA_TESTNET_API_SECRET = 'unit-test-secret';
 const { DeltaEngine } = await import('../worker/engine.mjs');
 const { OPTIONS_EXECUTION_ALLOWED, isOptionsExecutionAllowed } = await import('../worker/options-execution-lock.mjs');
 
-test('Testnet Grid diagnostics skip unsupported BTC/ETH product and never route an order', async () => {
+test('Testnet Grid default-off execution gate blocks routing until explicitly enabled', async () => {
   const engine = new DeltaEngine();
   const logs = [];
   let orderCalls = 0;
@@ -46,11 +46,11 @@ test('Testnet Grid diagnostics skip unsupported BTC/ETH product and never route 
   }, { equity: 1000, available: 1000 });
 
   assert.equal(orderCalls, 0);
-  assert.equal(engine.lastGridTestnetDiagnostics.status, 'WAITING_FOR_TESTNET_PRODUCTS');
+  assert.equal(engine.lastGridTestnetDiagnostics.status, 'GRID_EXECUTION_DISABLED');
+  assert.equal(engine.lastGridTestnetDiagnostics.gridExecutionAllowed, false);
   assert.equal(engine.lastGridTestnetDiagnostics.executionLocked, true);
   assert.equal(engine.lastGridTestnetDiagnostics.orderRoutingAttempted, false);
-  assert.equal(engine.testnetGridDiagnosticState.positions.length, 0);
-  assert.ok(logs.some(row => row.level === 'WARN' && row.message.includes('Grid skipped: BTCUSD not available on Delta Testnet')));
+  assert.equal(orderCalls, 0);
 });
 
 test('missing option catalogue credentials or API failure are diagnostic-only and clear stale candidates', async () => {
