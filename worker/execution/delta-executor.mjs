@@ -313,6 +313,25 @@ export function createDeltaExecutor({
     return order;
   }
 
+  async function cancelOrderById(orderId) {
+    const id = numberOrNull(orderId);
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      throw new Error('Delta Testnet cancellation requires a positive exchange order id');
+    }
+    const terminalStates = new Set([
+      'CLOSED', 'FILLED', 'CANCELLED', 'CANCELED', 'REJECTED', 'FAILED', 'EXPIRED', 'EXITED'
+    ]);
+    const current = await getOrderById(id);
+    if (terminalStates.has(stringOrEmpty(current.state).toUpperCase())) return current;
+    await request('DELETE', '/v2/orders', {}, { id });
+    const verified = await getOrderById(id);
+    const state = stringOrEmpty(verified.state).toUpperCase();
+    if (!terminalStates.has(state)) {
+      throw new Error('Delta Testnet order cancellation is unconfirmed; exchange state remains ' + (state || 'UNKNOWN'));
+    }
+    return verified;
+  }
+
   function timestampMs(value) {
     if (value === undefined || value === null || value === '') return null;
     if (typeof value === 'number' || /^\d+(?:\.\d+)?$/.test(String(value).trim())) {
@@ -1186,6 +1205,7 @@ export function createDeltaExecutor({
     getOpenOrders,
     getOrderById,
     getOrderByClientOrderId,
+    cancelOrderById,
     getFillsPage,
     getAccountSnapshot,
     getRecentCloseDetails,
