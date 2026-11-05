@@ -12,6 +12,8 @@ test('Grid UI exposes two allowlisted Testnet symbols and keeps execution behind
   assert.match(source, /getGridDisplayStatus/);
   assert.match(source, /gridSymbolConfigs/);
   assert.match(source, /gridExecutionAllowed/);
+  assert.match(source, /apiGridExecutionAllowed === true && testnetDiagnostics\?\.gridExecutionAllowed === true/);
+  assert.match(source, /globalSafetyAllowsStart/);
   assert.match(source, /PAXGUSD/);
   assert.match(source, /NVDAXUSD/);
   assert.match(source, /Start Grid \(Delta Testnet\)/);
