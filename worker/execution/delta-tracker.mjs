@@ -641,9 +641,11 @@ export class DeltaTestnetTracker {
             const lookupSymbol = stringValue(entryOrder?.product_symbol || entryOrder?.symbol).toUpperCase();
             const lookupSide = stringValue(entryOrder?.side).toUpperCase();
             const lookupClientOrderId = stringValue(entryOrder?.client_order_id);
+            const localProductId = numberOrNull(
+              fills.find(fill => numberOrNull(fill?.product_id) !== null)?.product_id
+            );
             const lookupContextMatches =
-              (!lookupProductId || !Number.isFinite(numberOrNull(fills.find(fill => numberOrNull(fill?.product_id) !== null)?.product_id))
-                || lookupProductId === numberOrNull(fills.find(fill => numberOrNull(fill?.product_id) !== null)?.product_id)) &&
+              (lookupProductId === null || localProductId === null || lookupProductId === localProductId) &&
               (!lookupSymbol || lookupSymbol === symbol) &&
               (!lookupSide || lookupSide === side) &&
               (!lookupClientOrderId || lookupClientOrderId === entryClientOrderId);
@@ -662,12 +664,14 @@ export class DeltaTestnetTracker {
                   );
                 }
                 position.entry_order_id = resolvedEntryOrderId;
-                await this.database.log?.('INFO', '[Tracker] Recovered missing entry order ID from client order ID', {
-                  symbol,
-                  positionId: position.id,
-                  entryOrderId: resolvedEntryOrderId,
-                  matchedFillCount: entryFillsByClientOrderLookup.length
-                }).catch(() => {});
+                if (typeof this.database.log === 'function') {
+                  await this.database.log('INFO', '[Tracker] Recovered missing entry order ID from client order ID', {
+                    symbol,
+                    positionId: position.id,
+                    entryOrderId: resolvedEntryOrderId,
+                    matchedFillCount: entryFillsByClientOrderLookup.length
+                  }).catch(() => {});
+                }
               }
             }
           } catch (error) {
