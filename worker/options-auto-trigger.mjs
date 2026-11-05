@@ -234,6 +234,49 @@ export function createOptionsAutoTrigger({
           strategy: upper(candidate.strategy),
           orderSubmitted: false
         });
+        // ==========================================
+// FULL AUTO EXECUTE LOGIC (ADDED)
+// ==========================================
+if (isEnabled(env.FULL_AUTO_EXECUTE)) {
+  const executeUrl = previewUrl.replace('/preview', '/execute');
+  await logger('INFO', '[AUTO-TRIGGER] FULL_AUTO_EXECUTE is ON. Submitting order...', { symbol: upper(candidate.symbol) });
+  
+  try {
+    const execResponse = await fetchImpl(executeUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-engine-secret': engineSecret
+      },
+      body: JSON.stringify({
+        symbol: upper(candidate.symbol),
+        strategy: upper(candidate.strategy),
+        qty: 1,
+        quoteToken: preview.quoteToken,
+        manualOverride: false
+      })
+    });
+    
+    const execPayload = await execResponse.json();
+    if (!execResponse.ok || execPayload?.success !== true) {
+      throw new Error(execPayload?.error || 'Execute API rejected the order');
+    }
+    
+    await logger('INFO', `[AUTO-TRIGGER] ✅ ORDER EXECUTED SUCCESSFULLY: ${upper(candidate.symbol)}`, {
+      orderId: execPayload?.order?.id || execPayload?.orderId || 'unknown'
+    });
+    await writeHeartbeat('ORDER_EXECUTED', { candidateReady: false, orderSubmitted: true, symbol: upper(candidate.symbol) });
+    return { status: 'ORDER_EXECUTED', previewRequested: true, orderSubmitted: true, candidate: upper(candidate.symbol) };
+  } catch (execError) {
+    const execMsg = safeError(execError, engineSecret);
+    await logger('ERROR', `[AUTO-TRIGGER] ❌ EXECUTION FAILED: ${execMsg}`, { symbol: upper(candidate.symbol) });
+    await writeHeartbeat('EXECUTION_ERROR', { error: execMsg });
+    return { status: 'EXECUTION_ERROR', previewRequested: true, orderSubmitted: false, error: execMsg };
+  }
+} else {
+  await logger('INFO', '[AUTO-TRIGGER] FULL_AUTO_EXECUTE is OFF. Waiting for manual execution.', { symbol: upper(candidate.symbol) });
+}
+// ==========================================
         // The short-lived quote token is intentionally not persisted or logged.
         return { status: 'CANDIDATE_READY', previewRequested: true, candidate: upper(candidate.symbol) };
       } catch (error) {
