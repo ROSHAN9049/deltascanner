@@ -20,6 +20,7 @@ test('all visible Grid risk choices are accepted by shared validation', () => {
   for (const value of [0.3, 0.5, 0.75, 1]) assert.equal(isAllowedGridRiskPerTradePct(value), true);
   for (const value of [0, 0.25, 1.25, 1.5, NaN]) assert.equal(isAllowedGridRiskPerTradePct(value), false);
   assert.deepEqual(GRID_DAILY_LOSS_CHOICES, [2]);
+  assert.equal(GRID_DAILY_LOSS_CHOICES[0], 2);
   assert.deepEqual(GRID_MOMENTUM_PAUSE_CHOICES, [2.5, 2.75, 3]);
 });
 
