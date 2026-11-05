@@ -286,7 +286,7 @@ export default async function handler(req, res) {
       if (body.gridDailyLossPct !== undefined) {
         const value = Number(body.gridDailyLossPct);
         if (!GRID_DAILY_LOSS_CHOICES.includes(value)) {
-          return res.status(400).json({ success: false, error: 'Grid daily loss limit must be 2%, 2.25% or 2.5%.' });
+          return res.status(400).json({ success: false, error: 'Grid daily loss limit is fixed at 2%.' });
         }
         patch.grid_daily_loss_pct = value;
       }
