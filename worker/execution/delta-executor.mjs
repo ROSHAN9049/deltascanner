@@ -1080,20 +1080,27 @@ export function createDeltaExecutor({
 
       const strategy = strategyValue(options?.strategy);
       const prefix = strategy === 'MOMENTUM' ? 'DDM' : strategy === 'SCALPING' ? 'DDS' : 'DDG';
+      const requestedOrderType = String(options?.orderType || 'market_order').trim().toLowerCase();
+      if (!['market_order', 'limit_order'].includes(requestedOrderType)) {
+        throw new Error('Grid bracket order type must be market_order or limit_order');
+      }
       const body = {
         product_id: product.id,
         size: quantity,
         side: direction.toLowerCase(),
-        order_type: 'market_order',
+        order_type: requestedOrderType,
         client_order_id: buildClientOrderId(options?.clientOrderId, prefix, normalizedSymbol),
         bracket_stop_loss_price: String(stop),
         bracket_take_profit_price: String(target),
-        bracket_stop_trigger_method: 'mark_price'
+        bracket_stop_trigger_method: 'mark_price',
+        ...(requestedOrderType === 'limit_order'
+          ? { limit_price: String(entry), time_in_force: 'gtc', reduce_only: false }
+          : {})
       };
 
       await logExecutor(
         'INFO',
-        '[Executor] Preparing Testnet market bracket order',
+        '[Executor] Preparing Testnet ' + requestedOrderType.replace('_', ' ') + ' bracket order',
         {
           environment: 'testnet',
           symbol: normalizedSymbol,
