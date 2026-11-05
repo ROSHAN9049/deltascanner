@@ -36,6 +36,7 @@ function fakeRuntime({
   orderAverageFillPrice = 60000,
   fills = [],
   orderHistory = [],
+  orderByClientOrderId = null,
   timestamp = Date.now()
 } = {}) {
   const httpCalls = [];
@@ -103,6 +104,11 @@ function fakeRuntime({
       return response({ success: true, result: rows });
     }
     if (parsed.pathname === '/v2/fills') return response({ success: true, result: fills, meta: {} });
+    if (parsed.pathname.startsWith('/v2/orders/client_order_id/')) {
+      return orderByClientOrderId
+        ? response({ success: true, result: orderByClientOrderId })
+        : response({ success: false, error: { code: 'order_not_found' } }, 404);
+    }
     if (parsed.pathname === '/v2/orders/history') return response({ success: true, result: orderHistory, meta: {} });
     if (parsed.pathname === '/v2/orders' && init.method === 'GET') return response({ success: true, result: [] });
     if (parsed.pathname === '/v2/wallet/balances') {
@@ -329,6 +335,68 @@ test('close-fill lookup correlates to this entry and ignores later same-symbol c
   assert.equal(fillCall.init.method, 'GET');
 });
  
+test('close-fill lookup resolves a missing entry order ID through the Delta client-order endpoint', async () => {
+  const clockMs = Date.parse('2026-10-29T08:00:00.000Z');
+  const openedAt = '2026-10-29T07:00:00.000Z';
+  const clientOrderId = 'DDM-BTCUSD-entry-no-exchange-id';
+  const runtime = fakeRuntime({
+    fills: [
+      {
+        id: 'entry-fill-without-client-id', product_id: 27, product_symbol: 'BTCUSD',
+        order_id: '8001', side: 'buy', size: '2', price: '60000', commission: '0.03',
+        settling_asset_symbol: 'USD',
+        created_at: String((clockMs - 60 * 60_000 - 1000) * 1000),
+        meta_data: { new_position: { size: 2, realized_pnl: '0' } }
+      },
+      {
+        id: 'target-close-fill', product_id: 27, product_symbol: 'BTCUSD',
+        order_id: '9001', side: 'sell', size: '2', price: '61005',
+        commission: '0.05', settling_asset_symbol: 'USD',
+        created_at: String((clockMs - 30 * 60_000) * 1000),
+        meta_data: { new_position: { size: 0, realized_pnl: '4.5' }, order_type: 'market_order' }
+      }
+    ],
+    orderHistory: [{
+      id: 9001, product_symbol: 'BTCUSD', stop_order_type: 'take_profit_order',
+      client_order_id: 'DDX-X-BTCUSD-target-close', reduce_only: true, state: 'closed'
+    }],
+    orderByClientOrderId: {
+      id: 8001,
+      product_id: 27,
+      product_symbol: 'BTCUSD',
+      side: 'buy',
+      client_order_id: clientOrderId,
+      state: 'closed'
+    }
+  });
+  const executor = createDeltaExecutor({
+    env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database,
+    now: () => clockMs
+  });
+
+  const details = await executor.getRecentCloseDetails('BTCUSD', openedAt, {
+    entry_order_id: null,
+    client_order_id: clientOrderId,
+    side: 'BUY'
+  });
+
+  assert.equal(details.exit_price, 61005);
+  assert.equal(details.fees, 0.05);
+  assert.equal(details.realized_pnl, 4.5);
+  assert.equal(details.close_order_id, '9001');
+  assert.equal(details.close_fill_history_complete, true);
+
+  const lookup = runtime.httpCalls.find(call =>
+    new URL(call.url).pathname === '/v2/orders/client_order_id/' + clientOrderId
+  );
+  assert.ok(lookup);
+  assert.equal(lookup.init.method, 'GET');
+  assert.ok(runtime.logs.some(row =>
+    row.message === '[Executor] Entry fill identity recovered from client order ID' &&
+    row.data.entryOrderId === '8001'
+  ));
+});
+
 test('WebSocket close persists confirmed close details and does not substitute mark price', async () => {
   const position = {
     id: 17, symbol: 'XAUTUSD', side: 'BUY', qty: 37, status: 'OPEN',
@@ -698,6 +766,109 @@ test('REST fill sync upserts idempotently and advances checkpoint only after the
   assert.equal(state.window_end_us, null);
   assert.equal(state.after_cursor, null);
   assert.equal(state.rows_ingested, 1);
+});
+
+test('closed-trade backfill resolves missing entry_order_id from client_order_id before legacy order_id', async () => {
+  const clientOrderId = 'DDM-BTCUSD-entry-backfill';
+  const closedPosition = {
+    id: 46,
+    symbol: 'BTCUSD',
+    status: 'CLOSED',
+    close_source: 'rest_reconcile',
+    realized_pnl_verified: false,
+    strategy: 'MOMENTUM',
+    side: 'BUY',
+    qty: '1',
+    entry_order_id: null,
+    // This generic field can contain bracket/exit metadata, not the entry ID.
+    order_id: '9001',
+    client_order_id: clientOrderId,
+    realized_pnl: null,
+    exit_reason: 'TP',
+    opened_at: '2026-10-29T10:00:00.000Z',
+    closed_at: '2026-10-29T10:10:00.000Z'
+  };
+  const fills = [
+    {
+      id: 'entry-fill-no-client-id',
+      symbol: 'BTCUSD',
+      order_id: '8001',
+      side: 'BUY',
+      size: '1',
+      price: '60000',
+      commission: '0.01',
+      commission_currency: 'USD',
+      created_at: '2026-10-29T10:00:01.000Z'
+    },
+    {
+      id: 'exit-fill-flat',
+      symbol: 'BTCUSD',
+      order_id: '9001',
+      side: 'SELL',
+      size: '1',
+      price: '60100',
+      commission: '0.01',
+      commission_currency: 'USD',
+      created_at: '2026-10-29T10:09:59.000Z',
+      raw: { meta_data: { new_position: { size: 0, realized_pnl: '0.15' }, order_type: 'market_order' } }
+    }
+  ];
+  const updates = [];
+  const materialized = [];
+  const database = {
+    async select(table) {
+      if (table === 'dd_delta_positions') return [closedPosition];
+      if (table === 'dd_fills') return fills;
+      if (table === 'dd_market_cache') {
+        return [{ symbol: 'BTCUSD', contract_value: '0.001', notional_type: 'vanilla' }];
+      }
+      return [];
+    },
+    async update(table, query, patch) {
+      updates.push({ table, query, patch: { ...patch } });
+      Object.assign(closedPosition, patch);
+    },
+    async upsertMany(table, values, conflict) {
+      materialized.push({ table, values, conflict });
+    },
+    async log() {}
+  };
+  const lookupCalls = [];
+  const executor = {
+    async getOrderByClientOrderId(value) {
+      lookupCalls.push(value);
+      return {
+        id: 8001,
+        product_id: 27,
+        product_symbol: 'BTCUSD',
+        side: 'buy',
+        client_order_id: value,
+        state: 'closed'
+      };
+    }
+  };
+  const tracker = new DeltaTestnetTracker({
+    env: demoEnv(), database, executor, WebSocketImpl: class {}
+  });
+  tracker.stopped = false;
+
+  const result = await tracker.materializeVerifiedClosedTrades();
+
+  assert.equal(result.materialized, 1);
+  assert.deepEqual(lookupCalls, [clientOrderId]);
+  assert.ok(updates.some(row =>
+    row.table === 'dd_delta_positions' && row.patch.entry_order_id === '8001'
+  ));
+  assert.ok(updates.some(row =>
+    row.table === 'dd_delta_positions' &&
+    row.patch.realized_pnl === 0.15 &&
+    row.patch.realized_pnl_verified === true
+  ));
+  const trade = materialized.find(row => row.table === 'dd_trades').values[0];
+  assert.equal(trade.entry_price, 60000);
+  assert.equal(trade.exit_price, 60100);
+  assert.equal(trade.net_pnl, 0.15);
+  assert.equal(trade.net_pnl_verified, true);
 });
 
 test('closed trade projection requires matching entry order, exit side and full quantity', async () => {

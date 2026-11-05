@@ -627,17 +627,76 @@ export class DeltaTestnetTracker {
         const entryFillsByClientOrderId = entryClientOrderId
           ? fills.filter(fill => String(fill?.client_order_id ?? '') === entryClientOrderId && validEntryFill(fill))
           : [];
+        let resolvedEntryOrderId = '';
+        let entryFillsByClientOrderLookup = [];
+
+        // REST fill rows can omit client_order_id even though the position
+        // retains it. Resolve the exchange order through Delta's client-ID
+        // endpoint, then match the local fill ledger by the returned order ID.
+        if (!explicitEntryOrderId && !entryFillsByClientOrderId.length &&
+            entryClientOrderId && typeof this.executor.getOrderByClientOrderId === 'function') {
+          try {
+            const entryOrder = await this.executor.getOrderByClientOrderId(entryClientOrderId);
+            const lookupProductId = numberOrNull(entryOrder?.product_id);
+            const lookupSymbol = stringValue(entryOrder?.product_symbol || entryOrder?.symbol).toUpperCase();
+            const lookupSide = stringValue(entryOrder?.side).toUpperCase();
+            const lookupClientOrderId = stringValue(entryOrder?.client_order_id);
+            const localProductId = numberOrNull(
+              fills.find(fill => numberOrNull(fill?.product_id) !== null)?.product_id
+            );
+            const lookupContextMatches =
+              (lookupProductId === null || localProductId === null || lookupProductId === localProductId) &&
+              (!lookupSymbol || lookupSymbol === symbol) &&
+              (!lookupSide || lookupSide === side) &&
+              (!lookupClientOrderId || lookupClientOrderId === entryClientOrderId);
+
+            if (lookupContextMatches && entryOrder?.id !== null && entryOrder?.id !== undefined) {
+              resolvedEntryOrderId = String(entryOrder.id);
+              entryFillsByClientOrderLookup = fills.filter(fill =>
+                String(fill?.order_id ?? '') === resolvedEntryOrderId && validEntryFill(fill)
+              );
+              if (entryFillsByClientOrderLookup.length) {
+                if (typeof this.database.update === 'function') {
+                  await this.database.update(
+                    'dd_delta_positions',
+                    'id=eq.' + encodeURIComponent(String(position.id)) + '&entry_order_id=is.null',
+                    { entry_order_id: resolvedEntryOrderId, updated_at: nowIso() }
+                  );
+                }
+                position.entry_order_id = resolvedEntryOrderId;
+                if (typeof this.database.log === 'function') {
+                  await this.database.log('INFO', '[Tracker] Recovered missing entry order ID from client order ID', {
+                    symbol,
+                    positionId: position.id,
+                    entryOrderId: resolvedEntryOrderId,
+                    matchedFillCount: entryFillsByClientOrderLookup.length
+                  }).catch(() => {});
+                }
+              }
+            }
+          } catch (error) {
+            await this.logSocketWarning('Delta entry fill backfill lookup by client order ID failed; P&L remains unverified', {
+              symbol,
+              positionId: position.id,
+              hasClientOrderId: true,
+              error: String(error?.message || error).slice(0, 200)
+            }, 'WARN');
+          }
+        }
+
         const entryFillsByLegacyOrderId = orderId
           ? fills.filter(fill => String(fill?.order_id ?? '') === orderId && validEntryFill(fill))
           : [];
-        // The generic order_id field can be replaced by the bracket metadata
-        // synchronizer. Prefer the dedicated entry ID, then the stable client ID,
-        // and only then use legacy order_id for old rows.
+        // The generic order_id field can be replaced by bracket metadata.
+        // Prefer dedicated entry ID, exact client ID, resolved client-ID lookup,
+        // and only then use the legacy generic order_id.
         const entryFills = entryFillsByExplicitOrderId.length
           ? entryFillsByExplicitOrderId
           : entryFillsByClientOrderId.length
             ? entryFillsByClientOrderId
-            : entryFillsByLegacyOrderId;
+            : entryFillsByClientOrderLookup.length
+              ? entryFillsByClientOrderLookup
+              : entryFillsByLegacyOrderId;
         const entry = weightedFillAverage(entryFills);
         if (!entry || !(entry.size > 0)) continue;
         const exitSide = side === 'BUY' ? 'SELL' : 'BUY';
