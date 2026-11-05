@@ -7,6 +7,7 @@ const underlying = {
   side: 'BUY',
   stage: 'CONFIRMED',
   score: 95,
+  normalizedScore: 95,
   change: 0
 };
 
@@ -30,6 +31,44 @@ const config = {
   buyMaxDelta: 0.65,
   scoreMin: 80
 };
+
+test('uses normalized underlying score instead of a high raw local score', () => {
+  const signal = analyseOption(
+    { ...baseTicker, greeks: { delta: 0.55 } },
+    { ...underlying, stage: 'SETUP', score: 100, normalizedScore: 57.5 },
+    'OPTIONS_BUY',
+    config
+  );
+  assert.equal(signal.underlyingScore, 57.5);
+  assert.equal(signal.underlyingRawScore, 100);
+  assert.equal(signal.ready, false);
+  assert.ok(signal.blocked.includes('Underlying stage is not CONFIRMED'));
+  assert.ok(signal.blocked.includes('Underlying normalized score below 80 or unavailable'));
+});
+
+test('a high normalized score does not bypass the underlying CONFIRMED stage', () => {
+  const signal = analyseOption(
+    { ...baseTicker, greeks: { delta: 0.55 } },
+    { ...underlying, stage: 'SETUP', score: 100, normalizedScore: 95 },
+    'OPTIONS_BUY',
+    config
+  );
+  assert.equal(signal.underlyingScore, 95);
+  assert.equal(signal.ready, false);
+  assert.ok(signal.blocked.includes('Underlying stage is not CONFIRMED'));
+  assert.ok(!signal.blocked.some(reason => reason.includes('normalized score below')));
+});
+
+test('missing normalized underlying score fails closed even when raw score is high', () => {
+  const signal = analyseOption(
+    { ...baseTicker, greeks: { delta: 0.55 } },
+    { ...underlying, score: 100, normalizedScore: null },
+    'OPTIONS_BUY',
+    config
+  );
+  assert.equal(signal.ready, false);
+  assert.ok(signal.blocked.includes('Underlying normalized score below 80 or unavailable'));
+});
 
 test('missing option Delta remains missing and cannot qualify', () => {
   const signal = analyseOption({ ...baseTicker }, underlying, 'OPTIONS_BUY', config);
