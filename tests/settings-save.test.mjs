@@ -4,6 +4,10 @@ import assert from 'node:assert/strict';
 process.env.ENGINE_SECRET = 'settings-test-secret';
 process.env.SUPABASE_URL = 'https://supabase.test';
 process.env.SUPABASE_SERVICE_ROLE_KEY = 'sb_secret_settings-test';
+process.env.GRID_SYMBOLS = 'PAXGUSD,NVDAXUSD';
+process.env.GRID_EXECUTION_ALLOWED = 'false';
+process.env.DELTA_ENVIRONMENT = 'SIGNAL_ONLY';
+process.env.DELTA_EXECUTION_MODE = 'testnet';
 
 const { default: handler } = await import('../api/engine/toggle.js');
 
@@ -21,8 +25,8 @@ function fakeFetch({ initialRows, savedRows }) {
   return {
     fetch: async (url, options = {}) => {
       const requestUrl = String(url);
-      assert.match(requestUrl, /^https:\/\/supabase\.test\/rest\/v1\/(dd_settings|dd_delta_positions|dd_engine_logs)\?/);
-      if (requestUrl.includes('/dd_delta_positions?')) {
+      assert.match(requestUrl, /^https:\/\/supabase\.test\/rest\/v1\/(dd_settings|dd_delta_positions|dd_orders|dd_engine_logs)\?/);
+      if (requestUrl.includes('/dd_delta_positions?') || requestUrl.includes('/dd_orders?')) {
         return { ok: true, status: 200, text: async () => '[]' };
       }
       if (requestUrl.includes('/dd_engine_logs?')) {
