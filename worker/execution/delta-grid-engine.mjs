@@ -537,7 +537,7 @@ export async function manageDeltaTestnetGrid({
     state.lastPrice = mark;
     return block('SAME_SYMBOL_POSITION_NOT_OWNED_BY_GRID');
   }
-  if (activeGridReservation) {
+  if (activeGridReservation && !exchangeSymbolPosition) {
     let raw = activeGridReservation.raw;
     if (typeof raw === 'string') {
       try { raw = JSON.parse(raw); } catch { raw = null; }
@@ -944,7 +944,7 @@ export async function manageDeltaTestnetGrid({
         symbol, levelIndex: n(candidate.levelIndex), qty: adjusted.qty,
         limitPrice: adjusted.entryPrice, stopPrice: verifiedStop, targetPrice: verifiedTarget,
         exchangeOrderId: String(orderId), clientOrderId: executionClientId,
-        unfilledSize, state: orderState, createdAt: at
+        unfilledSize, riskUsd: n(adjusted?.riskUsd), state: orderState, createdAt: at
       }];
       state.status = 'ENTRY_PENDING';
       state.wasEnabled = true;
