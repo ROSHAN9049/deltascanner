@@ -55,6 +55,7 @@ function harness({
         options_min_days_to_expiry: 2,
         options_max_days_to_expiry: 120,
         enabled: true,
+        auto_trade: true,
         emergency_stop: false,
         last_tick_at: new Date(NOW).toISOString(),
         ...settingsPatch
@@ -385,4 +386,42 @@ test('mock Delta Testnet API prevents replay of a used confirmation token', asyn
   );
   const after = apiCalls.filter(call => call.method === 'POST' && call.path === '/v2/orders').length;
   assert.equal(after, before);
+});
+
+
+test('Options preview fails closed when auto_trade is false', async () => {
+  const { executor, apiCalls } = harness({
+    strategy: 'OPTIONS_BUY',
+    settingsPatch: { auto_trade: false }
+  });
+  const preview = await executor.previewOptionsOrder({
+    symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1
+  });
+  assert.equal(preview.executionAllowed, false);
+  assert.match(preview.executionLockReason, /Auto Trade is off or unknown/);
+  assert.equal(apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
+});
+
+test('Options final entry-safety recheck blocks when auto_trade turns off after preview', async () => {
+  const settingsPatch = { auto_trade: true };
+  const { executor, apiCalls } = harness({
+    strategy: 'OPTIONS_BUY',
+    settingsPatch
+  });
+  const preview = await executor.previewOptionsOrder({
+    symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1
+  });
+  assert.equal(preview.executionAllowed, true);
+
+  settingsPatch.auto_trade = false;
+  await assert.rejects(
+    executor.placeOptionsOrder({
+      symbol: SHORT,
+      strategy: 'OPTIONS_BUY',
+      qty: 1,
+      quoteToken: preview.quoteToken
+    }),
+    /Auto Trade is off or unknown/
+  );
+  assert.equal(apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
 });
