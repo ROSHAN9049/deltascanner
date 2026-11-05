@@ -231,6 +231,9 @@ test('pending Testnet Grid order cancellation is confirmed by a follow-up order 
   const executor = createDeltaExecutor({
     env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database
   });
+  await executor.placeBracketOrder('XAUTUSD', 'BUY', 1, 60000, 59000, 62000, {
+    strategy: 'GRID', clientOrderId: 'DDG-XAUTUSD-G07-CANCEL', orderType: 'limit_order'
+  });
   const cancelled = await executor.cancelOrderById(123);
   assert.equal(cancelled.id, 123);
   assert.equal(cancelled.state, 'cancelled');
