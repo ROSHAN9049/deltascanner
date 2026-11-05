@@ -45,6 +45,8 @@ const OPTIONS_BUY_DETAIL_FIELDS = Object.freeze([
   'openInterest',
   'underlyingSymbol',
   'underlyingScore',
+  'underlyingRawScore',
+  'underlyingStage',
   'executionLocked'
 ]);
 
@@ -62,6 +64,9 @@ const OPTIONS_SELL_DETAIL_FIELDS = Object.freeze([
   'volume',
   'openInterest',
   'underlyingSymbol',
+  'underlyingScore',
+  'underlyingRawScore',
+  'underlyingStage',
   'hedgeSymbol',
   'hedgeStrike',
   'hedgeDelta',
@@ -318,7 +323,19 @@ export function analyseOption(ticker, underlying, strategy, cfg = {}) {
   const deltaMin = n(isBuy ? cfg.buyMinDelta : cfg.sellMinDelta) || (isBuy ? 0.45 : 0.20);
   const deltaMax = n(isBuy ? cfg.buyMaxDelta : cfg.sellMaxDelta) || (isBuy ? 0.65 : 0.35);
   const underlyingScoreMin = n(cfg.scoreMin || 70);
-  const underlyingOk = String(underlying?.stage || '') === 'CONFIRMED' && n(underlying?.score) >= underlyingScoreMin;
+  // The scanner's raw score is intentionally retained for diagnostics only.
+  // Entry qualification must use the normalized score that controls the
+  // underlying CONFIRMED stage; comparing the raw local score can mislabel a
+  // 50-point normalized SETUP as a 100-point confirmed underlying.
+  const underlyingNormalizedScore = optionalNumber(
+    underlying?.normalizedScore ?? underlying?.details?.normalizedScore
+  );
+  const underlyingRawScore = optionalNumber(underlying?.score);
+  const underlyingStage = String(underlying?.stage || '').trim().toUpperCase();
+  const underlyingStageConfirmed = underlyingStage === 'CONFIRMED';
+  const underlyingScoreOk = underlyingNormalizedScore !== null &&
+    underlyingNormalizedScore >= underlyingScoreMin;
+  const underlyingOk = underlyingStageConfirmed && underlyingScoreOk;
   const directionOk = !!underlying?.side && optionType === targetType;
   const deltaOk = greeks.delta !== null && delta >= deltaMin && delta <= deltaMax;
   const dteOk = dte >= minDte && dte <= maxDte;
@@ -326,7 +343,7 @@ export function analyseOption(ticker, underlying, strategy, cfg = {}) {
   const antiChaseOk = Math.abs(n(underlying?.change)) <= (isBuy ? 12 : 8);
   const noExpiryRisk = dte >= minDte;
   const score = Math.min(100, Math.round(
-    (underlyingOk ? 30 : Math.min(n(underlying?.score) / 80, 1) * 30) +
+    (underlyingOk ? 30 : Math.min(n(underlyingNormalizedScore) / 80, 1) * 30) +
     (directionOk ? 15 : 0) +
     (deltaOk ? 15 : 0) +
     (liqOk ? 20 : Math.max(0, 20 - Math.min(spreadPct / Math.max(maxSpread, 0.1), 2) * 10)) +
@@ -334,7 +351,10 @@ export function analyseOption(ticker, underlying, strategy, cfg = {}) {
     (antiChaseOk ? 10 : 0)
   ));
   const blocked = [];
-  if (!underlyingOk) blocked.push('Underlying CONFIRMED / score < ' + underlyingScoreMin);
+  if (!underlyingStageConfirmed) blocked.push('Underlying stage is not CONFIRMED');
+  if (!underlyingScoreOk) blocked.push(
+    'Underlying normalized score below ' + underlyingScoreMin + ' or unavailable'
+  );
   if (!directionOk) blocked.push('Underlying direction / option type mismatch');
   if (!deltaOk) blocked.push('Delta outside target band');
   if (!dteOk) blocked.push('Expiry outside configured DTE');
@@ -355,7 +375,8 @@ export function analyseOption(ticker, underlying, strategy, cfg = {}) {
     ready: stage === 'CONFIRMED' && blocked.length === 0,
     underlyingSymbol: String(underlying?.symbol || ''),
     underlyingAsset,
-    underlyingScore: n(underlying?.score), underlyingSide: String(underlying?.side || ''),
+    underlyingScore: underlyingNormalizedScore, underlyingRawScore,
+    underlyingStage, underlyingSide: String(underlying?.side || ''),
     underlyingChange: n(underlying?.change), sl, tp1, tp
   };
 }

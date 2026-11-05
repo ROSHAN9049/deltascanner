@@ -1,6 +1,12 @@
 import crypto from 'node:crypto';
 import { parseDeltaOptionSymbol } from './delta-options-policy.mjs';
-import { assertOptionsExecutionAllowed, getOptionsExecutionGate, assertOptionsManualTestOverrideAllowed } from '../options-execution-lock.mjs';
+import {
+  assertOptionsExecutionAllowed,
+  getOptionsExecutionGate,
+  assertOptionsManualTestOverrideAllowed,
+  getOptionsDatabaseExecutionGate,
+  OPTIONS_DATABASE_EXECUTION_LOCK_REASON
+} from '../options-execution-lock.mjs';
 import {
   calculateLongOptionMaxLoss,
   calculateDefinedRiskSpreadMaxLoss,
@@ -423,7 +429,7 @@ export function createDeltaOptionsExecution({
     assertTestnetProfile();
     const settingsRows = await database.select(
       'dd_settings',
-      'id=eq.1&select=id,enabled,auto_trade,emergency_stop,last_tick_at,max_options_positions'
+      'id=eq.1&select=id,enabled,auto_trade,emergency_stop,options_execution_enabled,last_tick_at,max_options_positions'
     );
     if (!Array.isArray(settingsRows) || settingsRows.length !== 1) {
       throw new Error('Options entry settings are unavailable; order blocked');
@@ -432,6 +438,9 @@ export function createDeltaOptionsExecution({
     if (settings.enabled !== true) throw new Error('Trading engine is disabled; Options entry blocked');
     if (settings.auto_trade !== true) throw new Error('Auto Trade is off or unknown; Options entry blocked');
     if (settings.emergency_stop !== false) throw new Error('Emergency Stop is active or unknown; Options entry blocked');
+    if (!getOptionsDatabaseExecutionGate(settings).allowed) {
+      throw new Error(OPTIONS_DATABASE_EXECUTION_LOCK_REASON + ' Options entry blocked');
+    }
     if (!isMarketTickFresh(settings.last_tick_at, now())) {
       throw new Error('Persisted market tick is stale or unavailable; Options entry blocked');
     }

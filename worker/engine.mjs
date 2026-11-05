@@ -15,7 +15,12 @@ import { shouldWriteMarketCache } from './market-cache-policy.mjs';
 import { MIN_RAW_CANDLES_FOR_ATR, mergeCandleUpdate, normalizeCandleBatch, normalizeEpochSeconds, candleMaxAgeIntervals } from './candle-normalization.mjs';
 import { detectAtrSpike, replaceOutlierCandleWithPrevious } from './atr-spike-guard.mjs';
 import { shouldEmitThrottledLog, websocketReconnectDelay, WS_ERROR_LOG_COOLDOWN_MS } from './ws-resilience.mjs';
-import { isOptionsExecutionAllowed, OPTIONS_EXECUTION_LOCK_REASON } from './options-execution-lock.mjs';
+import {
+  isOptionsExecutionAllowed,
+  OPTIONS_EXECUTION_LOCK_REASON,
+  getOptionsDatabaseExecutionGate,
+  OPTIONS_DATABASE_EXECUTION_LOCK_REASON
+} from './options-execution-lock.mjs';
 import { countOptionProductsByUnderlying, replaceOptionCacheSnapshot } from './options-cache-snapshot.mjs';
 import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from './signal-failure-diagnostics.mjs';
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
@@ -2865,6 +2870,11 @@ export class DeltaEngine {
     }
 
     const out = [];
+    const optionsDatabaseGate = getOptionsDatabaseExecutionGate(settings);
+    const optionsEnvironmentGate = isOptionsExecutionAllowed();
+    const testnetOptionsRouteConfigured = CONFIG.environment === 'TESTNET' &&
+      CONFIG.deltaExecutionMode === 'testnet' &&
+      CONFIG.directDeltaExecutionEnabled === true;
     for (const item of futuresItems || []) {
       const underlying = [item.mom, item.scalp].filter(Boolean).sort((a, b) => n(b.score) - n(a.score))[0];
       const asset = String(item.ticker?.symbol || '').toUpperCase().replace(/USD$/, '');
@@ -2884,16 +2894,17 @@ export class DeltaEngine {
           const q = sizing.qty;
           const duplicate = (openPositions || []).some(p => String(p.symbol) === s.symbol && n(p.qty) > 0);
           const routeConfigured = CONFIG.deltaExecutionMode === 'testnet'
-            ? false
+            ? testnetOptionsRouteConfigured
             : CONFIG.tradetronOptionsBridgeEnabled && this.tradetronOptions.isConfigured();
-          const executionLocked = !isOptionsExecutionAllowed();
+          const executionLocked = !optionsEnvironmentGate || !optionsDatabaseGate.allowed;
           const blocked = [...s.blocked];
           if (q < 1) blocked.push(sizing.reason || 'Full-premium risk budget below one contract');
           if (duplicate) blocked.push('Duplicate option position');
           if (!routeConfigured) blocked.push(CONFIG.deltaExecutionMode === 'testnet'
-            ? 'Direct Delta Testnet option order lifecycle is not implemented'
+            ? 'Direct Delta Testnet Options route unavailable'
             : 'Tradetron option signal route unavailable');
-          if (executionLocked) blocked.push(OPTIONS_EXECUTION_LOCK_REASON);
+          if (!optionsDatabaseGate.allowed) blocked.push(OPTIONS_DATABASE_EXECUTION_LOCK_REASON);
+          if (!optionsEnvironmentGate) blocked.push(OPTIONS_EXECUTION_LOCK_REASON);
           const ready = s.ready && q >= 1 && !duplicate && routeConfigured && !executionLocked;
           const row = { ...s, analysisReady: s.ready === true, ticker: best.ticker, strategy: 'OPTIONS_BUY', qty: q,
             notional: sizing.premiumNotional,
@@ -2914,6 +2925,7 @@ export class DeltaEngine {
               dte: row.dte, expiryMs: row.expiryMs, delta: row.delta, gamma: row.gamma, theta: row.theta,
               vega: row.vega, bid: row.bid, ask: row.ask, openInterest: row.oi, volume: row.volume,
               underlyingSymbol: row.underlyingSymbol, underlyingScore: row.underlyingScore,
+              underlyingRawScore: row.underlyingRawScore, underlyingStage: row.underlyingStage,
               executionLocked, routeConfigured, signalOnly: CONFIG.signalOnly, testnetProductVerified: best.ticker.testnet_product_verified === true, riskModel: 'FULL_PREMIUM_PLUS_TWO_SIDE_FEES' }, 'OPTIONS_BUY')
           });
           out.push(row);
@@ -2942,20 +2954,25 @@ export class DeltaEngine {
           const maxRiskPerSpread = Math.max(0, width - credit);
           const budget = this.optionRiskBudget(account, settings);
           const testnetMode = CONFIG.deltaExecutionMode === 'testnet';
-          const q = !testnetMode && maxRiskPerSpread > 0 ? Math.floor(budget / maxRiskPerSpread) : 0;
+          // Testnet spread quantity is a one-contract preview candidate only.
+          // The API re-resolves both products and verifies multipliers, fees,
+          // live quotes and the exact max-loss cap before placing either leg.
+          const q = testnetMode
+            ? 1
+            : (maxRiskPerSpread > 0 ? Math.floor(budget / maxRiskPerSpread) : 0);
           const blocked = [...s.blocked];
           if (!hedge) blocked.push('Defined-risk hedge unavailable');
           if (!(credit > 0)) blocked.push('Net credit <= 0');
-          if (testnetMode) blocked.push('Testnet credit-spread sizing and two-leg execution remain disabled pending fee/multiplier verification');
-          else if (q < 1) blocked.push('Spread risk exceeds option risk budget');
-          const optionRouteReady = CONFIG.deltaExecutionMode === 'testnet'
-            ? false
+          if (!testnetMode && q < 1) blocked.push('Spread risk exceeds option risk budget');
+          const optionRouteReady = testnetMode
+            ? testnetOptionsRouteConfigured
             : CONFIG.tradetronOptionsBridgeEnabled && this.tradetronOptions.isConfigured();
-          const executionLocked = !isOptionsExecutionAllowed() || CONFIG.deltaExecutionMode === 'testnet';
-          if (!optionRouteReady) blocked.push(CONFIG.deltaExecutionMode === 'testnet'
-            ? 'Direct Delta Testnet multi-leg option execution is not implemented'
+          const executionLocked = !optionsEnvironmentGate || !optionsDatabaseGate.allowed;
+          if (!optionRouteReady) blocked.push(testnetMode
+            ? 'Direct Delta Testnet Options route unavailable'
             : 'Tradetron option signal route unavailable');
-          if (executionLocked) blocked.push(OPTIONS_EXECUTION_LOCK_REASON);
+          if (!optionsDatabaseGate.allowed) blocked.push(OPTIONS_DATABASE_EXECUTION_LOCK_REASON);
+          if (!optionsEnvironmentGate) blocked.push(OPTIONS_EXECUTION_LOCK_REASON);
           const ready = s.ready && q >= 1 && !!hedge && credit > 0 && optionRouteReady && !executionLocked;
           const row = { ...s, analysisReady: s.ready === true, ticker: best.ticker, strategy: 'OPTIONS_SELL', qty: q,
             hedgeSymbol: hedge?.symbol || '', hedgeStrike: hedge?.strike || 0, hedgeDelta: hedge?.delta || 0,
@@ -2977,7 +2994,10 @@ export class DeltaEngine {
               theta: row.theta, vega: row.vega, bid: row.bid, ask: row.ask,
               openInterest: row.oi, volume: row.volume, hedgeSymbol: row.hedgeSymbol,
               hedgeStrike: row.hedgeStrike, hedgeDelta: row.hedgeDelta, credit: row.credit,
-              maxRiskPerSpread: row.maxRiskPerSpread, executionLocked: true, optionRouteReady: row.optionRouteReady, signalOnly: CONFIG.signalOnly, tradetronRoute: 'tt_option_*',
+              underlyingSymbol: row.underlyingSymbol, underlyingScore: row.underlyingScore,
+              underlyingRawScore: row.underlyingRawScore, underlyingStage: row.underlyingStage,
+              maxRiskPerSpread: row.maxRiskPerSpread, executionLocked: row.executionLocked,
+              optionRouteReady: row.optionRouteReady, signalOnly: CONFIG.signalOnly,
               definedRiskOnly: settings.options_sell_defined_risk_only !== false }, 'OPTIONS_SELL')
           });
           out.push(row);

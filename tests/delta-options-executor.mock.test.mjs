@@ -57,6 +57,7 @@ function harness({
         enabled: true,
         auto_trade: true,
         emergency_stop: false,
+        options_execution_enabled: true,
         last_tick_at: new Date(NOW).toISOString(),
         ...settingsPatch
       }];

@@ -1,3 +1,8 @@
+import {
+  getOptionsDatabaseExecutionGate,
+  OPTIONS_DATABASE_EXECUTION_LOCK_REASON
+} from './options-execution-lock.mjs';
+
 const DEFAULT_API_ORIGIN = 'https://deltascanner-api-v2.hostless.app';
 export const OPTIONS_AUTO_TRIGGER_INTERVAL_MS = 60_000;
 const MAX_CANDIDATE_AGE_MS = 5 * 60_000;
@@ -95,7 +100,7 @@ export function createOptionsAutoTrigger({
 
         const settingsRows = await database.select(
           'dd_settings',
-          'id=eq.1&select=enabled,auto_trade,emergency_stop,max_options_positions'
+          'id=eq.1&select=enabled,auto_trade,emergency_stop,options_execution_enabled,max_options_positions'
         );
         if (!Array.isArray(settingsRows) || settingsRows.length !== 1) {
           throw new Error('Options auto-trigger settings are missing or ambiguous');
@@ -112,6 +117,14 @@ export function createOptionsAutoTrigger({
         if (settings.emergency_stop !== false) {
           await writeHeartbeat('BLOCKED_ESTOP', { reason: 'emergency_stop is active or unknown' });
           return { status: 'BLOCKED_ESTOP', previewRequested: false };
+        }
+
+        const databaseExecutionGate = getOptionsDatabaseExecutionGate(settings);
+        if (!databaseExecutionGate.allowed) {
+          await writeHeartbeat('BLOCKED_OPTIONS_EXECUTION_DISABLED', {
+            reason: OPTIONS_DATABASE_EXECUTION_LOCK_REASON
+          });
+          return { status: 'BLOCKED_OPTIONS_EXECUTION_DISABLED', previewRequested: false };
         }
 
         const maxPositions = finite(settings.max_options_positions);

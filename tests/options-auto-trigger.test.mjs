@@ -45,6 +45,7 @@ function harness({
         enabled: true,
         auto_trade: true,
         emergency_stop: false,
+        options_execution_enabled: true,
         max_options_positions: 4,
         ...settingsPatch
       }];
@@ -131,6 +132,16 @@ test('unknown or active emergency stop blocks the preview poller', async () => {
   const result = await worker.runOnce();
   assert.equal(result.status, 'BLOCKED_ESTOP');
   assert.equal(calls.some(call => call.kind === 'fetch'), false);
+});
+
+test('database Options opt-in false blocks before preview or execution', async () => {
+  const { worker, calls, logs } = harness({
+    settingsPatch: { options_execution_enabled: false }
+  });
+  const result = await worker.runOnce();
+  assert.equal(result.status, 'BLOCKED_OPTIONS_EXECUTION_DISABLED');
+  assert.equal(calls.some(call => call.kind === 'fetch'), false);
+  assert.ok(logs.some(args => args[2]?.status === 'BLOCKED_OPTIONS_EXECUTION_DISABLED'));
 });
 
 test('open option position with the same symbol blocks duplicate preview requests', async () => {
