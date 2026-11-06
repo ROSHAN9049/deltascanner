@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS public.dd_wallet_transactions (
 
 CREATE INDEX IF NOT EXISTS dd_wallet_transactions_product_created_idx
   ON public.dd_wallet_transactions (product_id, created_at ASC);
+CREATE INDEX IF NOT EXISTS dd_wallet_transactions_created_idx
+  ON public.dd_wallet_transactions (created_at ASC);
 CREATE INDEX IF NOT EXISTS dd_wallet_transactions_type_created_idx
   ON public.dd_wallet_transactions (transaction_type, created_at ASC);
 CREATE INDEX IF NOT EXISTS dd_wallet_transactions_asset_created_idx
@@ -87,6 +89,23 @@ JOIN public.dd_trades AS canonical
 WHERE legacy_rotation.execution_id = position.client_order_id
   AND position.client_order_id IS NOT NULL
   AND canonical.net_pnl_verified IS TRUE;
+
+-- The prior canonical materializer stored Delta's exchange realized_pnl in
+-- net_pnl before wallet funding and the complete exchange fee ledger were
+-- joined. Preserve that exchange value, but do not present it as all-in net.
+UPDATE public.dd_trades
+SET exchange_realized_pnl = COALESCE(exchange_realized_pnl, net_pnl),
+    net_pnl = NULL,
+    net_pnl_verified = FALSE,
+    result = 'EXCHANGE P&L · COSTS UNVERIFIED'
+WHERE execution_id LIKE 'delta-testnet-position:%'
+  AND net_pnl_verified IS TRUE
+  AND net_pnl IS NOT NULL;
+
+-- Rotation rows are derived reporting only, not exchange transfers. Rebuild
+-- them only after fee and funding verification establishes a positive net.
+DELETE FROM public.dd_rotation_ledger
+WHERE execution_id LIKE 'delta-testnet-position:%';
 
 CREATE OR REPLACE FUNCTION public.refresh_dd_daily_pnl_for_date(p_trade_date DATE)
 RETURNS VOID
