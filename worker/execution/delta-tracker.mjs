@@ -549,7 +549,6 @@ export class DeltaTestnetTracker {
         after = null;
         await this.saveFillSyncState({
           last_synced_through_us: lastSyncedUs || null,
-          history_start_us: nextHistoryStartUs,
           window_start_us: windowStartUs,
           window_end_us: windowEndUs,
           after_cursor: null,
@@ -683,6 +682,7 @@ export class DeltaTestnetTracker {
       const nowUs = Math.floor(Date.now() * 1000);
       let windowStartUs = numberOrNull(state.window_start_us);
       let windowEndUs = numberOrNull(state.window_end_us);
+      let historyStartUs = numberOrNull(state.history_start_us);
       let after = stringValue(state.after_cursor) || null;
       if (!(windowStartUs > 0 && windowEndUs > windowStartUs)) {
         const lastSyncedUs = numberOrNull(state.last_synced_through_us);
@@ -691,12 +691,12 @@ export class DeltaTestnetTracker {
           ? Math.max(1, lastSyncedUs - overlapUs)
           : nowUs - 90 * 24 * 60 * 60 * 1_000_000;
         windowEndUs = nowUs;
-        const historyStartUs = numberOrNull(state.history_start_us);
-        const nextHistoryStartUs = historyStartUs === null
+        historyStartUs = historyStartUs === null
           ? windowStartUs : Math.min(historyStartUs, windowStartUs);
         after = null;
         await this.saveWalletSyncState({
           last_synced_through_us: lastSyncedUs || null,
+          history_start_us: historyStartUs,
           window_start_us: windowStartUs,
           window_end_us: windowEndUs,
           after_cursor: null,
@@ -704,6 +704,10 @@ export class DeltaTestnetTracker {
           last_error: null,
           rows_ingested: numberOrNull(state.rows_ingested) ?? 0
         });
+      } else if (historyStartUs === null) {
+        // Resume an in-progress legacy checkpoint conservatively from the
+        // beginning of its currently stored window.
+        historyStartUs = windowStartUs;
       }
 
       let pageCount = 0;
@@ -745,6 +749,7 @@ export class DeltaTestnetTracker {
           after = nextCursor;
           savedState = await this.saveWalletSyncState({
             last_synced_through_us: numberOrNull(state.last_synced_through_us) || null,
+            history_start_us: historyStartUs,
             window_start_us: windowStartUs,
             window_end_us: windowEndUs,
             after_cursor: after,
@@ -757,6 +762,7 @@ export class DeltaTestnetTracker {
         completed = true;
         savedState = await this.saveWalletSyncState({
           last_synced_through_us: windowEndUs,
+          history_start_us: historyStartUs,
           window_start_us: null,
           window_end_us: null,
           after_cursor: null,
