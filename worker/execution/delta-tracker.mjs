@@ -813,6 +813,14 @@ export class DeltaTestnetTracker {
         'status=in.(CLOSED,CLOSED_EXTERNALLY)&closed_at=not.is.null&order=closed_at.desc&limit=1000'
       );
       if (!Array.isArray(closedRows) || !closedRows.length) return { materialized: 0 };
+      const walletSyncRows = await this.database.select(
+        'dd_wallet_transaction_sync_state',
+        'id=eq.1&limit=1'
+      ).catch(() => []);
+      const walletSyncState = Array.isArray(walletSyncRows) ? walletSyncRows[0] || {} : {};
+      const walletSyncComplete = !walletSyncState.window_start_us &&
+        !walletSyncState.window_end_us && !walletSyncState.after_cursor &&
+        numberOrNull(walletSyncState.last_synced_through_us) !== null;
       const trades = [];
       for (const position of closedRows) {
         const symbol = stringValue(position?.symbol).toUpperCase();
@@ -983,8 +991,12 @@ export class DeltaTestnetTracker {
         const fillRealizedPnl = numberOrNull(nextPosition.realized_pnl ?? rawClose.realized_pnl);
         if (fillRealizedPnl !== null && !realizedPnlVerified && typeof this.database.update === 'function') {
           const fillReason = deltaCloseFields({}, { ...rawClose, close_order_id: flatCloseFill?.order_id ?? null }).exit_reason;
-          const patch = { realized_pnl: fillRealizedPnl, realized_pnl_verified: true,
-            close_source: position.close_source || 'rest_fill_ledger', updated_at: nowIso() };
+          const patch = {
+            realized_pnl: fillRealizedPnl,
+            realized_pnl_verified: true,
+            close_source: position.close_source || 'rest_fill_ledger',
+            updated_at: nowIso()
+          };
           if (flatCloseFill?.order_id != null) patch.close_order_id = String(flatCloseFill.order_id);
           if (fillReason !== 'UNKNOWN') patch.exit_reason = fillReason;
           await this.database.update('dd_delta_positions', 'id=eq.' + encodeURIComponent(String(position.id)), patch);
@@ -1025,45 +1037,131 @@ export class DeltaTestnetTracker {
           }
         }
 
-        // Position qty can already reflect an earlier partial reduction. Use the
-        // full fill-matched entry quantity once the aggregate exit fills match it.
+        // One completed Delta net-position lifecycle is one trade. Partial fill
+        // rows are components of this position and must never create separate trades.
         const tradeQty = entry.size;
         const allMatchedFills = [...entryFills, ...exitFills];
         const commissionCurrencies = [...new Set(allMatchedFills
           .map(fill => stringValue(fill?.commission_currency ?? fill?.raw?.settling_asset_symbol).toUpperCase())
           .filter(Boolean))];
-        // Numeric commissions from different/unknown settlement assets must
-        // never be added together or deducted from realized P&L as one fee.
         const commissionsComplete = allMatchedFills.every(fill =>
           numberOrNull(fill?.commission) !== null &&
           stringValue(fill?.commission_currency ?? fill?.raw?.settling_asset_symbol) !== ''
         ) && commissionCurrencies.length === 1;
-        const fees = commissionsComplete
+        const fillCommissionTotal = commissionsComplete
           ? allMatchedFills.reduce((sum, fill) => sum + numberOrNull(fill.commission), 0)
           : null;
+
         const productRows = await this.database.select(
           'dd_market_cache',
-          'symbol=eq.' + encodeURIComponent(symbol) + '&select=symbol,contract_value,notional_type&limit=1'
+          'symbol=eq.' + encodeURIComponent(symbol) + '&select=symbol,product_id,contract_value,notional_type&limit=1'
         ).catch(() => []);
         const product = Array.isArray(productRows) ? productRows[0] || null : null;
+        const productId = numberOrNull(position.product_id ?? product?.product_id ??
+          allMatchedFills.find(fill => numberOrNull(fill?.product_id) !== null)?.product_id);
         const contractValue = numberOrNull(product?.contract_value);
         const vanilla = String(product?.notional_type || '').toLowerCase() === 'vanilla';
         const entryNotional = vanilla && contractValue > 0 ? entry.price * tradeQty * contractValue : null;
         const exitNotional = vanilla && contractValue > 0 ? exit.price * tradeQty * contractValue : null;
-        const grossPnl = vanilla && contractValue > 0
-          ? (side === 'BUY' ? exit.price - entry.price : entry.price - exit.price) * tradeQty * contractValue
+
+        const walletFrom = new Date(openedMs).toISOString();
+        const walletTo = new Date(closedMs).toISOString();
+        const walletTransactions = productId !== null
+          ? await this.database.select(
+              'dd_wallet_transactions',
+              'product_id=eq.' + encodeURIComponent(String(productId)) +
+              '&created_at=gte.' + encodeURIComponent(walletFrom) +
+              '&created_at=lte.' + encodeURIComponent(walletTo) +
+              '&order=created_at.asc&limit=2000'
+            ).catch(() => [])
+          : [];
+        const positionWalletRows = Array.isArray(walletTransactions) ? walletTransactions : [];
+        const walletRowsAreCovered = walletSyncComplete &&
+          numberOrNull(walletSyncState.last_synced_through_us) >= closedMs * 1000;
+        const feeRows = positionWalletRows.filter(row =>
+          ['commission', 'commission_rebate', 'liquidation_fee'].includes(
+            stringValue(row?.transaction_type).toLowerCase()
+          )
+        );
+        const fundingRows = positionWalletRows.filter(row =>
+          stringValue(row?.transaction_type).toLowerCase() === 'funding'
+        );
+        const walletCurrencies = [...new Set(positionWalletRows
+          .map(row => stringValue(row?.asset_symbol).toUpperCase()).filter(Boolean))];
+        const walletCurrencyCompatible = walletCurrencies.length <= 1;
+        const walletFeeMovement = feeRows.reduce((sum, row) => sum + (numberOrNull(row?.amount) ?? 0), 0);
+        const walletFunding = fundingRows.reduce((sum, row) => sum + (numberOrNull(row?.amount) ?? 0), 0);
+
+        const rawCloseCommission = numberOrNull(
+          nextPosition.total_commission_paid ?? rawClose?.meta_data?.total_commission_paid
+        );
+        const rawCloseFunding = numberOrNull(
+          nextPosition.realized_funding ?? rawClose?.meta_data?.realized_funding
+        );
+        const feeCurrency = walletCurrencies[0] ||
+          commissionCurrencies[0] ||
+          stringValue(flatCloseFill?.raw?.settling_asset_symbol).toUpperCase() || null;
+        const pnlCurrency = feeCurrency;
+        let fees = null;
+        let feesVerified = false;
+        if (walletRowsAreCovered && walletCurrencyCompatible) {
+          // Wallet transaction amount is signed: commissions/liquidation fees
+          // debit the wallet, rebates credit it. This preserves rebate signs.
+          fees = -walletFeeMovement;
+          feesVerified = true;
+        } else if (rawCloseCommission !== null) {
+          fees = rawCloseCommission;
+          feesVerified = true;
+        } else if (fillCommissionTotal !== null) {
+          fees = fillCommissionTotal;
+          feesVerified = true;
+        }
+
+        let realizedFunding = null;
+        let fundingVerified = false;
+        if (walletRowsAreCovered && walletCurrencyCompatible) {
+          realizedFunding = walletFunding;
+          fundingVerified = true;
+        } else if (rawCloseFunding !== null) {
+          realizedFunding = rawCloseFunding;
+          fundingVerified = true;
+        }
+
+        const exchangeRealizedPnl = realizedPnlVerified ? realizedPnl : null;
+        // P&L is based on Delta's exchange-reported realized_pnl. Funding and
+        // signed wallet commission movements are separate exchange ledger
+        // components; never reconstruct realized P&L from price/notional deltas.
+        const pnlComponentsCurrencyCompatible = walletCurrencyCompatible &&
+          (!commissionCurrencies.length || !pnlCurrency || commissionCurrencies.every(value => value === pnlCurrency));
+        const netPnl = exchangeRealizedPnl !== null && feesVerified && fundingVerified &&
+          pnlComponentsCurrencyCompatible
+          ? exchangeRealizedPnl + realizedFunding - fees
           : null;
-        // Delta documents position/fill realized_pnl as net realized P&L.
-        // Keep commissions as a separately reported fee field; subtracting them
-        // again would double-count costs and understate the exchange result.
-        const netPnl = realizedPnlVerified ? realizedPnl : null;
         const pnlPct = netPnl !== null && entryNotional > 0 ? netPnl / entryNotional * 100 : null;
         const result = netPnl !== null
           ? netPnl > 0 ? 'WIN' : netPnl < 0 ? 'LOSS' : 'FLAT'
-          : grossPnl !== null
-            ? grossPnl > 0 ? 'GROSS WIN · NET UNVERIFIED'
-              : grossPnl < 0 ? 'GROSS LOSS · NET UNVERIFIED' : 'GROSS FLAT · NET UNVERIFIED'
-            : 'FILL MATCHED · P&L UNKNOWN';
+          : exchangeRealizedPnl !== null
+            ? 'EXCHANGE P&L · COSTS UNVERIFIED'
+            : 'EXCHANGE P&L UNVERIFIED';
+
+        const accountingPatch = {
+          updated_at: nowIso(),
+          realized_pnl: exchangeRealizedPnl,
+          realized_pnl_verified: exchangeRealizedPnl !== null,
+          fees,
+          fee_currency: feeCurrency,
+          fees_verified: feesVerified,
+          realized_funding: realizedFunding,
+          funding_verified: fundingVerified,
+          pnl_currency: pnlCurrency
+        };
+        await this.database.update(
+          'dd_delta_positions',
+          'id=eq.' + encodeURIComponent(String(position.id)),
+          accountingPatch
+        ).catch(() => {});
+        Object.assign(position, accountingPatch);
+
         trades.push({
           execution_id: 'delta-testnet-position:' + String(position.id),
           symbol,
@@ -1074,12 +1172,14 @@ export class DeltaTestnetTracker {
           qty: tradeQty,
           entry_notional: entryNotional,
           exit_notional: exitNotional,
+          exchange_realized_pnl: exchangeRealizedPnl,
+          realized_funding: realizedFunding,
+          funding_verified: fundingVerified,
+          pnl_currency: pnlCurrency,
           fees,
-          fees_verified: commissionsComplete,
-          // Gross P&L is calculated only for a known vanilla contract multiplier.
-          // Net P&L and result are withheld for synthetic/unverified closes.
-          gross_pnl: grossPnl,
-          gross_pnl_verified: grossPnl !== null,
+          fees_verified: feesVerified,
+          gross_pnl: exchangeRealizedPnl,
+          gross_pnl_verified: exchangeRealizedPnl !== null,
           net_pnl: netPnl,
           net_pnl_verified: netPnl !== null,
           pnl_pct: pnlPct,
@@ -1094,6 +1194,28 @@ export class DeltaTestnetTracker {
       }
       if (trades.length) {
         await this.database.upsertMany('dd_trades', trades, 'execution_id');
+
+        // The old engine ledger keyed trades by the entry client_order_id. Once
+        // the canonical Delta position lifecycle row exists, hide that legacy
+        // duplicate and discard its duplicate Profit Rotation accounting event.
+        for (const trade of trades) {
+          const positionId = String(trade.execution_id || '').replace(/^delta-testnet-position:/, '');
+          const sourcePosition = closedRows.find(row => String(row.id) === positionId);
+          const legacyClientOrderId = stringValue(sourcePosition?.client_order_id);
+          if (legacyClientOrderId && legacyClientOrderId !== trade.execution_id) {
+            await this.database.update(
+              'dd_trades',
+              'execution_id=eq.' + encodeURIComponent(legacyClientOrderId),
+              { result: 'SUPERSEDED', net_pnl: null, net_pnl_verified: false }
+            ).catch(() => {});
+            if (typeof this.database.remove === 'function') {
+              await this.database.remove(
+                'dd_rotation_ledger',
+                'execution_id=eq.' + encodeURIComponent(legacyClientOrderId)
+              ).catch(() => {});
+            }
+          }
+        }
 
         // Profit Rotation is an accounting ledger only; it never moves funds.
         // Create events only from a fill-matched trade with verified positive
@@ -1120,9 +1242,20 @@ export class DeltaTestnetTracker {
           await this.database.upsertMany('dd_rotation_ledger', rotationRows, 'execution_id');
           await this.database.log('INFO', 'Profit Rotation accounting events materialized from verified profitable closes', {
             rowsMaterialized: rotationRows.length,
-            source: 'fill-matched trade with verified exchange net realized P&L',
+            source: 'exchange realized P&L + verified funding and wallet fee ledger',
             fundsMoved: false
           }).catch(() => {});
+        }
+        if (typeof this.database.remove === 'function') {
+          const profitableIds = new Set(rotationRows.map(row => row.execution_id));
+          for (const trade of trades) {
+            if (!profitableIds.has(trade.execution_id)) {
+              await this.database.remove(
+                'dd_rotation_ledger',
+                'execution_id=eq.' + encodeURIComponent(trade.execution_id)
+              ).catch(() => {});
+            }
+          }
         }
 
         await this.database.log('INFO', 'Fill-matched Delta Testnet closed trades materialized', {
