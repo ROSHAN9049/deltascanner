@@ -1158,23 +1158,68 @@ function Rotation({ ledger = [], accountDataProtected = false, ledgerComplete = 
   </>;
 }
 function Analytics({ trades = [], accountDataProtected = false, tradesComplete = false, tradeRowCount = null }) {
- if(accountDataProtected) return <Panel title="Analytics · Protected"><div className="lockedText">Delta Testnet trade analytics are private. Enter ENGINE_SECRET in Settings to view them.</div></Panel>;
- const engines=['MOMENTUM','SCALPING'].map(engine=>{
-  const rows=trades.filter(t=>t.strategy===engine), pnl=rows.filter(t=>safeNum(t.net_pnl)!==null), wins=pnl.filter(t=>safeNum(t.net_pnl)>0), losses=pnl.filter(t=>safeNum(t.net_pnl)<0);
-  const avgWin=wins.length?wins.reduce((s,t)=>s+safeNum(t.net_pnl),0)/wins.length:null, avgLoss=losses.length?losses.reduce((s,t)=>s+safeNum(t.net_pnl),0)/losses.length:null;
-  const rs=rows.map(t=>safeNum(t.r_multiple)), avgR=rows.length&&rs.every(v=>v!==null)?rs.reduce((s,v)=>s+v,0)/rows.length:null;
-  const net=tradesComplete&&rows.length&&pnl.length===rows.length?pnl.reduce((s,t)=>s+safeNum(t.net_pnl),0):null;
-  return {engine,rows,pnl,wins,avgWin,avgLoss,avgR,net};
- });
- const known=tradesComplete&&trades.length>0&&trades.every(t=>safeNum(t.net_pnl)!==null);
- const sorted=known?[...trades].sort((a,b)=>safeNum(b.net_pnl)-safeNum(a.net_pnl)):[];
- const exTop=known?trades.reduce((s,t)=>s+safeNum(t.net_pnl),0)-sorted.slice(0,5).reduce((s,t)=>s+safeNum(t.net_pnl),0):null;
- const byReason={}; for(const t of trades){const key=t.exit_reason||'UNKNOWN';byReason[key]=(byReason[key]||0)+1;}
- return <><section className="panel"><div className="panelTitle"><h2>Delta Testnet per-engine statistics</h2></div><div className="engineStats">{engines.map(e=><div key={e.engine}><h3>{e.engine}</h3><b>{!e.pnl.length?'NO P&L DATA':(!tradesComplete?'SAMPLE · ':'')+(e.wins.length/e.pnl.length*100).toFixed(1)+'% win rate'}</b><span>{e.rows.length} loaded rows · {e.pnl.length} with P&amp;L · avg win {e.avgWin===null?'—':money(e.avgWin)} · avg loss {e.avgLoss===null?'—':money(e.avgLoss)} · avg R {e.avgR===null?'—':e.avgR.toFixed(2)} · net {e.net===null?'INCOMPLETE DATA':money(e.net)}</span></div>)}</div></section>
- <section className="cards"><Card label="NET EXCLUDING TOP 5 WINNERS" value={exTop===null?(trades.length?'INCOMPLETE DATA':'—'):money(exTop)} sub={tradesComplete?'Available only when every recorded trade has net P&L':'Partial data — loaded records only (history incomplete)'}/><Card label="EXIT REASONS" value={Object.keys(byReason).length} sub={tradesComplete?'Recorded exit reason labels':'Partial data — loaded records only (history incomplete)'}/><Card label="TOTAL DELTA TESTNET TRADES" value={tradesComplete?trades.length:trades.length?'PARTIAL':'—'} sub={tradesComplete?'All stored Delta Testnet closed-trade rows':'Loaded '+trades.length+' of '+(tradeRowCount??'an unknown number')+' stored rows'}/></section>
- {!tradesComplete?<div className="lockedText">Partial data — loaded records only (history incomplete).</div>:null}
- <Panel title="Exits by reason"><div className="chips">{Object.entries(byReason).map(([reason,count])=><span key={reason}>{reason}: {count}</span>)}</div></Panel>
- <Panel title="Equity Curve"><div className="curve">{known?equityPoints(trades).map((p,i)=><span key={i} style={{height:Math.max(4,Math.min(150,70+p.delta))}} title={p.label}></span>):<div className="muted">{trades.length?'Equity curve hidden because P&L values are missing.':'No verified Delta Testnet closed-trade P&L records yet.'}</div>}</div></Panel></>;
+  if (accountDataProtected) return <Panel title="Analytics · Protected"><div className="lockedText">Delta Testnet trade analytics are private. Enter ENGINE_SECRET in Settings to view them.</div></Panel>;
+  const realizedValue = trade => trade?.gross_pnl_verified === true
+    ? safeNum(trade.exchange_realized_pnl ?? trade.gross_pnl)
+    : null;
+  const engines = ['MOMENTUM', 'SCALPING'].map(engine => {
+    const rows = trades.filter(trade => trade.strategy === engine);
+    const realizedRows = rows.filter(trade => realizedValue(trade) !== null);
+    const wins = realizedRows.filter(trade => realizedValue(trade) > 0);
+    const losses = realizedRows.filter(trade => realizedValue(trade) < 0);
+    const avgWin = wins.length
+      ? wins.reduce((sum, trade) => sum + realizedValue(trade), 0) / wins.length : null;
+    const avgLoss = losses.length
+      ? losses.reduce((sum, trade) => sum + realizedValue(trade), 0) / losses.length : null;
+    const rs = rows.map(trade => safeNum(trade.r_multiple));
+    const avgR = rows.length && rs.every(value => value !== null)
+      ? rs.reduce((sum, value) => sum + value, 0) / rows.length : null;
+    const netRows = rows.filter(trade => trade?.net_pnl_verified === true && safeNum(trade.net_pnl) !== null);
+    const net = tradesComplete && rows.length > 0 && netRows.length === rows.length
+      ? netRows.reduce((sum, trade) => sum + safeNum(trade.net_pnl), 0) : null;
+    return { engine, rows, realizedRows, wins, avgWin, avgLoss, avgR, net };
+  });
+  const realizedKnown = tradesComplete && trades.length > 0 &&
+    trades.every(trade => realizedValue(trade) !== null);
+  const netKnown = tradesComplete && trades.length > 0 &&
+    trades.every(trade => trade?.net_pnl_verified === true && safeNum(trade.net_pnl) !== null);
+  const sortedNet = netKnown
+    ? [...trades].sort((left, right) => safeNum(right.net_pnl) - safeNum(left.net_pnl)) : [];
+  const netExTopFive = netKnown
+    ? trades.reduce((sum, trade) => sum + safeNum(trade.net_pnl), 0) -
+      sortedNet.slice(0, 5).reduce((sum, trade) => sum + safeNum(trade.net_pnl), 0)
+    : null;
+  const byReason = {};
+  for (const trade of trades) {
+    const key = trade.exit_reason || 'UNKNOWN';
+    byReason[key] = (byReason[key] || 0) + 1;
+  }
+  return <>
+    <section className="panel">
+      <div className="panelTitle"><h2>Delta Testnet per-engine statistics</h2></div>
+      <div className="lockedText">Win rate and average win/loss use Delta-reported realized P&amp;L before fees, matching Delta P&amp;L Analytics. Net includes separately verified fees and funding.</div>
+      <div className="engineStats">{engines.map(engine => <div key={engine.engine}>
+        <h3>{engine.engine}</h3>
+        <b>{!engine.realizedRows.length ? 'NO REALIZED P&L DATA'
+          : (!tradesComplete ? 'SAMPLE · ' : '') +
+            (engine.wins.length / engine.realizedRows.length * 100).toFixed(1) + '% win rate'}</b>
+        <span>{engine.rows.length} loaded rows · {engine.realizedRows.length} with realized P&amp;L · avg win {engine.avgWin === null ? '—' : money(engine.avgWin)} · avg loss {engine.avgLoss === null ? '—' : money(engine.avgLoss)} · avg R {engine.avgR === null ? '—' : engine.avgR.toFixed(2)} · net {engine.net === null ? 'INCOMPLETE DATA' : money(engine.net)}</span>
+      </div>)}</div>
+    </section>
+    <section className="cards">
+      <Card label="NET EXCLUDING TOP 5 WINNERS" value={netExTopFive === null ? (trades.length ? 'INCOMPLETE DATA' : '—') : money(netExTopFive)}
+        sub={netKnown ? 'All-in net P&L after verified fees and funding' : 'Net history remains incomplete until every exchange cost is verified'}/>
+      <Card label="EXIT REASONS" value={Object.keys(byReason).length}
+        sub={tradesComplete ? 'Recorded exit reason labels' : 'Partial data — loaded records only (history incomplete)'}/>
+      <Card label="TOTAL DELTA TESTNET TRADES" value={tradesComplete ? trades.length : trades.length ? 'PARTIAL' : '—'}
+        sub={tradesComplete ? 'Canonical, non-duplicate Delta position lifecycles' : 'Loaded ' + trades.length + ' of ' + (tradeRowCount ?? 'an unknown number') + ' stored rows'}/>
+    </section>
+    {!tradesComplete ? <div className="lockedText">Partial data — loaded records only (history incomplete).</div> : null}
+    {!realizedKnown ? <div className="lockedText">Realized P&amp;L statistics are incomplete until each closed position has a verified Delta exchange result.</div> : null}
+    <Panel title="Exits by reason"><div className="chips">{Object.entries(byReason).map(([reason, count]) => <span key={reason}>{reason}: {count}</span>)}</div></Panel>
+    <Panel title="Equity Curve"><div className="curve">{netKnown ? equityPoints(trades).map((point, index) => <span key={index} style={{height:Math.max(4,Math.min(150,70+point.delta))}} title={point.label}></span>)
+      : <div className="muted">{trades.length ? 'Equity curve hidden until all-in net P&L values are verified.' : 'No verified Delta Testnet closed-trade P&L records yet.'}</div>}</div></Panel>
+  </>;
 }
 function equityPoints(trades) {
   let total=0;
