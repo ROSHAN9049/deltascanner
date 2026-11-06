@@ -26,6 +26,7 @@ import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from '
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
 import { buildApiDerivedTrackingPlan, strategyForDerivedTrade } from './tradetron-derived-trades.mjs';
 import { deltaExecutor } from './execution/delta-executor.mjs';
+import { projectCanonicalDeltaBrackets } from './execution/delta-position-projection.mjs';
 import { manageDeltaTestnetMultiGrid } from './execution/delta-multi-grid-engine.mjs';
 import { assertDirectDeltaExecutionMode, getExecutionRouteBlockReason, DELTA_TESTNET_FUTURES_ALLOWLIST, isAllowedDeltaTestnetFutureSymbol, isEligibleDeltaTestnetPerpetualProduct, isMarketTickFresh, canStartWorkerInExecutionProfile } from './execution/execution-route-policy.mjs';
 import { canExecuteDeltaTestnetOrders, checkDeltaTestnetPrivateApi, isPrivateApiConnectivityError } from './execution/testnet-private-api-health.mjs';
@@ -3891,6 +3892,42 @@ export class DeltaEngine {
   }
 
   async managePositionRow(row, exchangePosition, setting, openOrders = []) {
+    let canonicalRows;
+    try {
+      canonicalRows = await db.select(
+        'dd_delta_positions',
+        'symbol=eq.' + encodeURIComponent(row.symbol) +
+          '&status=eq.OPEN&select=symbol,status,client_order_id,entry_order_id,sl_price,tp_price&limit=10'
+      );
+    } catch (error) {
+      await this.log('ERROR', 'Canonical Delta bracket lookup failed; stale engine position levels were not used', {
+        symbol: row.symbol, executionId: row.execution_id,
+        error: String(error?.message || error).slice(0, 220),
+        executionBlocked: true
+      }).catch(() => {});
+      return;
+    }
+    const bracketProjection = projectCanonicalDeltaBrackets(row, canonicalRows);
+    if (!bracketProjection.ok) {
+      await this.log('ERROR', 'Canonical Delta bracket levels unavailable; stale engine position levels were not used', {
+        symbol: row.symbol, executionId: row.execution_id,
+        reason: bracketProjection.reason,
+        executionBlocked: true
+      }).catch(() => {});
+      return;
+    }
+    Object.assign(row, bracketProjection.patch);
+    if (bracketProjection.changed) {
+      await db.update('dd_positions', 'execution_id=eq.' + encodeURIComponent(row.execution_id), {
+        ...bracketProjection.patch, updated_at: iso()
+      });
+      await this.log('INFO', 'Engine position SL/TP projection aligned to exchange-confirmed Delta bracket', {
+        symbol: row.symbol, executionId: row.execution_id,
+        stop: bracketProjection.patch.stop_price ?? row.stop_price,
+        target: bracketProjection.patch.tp_price ?? row.tp_price,
+        entryOrderId: row.entry_order_id
+      });
+    }
     const mark = n(exchangePosition.mark_price || this.tickerMap.get(row.symbol)?.mark_price || row.current_price);
     const qty = Math.abs(n(exchangePosition.size));
     const originalRisk = Math.abs(n(row.entry_price) - n(row.stop_price));
