@@ -7,7 +7,7 @@ import {
   DELTA_TESTNET_REST_BASE,
   DELTA_TESTNET_PRIVATE_WS_URL
 } from '../worker/execution/delta-executor.mjs';
-import { DeltaTestnetTracker, normalizeDeltaWsPosition, normalizeDeltaFill, strategyFromClientOrderId } from '../worker/execution/delta-tracker.mjs';
+import { DeltaTestnetTracker, normalizeDeltaWsPosition, normalizeDeltaFill, normalizeDeltaWalletTransaction, strategyFromClientOrderId } from '../worker/execution/delta-tracker.mjs';
 import { parseDeltaExecutionMode } from '../server/config.js';
 import { assessCorrelatedEntry, correlationGroupForSymbol } from '../worker/engine.mjs';
 
@@ -148,6 +148,94 @@ function fakeRuntime({
 
   return { httpCalls, database, fetchImpl, logs, updates, persistedPositions };
 }
+
+
+test('Delta wallet transaction normalization preserves the exchange signed amount and metadata', () => {
+  const normalized = normalizeDeltaWalletTransaction({
+    id: 987654,
+    transaction_type: 'funding',
+    amount: '-210.17',
+    balance: '900.10',
+    asset_id: 1,
+    asset_symbol: 'USD',
+    product_id: 27,
+    created_at: '2026-11-05T12:00:00.123456Z',
+    meta_data: { product_symbol: 'BTCUSD' }
+  });
+  assert.equal(normalized.id, '987654');
+  assert.equal(normalized.transaction_type, 'funding');
+  assert.equal(normalized.amount, -210.17);
+  assert.equal(normalized.balance, 900.1);
+  assert.equal(normalized.asset_symbol, 'USD');
+  assert.equal(normalized.created_at, '2026-11-05T12:00:00.123456Z');
+  assert.deepEqual(normalized.meta_data, { product_symbol: 'BTCUSD' });
+  assert.equal(normalized.source, 'rest');
+  assert.equal(normalizeDeltaWalletTransaction({ id: 1, transaction_type: 'fee', amount: 0 }), null);
+});
+
+test('wallet transaction sync resumes pagination and upserts each page idempotently', async () => {
+  const walletUpserts = [];
+  const checkpointUpserts = [];
+  const calls = [];
+  const pages = [
+    {
+      rows: [
+        { id: 1, transaction_type: 'commission', amount: '-0.12', asset_symbol: 'USD', created_at: '2026-11-05T10:00:00Z' },
+        { id: 2, transaction_type: 'funding', amount: '-0.03', asset_symbol: 'USD', created_at: '2026-11-05T10:01:00Z' }
+      ],
+      after: 'wallet-cursor-2'
+    },
+    {
+      rows: [
+        { id: 3, transaction_type: 'commission_rebate', amount: '0.01', asset_symbol: 'USD', created_at: '2026-11-05T10:02:00Z' }
+      ],
+      after: null
+    }
+  ];
+  const database = {
+    async select(table) {
+      if (table === 'dd_delta_wallet_sync_state') return [];
+      return [];
+    },
+    async upsert(table, row) {
+      assert.equal(table, 'dd_delta_wallet_sync_state');
+      checkpointUpserts.push({ ...row });
+    },
+    async upsertMany(table, rows, conflict) {
+      assert.equal(table, 'dd_delta_wallet_transactions');
+      assert.equal(conflict, 'id');
+      walletUpserts.push(rows.map(row => ({ ...row })));
+    },
+    async log() {}
+  };
+  const tracker = new DeltaTestnetTracker({
+    env: demoEnv(),
+    database,
+    executor: {
+      async getWalletTransactionsPage(input) {
+        calls.push(input);
+        return pages[calls.length - 1];
+      }
+    },
+    WebSocketImpl: class {}
+  });
+  tracker.stopped = false;
+
+  const result = await tracker.syncRecentWalletTransactions();
+
+  assert.equal(result.pages, 2);
+  assert.equal(result.transactionsUpserted, 3);
+  assert.equal(result.completedWindow, true);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].after, null);
+  assert.equal(calls[1].after, 'wallet-cursor-2');
+  assert.equal(walletUpserts.length, 2);
+  assert.deepEqual(walletUpserts.flat().map(row => row.id), ['1', '2', '3']);
+  assert.equal(walletUpserts.flat()[0].amount, -0.12);
+  assert.equal(walletUpserts.flat()[1].amount, -0.03);
+  assert.ok(checkpointUpserts.some(row => row.after_cursor === 'wallet-cursor-2'));
+  assert.ok(checkpointUpserts.some(row => row.last_synced_through_us && row.window_start_us === null));
+});
 
 test('AMDBUSD is classified in the stock-token correlation group', () => {
   assert.equal(correlationGroupForSymbol('AMDBUSD'), 'STOCK_TOKENS');
