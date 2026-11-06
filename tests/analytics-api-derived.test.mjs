@@ -22,6 +22,18 @@ test('Delta analytics compute win metrics from exchange realized P&L and net cur
   assert.match(analytics, /const avgLoss = losses\.length/);
   assert.match(analytics, /const netKnown = tradesComplete/);
   assert.match(analytics, /trade\?\.net_pnl_verified === true && safeNum\(trade\.net_pnl\) !== null/);
-  assert.match(analytics, /equityPoints\(trades\)/);
+  assert.match(analytics, /equityPoints\(periodTrades\)/);
   assert.doesNotMatch(analytics, /equityPoints\(derivedRows\)/);
+});
+
+
+test('P&L and Analytics expose the same IST-aware date-window filtering', () => {
+  const pnlStart = source.indexOf('function PNL({');
+  const pnlEnd = source.indexOf('\nfunction Rotation(', pnlStart);
+  const pnl = source.slice(pnlStart, pnlEnd);
+  assert.match(pnl, /filterDeltaTradesByPeriod\(allTrades, period, fromDate, toDate\)/);
+  assert.match(pnl, /const complete = values => tradesComplete && values\.every/);
+  assert.match(analytics, /filterDeltaTradesByPeriod\(trades, period, fromDate, toDate\)/);
+  assert.match(source, /<option value="CUSTOM">Custom<\/option>/);
+  assert.match(source, /configured rate of ₹\{USD_INR_RATE\.toFixed\(2\)\} per USD/);
 });
