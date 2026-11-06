@@ -179,6 +179,9 @@ export default async function handler(req, res) {
       deltaTestnetClosedPositions: deltaTestnetClosedPositionRows || [],
       deltaTestnetClosedPositionCount: deltaTestnetClosedPositionCount == null
         ? null : Number(deltaTestnetClosedPositionCount),
+      deltaTestnetClosedPositions: deltaTestnetClosedPositionRows || [],
+      deltaTestnetClosedPositionCount: deltaTestnetClosedPositionCount == null
+        ? null : Number(deltaTestnetClosedPositionCount),
       deltaTestnetWalletTransactions: deltaTestnetWalletTransactionRows || [],
       deltaTestnetWalletTransactionRowCount: deltaTestnetWalletTransactionRowCount == null
         ? null : Number(deltaTestnetWalletTransactionRowCount),
