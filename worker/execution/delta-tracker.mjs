@@ -1196,8 +1196,8 @@ export class DeltaTestnetTracker {
           feesVerified = true;
         } else if (rawCloseCommission !== null) {
           fees = rawCloseCommission;
-          feesVerified = unsupportedFeeRows.length === 0 &&
-            unattributedFeeRows.length === 0;
+          feesVerified = walletRowsAreCovered && walletCurrencyCompatible &&
+            unsupportedFeeRows.length === 0 && unattributedFeeRows.length === 0;
         }
 
         let realizedFunding = null;
