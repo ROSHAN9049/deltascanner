@@ -1252,17 +1252,23 @@ async syncBracketMetadataOnce(key) {
       const closeDetailsVerified = details?.close_fill_history_complete === true && close.realized_pnl !== null;
       const realizedPnlVerified = close.realized_pnl !== null &&
         (closeSource === 'private_websocket' || closeDetailsVerified);
+      const realizedFundingVerified = close.realized_funding !== null
+        ? closeSource === 'private_websocket' || details?.close_fill_history_complete === true
+        : active.realized_funding_verified === true && numberOrNull(active.realized_funding) !== null;
+      const closePatch = { ...close };
+      // A position snapshot can carry funding accumulated before the final
+      // close event. Preserve that exchange value when the close event omits it.
+      if (close.realized_funding === null) delete closePatch.realized_funding;
       const closedAt = nowIso();
       await this.database.update('dd_delta_positions', 'id=eq.' + encodeURIComponent(active.id), {
         status: botManagedExit ? 'CLOSED' : 'CLOSED_EXTERNALLY',
         closed_at: closedAt,
         updated_at: closedAt,
         unrealized_pnl: 0,
-        ...close,
+        ...closePatch,
         close_source: closeSource,
         realized_pnl_verified: realizedPnlVerified,
-        realized_funding_verified: close.realized_funding !== null &&
-          (closeSource === 'private_websocket' || details?.close_fill_history_complete === true)
+        realized_funding_verified: realizedFundingVerified
       });
       void this.materializeVerifiedClosedTrades().catch(error =>
         this.logSocketWarning('Verified Delta Testnet trade projection deferred', {
