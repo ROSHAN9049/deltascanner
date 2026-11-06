@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   createDeltaExecutor,
   assertDeltaTestnetConfiguration,
+  DELTA_ENTRY_ORDER_LOOKUP_MAX_AGE_MS,
   DELTA_TESTNET_REST_BASE,
   DELTA_TESTNET_PRIVATE_WS_URL
 } from '../worker/execution/delta-executor.mjs';
@@ -469,17 +470,25 @@ test('historical close-fill backfill skips client-order lookup after three days 
     client_order_id: clientOrderId,
     side: 'BUY'
   });
+  const repeatedDetails = await executor.getRecentCloseDetails('BTCUSD', openedAt, {
+    entry_order_id: null,
+    client_order_id: clientOrderId,
+    side: 'BUY'
+  });
 
   assert.equal(details, null);
+  assert.equal(repeatedDetails, null);
   assert.ok(runtime.httpCalls.some(call => new URL(call.url).pathname === '/v2/fills'));
   assert.ok(!runtime.httpCalls.some(call =>
     new URL(call.url).pathname === '/v2/orders/client_order_id/' + clientOrderId
   ));
-  assert.ok(runtime.logs.some(row =>
-    row.level === 'INFO' &&
-    row.data?.fillResolution === 'UNRESOLVED' &&
-    row.data?.clientOrderLookupSkipped === true
-  ));
+  const unresolvedLogs = runtime.logs.filter(row =>
+    row.message.includes('client-order lookup skipped after 3 days') &&
+    row.data?.fillResolution === 'UNRESOLVED'
+  );
+  assert.equal(unresolvedLogs.length, 1, 'repeated reconciliation must not repeat the same INFO record');
+  assert.equal(unresolvedLogs[0].level, 'INFO');
+  assert.equal(unresolvedLogs[0].data.clientOrderLookupSkipped, true);
   assert.ok(!runtime.logs.some(row =>
     row.level === 'WARN' && /Entry fill identity was not found|Entry order lookup by client ID failed/.test(row.message)
   ));
@@ -935,8 +944,8 @@ test('closed-trade backfill resolves missing entry_order_id from client_order_id
     client_order_id: clientOrderId,
     realized_pnl: null,
     exit_reason: 'TP',
-    opened_at: '2026-10-29T10:00:00.000Z',
-    closed_at: '2026-10-29T10:10:00.000Z'
+    opened_at: new Date(Date.now() - 15 * 60_000).toISOString(),
+    closed_at: new Date(Date.now() - 5 * 60_000).toISOString()
   };
   const fills = [
     {
@@ -948,7 +957,7 @@ test('closed-trade backfill resolves missing entry_order_id from client_order_id
       price: '60000',
       commission: '0.01',
       commission_currency: 'USD',
-      created_at: '2026-10-29T10:00:01.000Z'
+      created_at: new Date(Date.now() - 15 * 60_000 + 1000).toISOString()
     },
     {
       id: 'exit-fill-flat',
@@ -959,7 +968,7 @@ test('closed-trade backfill resolves missing entry_order_id from client_order_id
       price: '60100',
       commission: '0.01',
       commission_currency: 'USD',
-      created_at: '2026-10-29T10:09:59.000Z',
+      created_at: new Date(Date.now() - 5 * 60_000 + 1000).toISOString(),
       raw: { meta_data: { new_position: { size: 0, realized_pnl: '0.15' }, order_type: 'market_order' } }
     }
   ];
@@ -1019,6 +1028,130 @@ test('closed-trade backfill resolves missing entry_order_id from client_order_id
   assert.equal(trade.exit_price, 60100);
   assert.equal(trade.net_pnl, 0.15);
   assert.equal(trade.net_pnl_verified, true);
+});
+
+test('tracker backfill skips entry client-order lookup after three days and logs UNRESOLVED once', async () => {
+  const now = Date.now();
+  const openedAt = new Date(now - DELTA_ENTRY_ORDER_LOOKUP_MAX_AGE_MS - 60 * 60_000).toISOString();
+  const closedAt = new Date(now - DELTA_ENTRY_ORDER_LOOKUP_MAX_AGE_MS - 5 * 60_000).toISOString();
+  const position = {
+    id: 146,
+    symbol: 'BTCUSD',
+    status: 'CLOSED',
+    close_source: 'rest_reconcile',
+    realized_pnl_verified: false,
+    strategy: 'MOMENTUM',
+    side: 'BUY',
+    qty: '1',
+    entry_order_id: null,
+    order_id: 'exit-146',
+    client_order_id: 'DDM-BTCUSD-older-than-three-days',
+    opened_at: openedAt,
+    closed_at: closedAt
+  };
+  const logs = [];
+  const lookupCalls = [];
+  const database = {
+    async select(table) {
+      if (table === 'dd_delta_positions') return [position];
+      if (table === 'dd_fills') return [{
+        id: 'exit-146-fill',
+        symbol: 'BTCUSD',
+        order_id: 'exit-146',
+        side: 'SELL',
+        size: '1',
+        price: '60100',
+        commission: '0.01',
+        created_at: new Date(Date.parse(closedAt) - 1000).toISOString()
+      }];
+      return [];
+    },
+    async upsertMany() {},
+    async log(level, message, data) { logs.push({ level, message, data }); }
+  };
+  const executor = {
+    async getOrderByClientOrderId(value) {
+      lookupCalls.push(value);
+      const error = new Error('order_not_found');
+      error.code = 'order_not_found';
+      throw error;
+    }
+  };
+  const tracker = new DeltaTestnetTracker({ env: demoEnv(), database, executor, WebSocketImpl: class {} });
+  tracker.stopped = false;
+
+  await tracker.materializeVerifiedClosedTrades();
+  await tracker.materializeVerifiedClosedTrades();
+
+  assert.deepEqual(lookupCalls, []);
+  const unresolved = logs.filter(row =>
+    row.message.includes('client-order lookup skipped after 3 days') &&
+    row.data?.fillResolution === 'UNRESOLVED'
+  );
+  assert.equal(unresolved.length, 1);
+  assert.equal(unresolved[0].level, 'INFO');
+  assert.equal(unresolved[0].data.clientOrderLookupSkipped, true);
+  assert.equal(logs.some(row => row.level === 'WARN'), false);
+});
+
+test('tracker keeps recent order_not_found backfill failures at WARN', async () => {
+  const now = Date.now();
+  const openedAt = new Date(now - 60 * 60_000).toISOString();
+  const closedAt = new Date(now - 5 * 60_000).toISOString();
+  const position = {
+    id: 147,
+    symbol: 'BTCUSD',
+    status: 'CLOSED',
+    close_source: 'rest_reconcile',
+    realized_pnl_verified: false,
+    strategy: 'MOMENTUM',
+    side: 'BUY',
+    qty: '1',
+    entry_order_id: null,
+    order_id: 'exit-147',
+    client_order_id: 'DDM-BTCUSD-recent',
+    opened_at: openedAt,
+    closed_at: closedAt
+  };
+  const logs = [];
+  const lookupCalls = [];
+  const database = {
+    async select(table) {
+      if (table === 'dd_delta_positions') return [position];
+      if (table === 'dd_fills') return [{
+        id: 'exit-147-fill',
+        symbol: 'BTCUSD',
+        order_id: 'exit-147',
+        side: 'SELL',
+        size: '1',
+        price: '60100',
+        commission: '0.01',
+        created_at: new Date(Date.parse(closedAt) - 1000).toISOString()
+      }];
+      return [];
+    },
+    async upsertMany() {},
+    async log(level, message, data) { logs.push({ level, message, data }); }
+  };
+  const executor = {
+    async getOrderByClientOrderId(value) {
+      lookupCalls.push(value);
+      const error = new Error('order_not_found');
+      error.code = 'order_not_found';
+      throw error;
+    }
+  };
+  const tracker = new DeltaTestnetTracker({ env: demoEnv(), database, executor, WebSocketImpl: class {} });
+  tracker.stopped = false;
+
+  await tracker.materializeVerifiedClosedTrades();
+
+  assert.deepEqual(lookupCalls, ['DDM-BTCUSD-recent']);
+  assert.ok(logs.some(row =>
+    row.level === 'WARN' &&
+    row.message === 'Delta entry fill backfill lookup by client order ID failed; P&L remains unverified' &&
+    /order_not_found/.test(row.data.error)
+  ));
 });
 
 test('closed trade projection requires matching entry order, exit side and full quantity', async () => {

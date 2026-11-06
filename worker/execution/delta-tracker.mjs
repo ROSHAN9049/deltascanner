@@ -3,6 +3,7 @@ import * as defaultDb from '../../server/db.js';
 import {
   assertDeltaTestnetConfiguration,
   deltaExecutor,
+  DELTA_ENTRY_ORDER_LOOKUP_MAX_AGE_MS,
   DELTA_TESTNET_PRIVATE_WS_URL,
   deltaHmacSha256
 } from './delta-executor.mjs';
@@ -170,6 +171,7 @@ export class DeltaTestnetTracker {
     this.fillSyncInFlight = null;
     this.fillTradeMaterializerInFlight = null;
     this.fillSyncLastWarningAt = 0;
+    this.historicalEntryFillLookupLogged = new Set();
   }
 
   async start() {
@@ -201,6 +203,46 @@ export class DeltaTestnetTracker {
     if (!shouldEmitThrottledLog(this.lastSocketWarningAt, now, WS_ERROR_LOG_COOLDOWN_MS)) return;
     this.lastSocketWarningAt = now;
     await this.database.log(level, message, data).catch(() => {});
+  }
+
+  async logHistoricalEntryFillUnresolvedOnce({
+    positionId,
+    symbol,
+    clientOrderId,
+    openedMs,
+    orderNotFound = false
+  } = {}) {
+    const identity = stringValue(positionId) || stringValue(clientOrderId) ||
+      (Number.isFinite(openedMs) ? String(openedMs) : 'unknown');
+    const key = stringValue(symbol).toUpperCase() + ':' + identity;
+    if (this.historicalEntryFillLookupLogged.has(key)) return;
+
+    // A bounded process-local cache prevents a repeated INFO record on every
+    // closed-trade materialization cycle without persisting reconciliation state.
+    if (this.historicalEntryFillLookupLogged.size >= 1024) {
+      const oldestKey = this.historicalEntryFillLookupLogged.values().next().value;
+      if (oldestKey !== undefined) this.historicalEntryFillLookupLogged.delete(oldestKey);
+    }
+    this.historicalEntryFillLookupLogged.add(key);
+
+    if (typeof this.database.log !== 'function') return;
+    await this.database.log(
+      'INFO',
+      orderNotFound
+        ? '[Tracker] Historical entry order not found; fill identity remains UNRESOLVED'
+        : '[Tracker] Historical entry fill identity remains UNRESOLVED; client-order lookup skipped after 3 days',
+      {
+        symbol: stringValue(symbol).toUpperCase(),
+        positionId: positionId ?? null,
+        hasClientOrderId: Boolean(stringValue(clientOrderId)),
+        fillResolution: 'UNRESOLVED',
+        clientOrderLookupSkipped: !orderNotFound,
+        reason: orderNotFound ? 'order_not_found' : 'older_than_3_days',
+        ...(Number.isFinite(openedMs)
+          ? { lookupAgeMs: Math.max(0, Date.now() - openedMs) }
+          : {})
+      }
+    ).catch(() => {});
   }
 
   clearAuthTimeout() {
@@ -633,54 +675,82 @@ export class DeltaTestnetTracker {
         // REST fill rows can omit client_order_id even though the position
         // retains it. Resolve the exchange order through Delta's client-ID
         // endpoint, then match the local fill ledger by the returned order ID.
+        const entryLookupAgeMs = Date.now() - openedMs;
+        const historicalEntryLookupSkipped =
+          entryLookupAgeMs > DELTA_ENTRY_ORDER_LOOKUP_MAX_AGE_MS;
         if (!explicitEntryOrderId && !entryFillsByClientOrderId.length &&
             entryClientOrderId && typeof this.executor.getOrderByClientOrderId === 'function') {
-          try {
-            const entryOrder = await this.executor.getOrderByClientOrderId(entryClientOrderId);
-            const lookupProductId = numberOrNull(entryOrder?.product_id);
-            const lookupSymbol = stringValue(entryOrder?.product_symbol || entryOrder?.symbol).toUpperCase();
-            const lookupSide = stringValue(entryOrder?.side).toUpperCase();
-            const lookupClientOrderId = stringValue(entryOrder?.client_order_id);
-            const localProductId = numberOrNull(
-              fills.find(fill => numberOrNull(fill?.product_id) !== null)?.product_id
-            );
-            const lookupContextMatches =
-              (lookupProductId === null || localProductId === null || lookupProductId === localProductId) &&
-              (!lookupSymbol || lookupSymbol === symbol) &&
-              (!lookupSide || lookupSide === side) &&
-              (!lookupClientOrderId || lookupClientOrderId === entryClientOrderId);
-
-            if (lookupContextMatches && entryOrder?.id !== null && entryOrder?.id !== undefined) {
-              resolvedEntryOrderId = String(entryOrder.id);
-              entryFillsByClientOrderLookup = fills.filter(fill =>
-                String(fill?.order_id ?? '') === resolvedEntryOrderId && validEntryFill(fill)
+          if (historicalEntryLookupSkipped) {
+            await this.logHistoricalEntryFillUnresolvedOnce({
+              positionId: position.id,
+              symbol,
+              clientOrderId: entryClientOrderId,
+              openedMs
+            });
+          } else {
+            try {
+              const entryOrder = await this.executor.getOrderByClientOrderId(entryClientOrderId);
+              const lookupProductId = numberOrNull(entryOrder?.product_id);
+              const lookupSymbol = stringValue(entryOrder?.product_symbol || entryOrder?.symbol).toUpperCase();
+              const lookupSide = stringValue(entryOrder?.side).toUpperCase();
+              const lookupClientOrderId = stringValue(entryOrder?.client_order_id);
+              const localProductId = numberOrNull(
+                fills.find(fill => numberOrNull(fill?.product_id) !== null)?.product_id
               );
-              if (entryFillsByClientOrderLookup.length) {
-                if (typeof this.database.update === 'function') {
-                  await this.database.update(
-                    'dd_delta_positions',
-                    'id=eq.' + encodeURIComponent(String(position.id)) + '&entry_order_id=is.null',
-                    { entry_order_id: resolvedEntryOrderId, updated_at: nowIso() }
-                  );
-                }
-                position.entry_order_id = resolvedEntryOrderId;
-                if (typeof this.database.log === 'function') {
-                  await this.database.log('INFO', '[Tracker] Recovered missing entry order ID from client order ID', {
-                    symbol,
-                    positionId: position.id,
-                    entryOrderId: resolvedEntryOrderId,
-                    matchedFillCount: entryFillsByClientOrderLookup.length
-                  }).catch(() => {});
+              const lookupContextMatches =
+                (lookupProductId === null || localProductId === null || lookupProductId === localProductId) &&
+                (!lookupSymbol || lookupSymbol === symbol) &&
+                (!lookupSide || lookupSide === side) &&
+                (!lookupClientOrderId || lookupClientOrderId === entryClientOrderId);
+
+              if (lookupContextMatches && entryOrder?.id !== null && entryOrder?.id !== undefined) {
+                resolvedEntryOrderId = String(entryOrder.id);
+                entryFillsByClientOrderLookup = fills.filter(fill =>
+                  String(fill?.order_id ?? '') === resolvedEntryOrderId && validEntryFill(fill)
+                );
+                if (entryFillsByClientOrderLookup.length) {
+                  if (typeof this.database.update === 'function') {
+                    await this.database.update(
+                      'dd_delta_positions',
+                      'id=eq.' + encodeURIComponent(String(position.id)) + '&entry_order_id=is.null',
+                      { entry_order_id: resolvedEntryOrderId, updated_at: nowIso() }
+                    );
+                  }
+                  position.entry_order_id = resolvedEntryOrderId;
+                  if (typeof this.database.log === 'function') {
+                    await this.database.log('INFO', '[Tracker] Recovered missing entry order ID from client order ID', {
+                      symbol,
+                      positionId: position.id,
+                      entryOrderId: resolvedEntryOrderId,
+                      matchedFillCount: entryFillsByClientOrderLookup.length
+                    }).catch(() => {});
+                  }
                 }
               }
+            } catch (error) {
+              const errorMessage = String(error?.message || error);
+              const errorCode = stringValue(error?.code).toLowerCase();
+              const isOrderNotFound =
+                errorCode === 'order_not_found' || /\border_not_found\b/i.test(errorMessage);
+              const historicalOrderNotFound =
+                isOrderNotFound && Date.now() - openedMs > DELTA_ENTRY_ORDER_LOOKUP_MAX_AGE_MS;
+              if (historicalOrderNotFound) {
+                await this.logHistoricalEntryFillUnresolvedOnce({
+                  positionId: position.id,
+                  symbol,
+                  clientOrderId: entryClientOrderId,
+                  openedMs,
+                  orderNotFound: true
+                });
+              } else {
+                await this.logSocketWarning('Delta entry fill backfill lookup by client order ID failed; P&L remains unverified', {
+                  symbol,
+                  positionId: position.id,
+                  hasClientOrderId: true,
+                  error: errorMessage.slice(0, 200)
+                }, 'WARN');
+              }
             }
-          } catch (error) {
-            await this.logSocketWarning('Delta entry fill backfill lookup by client order ID failed; P&L remains unverified', {
-              symbol,
-              positionId: position.id,
-              hasClientOrderId: true,
-              error: String(error?.message || error).slice(0, 200)
-            }, 'WARN');
           }
         }
 
