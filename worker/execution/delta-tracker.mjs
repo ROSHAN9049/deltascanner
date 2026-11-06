@@ -1115,7 +1115,9 @@ export class DeltaTestnetTracker {
           (walletTransactionProductId(row) === null && walletTransactionSymbol(row) === symbol)
         );
         const pnlWalletRows = positionWalletRows.filter(row =>
-          ['cashflow', 'commission', 'commission_rebate', 'liquidation_fee', 'funding'].includes(
+          ['commission', 'commission_rebate', 'liquidation_fee', 'funding',
+            'trading_credits_paid', 'trading_fee_credits_paid_liquidation_fee',
+            'trading_credits_reverted'].includes(
             stringValue(row?.transaction_type).toLowerCase()
           )
         );
@@ -1128,9 +1130,6 @@ export class DeltaTestnetTracker {
           numberOrNull(walletSyncState.last_synced_through_us) >= closedMs * 1000;
         const unattributedFundingRows = unattributedPnlWalletRows.filter(row =>
           stringValue(row?.transaction_type).toLowerCase() === 'funding'
-        );
-        const unattributedLiquidationFeeRows = unattributedPnlWalletRows.filter(row =>
-          stringValue(row?.transaction_type).toLowerCase() === 'liquidation_fee'
         );
         const unattributedFeeRows = unattributedPnlWalletRows.filter(row =>
           ['commission', 'commission_rebate', 'liquidation_fee',
