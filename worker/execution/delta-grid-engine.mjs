@@ -73,14 +73,24 @@ export async function cancelAndVerifyGridOrder({ executor, orderId, clientOrderI
     throw new Error('Grid order cancellation requires a verified exchange order ID');
   }
 
-  await executor.cancelOrderById(resolvedOrderId);
-  // Deliberately perform a fresh read after the cancel helper. A terminal fill
-  // or a stale cancel acknowledgement is not proof that the resting entry is gone.
+  let cancelRequestError = null;
+  try {
+    await executor.cancelOrderById(resolvedOrderId);
+  } catch (error) {
+    // A request timeout does not establish whether DELETE reached the exchange.
+    // Still perform the required read-after-cancel before declaring failure.
+    cancelRequestError = error;
+  }
+  // Deliberately perform a fresh read after the cancel helper, even when that
+  // helper timed out. A FILLED or still-open state is not cancellation proof.
   const confirmedOrder = await executor.getOrderById(resolvedOrderId);
   const confirmedState = text(confirmedOrder?.state).toUpperCase();
   if (!cancelledOrderStates.has(confirmedState)) {
+    const requestDetail = cancelRequestError
+      ? '; cancel request error: ' + String(cancelRequestError?.message || cancelRequestError).slice(0, 180)
+      : '';
     throw new Error('Grid entry cancellation is unconfirmed; exchange state is ' +
-      (confirmedState || 'UNKNOWN'));
+      (confirmedState || 'UNKNOWN') + requestDetail);
   }
   return { orderId: resolvedOrderId, order: confirmedOrder, state: 'CANCELLED' };
 }
