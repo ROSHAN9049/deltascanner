@@ -93,7 +93,9 @@ export function createDeltaPositionReconciler({
 
   async function logUplMismatchIfNeeded(position) {
     const entryPrice = numberOrNull(position?.entry_price);
-    const markPrice = numberOrNull(position?.current_price);
+    // Delta calculates vanilla futures uPnL from mark/fair price. Never compare
+    // it with a last-traded/current-price fallback when mark_price is absent.
+    const markPrice = numberOrNull(position?.mark_price);
     const exchangeUpl = numberOrNull(position?.unrealized_pnl);
     const qty = numberOrNull(position?.qty);
     const side = stringValue(position?.side).toUpperCase();
@@ -133,6 +135,11 @@ export function createDeltaPositionReconciler({
       exchangeUpl,
       driftPct: Number(driftPct.toFixed(2)),
       contractValue,
+      impliedContractValue: Number((Math.abs(exchangeUpl) /
+        Math.max(1e-12, Math.abs(markPrice - entryPrice) * qty)).toFixed(8)),
+      indexPrice: numberOrNull(position?.index_price),
+      unrealizedCashflow: numberOrNull(position?.unrealized_cashflow),
+      markPriceSource: 'exchange_mark_price',
       entryPrice,
       markPrice,
       qty,
