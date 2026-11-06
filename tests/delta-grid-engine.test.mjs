@@ -202,9 +202,10 @@ test('Grid preserves reservation and emits CRITICAL when exchange cancellation c
     pendingEntries: [{ symbol: 'NVDAXUSD', exchangeOrderId: '654', clientOrderId: 'DDG-NVDAXUSD-X' }],
     positions: [], events: []
   };
+  const calls = [];
   const executor = {
-    async cancelOrderById() { throw new Error('exchange timeout'); },
-    async getOrderById(id) { return { id, state: 'OPEN' }; },
+    async cancelOrderById(id) { calls.push(['cancel', id]); throw new Error('exchange timeout'); },
+    async getOrderById(id) { calls.push(['get', id]); return { id, state: 'OPEN' }; },
     async getOpenPositions() { return []; }
   };
   const database = {
@@ -224,4 +225,16 @@ test('Grid preserves reservation and emits CRITICAL when exchange cancellation c
   assert.equal(updates.length, 0);
   assert.equal(logs[0].level, 'CRITICAL');
   assert.equal(logs[0].data.reservationReleased, false);
+  assert.deepEqual(calls, [['cancel', 654], ['get', 654]]);
+});
+
+test('Grid accepts a read-after-timeout only when Delta confirms the order is CANCELLED', async () => {
+  const calls = [];
+  const executor = {
+    async cancelOrderById(id) { calls.push(['cancel', id]); throw new Error('response timeout after DELETE'); },
+    async getOrderById(id) { calls.push(['get', id]); return { id, state: 'CANCELLED' }; }
+  };
+  const result = await cancelAndVerifyGridOrder({ executor, orderId: 321 });
+  assert.equal(result.state, 'CANCELLED');
+  assert.deepEqual(calls, [['cancel', 321], ['get', 321]]);
 });
