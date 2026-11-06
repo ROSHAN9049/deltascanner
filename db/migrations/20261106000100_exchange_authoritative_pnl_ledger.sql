@@ -4,12 +4,14 @@ ALTER TABLE public.dd_delta_positions
   ADD COLUMN IF NOT EXISTS realized_funding NUMERIC NULL,
   ADD COLUMN IF NOT EXISTS funding_verified BOOLEAN NOT NULL DEFAULT FALSE,
   ADD COLUMN IF NOT EXISTS fees_verified BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS fee_currency TEXT NULL,
   ADD COLUMN IF NOT EXISTS pnl_currency TEXT NULL;
 
 ALTER TABLE public.dd_trades
   ADD COLUMN IF NOT EXISTS exchange_realized_pnl NUMERIC NULL,
   ADD COLUMN IF NOT EXISTS realized_funding NUMERIC NULL,
   ADD COLUMN IF NOT EXISTS funding_verified BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS fee_currency TEXT NULL,
   ADD COLUMN IF NOT EXISTS pnl_currency TEXT NULL;
 
 COMMENT ON COLUMN public.dd_trades.exchange_realized_pnl IS
@@ -46,6 +48,7 @@ CREATE INDEX IF NOT EXISTS dd_wallet_transactions_asset_created_idx
 CREATE TABLE IF NOT EXISTS public.dd_wallet_transaction_sync_state (
   id BIGINT PRIMARY KEY DEFAULT 1,
   last_synced_through_us BIGINT NULL,
+  history_start_us BIGINT NULL,
   window_start_us BIGINT NULL,
   window_end_us BIGINT NULL,
   after_cursor TEXT NULL,
@@ -54,6 +57,9 @@ CREATE TABLE IF NOT EXISTS public.dd_wallet_transaction_sync_state (
   rows_ingested BIGINT NOT NULL DEFAULT 0 CHECK (rows_ingested >= 0),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE public.dd_wallet_transaction_sync_state
+  ADD COLUMN IF NOT EXISTS history_start_us BIGINT NULL;
 
 INSERT INTO public.dd_wallet_transaction_sync_state (id)
 VALUES (1)
