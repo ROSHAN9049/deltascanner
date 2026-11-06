@@ -1127,6 +1127,7 @@ export class DeltaTestnetTracker {
         const walletRowsAreCovered = productId !== null &&
           walletTransactionsLoaded &&
           walletSyncComplete &&
+          numberOrNull(walletSyncState.history_start_us) <= openedMs * 1000 &&
           numberOrNull(walletSyncState.last_synced_through_us) >= closedMs * 1000;
         const unattributedFundingRows = unattributedPnlWalletRows.filter(row =>
           stringValue(row?.transaction_type).toLowerCase() === 'funding'
