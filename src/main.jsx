@@ -477,7 +477,6 @@ function App() {
     {tab === 'delta-testnet-positions' && <DeltaTestnetPositions rows={state?.deltaTestnetPositions || []} accountDataProtected={accountDataProtected} mode={executionCoverage?.deltaExecutionMode || 'disabled'} />}
     {tab === 'trade-history' && <TradeHistory trades={trades} title="Trade History · Delta Testnet Ledger" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'pnl' && <PNL
-      trades={trades}
       closedPositions={state?.deltaTestnetClosedPositions || []}
       closedPositionCount={state?.deltaTestnetClosedPositionCount ?? null}
       walletTransactions={state?.deltaTestnetWalletTransactions || []}
@@ -485,7 +484,6 @@ function App() {
       walletSyncState={state?.deltaTestnetWalletSyncState || null}
       settings={settings}
       accountDataProtected={accountDataProtected}
-      tradesComplete={tradeHistoryComplete}
       fillSyncState={state?.deltaTestnetFillSyncState || null}
       fillCount={state?.deltaTestnetFillCount ?? null}
     />}
@@ -1063,7 +1061,6 @@ function walletAmountMapLabel(values) {
     : 'NO RECORDED ROWS';
 }
 function PNL({
-  trades = [],
   closedPositions = [],
   closedPositionCount = null,
   walletTransactions = [],
@@ -1071,7 +1068,6 @@ function PNL({
   walletSyncState = null,
   settings = {},
   accountDataProtected = false,
-  tradesComplete = false,
   fillSyncState = null,
   fillCount = null
 }) {
