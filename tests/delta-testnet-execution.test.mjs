@@ -973,6 +973,7 @@ test('wallet transaction sync upserts idempotently and advances its cursor check
   assert.ok(walletBatches.every(batch => batch.conflict === 'id'));
   assert.deepEqual(walletBatches.flatMap(batch => batch.values.map(row => row.id)), ['987', '988']);
   assert.ok(state.last_synced_through_us > 0);
+  assert.ok(state.history_start_us > 0);
   assert.equal(state.window_start_us, null);
   assert.equal(state.window_end_us, null);
   assert.equal(state.after_cursor, null);
@@ -1274,7 +1275,9 @@ test('closed trade projection requires matching entry order, exit side and full 
       if (table === 'dd_fills') return fills;
       if (table === 'dd_market_cache') return [{ symbol: 'BTCUSD', product_id: 27, contract_value: '0.001', notional_type: 'vanilla' }];
       if (table === 'dd_wallet_transaction_sync_state') return [{
-        id: 1, last_synced_through_us: Date.parse(closedPosition.closed_at) * 1000 + 1
+        id: 1,
+        last_synced_through_us: Date.parse(closedPosition.closed_at) * 1000 + 1,
+        history_start_us: Date.parse(closedPosition.opened_at) * 1000 - 1
       }];
       if (table === 'dd_wallet_transactions') return [
         { id: 'cashflow-42', transaction_type: 'cashflow', amount: '0.2', product_id: 27, asset_symbol: 'USD' },
