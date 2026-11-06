@@ -153,9 +153,11 @@ test('exchange-authoritative P&L migration adds private wallet history and verif
   assert.match(exchangePnlMigration, /^BEGIN;/);
   assert.match(exchangePnlMigration, /CREATE TABLE IF NOT EXISTS public\.dd_wallet_transactions/i);
   assert.match(exchangePnlMigration, /CREATE TABLE IF NOT EXISTS public\.dd_wallet_transaction_sync_state/i);
+  assert.match(exchangePnlMigration, /ADD COLUMN IF NOT EXISTS history_start_us BIGINT NULL/i);
   assert.match(exchangePnlMigration, /ADD COLUMN IF NOT EXISTS exchange_realized_pnl NUMERIC NULL/i);
   assert.match(exchangePnlMigration, /ADD COLUMN IF NOT EXISTS realized_funding NUMERIC NULL/i);
   assert.match(exchangePnlMigration, /ADD COLUMN IF NOT EXISTS funding_verified BOOLEAN NOT NULL DEFAULT FALSE/i);
+  assert.match(exchangePnlMigration, /ADD COLUMN IF NOT EXISTS fee_currency TEXT NULL/i);
   assert.match(exchangePnlMigration, /ALTER TABLE public\.dd_wallet_transactions ENABLE ROW LEVEL SECURITY/i);
   assert.match(exchangePnlMigration, /REVOKE ALL ON TABLE public\.dd_wallet_transactions FROM anon, authenticated/i);
   assert.match(exchangePnlMigration, /GRANT ALL ON TABLE public\.dd_wallet_transactions TO service_role/i);
