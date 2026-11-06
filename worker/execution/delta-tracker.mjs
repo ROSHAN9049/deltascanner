@@ -1072,8 +1072,7 @@ export class DeltaTestnetTracker {
           try {
             const selected = await this.database.select(
               'dd_wallet_transactions',
-              'product_id=eq.' + encodeURIComponent(String(productId)) +
-              '&created_at=gte.' + encodeURIComponent(walletFrom) +
+              'created_at=gte.' + encodeURIComponent(walletFrom) +
               '&created_at=lte.' + encodeURIComponent(walletTo) +
               '&order=created_at.asc&limit=2000'
             );
@@ -1089,15 +1088,42 @@ export class DeltaTestnetTracker {
             }, 'WARN');
           }
         }
-        const positionWalletRows = walletTransactions;
-        const walletRowsAreCovered = productId !== null &&
-          walletTransactionsLoaded &&
-          walletSyncComplete &&
-          numberOrNull(walletSyncState.last_synced_through_us) >= closedMs * 1000;
+        const walletTransactionProductId = row => numberOrNull(
+          row?.product_id ?? row?.meta_data?.product_id ?? row?.raw?.product_id
+        );
+        const walletTransactionSymbol = row => stringValue(
+          row?.meta_data?.product_symbol ?? row?.meta_data?.symbol ??
+          row?.raw?.product_symbol ?? row?.raw?.symbol
+        ).toUpperCase();
+        const allPnlWalletRows = walletTransactions.filter(row =>
+          ['cashflow', 'commission', 'commission_rebate', 'liquidation_fee', 'funding'].includes(
+            stringValue(row?.transaction_type).toLowerCase()
+          )
+        );
+        const positionWalletRows = walletTransactions.filter(row =>
+          walletTransactionProductId(row) === productId ||
+          (walletTransactionProductId(row) === null && walletTransactionSymbol(row) === symbol)
+        );
         const pnlWalletRows = positionWalletRows.filter(row =>
           ['cashflow', 'commission', 'commission_rebate', 'liquidation_fee', 'funding'].includes(
             stringValue(row?.transaction_type).toLowerCase()
           )
+        );
+        const unattributedPnlWalletRows = allPnlWalletRows.filter(row =>
+          walletTransactionProductId(row) === null && !walletTransactionSymbol(row)
+        );
+        const walletRowsAreCovered = productId !== null &&
+          walletTransactionsLoaded &&
+          walletSyncComplete &&
+          numberOrNull(walletSyncState.last_synced_through_us) >= closedMs * 1000;
+        const unattributedFundingRows = unattributedPnlWalletRows.filter(row =>
+          stringValue(row?.transaction_type).toLowerCase() === 'funding'
+        );
+        const unattributedCashflowRows = unattributedPnlWalletRows.filter(row =>
+          stringValue(row?.transaction_type).toLowerCase() === 'cashflow'
+        );
+        const unattributedLiquidationFeeRows = unattributedPnlWalletRows.filter(row =>
+          stringValue(row?.transaction_type).toLowerCase() === 'liquidation_fee'
         );
         const feeRows = pnlWalletRows.filter(row =>
           ['commission', 'commission_rebate', 'liquidation_fee'].includes(
@@ -1137,13 +1163,21 @@ export class DeltaTestnetTracker {
           // Fill commission is returned by Delta for every matched entry and
           // exit fill. Prefer that per-fill value; wallet commission movements
           // supplement fee types not represented on fills (e.g. liquidation).
-          const liquidationFee = walletRowsAreCovered && walletCurrencyCompatible
+          const liquidationFeeAttributionComplete = walletRowsAreCovered && walletCurrencyCompatible &&
+            unattributedLiquidationFeeRows.length === 0;
+          const liquidationFee = liquidationFeeAttributionComplete
             ? -feeRows.filter(row => stringValue(row?.transaction_type).toLowerCase() === 'liquidation_fee')
               .reduce((sum, row) => sum + (numberOrNull(row?.amount) ?? 0), 0)
             : 0;
           fees = fillCommissionTotal + liquidationFee;
-          feesVerified = true;
-        } else if (walletRowsAreCovered && walletCurrencyCompatible) {
+          feesVerified = !feeRows.some(row =>
+            stringValue(row?.transaction_type).toLowerCase() === 'liquidation_fee'
+          ) || liquidationFeeAttributionComplete;
+        } else if (walletRowsAreCovered && walletCurrencyCompatible &&
+          unattributedLiquidationFeeRows.length === 0 &&
+          unattributedPnlWalletRows.filter(row => ['commission', 'commission_rebate'].includes(
+            stringValue(row?.transaction_type).toLowerCase()
+          )).length === 0) {
           fees = -walletFeeMovement;
           feesVerified = true;
         } else if (rawCloseCommission !== null) {
@@ -1153,7 +1187,7 @@ export class DeltaTestnetTracker {
 
         let realizedFunding = null;
         let fundingVerified = false;
-        if (walletRowsAreCovered && walletCurrencyCompatible) {
+        if (walletRowsAreCovered && walletCurrencyCompatible && unattributedFundingRows.length === 0) {
           realizedFunding = walletFunding;
           fundingVerified = true;
         } else if (rawCloseFunding !== null) {
@@ -1162,7 +1196,8 @@ export class DeltaTestnetTracker {
         }
 
         let exchangeRealizedPnl = realizedPnlVerified ? realizedPnl : null;
-        if (walletRowsAreCovered && cashflowRows.length && walletCurrencyCompatible) {
+        if (walletRowsAreCovered && cashflowRows.length && walletCurrencyCompatible &&
+            unattributedCashflowRows.length === 0) {
           // Delta's India help material identifies futures cashflow as realized
           // P&L. It is the account-ledger cross-check for the fill snapshot.
           exchangeRealizedPnl = walletCashflow;
