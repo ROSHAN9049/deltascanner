@@ -66,6 +66,8 @@ export default async function handler(req, res) {
       deltaTestnetClosedTodayCount,
       deltaTestnetFillSyncStateRows,
       deltaTestnetFillCount,
+      deltaTestnetClosedPositionRows,
+      deltaTestnetClosedPositionCount,
       deltaTestnetWalletTransactionRows,
       deltaTestnetWalletTransactionRowCount,
       deltaTestnetWalletSyncStateRows
@@ -81,11 +83,13 @@ export default async function handler(req, res) {
           count('dd_delta_positions', 'status=in.(CLOSED,CLOSED_EXTERNALLY)&closed_at=gte.' + todayStartQuery + '&select=id').catch(() => null),
           select('dd_delta_fill_sync_state', 'id=eq.1&limit=1').catch(() => []),
           count('dd_fills', 'select=id').catch(() => null),
+          select('dd_delta_positions', 'status=in.(CLOSED,CLOSED_EXTERNALLY)&order=closed_at.desc&limit=1000').catch(() => []),
+          count('dd_delta_positions', 'status=in.(CLOSED,CLOSED_EXTERNALLY)&select=id').catch(() => null),
           select('dd_delta_wallet_transactions', 'order=created_at.desc&limit=1000').catch(() => []),
           count('dd_delta_wallet_transactions', 'select=id').catch(() => null),
           select('dd_delta_wallet_sync_state', 'id=eq.1&limit=1').catch(() => [])
         ])
-      : [[], null, [], null, [], null, [], null, [], null, [], null, []];
+      : [[], null, [], null, [], null, [], null, [], null, [], null, [], null, []];
 
     const [lastConfirmedSignalResult, signalsTodayCount] = await Promise.all([
       select(
@@ -172,6 +176,9 @@ export default async function handler(req, res) {
       deltaTestnetTradeRowCount: deltaTestnetTradeRowCount == null ? null : Number(deltaTestnetTradeRowCount),
       deltaTestnetFillSyncState: Array.isArray(deltaTestnetFillSyncStateRows) ? deltaTestnetFillSyncStateRows[0] || null : null,
       deltaTestnetFillCount: deltaTestnetFillCount == null ? null : Number(deltaTestnetFillCount),
+      deltaTestnetClosedPositions: deltaTestnetClosedPositionRows || [],
+      deltaTestnetClosedPositionCount: deltaTestnetClosedPositionCount == null
+        ? null : Number(deltaTestnetClosedPositionCount),
       deltaTestnetWalletTransactions: deltaTestnetWalletTransactionRows || [],
       deltaTestnetWalletTransactionRowCount: deltaTestnetWalletTransactionRowCount == null
         ? null : Number(deltaTestnetWalletTransactionRowCount),
