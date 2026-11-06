@@ -225,6 +225,7 @@ export class DeltaTestnetTracker {
     }
     this.historicalEntryFillLookupLogged.add(key);
 
+    if (typeof this.database.log !== 'function') return;
     await this.database.log(
       'INFO',
       orderNotFound
@@ -730,7 +731,7 @@ export class DeltaTestnetTracker {
               const errorMessage = String(error?.message || error);
               const errorCode = stringValue(error?.code).toLowerCase();
               const isOrderNotFound =
-                errorCode === 'order_not_found' || /\\border_not_found\\b/i.test(errorMessage);
+                errorCode === 'order_not_found' || /\border_not_found\b/i.test(errorMessage);
               const historicalOrderNotFound =
                 isOrderNotFound && Date.now() - openedMs > DELTA_ENTRY_ORDER_LOOKUP_MAX_AGE_MS;
               if (historicalOrderNotFound) {
