@@ -968,9 +968,10 @@ test('wallet transaction sync upserts idempotently and advances its cursor check
   assert.equal(calls, 2);
   assert.equal(result.completedWindow, true);
   assert.equal(result.transactionsUpserted, 2);
-  const batch = batches.find(row => row.table === 'dd_wallet_transactions');
-  assert.equal(batch.conflict, 'id');
-  assert.deepEqual(batch.values.map(row => row.id), ['987', '988']);
+  const walletBatches = batches.filter(row => row.table === 'dd_wallet_transactions');
+  assert.equal(walletBatches.length, 2);
+  assert.ok(walletBatches.every(batch => batch.conflict === 'id'));
+  assert.deepEqual(walletBatches.flatMap(batch => batch.values.map(row => row.id)), ['987', '988']);
   assert.ok(state.last_synced_through_us > 0);
   assert.equal(state.window_start_us, null);
   assert.equal(state.window_end_us, null);
