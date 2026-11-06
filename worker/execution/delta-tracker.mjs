@@ -549,6 +549,7 @@ export class DeltaTestnetTracker {
         after = null;
         await this.saveFillSyncState({
           last_synced_through_us: lastSyncedUs || null,
+          history_start_us: nextHistoryStartUs,
           window_start_us: windowStartUs,
           window_end_us: windowEndUs,
           after_cursor: null,
@@ -595,6 +596,7 @@ export class DeltaTestnetTracker {
           after = nextCursor;
           savedState = await this.saveFillSyncState({
             last_synced_through_us: numberOrNull(state.last_synced_through_us) || null,
+            history_start_us: numberOrNull(state.history_start_us) ?? windowStartUs,
             window_start_us: windowStartUs,
             window_end_us: windowEndUs,
             after_cursor: after,
@@ -607,6 +609,7 @@ export class DeltaTestnetTracker {
         completed = true;
         savedState = await this.saveFillSyncState({
           last_synced_through_us: windowEndUs,
+          history_start_us: numberOrNull(state.history_start_us) ?? windowStartUs,
           window_start_us: null,
           window_end_us: null,
           after_cursor: null,
@@ -646,6 +649,7 @@ export class DeltaTestnetTracker {
       const state = Array.isArray(previous) ? previous[0] || {} : {};
       await this.saveFillSyncState({
         last_synced_through_us: numberOrNull(state.last_synced_through_us) || null,
+        history_start_us: numberOrNull(state.history_start_us) || null,
         window_start_us: numberOrNull(state.window_start_us) || null,
         window_end_us: numberOrNull(state.window_end_us) || null,
         after_cursor: stringValue(state.after_cursor) || null,
@@ -687,6 +691,9 @@ export class DeltaTestnetTracker {
           ? Math.max(1, lastSyncedUs - overlapUs)
           : nowUs - 90 * 24 * 60 * 60 * 1_000_000;
         windowEndUs = nowUs;
+        const historyStartUs = numberOrNull(state.history_start_us);
+        const nextHistoryStartUs = historyStartUs === null
+          ? windowStartUs : Math.min(historyStartUs, windowStartUs);
         after = null;
         await this.saveWalletSyncState({
           last_synced_through_us: lastSyncedUs || null,
@@ -820,7 +827,8 @@ export class DeltaTestnetTracker {
       const walletSyncState = Array.isArray(walletSyncRows) ? walletSyncRows[0] || {} : {};
       const walletSyncComplete = !walletSyncState.window_start_us &&
         !walletSyncState.window_end_us && !walletSyncState.after_cursor &&
-        numberOrNull(walletSyncState.last_synced_through_us) !== null;
+        numberOrNull(walletSyncState.last_synced_through_us) !== null &&
+        numberOrNull(walletSyncState.history_start_us) !== null;
       const trades = [];
       for (const position of closedRows) {
         const symbol = stringValue(position?.symbol).toUpperCase();
@@ -1096,7 +1104,9 @@ export class DeltaTestnetTracker {
           row?.raw?.product_symbol ?? row?.raw?.symbol
         ).toUpperCase();
         const allPnlWalletRows = walletTransactions.filter(row =>
-          ['cashflow', 'commission', 'commission_rebate', 'liquidation_fee', 'funding'].includes(
+          ['commission', 'commission_rebate', 'liquidation_fee', 'funding',
+            'trading_credits_paid', 'trading_fee_credits_paid_liquidation_fee',
+            'trading_credits_reverted'].includes(
             stringValue(row?.transaction_type).toLowerCase()
           )
         );
@@ -1119,11 +1129,13 @@ export class DeltaTestnetTracker {
         const unattributedFundingRows = unattributedPnlWalletRows.filter(row =>
           stringValue(row?.transaction_type).toLowerCase() === 'funding'
         );
-        const unattributedCashflowRows = unattributedPnlWalletRows.filter(row =>
-          stringValue(row?.transaction_type).toLowerCase() === 'cashflow'
-        );
         const unattributedLiquidationFeeRows = unattributedPnlWalletRows.filter(row =>
           stringValue(row?.transaction_type).toLowerCase() === 'liquidation_fee'
+        );
+        const unattributedFeeRows = unattributedPnlWalletRows.filter(row =>
+          ['commission', 'commission_rebate', 'liquidation_fee',
+            'trading_credits_paid', 'trading_fee_credits_paid_liquidation_fee',
+            'trading_credits_reverted'].includes(stringValue(row?.transaction_type).toLowerCase())
         );
         const feeRows = pnlWalletRows.filter(row =>
           ['commission', 'commission_rebate', 'liquidation_fee'].includes(
@@ -1133,8 +1145,9 @@ export class DeltaTestnetTracker {
         const fundingRows = pnlWalletRows.filter(row =>
           stringValue(row?.transaction_type).toLowerCase() === 'funding'
         );
-        const cashflowRows = pnlWalletRows.filter(row =>
-          stringValue(row?.transaction_type).toLowerCase() === 'cashflow'
+        const unsupportedFeeRows = pnlWalletRows.filter(row =>
+          ['trading_credits_paid', 'trading_fee_credits_paid_liquidation_fee',
+            'trading_credits_reverted'].includes(stringValue(row?.transaction_type).toLowerCase())
         );
         const pnlRowsHaveCurrency = pnlWalletRows.every(row => stringValue(row?.asset_symbol) !== '');
         const walletCurrencies = [...new Set(pnlWalletRows
@@ -1145,7 +1158,12 @@ export class DeltaTestnetTracker {
         // as recorded by the exchange rather than being guessed from trade side.
         const walletFeeMovement = feeRows.reduce((sum, row) => sum + (numberOrNull(row?.amount) ?? 0), 0);
         const walletFunding = fundingRows.reduce((sum, row) => sum + (numberOrNull(row?.amount) ?? 0), 0);
-        const walletCashflow = cashflowRows.reduce((sum, row) => sum + (numberOrNull(row?.amount) ?? 0), 0);
+        const walletCommissionRebates = feeRows
+          .filter(row => stringValue(row?.transaction_type).toLowerCase() === 'commission_rebate')
+          .reduce((sum, row) => sum + (numberOrNull(row?.amount) ?? 0), 0);
+        const walletLiquidationFee = -feeRows
+          .filter(row => stringValue(row?.transaction_type).toLowerCase() === 'liquidation_fee')
+          .reduce((sum, row) => sum + (numberOrNull(row?.amount) ?? 0), 0);
 
         const rawCloseCommission = numberOrNull(
           nextPosition.total_commission_paid ?? rawClose?.meta_data?.total_commission_paid
@@ -1160,30 +1178,26 @@ export class DeltaTestnetTracker {
         let fees = null;
         let feesVerified = false;
         if (fillCommissionTotal !== null) {
-          // Fill commission is returned by Delta for every matched entry and
-          // exit fill. Prefer that per-fill value; wallet commission movements
-          // supplement fee types not represented on fills (e.g. liquidation).
-          const liquidationFeeAttributionComplete = walletRowsAreCovered && walletCurrencyCompatible &&
-            unattributedLiquidationFeeRows.length === 0;
-          const liquidationClose = exitReason === 'LIQUIDATION' || allMatchedFills.some(fill =>
-            stringValue(fill?.fill_type).toLowerCase() === 'liquidation'
-          );
-          const liquidationFee = liquidationFeeAttributionComplete
-            ? -feeRows.filter(row => stringValue(row?.transaction_type).toLowerCase() === 'liquidation_fee')
-              .reduce((sum, row) => sum + (numberOrNull(row?.amount) ?? 0), 0)
-            : 0;
-          fees = fillCommissionTotal + liquidationFee;
-          feesVerified = !liquidationClose || liquidationFeeAttributionComplete;
+          // Fill commissions are the primary per-fill source. Wallet rebates
+          // and liquidation fees are separate signed credits/debits and must
+          // be applied once, only when the full trade window is covered.
+          const walletFeeAdjustmentsComplete = walletRowsAreCovered &&
+            walletCurrencyCompatible && unattributedFeeRows.length === 0 &&
+            unsupportedFeeRows.length === 0;
+          fees = walletFeeAdjustmentsComplete
+            ? fillCommissionTotal - walletCommissionRebates + walletLiquidationFee
+            : fillCommissionTotal;
+          feesVerified = walletFeeAdjustmentsComplete;
         } else if (walletRowsAreCovered && walletCurrencyCompatible &&
-          unattributedLiquidationFeeRows.length === 0 &&
-          unattributedPnlWalletRows.filter(row => ['commission', 'commission_rebate'].includes(
-            stringValue(row?.transaction_type).toLowerCase()
-          )).length === 0) {
+          unattributedFeeRows.length === 0 && unsupportedFeeRows.length === 0) {
+          // Delta wallet amounts are signed (+ credit, - debit); the fee cost
+          // is the negative of the net wallet movement for fee transaction types.
           fees = -walletFeeMovement;
           feesVerified = true;
         } else if (rawCloseCommission !== null) {
           fees = rawCloseCommission;
-          feesVerified = true;
+          feesVerified = unsupportedFeeRows.length === 0 &&
+            unattributedFeeRows.length === 0;
         }
 
         let realizedFunding = null;
@@ -1196,13 +1210,10 @@ export class DeltaTestnetTracker {
           fundingVerified = true;
         }
 
-        let exchangeRealizedPnl = realizedPnlVerified ? realizedPnl : null;
-        if (walletRowsAreCovered && cashflowRows.length && walletCurrencyCompatible &&
-            unattributedCashflowRows.length === 0) {
-          // Delta's India help material identifies futures cashflow as realized
-          // P&L. It is the account-ledger cross-check for the fill snapshot.
-          exchangeRealizedPnl = walletCashflow;
-        }
+        // Delta P&L Analytics' realized result is the exchange's position/fill
+        // realized_pnl. Generic wallet cashflow is not a trade P&L source and
+        // must never overwrite this per-position amount.
+        const exchangeRealizedPnl = realizedPnlVerified ? realizedPnl : null;
         // Realized P&L, funding and fees are independent exchange ledger
         // components. Never infer realized P&L from local price arithmetic.
         const pnlComponentsCurrencyCompatible = walletCurrencyCompatible &&
@@ -1251,6 +1262,7 @@ export class DeltaTestnetTracker {
           exchange_realized_pnl: exchangeRealizedPnl,
           realized_funding: realizedFunding,
           funding_verified: fundingVerified,
+          fee_currency: feeCurrency,
           pnl_currency: pnlCurrency,
           fees,
           fees_verified: feesVerified,
