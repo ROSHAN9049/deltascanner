@@ -76,6 +76,7 @@ test('reconciler refreshes mark and unrealized P&L when quantity and side match'
       side: 'BUY',
       entry_price: 3871.87,
       current_price: 4050,
+      mark_price: 4050,
       unrealized_pnl: 6.34,
       product_id: 181689
     }]
@@ -121,6 +122,7 @@ test('reconciler logs upl_mismatch when local vanilla P&L has opposite sign', as
       side: 'BUY',
       entry_price: 3871.87,
       current_price: 4050,
+      mark_price: 4050,
       unrealized_pnl: -6.73
     }]
   });
@@ -328,4 +330,59 @@ test('migration runner includes nullable Delta close details migration after ext
   const closeDetailsIndex = runner.indexOf("'db/migrations/20261029110000_delta_position_close_details.sql'");
   assert.ok(externalCloseIndex >= 0);
   assert.ok(closeDetailsIndex > externalCloseIndex);
+});
+
+
+test('reconciler does not compare last-traded fallback prices with mark-based exchange uPnL', async () => {
+  const rt = runtime({
+    openRows: [{
+      id: 1, symbol: 'SPYXUSD', qty: 35, side: 'SELL',
+      entry_price: 730.49, current_price: 733.90, unrealized_pnl: -1.20
+    }],
+    exchangePositions: [{
+      symbol: 'SPYXUSD', qty: 35, side: 'SELL',
+      entry_price: 730.49, current_price: 733.90,
+      // Deliberately omit mark_price: a last-traded fallback is not valid for
+      // comparing against Delta's mark-based unrealized P&L.
+      unrealized_pnl: -1.337, product_id: 184021
+    }]
+  });
+  rt.executor.getProductMetadata = async () => ({
+    symbol: 'SPYXUSD', contract_value: '0.01', notional_type: 'vanilla'
+  });
+  const reconciler = createDeltaPositionReconciler({
+    env: rt.env, database: rt.database, executor: rt.executor, now: fixedNow
+  });
+  await reconciler.reconcile();
+  assert.ok(!rt.logs.some(row => row.data?.event === 'upl_mismatch'));
+});
+
+test('canonical Delta bracket projection replaces stale signal SL/TP values', async () => {
+  const { projectCanonicalDeltaBrackets } = await import('../worker/execution/delta-position-projection.mjs');
+  const engineRow = {
+    symbol: 'SPYXUSD', execution_id: 'DDM-SPYXUSD-hstzd',
+    entry_order_id: '2177516823', stop_price: 740.74, tp_price: 702.41
+  };
+  const result = projectCanonicalDeltaBrackets(engineRow, [{
+    symbol: 'SPYXUSD', status: 'OPEN',
+    client_order_id: 'DDM-SPYXUSD-hstzd', entry_order_id: '2177516823',
+    sl_price: 739.62, tp_price: 701.34
+  }]);
+  assert.equal(result.ok, true);
+  assert.equal(result.patch.stop_price, 739.62);
+  assert.equal(result.patch.tp_price, 701.34);
+  assert.equal(result.changed, true);
+});
+
+test('canonical Delta bracket projection refuses to fall back to unverified signal levels', async () => {
+  const { projectCanonicalDeltaBrackets } = await import('../worker/execution/delta-position-projection.mjs');
+  const result = projectCanonicalDeltaBrackets({
+    symbol: 'SPYXUSD', execution_id: 'DDM-SPYXUSD-hstzd',
+    stop_price: 740.74, tp_price: 702.41
+  }, [{
+    symbol: 'SPYXUSD', status: 'OPEN', client_order_id: 'DDM-SPYXUSD-hstzd',
+    sl_price: null, tp_price: null
+  }]);
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'CANONICAL_DELTA_BRACKET_LEVELS_UNAVAILABLE');
 });
