@@ -81,6 +81,31 @@ function fillTimestamp(value) {
   return { createdAt: new Date(milliseconds).toISOString(), timestampUs };
 }
 
+/** Normalize an authenticated Delta /v2/wallet/transactions row. */
+export function normalizeDeltaWalletTransaction(transaction) {
+  if (!transaction || typeof transaction !== 'object' || Array.isArray(transaction)) return null;
+  const id = stringValue(transaction.id);
+  const transactionType = stringValue(transaction.transaction_type).toLowerCase();
+  const assetSymbol = stringValue(transaction.asset_symbol).toUpperCase();
+  const time = fillTimestamp(transaction.created_at);
+  const amount = numberOrNull(transaction.amount);
+  if (!id || !transactionType || !assetSymbol || amount === null || !time.createdAt) return null;
+  return {
+    id,
+    transaction_type: transactionType,
+    amount,
+    balance: numberOrNull(transaction.balance),
+    asset_id: numberOrNull(transaction.asset_id),
+    asset_symbol: assetSymbol,
+    product_id: numberOrNull(transaction.product_id),
+    created_at: time.createdAt,
+    meta_data: transaction.meta_data && typeof transaction.meta_data === 'object'
+      ? transaction.meta_data : {},
+    raw: transaction,
+    source: 'rest'
+  };
+}
+
 /** Normalize both authenticated user_trades events and REST /v2/fills records. */
 export function normalizeDeltaFill(fill, source = 'websocket') {
   if (!fill || typeof fill !== 'object' || Array.isArray(fill)) return null;
@@ -168,7 +193,9 @@ export class DeltaTestnetTracker {
     this.authTimeoutTimer = null;
     this.lastSocketWarningAt = 0;
     this.fillSyncInterval = null;
+    this.walletSyncInterval = null;
     this.fillSyncInFlight = null;
+    this.walletSyncInFlight = null;
     this.fillTradeMaterializerInFlight = null;
     this.fillSyncLastWarningAt = 0;
     this.historicalEntryFillLookupLogged = new Set();
@@ -195,6 +222,21 @@ export class DeltaTestnetTracker {
         );
       }, 60_000);
       this.fillSyncInterval.unref?.();
+    }
+    if (typeof this.executor.getWalletTransactionsPage === 'function') {
+      void this.syncRecentWalletTransactions().catch(error =>
+        this.logSocketWarning('Delta Testnet wallet transaction backfill failed; checkpoint retained', {
+          error: String(error?.message || error).slice(0, 200)
+        }, 'WARN')
+      );
+      this.walletSyncInterval = setInterval(() => {
+        void this.syncRecentWalletTransactions().catch(error =>
+          this.logSocketWarning('Delta Testnet wallet transaction backfill failed; checkpoint retained', {
+            error: String(error?.message || error).slice(0, 200)
+          }, 'WARN')
+        );
+      }, 60_000);
+      this.walletSyncInterval.unref?.();
     }
   }
 
@@ -482,6 +524,143 @@ export class DeltaTestnetTracker {
     }
     await this.database.upsert('dd_delta_fill_sync_state', next, 'id');
     return next;
+  }
+
+  async saveWalletSyncState(patch) {
+    const next = { id: 1, ...patch, updated_at: nowIso() };
+    if (typeof this.database.upsert !== 'function') {
+      throw new Error('Database wallet transaction checkpoint upsert is unavailable');
+    }
+    await this.database.upsert('dd_delta_wallet_sync_state', next, 'id');
+    return next;
+  }
+
+  async syncRecentWalletTransactions() {
+    if (this.stopped || typeof this.executor.getWalletTransactionsPage !== 'function') return null;
+    if (this.walletSyncInFlight) return this.walletSyncInFlight;
+    const operation = (async () => {
+      const stateRows = await this.database.select('dd_delta_wallet_sync_state', 'id=eq.1&limit=1');
+      const state = Array.isArray(stateRows) ? stateRows[0] || {} : {};
+      const nowUs = Math.floor(Date.now() * 1000);
+      let windowStartUs = numberOrNull(state.window_start_us);
+      let windowEndUs = numberOrNull(state.window_end_us);
+      let after = stringValue(state.after_cursor) || null;
+      if (!(windowStartUs > 0 && windowEndUs > windowStartUs)) {
+        const lastSyncedUs = numberOrNull(state.last_synced_through_us);
+        const overlapUs = 5 * 60 * 1_000_000;
+        // Delta's wallet history endpoint supports a 90-day default history.
+        // Start with that full supported window so fees/funding predating worker
+        // deployment are not silently omitted from the account ledger.
+        windowStartUs = lastSyncedUs > 0
+          ? Math.max(1, lastSyncedUs - overlapUs)
+          : nowUs - 90 * 24 * 60 * 60 * 1_000_000;
+        windowEndUs = nowUs;
+        after = null;
+        await this.saveWalletSyncState({
+          last_synced_through_us: lastSyncedUs || null,
+          window_start_us: windowStartUs,
+          window_end_us: windowEndUs,
+          after_cursor: null,
+          last_success_at: state.last_success_at || null,
+          last_error: null,
+          rows_ingested: numberOrNull(state.rows_ingested) ?? 0
+        });
+      }
+
+      let pageCount = 0;
+      let ingestedCount = 0;
+      let completed = false;
+      let savedState = state;
+      const pageSize = 50;
+      const maxPagesPerCycle = 5;
+      while (!this.stopped && pageCount < maxPagesPerCycle) {
+        const requestedCursor = after;
+        const page = await this.executor.getWalletTransactionsPage({
+          startTime: windowStartUs,
+          endTime: windowEndUs,
+          after: requestedCursor,
+          pageSize
+        });
+        if (!page || !Array.isArray(page.rows)) {
+          throw new Error('Delta Testnet wallet transaction page was not an array');
+        }
+        const normalized = page.rows.map(normalizeDeltaWalletTransaction).filter(Boolean);
+        if (normalized.length) {
+          if (typeof this.database.upsertMany === 'function') {
+            await this.database.upsertMany('dd_delta_wallet_transactions', normalized, 'id');
+          } else if (typeof this.database.upsert === 'function') {
+            for (const row of normalized) await this.database.upsert('dd_delta_wallet_transactions', row, 'id');
+          } else {
+            throw new Error('Database wallet transaction upsert is unavailable');
+          }
+        }
+        ingestedCount += normalized.length;
+        pageCount += 1;
+        const nextCursor = stringValue(page.after) || null;
+        if (nextCursor && nextCursor === requestedCursor) {
+          throw new Error('Delta Testnet wallet transaction pagination cursor repeated; checkpoint was not advanced');
+        }
+        if (nextCursor) {
+          after = nextCursor;
+          savedState = await this.saveWalletSyncState({
+            last_synced_through_us: numberOrNull(state.last_synced_through_us) || null,
+            window_start_us: windowStartUs,
+            window_end_us: windowEndUs,
+            after_cursor: after,
+            last_success_at: nowIso(),
+            last_error: null,
+            rows_ingested: (numberOrNull(state.rows_ingested) ?? 0) + ingestedCount
+          });
+          continue;
+        }
+        completed = true;
+        savedState = await this.saveWalletSyncState({
+          last_synced_through_us: windowEndUs,
+          window_start_us: null,
+          window_end_us: null,
+          after_cursor: null,
+          last_success_at: nowIso(),
+          last_error: null,
+          rows_ingested: (numberOrNull(state.rows_ingested) ?? 0) + ingestedCount
+        });
+        break;
+      }
+      if (pageCount && (ingestedCount || completed)) {
+        await this.database.log('INFO', 'Delta Testnet wallet transaction history sync completed a page batch', {
+          pages: pageCount,
+          transactionsUpserted: ingestedCount,
+          completedWindow: completed,
+          rowsIngestedTotal: numberOrNull(savedState.rows_ingested) ?? ingestedCount,
+          source: 'authenticated REST /v2/wallet/transactions'
+        }).catch(() => {});
+      }
+      return {
+        pages: pageCount,
+        transactionsUpserted: ingestedCount,
+        completedWindow: completed,
+        lastSyncedThroughUs: numberOrNull(savedState.last_synced_through_us) ?? null
+      };
+    })();
+    this.walletSyncInFlight = operation;
+    try {
+      return await operation;
+    } catch (error) {
+      const message = String(error?.message || error).slice(0, 240);
+      const previous = await this.database.select('dd_delta_wallet_sync_state', 'id=eq.1&limit=1').catch(() => []);
+      const state = Array.isArray(previous) ? previous[0] || {} : {};
+      await this.saveWalletSyncState({
+        last_synced_through_us: numberOrNull(state.last_synced_through_us) || null,
+        window_start_us: numberOrNull(state.window_start_us) || null,
+        window_end_us: numberOrNull(state.window_end_us) || null,
+        after_cursor: stringValue(state.after_cursor) || null,
+        last_success_at: state.last_success_at || null,
+        last_error: message,
+        rows_ingested: numberOrNull(state.rows_ingested) ?? 0
+      }).catch(() => {});
+      throw error;
+    } finally {
+      if (this.walletSyncInFlight === operation) this.walletSyncInFlight = null;
+    }
   }
 
   async syncRecentFills() {
@@ -1230,7 +1409,9 @@ async syncBracketMetadataOnce(key) {
     this.stopped = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.fillSyncInterval) clearInterval(this.fillSyncInterval);
+    if (this.walletSyncInterval) clearInterval(this.walletSyncInterval);
     this.fillSyncInterval = null;
+    this.walletSyncInterval = null;
     this.clearAuthTimeout();
     this.reconnectTimer = null;
     for (const timer of this.symbolTimers.values()) clearTimeout(timer);
