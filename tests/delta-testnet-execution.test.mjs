@@ -1127,7 +1127,7 @@ test('closed-trade backfill resolves missing entry_order_id from client_order_id
   assert.equal(trade.exit_price, 60100);
   assert.equal(trade.exchange_realized_pnl, 0.15);
   assert.equal(trade.fees, 0.02);
-  assert.equal(trade.fees_verified, true);
+  assert.equal(trade.fees_verified, false);
   assert.equal(trade.funding_verified, false);
   assert.equal(trade.net_pnl, null);
   assert.equal(trade.net_pnl_verified, false);
