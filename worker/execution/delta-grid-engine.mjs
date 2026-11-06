@@ -47,6 +47,44 @@ function samePrice(a, b, tickSize) {
   return Math.abs(left - right) <= tolerance;
 }
 
+const cancelledOrderStates = new Set(['CANCELLED', 'CANCELED']);
+
+export function hasVerifiedGridBracket(order, expectedStop, expectedTarget, tickSize) {
+  const actualStop = numberOrNull(order?.bracket_stop_loss_price);
+  const actualTarget = numberOrNull(order?.bracket_take_profit_price);
+  return actualStop !== null && actualStop > 0 &&
+    actualTarget !== null && actualTarget > 0 &&
+    samePrice(actualStop, expectedStop, tickSize) &&
+    samePrice(actualTarget, expectedTarget, tickSize);
+}
+
+export async function cancelAndVerifyGridOrder({ executor, orderId, clientOrderId } = {}) {
+  if (!executor || typeof executor.cancelOrderById !== 'function' ||
+      typeof executor.getOrderById !== 'function') {
+    throw new Error('Grid order cancellation and exchange verification are unavailable');
+  }
+  let resolvedOrderId = numberOrNull(orderId);
+  if (!(resolvedOrderId > 0) && clientOrderId &&
+      typeof executor.getOrderByClientOrderId === 'function') {
+    const byClientId = await executor.getOrderByClientOrderId(clientOrderId);
+    resolvedOrderId = numberOrNull(byClientId?.id ?? byClientId?.order_id);
+  }
+  if (!Number.isSafeInteger(resolvedOrderId) || resolvedOrderId <= 0) {
+    throw new Error('Grid order cancellation requires a verified exchange order ID');
+  }
+
+  await executor.cancelOrderById(resolvedOrderId);
+  // Deliberately perform a fresh read after the cancel helper. A terminal fill
+  // or a stale cancel acknowledgement is not proof that the resting entry is gone.
+  const confirmedOrder = await executor.getOrderById(resolvedOrderId);
+  const confirmedState = text(confirmedOrder?.state).toUpperCase();
+  if (!cancelledOrderStates.has(confirmedState)) {
+    throw new Error('Grid entry cancellation is unconfirmed; exchange state is ' +
+      (confirmedState || 'UNKNOWN'));
+  }
+  return { orderId: resolvedOrderId, order: confirmedOrder, state: 'CANCELLED' };
+}
+
 function emptyTestnetGridState(accountEquity, timestamp) {
   const state = createGridState();
   state.version = 2;
@@ -229,6 +267,128 @@ async function closeAndVerify(executor, symbol, expectedQty) {
   const order = await executor.closePosition(symbol, qty);
   const after = await findOpenPosition(executor, symbol);
   return { closed: !after, order: order || null, remaining: after || null };
+}
+
+function parseOrderRaw(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch {}
+  }
+  return {};
+}
+
+export async function cancelUnverifiedGridEntry({
+  executor, database, state, symbol, orderId, clientOrderId,
+  expectedStop, expectedTarget, raw = {}, now = () => Date.now(), mark = null,
+  verificationError = null
+} = {}) {
+  const at = new Date(now()).toISOString();
+  const normalizedSymbol = text(symbol).toUpperCase();
+  const normalizedClientId = text(clientOrderId);
+  const reservationRaw = parseOrderRaw(raw);
+  let confirmedOrder = null;
+  let resolvedOrderId = numberOrNull(orderId);
+
+  try {
+    const cancellation = await cancelAndVerifyGridOrder({
+      executor, orderId: resolvedOrderId, clientOrderId: normalizedClientId
+    });
+    resolvedOrderId = cancellation.orderId;
+    confirmedOrder = cancellation.order;
+
+    // A partially filled limit entry may leave an open position after the
+    // unfilled remainder is cancelled. Close and verify any resulting exposure
+    // before releasing the reservation.
+    const remainingPosition = await findOpenPosition(executor, normalizedSymbol);
+    if (remainingPosition) {
+      const close = await closeAndVerify(executor, normalizedSymbol, remainingPosition.qty);
+      if (!close.closed) {
+        throw new Error('Entry order was cancelled but its partial-fill position could not be closed and verified');
+      }
+    }
+
+    if (!normalizedClientId) {
+      throw new Error('Cannot release Grid reservation without its client order ID');
+    }
+    await database.update(
+      'dd_orders',
+      'client_order_id=eq.' + encodeURIComponent(normalizedClientId),
+      {
+        state: 'CANCELLED',
+        unfilled_size: numberOrNull(confirmedOrder?.unfilled_size),
+        updated_at: at,
+        raw: {
+          ...reservationRaw,
+          reservation: false,
+          accepted: true,
+          exchange_state: 'CANCELLED',
+          cancelledByGridSafety: true,
+          bracketVerificationFailed: true,
+          bracketVerificationError: String(verificationError || 'SL/TP mismatch or missing'),
+          cancelVerifiedAt: at
+        }
+      }
+    );
+
+    state.pendingEntries = (Array.isArray(state.pendingEntries) ? state.pendingEntries : [])
+      .filter(row => text(row?.symbol).toUpperCase() !== normalizedSymbol);
+    state.positions = (Array.isArray(state.positions) ? state.positions : [])
+      .filter(row => text(row?.symbol).toUpperCase() !== normalizedSymbol);
+    state.status = 'HALTED';
+    state.pausedReason = 'GRID_BRACKET_UNVERIFIED_CANCELLED';
+    pushEvent(state, {
+      type: 'HALT', reason: state.pausedReason, symbol: normalizedSymbol,
+      orderId: String(resolvedOrderId), price: mark
+    }, at);
+    await database.log('WARN', 'Grid entry bracket verification failed; exchange cancellation confirmed and reservation released', {
+      symbol: normalizedSymbol, orderId: resolvedOrderId,
+      clientOrderId: normalizedClientId,
+      expectedStop: numberOrNull(expectedStop), expectedTarget: numberOrNull(expectedTarget),
+      actualStop: numberOrNull(confirmedOrder?.bracket_stop_loss_price),
+      actualTarget: numberOrNull(confirmedOrder?.bracket_take_profit_price),
+      partialFillClosed: Boolean(remainingPosition),
+      reservationReleased: true,
+      executionBlocked: true
+    }).catch(() => {});
+    return { cancelled: true, reason: state.pausedReason, orderId: resolvedOrderId };
+  } catch (error) {
+    state.status = 'HALTED';
+    state.pausedReason = 'GRID_BRACKET_CANCEL_UNCONFIRMED';
+    const pending = Array.isArray(state.pendingEntries) ? [...state.pendingEntries] : [];
+    if (!pending.some(row => text(row?.symbol).toUpperCase() === normalizedSymbol)) {
+      pending.push({
+        symbol: normalizedSymbol,
+        exchangeOrderId: resolvedOrderId ? String(resolvedOrderId) : null,
+        clientOrderId: normalizedClientId || null,
+        stopPrice: numberOrNull(expectedStop),
+        targetPrice: numberOrNull(expectedTarget),
+        state: 'UNKNOWN',
+        createdAt: at
+      });
+    }
+    state.pendingEntries = pending;
+    pushEvent(state, {
+      type: 'HALT', reason: state.pausedReason, symbol: normalizedSymbol,
+      orderId: resolvedOrderId ? String(resolvedOrderId) : null, price: mark
+    }, at);
+    await database.log('CRITICAL', 'CRITICAL: Grid bracket verification failed and exchange cancellation could not be confirmed; both Grid symbols must remain halted', {
+      symbol: normalizedSymbol, orderId: resolvedOrderId,
+      clientOrderId: normalizedClientId || null,
+      expectedStop: numberOrNull(expectedStop), expectedTarget: numberOrNull(expectedTarget),
+      verificationError: String(verificationError || '').slice(0, 220),
+      cancellationError: String(error?.message || error).slice(0, 240),
+      reservationReleased: false,
+      doNotRetryOrRelease: true,
+      executionBlocked: true
+    }).catch(() => {});
+    return {
+      cancelled: false, reason: state.pausedReason,
+      orderId: resolvedOrderId, error: String(error?.message || error)
+    };
+  }
 }
 
 function verifiedPnlSnapshot({ closedPositions, closedPositionCount, trades, tradeCount, todayStart }) {
@@ -562,6 +722,18 @@ export async function manageDeltaTestnetGrid({
       const pendingOrder = await executor.getOrderById(pendingOrderId);
       const pendingOrderState = text(pendingOrder?.state).toUpperCase();
       if (!terminalOrderStates.has(pendingOrderState)) {
+        if (!hasVerifiedGridBracket(
+          pendingOrder, pendingState.stopPrice, pendingState.targetPrice, product.tick_size
+        )) {
+          const result = await cancelUnverifiedGridEntry({
+            executor, database, state, symbol, orderId: pendingOrderId,
+            clientOrderId: pendingState.clientOrderId,
+            expectedStop: pendingState.stopPrice, expectedTarget: pendingState.targetPrice,
+            raw: { stop_price: pendingState.stopPrice, tp_price: pendingState.targetPrice },
+            now, mark, verificationError: 'Persisted pending Grid order is missing or has mismatched SL/TP'
+          });
+          return block(result.reason);
+        }
         state.pendingEntries = [{
           ...pendingState,
           unfilledSize: numberOrNull(pendingOrder?.unfilled_size),
@@ -612,6 +784,22 @@ export async function manageDeltaTestnetGrid({
     }
     const exchangeOrderState = text(exchangeOrder?.state).toUpperCase();
     const terminalState = terminalOrderStates.has(exchangeOrderState);
+    if (!terminalState && !hasVerifiedGridBracket(
+      exchangeOrder,
+      pendingState?.stopPrice ?? raw?.stop_price,
+      pendingState?.targetPrice ?? raw?.tp_price,
+      product.tick_size
+    )) {
+      const result = await cancelUnverifiedGridEntry({
+        executor, database, state, symbol, orderId: exchangeOrderId,
+        clientOrderId: activeGridReservation.client_order_id,
+        expectedStop: pendingState?.stopPrice ?? raw?.stop_price,
+        expectedTarget: pendingState?.targetPrice ?? raw?.tp_price,
+        raw, now, mark,
+        verificationError: 'Reconciled pending Grid order is missing or has mismatched SL/TP'
+      });
+      return block(result.reason);
+    }
     if (!terminalState && (settings.emergency_stop === true || settings.grid_enabled !== true ||
         settings.auto_trade !== true || settings.enabled === false || settings.continuous_mode === false)) {
       try {
@@ -977,13 +1165,17 @@ export async function manageDeltaTestnetGrid({
 
   const executionClientId = 'DDG-' + symbol + '-G' +
     (n(candidate.levelIndex) + 1) + '-' + Math.floor(timestamp / 1000).toString(36);
+  let submittedOrder = null;
+  let submittedOrderId = null;
+  let bracketVerified = false;
   try {
-    const order = await executor.placeBracketOrder(
+    submittedOrder = await executor.placeBracketOrder(
       symbol, 'BUY', adjusted.qty, adjusted.entryPrice,
       adjusted.stopPrice, adjusted.targetPrice,
       { strategy: 'GRID', clientOrderId: executionClientId, orderType: 'limit_order' }
     );
-    const orderId = order?.id ?? order?.order_id;
+    const orderId = submittedOrder?.id ?? submittedOrder?.order_id;
+    submittedOrderId = numberOrNull(orderId);
     if (!(numberOrNull(orderId) > 0)) {
       throw new Error('Grid limit entry did not return an exchange order identity; outcome remains reserved');
     }
@@ -991,12 +1183,21 @@ export async function manageDeltaTestnetGrid({
     const detail = await executor.getOrderById(orderId);
     const verifiedStop = numberOrNull(detail?.bracket_stop_loss_price);
     const verifiedTarget = numberOrNull(detail?.bracket_take_profit_price);
-    if (!samePrice(verifiedStop, adjusted.stopPrice, product.tick_size) ||
-        !samePrice(verifiedTarget, adjusted.targetPrice, product.tick_size)) {
-      throw new Error('Exchange order detail did not confirm both attached Grid bracket prices');
+    if (!hasVerifiedGridBracket(detail, adjusted.stopPrice, adjusted.targetPrice, product.tick_size)) {
+      const result = await cancelUnverifiedGridEntry({
+        executor, database, state, symbol, orderId,
+        clientOrderId: executionClientId,
+        expectedStop: adjusted.stopPrice, expectedTarget: adjusted.targetPrice,
+        raw: { stop_price: adjusted.stopPrice, tp_price: adjusted.targetPrice },
+        now, mark,
+        verificationError: 'Freshly accepted Grid order did not confirm both requested bracket prices'
+      });
+      await persist();
+      return block(result.reason);
     }
-    const orderState = text(order?.state || detail?.state).toUpperCase();
-    const unfilledSize = numberOrNull(order?.unfilled_size ?? detail?.unfilled_size);
+    bracketVerified = true;
+    const orderState = text(submittedOrder?.state || detail?.state).toUpperCase();
+    const unfilledSize = numberOrNull(submittedOrder?.unfilled_size ?? detail?.unfilled_size);
     if (['OPEN', 'PENDING', 'NEW', 'PARTIALLY_FILLED'].includes(orderState) &&
         unfilledSize !== null && unfilledSize > 0) {
       state.pendingEntries = [{
@@ -1092,6 +1293,41 @@ export async function manageDeltaTestnetGrid({
     await persist();
     return { state, safety };
   } catch (error) {
+    if (!bracketVerified) {
+      let reservation = null;
+      let reservationLookupFailed = false;
+      if (submittedOrder || submittedOrderId) {
+        reservation = { state: 'PENDING', raw: {} };
+      } else if (typeof database.select === 'function') {
+        try {
+          const rows = await database.select(
+            'dd_orders',
+            'client_order_id=eq.' + encodeURIComponent(executionClientId) +
+              '&select=state,raw&limit=1'
+          );
+          reservation = Array.isArray(rows) ? rows[0] || null : null;
+        } catch {
+          reservationLookupFailed = true;
+        }
+      }
+      const reservationState = text(reservation?.state).toUpperCase();
+      const mayHaveBeenAccepted = Boolean(submittedOrder || submittedOrderId || reservationLookupFailed ||
+        (reservation && !['FAILED', 'REJECTED', 'EXPIRED'].includes(reservationState)));
+      if (mayHaveBeenAccepted) {
+        const raw = parseOrderRaw(reservation?.raw);
+        const result = await cancelUnverifiedGridEntry({
+          executor, database, state, symbol,
+          orderId: submittedOrderId ?? raw.testnet_order_id,
+          clientOrderId: executionClientId,
+          expectedStop: adjusted.stopPrice, expectedTarget: adjusted.targetPrice,
+          raw: { ...raw, stop_price: adjusted.stopPrice, tp_price: adjusted.targetPrice },
+          now, mark,
+          verificationError: String(error?.message || error).slice(0, 220)
+        });
+        await persist();
+        return block(result.reason);
+      }
+    }
     state.positions = [];
     state.pausedReason = 'GRID_ENTRY_UNCONFIRMED';
     state.status = 'HALTED';
