@@ -615,6 +615,7 @@ export function createDeltaExecutor({
       : null;
     const feeCurrency = currencies.length === 1 ? currencies[0] : null;
     const realizedPnl = numberOrNull(closeFill?.meta_data?.new_position?.realized_pnl);
+    const realizedFunding = numberOrNull(closeFill?.meta_data?.new_position?.realized_funding);
 
     let orderHistory = null;
     if (orderId !== null) {
@@ -639,6 +640,7 @@ export function createDeltaExecutor({
       fees,
       fee_currency: feeCurrency,
       realized_pnl: realizedPnl,
+      realized_funding: realizedFunding,
       close_order_id: orderId === null ? null : String(orderId),
       client_order_id: clientOrderId,
       stop_order_type: orderHistory?.stop_order_type ?? null,
@@ -670,6 +672,33 @@ export function createDeltaExecutor({
     });
     if (!Array.isArray(response?.result)) {
       throw new Error('Delta Testnet fills endpoint returned an invalid result page');
+    }
+    return {
+      rows: response.result,
+      after: stringOrEmpty(response?.meta?.after) || null,
+      before: stringOrEmpty(response?.meta?.before) || null
+    };
+  }
+
+  async function getWalletTransactionsPage({ startTime, endTime, after = null, pageSize = 50 } = {}) {
+    const start = numberOrNull(startTime);
+    const end = numberOrNull(endTime);
+    if (!Number.isSafeInteger(start) || start <= 0 ||
+        !Number.isSafeInteger(end) || end <= start) {
+      throw new Error('Delta Testnet wallet transaction sync requires a valid microsecond time window');
+    }
+    const size = numberOrNull(pageSize);
+    if (!Number.isSafeInteger(size) || size < 1) {
+      throw new Error('Delta Testnet wallet transaction page size must be a positive integer');
+    }
+    const response = await request('GET', '/v2/wallet/transactions', {
+      start_time: start,
+      end_time: end,
+      page_size: Math.min(50, size),
+      after: stringOrEmpty(after) || undefined
+    });
+    if (!Array.isArray(response?.result)) {
+      throw new Error('Delta Testnet wallet transactions endpoint returned an invalid result page');
     }
     return {
       rows: response.result,
@@ -1279,6 +1308,7 @@ export function createDeltaExecutor({
     getOrderByClientOrderId,
     cancelOrderById,
     getFillsPage,
+    getWalletTransactionsPage,
     getAccountSnapshot,
     getRecentCloseDetails,
     getProductMetadata: resolveProduct,

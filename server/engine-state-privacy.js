@@ -174,6 +174,8 @@ export function protectEngineState(payload, authorized) {
       optionsTestnetDiagnostics: publicOptionsTestnetDiagnostics(payload?.executionCoverage?.optionsTestnetDiagnostics)
     },
     deltaTestnetPositions: [],
+    deltaTestnetClosedPositions: [],
+    deltaTestnetClosedPositionCount: null,
     deltaTestnetOpenPositionCount: null,
     deltaTestnetOrders: [],
     deltaTestnetOrderCount: null,
@@ -183,6 +185,9 @@ export function protectEngineState(payload, authorized) {
     deltaTestnetClosedTodayPnl: null,
     deltaTestnetClosedTodayPnlComplete: false,
     deltaTestnetFillSyncState: null,
-    deltaTestnetFillCount: null
+    deltaTestnetFillCount: null,
+    deltaTestnetWalletTransactions: [],
+    deltaTestnetWalletTransactionRowCount: null,
+    deltaTestnetWalletSyncState: null
   };
 }

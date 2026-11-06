@@ -88,6 +88,7 @@ export function deltaCloseFields(event = {}, details = null) {
     ]),
     fee_currency: stringValue(detail.fee_currency ?? source.fee_currency) || null,
     realized_pnl: firstNumber(sources, ['realized_pnl', 'realizedPnl']),
+    realized_funding: firstNumber(sources, ['realized_funding', 'realizedFunding']),
     exit_reason: normalizeDeltaExitReason(reasonEvent),
     close_order_id: closeOrderId === null ? null : String(closeOrderId)
   };

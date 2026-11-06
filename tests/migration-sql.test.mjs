@@ -96,6 +96,35 @@ test('multi-symbol Grid settings migration is registered and adds per-symbol con
     deltaMigrationRunner.indexOf('20261103000100_add_per_strategy_position_limits.sql'));
 });
 
+
+const deltaWalletMigrationPath = fileURLToPath(new URL('../db/migrations/20261106000100_delta_wallet_transaction_ledger.sql', import.meta.url));
+const deltaWalletMigration = readFileSync(deltaWalletMigrationPath, 'utf8');
+
+describe('Delta wallet accounting migration', () => {
+  test('stores signed wallet transactions and exchange realized funding without price estimates', () => {
+    assert.match(deltaWalletMigration, /^BEGIN;/);
+    assert.match(deltaWalletMigration, /CREATE TABLE IF NOT EXISTS public\.dd_delta_wallet_transactions/i);
+    assert.match(deltaWalletMigration, /amount NUMERIC NOT NULL/i);
+    assert.match(deltaWalletMigration, /transaction_type TEXT NOT NULL/i);
+    assert.match(deltaWalletMigration, /meta_data JSONB NOT NULL/i);
+    assert.match(deltaWalletMigration, /ADD COLUMN IF NOT EXISTS realized_funding NUMERIC NULL/i);
+    assert.match(deltaWalletMigration, /ADD COLUMN IF NOT EXISTS realized_funding_verified BOOLEAN NOT NULL DEFAULT FALSE/i);
+    assert.match(deltaWalletMigration, /CREATE TABLE IF NOT EXISTS public\.dd_delta_wallet_sync_state/i);
+    assert.match(deltaWalletMigration, /REVOKE ALL ON TABLE public\.dd_delta_wallet_transactions FROM anon, authenticated/i);
+    assert.match(deltaWalletMigration, /GRANT ALL ON TABLE public\.dd_delta_wallet_transactions TO service_role/i);
+    assert.match(deltaWalletMigration, /NOTIFY pgrst/i);
+    assert.match(deltaWalletMigration, /COMMIT;/);
+  });
+
+  test('migration runner applies the wallet ledger after multi-symbol Grid settings', () => {
+    const gridIndex = migrationRunner.indexOf('20261105000100_enable_testnet_multi_symbol_grid.sql');
+    const walletIndex = migrationRunner.indexOf('20261106000100_delta_wallet_transaction_ledger.sql');
+    assert.ok(gridIndex >= 0 && walletIndex > gridIndex);
+    assert.match(migrationRunner, /'dd_delta_wallet_transactions'/);
+    assert.match(migrationRunner, /'dd_delta_wallet_sync_state'/);
+  });
+});
+
 test('Delta position-close migration stays between worker lease and E-STOP safety migrations', () => {
   const leaseIndex = deltaMigrationRunner.indexOf('20261029100000_worker_lease_ownership.sql');
   const closeDetailsIndex = deltaMigrationRunner.indexOf('20261029110000_delta_position_close_details.sql');
