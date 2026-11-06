@@ -1930,7 +1930,7 @@ export class DeltaEngine {
   }
 
   async recentTrades() {
-    return db.select('dd_trades', 'order=closed_at.desc&limit=200');
+    return db.select('dd_trades', 'or=(result.is.null,result.neq.SUPERSEDED)&order=closed_at.desc&limit=200');
   }
 
   async getStrategyPositionCapAssessment(strategy, settings = {}) {
@@ -4041,7 +4041,38 @@ export class DeltaEngine {
     if (row.requested_exit_reason) reason = row.requested_exit_reason;
 
     const executionId = row.execution_id;
-    const exists = await db.select('dd_trades', 'execution_id=eq.' + encodeURIComponent(executionId) + '&select=execution_id');
+
+    // DeltaTestnetTracker owns the exchange-position lifecycle and writes one
+    // canonical dd_trades row keyed by position ID. Do not create a second
+    // price-derived trade keyed by the legacy entry client_order_id.
+    const encodedExecutionId = encodeURIComponent(String(executionId));
+    let deltaPositionRows = await db.select(
+      'dd_delta_positions',
+      'client_order_id=eq.' + encodedExecutionId + '&select=id,status,client_order_id&limit=1'
+    );
+    if (!Array.isArray(deltaPositionRows) || !deltaPositionRows.length) {
+      deltaPositionRows = await db.select(
+        'dd_delta_positions',
+        'entry_order_id=eq.' + encodedExecutionId + '&select=id,status,client_order_id&limit=1'
+      );
+    }
+    if (Array.isArray(deltaPositionRows) && deltaPositionRows.length) {
+      await db.update('dd_positions', 'execution_id=eq.' + encodedExecutionId, {
+        qty: 0, updated_at: iso()
+      });
+      await db.update('dd_trades', 'execution_id=eq.' + encodedExecutionId, {
+        result: 'SUPERSEDED', net_pnl: null, net_pnl_verified: false
+      }).catch(() => {});
+      await db.remove('dd_rotation_ledger', 'execution_id=eq.' + encodedExecutionId).catch(() => {});
+      await this.log('INFO', 'Legacy trade materialization skipped; canonical Delta position ledger owns this lifecycle', {
+        executionId,
+        deltaPositionId: deltaPositionRows[0].id,
+        deltaPositionStatus: deltaPositionRows[0].status
+      });
+      return;
+    }
+
+    const exists = await db.select('dd_trades', 'execution_id=eq.' + encodedExecutionId + '&select=execution_id');
     if (exists && exists.length) {
       await db.update('dd_positions', 'execution_id=eq.' + encodeURIComponent(executionId), { qty: 0, updated_at: iso() });
       return;
