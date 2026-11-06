@@ -133,6 +133,7 @@ export function createDeltaExecutor({
   now = () => Date.now()
 } = {}) {
   const symbolLocks = new Set();
+  const historicalEntryLookupLogged = new Set();
   let productsCache = [];
   let productsCachedAt = 0;
 
@@ -158,6 +159,45 @@ export function createDeltaExecutor({
         String(error?.message || error)
       );
     }
+  }
+
+  async function logHistoricalEntryFillUnresolvedOnce({
+    symbol,
+    entryOrderId = null,
+    entryClientOrderId = null,
+    openedMs = null,
+    orderNotFound = false
+  } = {}) {
+    const normalizedSymbol = stringOrEmpty(symbol).toUpperCase();
+    const identity = stringOrEmpty(entryOrderId) ||
+      stringOrEmpty(entryClientOrderId) ||
+      (openedMs === null ? 'unknown' : String(openedMs));
+    const key = normalizedSymbol + ':' + identity;
+    if (historicalEntryLookupLogged.has(key)) return;
+
+    // Keep this diagnostic-only cache bounded for long-running workers.
+    if (historicalEntryLookupLogged.size >= 1024) {
+      const oldestKey = historicalEntryLookupLogged.values().next().value;
+      if (oldestKey !== undefined) historicalEntryLookupLogged.delete(oldestKey);
+    }
+    historicalEntryLookupLogged.add(key);
+
+    const lookupAgeMs = openedMs === null ? null : Math.max(0, now() - openedMs);
+    await logExecutor(
+      'INFO',
+      orderNotFound
+        ? '[Executor] Historical entry order not found; fill identity remains UNRESOLVED'
+        : '[Executor] Historical entry fill identity remains UNRESOLVED; client-order lookup skipped after 3 days',
+      {
+        symbol: normalizedSymbol,
+        entryOrderId: stringOrEmpty(entryOrderId) || null,
+        hasClientOrderId: Boolean(stringOrEmpty(entryClientOrderId)),
+        fillResolution: 'UNRESOLVED',
+        clientOrderLookupSkipped: !orderNotFound,
+        reason: orderNotFound ? 'order_not_found' : 'older_than_3_days',
+        ...(lookupAgeMs === null ? {} : { lookupAgeMs })
+      }
+    );
   }
 
   async function request(method, path, params = {}, body = null) {
@@ -484,11 +524,11 @@ export function createDeltaExecutor({
         const historicalMissingOrder = isOrderNotFound && entryOrderLookupTooOld();
         if (historicalMissingOrder) {
           historicalOrderNotFound = true;
-          await logExecutor('INFO', '[Executor] Historical entry order not found; fill identity remains UNRESOLVED', {
+          await logHistoricalEntryFillUnresolvedOnce({
             symbol: normalizedSymbol,
-            hasClientOrderId: true,
-            fillResolution: 'UNRESOLVED',
-            lookupAgeMs: Math.max(0, now() - openedMs)
+            entryClientOrderId,
+            openedMs,
+            orderNotFound: true
           });
         } else {
           await logExecutor('WARN', '[Executor] Entry order lookup by client ID failed; close details remain unverified', {
@@ -503,20 +543,21 @@ export function createDeltaExecutor({
     if (hasEntryIdentity && !matchingEntryFills.length) {
       if (!historicalOrderNotFound) {
         const historicalLookupSkipped = entryOrderLookupTooOld();
-        await logExecutor(
-          historicalLookupSkipped ? 'INFO' : 'WARN',
-          historicalLookupSkipped
-            ? '[Executor] Historical entry fill identity remains UNRESOLVED; client-order lookup skipped after 3 days'
-            : '[Executor] Entry fill identity was not found; close details remain unverified',
-          {
+        if (historicalLookupSkipped) {
+          await logHistoricalEntryFillUnresolvedOnce({
+            symbol: normalizedSymbol,
+            entryOrderId: resolvedEntryOrderId,
+            entryClientOrderId,
+            openedMs
+          });
+        } else {
+          await logExecutor('WARN', '[Executor] Entry fill identity was not found; close details remain unverified', {
             symbol: normalizedSymbol,
             entryOrderId: resolvedEntryOrderId || null,
             hasClientOrderId: Boolean(entryClientOrderId),
-            fillResolution: 'UNRESOLVED',
-            clientOrderLookupSkipped: historicalLookupSkipped,
-            ...(openedMs === null ? {} : { lookupAgeMs: Math.max(0, now() - openedMs) })
-          }
-        );
+            fillResolution: 'UNRESOLVED'
+          });
+        }
       }
       return null;
     }
