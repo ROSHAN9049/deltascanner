@@ -150,6 +150,17 @@ function fakeRuntime({
 }
 
 
+test('Delta position snapshots normalize realized funding independently from realized P&L', () => {
+  const normalized = normalizeDeltaWsPosition({
+    product_symbol: 'BTCUSD',
+    size: 2,
+    realized_pnl: '-1.25',
+    realized_funding: '-0.08'
+  });
+  assert.equal(normalized.realized_pnl, -1.25);
+  assert.equal(normalized.realized_funding, -0.08);
+});
+
 test('Delta wallet transaction normalization preserves the exchange signed amount and metadata', () => {
   const normalized = normalizeDeltaWalletTransaction({
     id: 987654,
