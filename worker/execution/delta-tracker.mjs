@@ -1279,11 +1279,13 @@ export class DeltaTestnetTracker {
           const sourcePosition = closedRows.find(row => String(row.id) === positionId);
           const legacyClientOrderId = stringValue(sourcePosition?.client_order_id);
           if (legacyClientOrderId && legacyClientOrderId !== trade.execution_id) {
-            await this.database.update(
-              'dd_trades',
-              'execution_id=eq.' + encodeURIComponent(legacyClientOrderId),
-              { result: 'SUPERSEDED', net_pnl: null, net_pnl_verified: false }
-            ).catch(() => {});
+            if (typeof this.database.update === 'function') {
+              await this.database.update(
+                'dd_trades',
+                'execution_id=eq.' + encodeURIComponent(legacyClientOrderId),
+                { result: 'SUPERSEDED', net_pnl: null, net_pnl_verified: false }
+              ).catch(() => {});
+            }
             if (typeof this.database.remove === 'function') {
               await this.database.remove(
                 'dd_rotation_ledger',
