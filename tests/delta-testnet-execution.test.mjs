@@ -1280,8 +1280,9 @@ test('closed trade projection requires matching entry order, exit side and full 
         history_start_us: Date.parse(closedPosition.opened_at) * 1000 - 1
       }];
       if (table === 'dd_wallet_transactions') return [
-        { id: 'cashflow-42', transaction_type: 'cashflow', amount: '0.2', product_id: 27, asset_symbol: 'USD' },
+        { id: 'cashflow-42', transaction_type: 'cashflow', amount: '99', product_id: 27, asset_symbol: 'USD' },
         { id: 'commission-42', transaction_type: 'commission', amount: '-0.04', product_id: 27, asset_symbol: 'USD' },
+        { id: 'rebate-42', transaction_type: 'commission_rebate', amount: '0.01', product_id: 27, asset_symbol: 'USD' },
         { id: 'funding-42', transaction_type: 'funding', amount: '-0.01', product_id: 27, asset_symbol: 'USD' }
       ];
       return [];
@@ -1304,16 +1305,16 @@ test('closed trade projection requires matching entry order, exit side and full 
   assert.equal(trade.exit_price, 60120);
   assert.ok(Math.abs(trade.entry_notional - 120) < 1e-9);
   assert.ok(Math.abs(trade.exit_notional - 120.24) < 1e-9);
-  assert.ok(Math.abs(trade.fees - 0.04) < 1e-9);
+  assert.ok(Math.abs(trade.fees - 0.03) < 1e-9);
   assert.equal(trade.exchange_realized_pnl, 0.2);
   assert.equal(trade.realized_funding, -0.01);
   assert.equal(trade.funding_verified, true);
-  assert.equal(trade.net_pnl, 0.15);
+  assert.equal(trade.net_pnl, 0.16);
   assert.equal(trade.fees_verified, true);
   assert.equal(trade.gross_pnl_verified, true);
   assert.equal(trade.net_pnl_verified, true);
   assert.ok(Math.abs(trade.gross_pnl - 0.2) < 1e-9);
-  assert.equal(trade.pnl_pct, (0.15 / 120) * 100);
+  assert.equal(trade.pnl_pct, (0.16 / 120) * 100);
   assert.deepEqual(trade.entry_fill_ids, ['entry-1', 'entry-2']);
   assert.deepEqual(trade.exit_fill_ids, ['exit-1']);
   const rotationBatch = materialized.find(row => row.table === 'dd_rotation_ledger');
@@ -1321,9 +1322,9 @@ test('closed trade projection requires matching entry order, exit side and full 
   assert.equal(rotationBatch.conflict, 'execution_id');
   assert.equal(rotationBatch.values.length, 1);
   assert.equal(rotationBatch.values[0].execution_id, trade.execution_id);
-  assert.equal(rotationBatch.values[0].profit, 0.15);
-  assert.equal(rotationBatch.values[0].released, 0.135);
-  assert.equal(rotationBatch.values[0].retained, 0.015);
+  assert.equal(rotationBatch.values[0].profit, 0.16);
+  assert.equal(rotationBatch.values[0].released, 0.144);
+  assert.equal(rotationBatch.values[0].retained, 0.016);
   assert.equal(rotationBatch.values[0].rotation_id, 'delta-testnet-rotation:42');
   assert.equal(rotationBatch.values[0].trade_id, null);
   assert.equal(rotationBatch.values[0].created_at, closedPosition.closed_at);
