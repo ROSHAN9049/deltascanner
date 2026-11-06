@@ -22,8 +22,7 @@ const MIGRATIONS = [
   'db/migrations/20261029163000_delta_fill_ledger.sql',
   'db/migrations/20261103000100_add_per_strategy_position_limits.sql',
   'db/migrations/20261105000100_enable_testnet_multi_symbol_grid.sql',
-  'db/migrations/20261106000100_exchange_authoritative_pnl_ledger.sql',
-  'db/migrations/20261105000100_enable_testnet_multi_symbol_grid.sql'
+  'db/migrations/20261106000100_exchange_authoritative_pnl_ledger.sql'
 ];
 
 // These are the four "already exists" SQLSTATEs explicitly approved for skipping.
