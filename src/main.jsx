@@ -1071,13 +1071,28 @@ function PNL({
   fillSyncState = null,
   fillCount = null
 }) {
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
   if(accountDataProtected) return <Panel title="PNL · Protected"><div className="lockedText">Private Delta Testnet P&amp;L and account values are hidden. Enter ENGINE_SECRET in Settings to inspect them.</div></Panel>;
 
-  const positions = Array.isArray(closedPositions) ? closedPositions : [];
-  const positionCount = safeNum(closedPositionCount);
-  const positionRowsComplete = positionCount !== null &&
-    Number.isSafeInteger(positionCount) && positionCount >= 0 &&
-    positionCount === positions.length;
+  const allPositions = Array.isArray(closedPositions) ? closedPositions : [];
+  const allPositionCount = safeNum(closedPositionCount);
+  const allPositionRowsComplete = allPositionCount !== null &&
+    Number.isSafeInteger(allPositionCount) && allPositionCount >= 0 &&
+    allPositionCount === allPositions.length;
+  const allWalletTransactions = Array.isArray(walletTransactions) ? walletTransactions : [];
+  const allWalletRowsComplete = walletTransactionCount !== null &&
+    Number(walletTransactionCount) === allWalletTransactions.length;
+  const invalidDateRange = Boolean(fromDate && toDate && fromDate > toDate);
+  const inSelectedDateRange = value => {
+    const day = indiaDateKey(value);
+    return Boolean(day) && (!fromDate || day >= fromDate) && (!toDate || day <= toDate);
+  };
+  const positions = invalidDateRange ? [] : allPositions.filter(row => inSelectedDateRange(row?.closed_at));
+  const positionRowsComplete = allPositionRowsComplete && !invalidDateRange;
+  const positionCount = positionRowsComplete ? positions.length : null;
+  const selectedWalletTransactions = invalidDateRange
+    ? [] : allWalletTransactions.filter(row => inSelectedDateRange(row?.created_at));
   const verifiedPositionPnl = positions
     .filter(row => row?.realized_pnl_verified === true && safeNum(row?.realized_pnl) !== null)
     .map(row => safeNum(row.realized_pnl));
@@ -1090,7 +1105,10 @@ function PNL({
   const winRate = verifiedPositionPnl.length ? wins.length / verifiedPositionPnl.length * 100 : null;
   const missingPositionCount = positionCount === null ? null : Math.max(0, positionCount - verifiedPositionPnl.length);
 
-  const walletSummary = summarizeDeltaWalletTransactions(walletTransactions, walletTransactionCount);
+  const walletSummary = summarizeDeltaWalletTransactions(
+    selectedWalletTransactions,
+    allWalletRowsComplete && !invalidDateRange ? selectedWalletTransactions.length : null
+  );
   const walletTotals = walletSummary.totals;
   const walletLatestSync = walletSyncState?.last_success_at ? new Date(walletSyncState.last_success_at) : null;
   const walletLatestSyncValid = walletLatestSync && Number.isFinite(walletLatestSync.getTime());
@@ -1102,8 +1120,9 @@ function PNL({
   const walletSyncSub = walletSyncState?.last_error
     ? 'Last sync error: ' + String(walletSyncState.last_error).slice(0, 120)
     : walletLatestSyncValid
-      ? (String(walletSummary.loadedRows) + ' of ' + String(walletSummary.expectedRows ?? 'unknown') +
-          ' wallet rows loaded · last sync ' + walletLatestSync.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }))
+      ? (String(walletSummary.loadedRows) + ' matching wallet rows in selected period · ' +
+          String(allWalletTransactions.length) + ' relevant rows loaded · last sync ' +
+          walletLatestSync.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }))
       : 'Authenticated Delta wallet transaction backfill has not completed yet';
 
   const fillLatestSync = fillSyncState?.last_success_at ? new Date(fillSyncState.last_success_at) : null;
@@ -1134,6 +1153,14 @@ function PNL({
     : 'INCOMPLETE DATA';
 
   return <>
+    <Panel title="P&L date window">
+      <div className="lockedText">Use the same dates as Delta Exchange Analytics for a like-for-like comparison. Dates are interpreted in India Standard Time. Leave both blank for all loaded history.</div>
+      <div className="cards">
+        <label>From (IST)<input type="date" value={fromDate} onChange={event => setFromDate(event.target.value)} /></label>
+        <label>To (IST)<input type="date" value={toDate} onChange={event => setToDate(event.target.value)} /></label>
+      </div>
+      {invalidDateRange ? <div className="danger">The start date must be on or before the end date.</div> : null}
+    </Panel>
     <section className="cards">
       <Card
         label={everyPositionVerified ? 'REALIZED P&L · DELTA' : 'VERIFIED REALIZED P&L SUBTOTAL'}
