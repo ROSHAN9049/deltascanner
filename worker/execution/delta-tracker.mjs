@@ -1078,15 +1078,20 @@ export class DeltaTestnetTracker {
         const positionWalletRows = Array.isArray(walletTransactions) ? walletTransactions : [];
         const walletRowsAreCovered = walletSyncComplete &&
           numberOrNull(walletSyncState.last_synced_through_us) >= closedMs * 1000;
-        const feeRows = positionWalletRows.filter(row =>
+        const pnlWalletRows = positionWalletRows.filter(row =>
+          ['commission', 'commission_rebate', 'liquidation_fee', 'funding'].includes(
+            stringValue(row?.transaction_type).toLowerCase()
+          )
+        );
+        const feeRows = pnlWalletRows.filter(row =>
           ['commission', 'commission_rebate', 'liquidation_fee'].includes(
             stringValue(row?.transaction_type).toLowerCase()
           )
         );
-        const fundingRows = positionWalletRows.filter(row =>
+        const fundingRows = pnlWalletRows.filter(row =>
           stringValue(row?.transaction_type).toLowerCase() === 'funding'
         );
-        const walletCurrencies = [...new Set(positionWalletRows
+        const walletCurrencies = [...new Set(pnlWalletRows
           .map(row => stringValue(row?.asset_symbol).toUpperCase()).filter(Boolean))];
         const walletCurrencyCompatible = walletCurrencies.length <= 1;
         const walletFeeMovement = feeRows.reduce((sum, row) => sum + (numberOrNull(row?.amount) ?? 0), 0);
