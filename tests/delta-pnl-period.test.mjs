@@ -6,7 +6,7 @@ const rows = [
   { id: 1, closed_at: '2026-11-06T02:00:00.000Z' }, // 07:30 IST, today
   { id: 2, closed_at: '2026-11-05T18:30:00.000Z' }, // 00:00 IST, Nov 6
   { id: 3, closed_at: '2026-10-31T18:29:59.000Z' }, // Oct 31 IST
-  { id: 4, closed_at: '2026-10-01T10:00:00.000Z' },
+  { id: 4, closed_at: '2026-10-10T10:00:00.000Z' },
   { id: 5, closed_at: null }
 ];
 
