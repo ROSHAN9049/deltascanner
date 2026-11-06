@@ -16,9 +16,24 @@ test('Analytics uses only the Delta Testnet trade ledger', () => {
   assert.doesNotMatch(analytics, /raw_pnl|API-Derived|unverified fills/);
 });
 
-test('Delta analytics retain safe partial-history labels and only use verified trade rows for the equity curve', () => {
-  assert.match(analytics, /tradesComplete\?'Recorded exit reason labels':'Partial data — loaded records only \(history incomplete\)'/);
-  assert.match(analytics, /tradesComplete&&trades.length>0&&trades.every\(t=>safeNum\(t.net_pnl\)!==null\)/);
-  assert.match(analytics, /equityPoints\(trades\)/);
+test('Delta analytics compute win metrics from exchange realized P&L and net curve only from verified after-cost P&L', () => {
+  assert.match(analytics, /const realizedValue = trade => trade\?\.gross_pnl_verified === true/);
+  assert.match(analytics, /const wins = realizedRows\.filter\(trade => realizedValue\(trade\) > 0\)/);
+  assert.match(analytics, /const avgLoss = losses\.length/);
+  assert.match(analytics, /const netKnown = tradesComplete/);
+  assert.match(analytics, /trade\?\.net_pnl_verified === true && safeNum\(trade\.net_pnl\) !== null/);
+  assert.match(analytics, /equityPoints\(periodTrades\)/);
   assert.doesNotMatch(analytics, /equityPoints\(derivedRows\)/);
+});
+
+
+test('P&L and Analytics expose the same IST-aware date-window filtering', () => {
+  const pnlStart = source.indexOf('function PNL({');
+  const pnlEnd = source.indexOf('\nfunction Rotation(', pnlStart);
+  const pnl = source.slice(pnlStart, pnlEnd);
+  assert.match(pnl, /filterDeltaTradesByPeriod\(allTrades, period, fromDate, toDate\)/);
+  assert.match(pnl, /const complete = values => tradesComplete && values\.every/);
+  assert.match(analytics, /filterDeltaTradesByPeriod\(trades, period, fromDate, toDate\)/);
+  assert.match(source, /<option value="CUSTOM">Custom<\/option>/);
+  assert.match(source, /configured rate of ₹\{USD_INR_RATE\.toFixed\(2\)\} per USD/);
 });

@@ -7,7 +7,7 @@ import {
   DELTA_TESTNET_REST_BASE,
   DELTA_TESTNET_PRIVATE_WS_URL
 } from '../worker/execution/delta-executor.mjs';
-import { DeltaTestnetTracker, normalizeDeltaWsPosition, normalizeDeltaFill, strategyFromClientOrderId } from '../worker/execution/delta-tracker.mjs';
+import { DeltaTestnetTracker, normalizeDeltaWsPosition, normalizeDeltaFill, normalizeDeltaWalletTransaction, strategyFromClientOrderId } from '../worker/execution/delta-tracker.mjs';
 import { parseDeltaExecutionMode } from '../server/config.js';
 import { assessCorrelatedEntry, correlationGroupForSymbol } from '../worker/engine.mjs';
 
@@ -881,6 +881,105 @@ test('executor requests /v2/fills with signed cursor pagination and clamps page 
   assert.equal(page.after, 'next-cursor');
 });
 
+test('wallet transaction normalization preserves signed funding and fee amounts', () => {
+  const row = normalizeDeltaWalletTransaction({
+    id: 987, transaction_type: 'funding', amount: '-0.0125', balance: '99.98',
+    product_id: 27, asset_id: 1, asset_symbol: 'USD',
+    created_at: '2026-11-05T10:00:00.123456Z', meta_data: { funding_rate: '0.0001' }
+  });
+  assert.equal(row.id, '987');
+  assert.equal(row.transaction_type, 'funding');
+  assert.equal(row.amount, -0.0125);
+  assert.equal(row.product_id, 27);
+  assert.equal(row.asset_symbol, 'USD');
+  assert.equal(row.created_at, '2026-11-05T10:00:00.123456Z');
+  assert.deepEqual(row.meta_data, { funding_rate: '0.0001' });
+  assert.equal(row.source, 'rest');
+  assert.equal(normalizeDeltaWalletTransaction({ id: 1, transaction_type: 'commission', amount: null }), null);
+});
+
+test('wallet transaction endpoint uses signed Demo REST pagination and a 200-row cap', async () => {
+  const calls = [];
+  const executor = createDeltaExecutor({
+    env: demoEnv(),
+    database: { async select() { return []; }, async log() {} },
+    fetchImpl: async (url, init) => {
+      calls.push({ url: new URL(url), init });
+      return response({
+        success: true,
+        result: [{ id: 987, transaction_type: 'funding', amount: '-0.01', asset_symbol: 'USD' }],
+        meta: { after: 'wallet-next', before: null }
+      });
+    },
+    now: () => 1770000000000
+  });
+  const page = await executor.getWalletTransactionsPage({
+    startTime: 1769990000000000, endTime: 1770000000000000,
+    after: 'wallet-cursor', pageSize: 500
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url.pathname, '/v2/wallet/transactions');
+  assert.equal(calls[0].url.searchParams.get('start_time'), '1769990000000000');
+  assert.equal(calls[0].url.searchParams.get('end_time'), '1770000000000000');
+  assert.equal(calls[0].url.searchParams.get('page_size'), '200');
+  assert.equal(calls[0].url.searchParams.get('after'), 'wallet-cursor');
+  assert.match(calls[0].init.headers.signature, /^[0-9a-f]{64}$/);
+  assert.equal(page.rows[0].id, 987);
+  assert.equal(page.after, 'wallet-next');
+});
+
+test('wallet transaction sync upserts idempotently and advances its cursor checkpoint', async () => {
+  const batches = [];
+  let state = null;
+  let calls = 0;
+  const database = {
+    async select(table) {
+      if (table === 'dd_wallet_transaction_sync_state') return state ? [{ ...state }] : [];
+      if (table === 'dd_delta_positions') return [];
+      return [];
+    },
+    async upsert(table, row) {
+      if (table === 'dd_wallet_transaction_sync_state') state = { ...row };
+    },
+    async upsertMany(table, values, conflict) {
+      batches.push({ table, values: values.map(value => ({ ...value })), conflict });
+    },
+    async log() {}
+  };
+  const executor = {
+    async getWalletTransactionsPage({ after }) {
+      calls += 1;
+      if (after === null) return {
+        rows: [{ id: 987, transaction_type: 'funding', amount: '-0.01',
+          product_id: 27, asset_id: 1, asset_symbol: 'USD', created_at: '2026-11-05T10:00:00Z' }],
+        after: 'wallet-next'
+      };
+      assert.equal(after, 'wallet-next');
+      return {
+        rows: [{ id: 988, transaction_type: 'commission', amount: '-0.02',
+          product_id: 27, asset_id: 1, asset_symbol: 'USD', created_at: '2026-11-05T10:01:00Z' }],
+        after: null
+      };
+    }
+  };
+  const tracker = new DeltaTestnetTracker({ env: demoEnv(), database, executor, WebSocketImpl: class {} });
+  tracker.stopped = false;
+  const result = await tracker.syncRecentWalletTransactions();
+  assert.equal(calls, 2);
+  assert.equal(result.completedWindow, true);
+  assert.equal(result.transactionsUpserted, 2);
+  const walletBatches = batches.filter(row => row.table === 'dd_wallet_transactions');
+  assert.equal(walletBatches.length, 2);
+  assert.ok(walletBatches.every(batch => batch.conflict === 'id'));
+  assert.deepEqual(walletBatches.flatMap(batch => batch.values.map(row => row.id)), ['987', '988']);
+  assert.ok(state.last_synced_through_us > 0);
+  assert.ok(state.history_start_us > 0);
+  assert.equal(state.window_start_us, null);
+  assert.equal(state.window_end_us, null);
+  assert.equal(state.after_cursor, null);
+  assert.equal(state.rows_ingested, 2);
+});
+
 test('REST fill sync upserts idempotently and advances checkpoint only after the last page', async () => {
   const batches = [];
   let state = null;
@@ -1026,8 +1125,12 @@ test('closed-trade backfill resolves missing entry_order_id from client_order_id
   const trade = materialized.find(row => row.table === 'dd_trades').values[0];
   assert.equal(trade.entry_price, 60000);
   assert.equal(trade.exit_price, 60100);
-  assert.equal(trade.net_pnl, 0.15);
-  assert.equal(trade.net_pnl_verified, true);
+  assert.equal(trade.exchange_realized_pnl, 0.15);
+  assert.equal(trade.fees, 0.02);
+  assert.equal(trade.fees_verified, false);
+  assert.equal(trade.funding_verified, false);
+  assert.equal(trade.net_pnl, null);
+  assert.equal(trade.net_pnl_verified, false);
 });
 
 test('tracker backfill skips entry client-order lookup after three days and logs UNRESOLVED once', async () => {
@@ -1170,7 +1273,18 @@ test('closed trade projection requires matching entry order, exit side and full 
     async select(table) {
       if (table === 'dd_delta_positions') return [closedPosition];
       if (table === 'dd_fills') return fills;
-      if (table === 'dd_market_cache') return [{ symbol: 'BTCUSD', contract_value: '0.001', notional_type: 'vanilla' }];
+      if (table === 'dd_market_cache') return [{ symbol: 'BTCUSD', product_id: 27, contract_value: '0.001', notional_type: 'vanilla' }];
+      if (table === 'dd_wallet_transaction_sync_state') return [{
+        id: 1,
+        last_synced_through_us: Date.parse(closedPosition.closed_at) * 1000 + 1,
+        history_start_us: Date.parse(closedPosition.opened_at) * 1000 - 1
+      }];
+      if (table === 'dd_wallet_transactions') return [
+        { id: 'cashflow-42', transaction_type: 'cashflow', amount: '99', product_id: 27, asset_symbol: 'USD' },
+        { id: 'commission-42', transaction_type: 'commission', amount: '-0.04', product_id: 27, asset_symbol: 'USD' },
+        { id: 'rebate-42', transaction_type: 'commission_rebate', amount: '0.01', product_id: 27, asset_symbol: 'USD' },
+        { id: 'funding-42', transaction_type: 'funding', amount: '-0.01', product_id: 27, asset_symbol: 'USD' }
+      ];
       return [];
     },
     async upsertMany(table, values, conflict) {
@@ -1191,13 +1305,16 @@ test('closed trade projection requires matching entry order, exit side and full 
   assert.equal(trade.exit_price, 60120);
   assert.ok(Math.abs(trade.entry_notional - 120) < 1e-9);
   assert.ok(Math.abs(trade.exit_notional - 120.24) < 1e-9);
-  assert.ok(Math.abs(trade.fees - 0.04) < 1e-9);
-  assert.equal(trade.net_pnl, 0.2);
+  assert.ok(Math.abs(trade.fees - 0.03) < 1e-9);
+  assert.equal(trade.exchange_realized_pnl, 0.2);
+  assert.equal(trade.realized_funding, -0.01);
+  assert.equal(trade.funding_verified, true);
+  assert.equal(trade.net_pnl, 0.16);
   assert.equal(trade.fees_verified, true);
   assert.equal(trade.gross_pnl_verified, true);
   assert.equal(trade.net_pnl_verified, true);
-  assert.ok(Math.abs(trade.gross_pnl - 0.24) < 1e-9);
-  assert.equal(trade.pnl_pct, (0.2 / 120) * 100);
+  assert.ok(Math.abs(trade.gross_pnl - 0.2) < 1e-9);
+  assert.equal(trade.pnl_pct, (0.16 / 120) * 100);
   assert.deepEqual(trade.entry_fill_ids, ['entry-1', 'entry-2']);
   assert.deepEqual(trade.exit_fill_ids, ['exit-1']);
   const rotationBatch = materialized.find(row => row.table === 'dd_rotation_ledger');
@@ -1205,9 +1322,9 @@ test('closed trade projection requires matching entry order, exit side and full 
   assert.equal(rotationBatch.conflict, 'execution_id');
   assert.equal(rotationBatch.values.length, 1);
   assert.equal(rotationBatch.values[0].execution_id, trade.execution_id);
-  assert.equal(rotationBatch.values[0].profit, 0.2);
-  assert.equal(rotationBatch.values[0].released, 0.18);
-  assert.equal(rotationBatch.values[0].retained, 0.02);
+  assert.equal(rotationBatch.values[0].profit, 0.16);
+  assert.equal(rotationBatch.values[0].released, 0.144);
+  assert.equal(rotationBatch.values[0].retained, 0.016);
   assert.equal(rotationBatch.values[0].rotation_id, 'delta-testnet-rotation:42');
   assert.equal(rotationBatch.values[0].trade_id, null);
   assert.equal(rotationBatch.values[0].created_at, closedPosition.closed_at);
@@ -1251,7 +1368,10 @@ test('closed trade projection supports partial exits when total fills match the 
   assert.equal(trade.entry_price, 60010);
   assert.equal(trade.exit_price, 60075);
   assert.ok(Math.abs(trade.gross_pnl - 0.26) < 1e-9);
-  assert.equal(trade.net_pnl, 0.26);
+  assert.equal(trade.exchange_realized_pnl, 0.26);
+  assert.equal(trade.funding_verified, false);
+  assert.equal(trade.net_pnl, null);
+  assert.equal(trade.net_pnl_verified, false);
   assert.deepEqual(trade.exit_fill_ids, ['exit-partial-1', 'exit-partial-2']);
 });
 
@@ -1281,7 +1401,7 @@ test('closed trade projection refuses missing exit fill quantity', async () => {
 });
 
 
-test('historical synthetic-close rows keep fill-derived gross but withhold unverified net P&L', async () => {
+test('historical synthetic-close rows withhold exchange P&L when the close is unverified', async () => {
   const materialized = [];
   const database = {
     async select(table, query) {
@@ -1309,10 +1429,11 @@ test('historical synthetic-close rows keep fill-derived gross but withhold unver
   const result = await tracker.materializeVerifiedClosedTrades();
   assert.equal(result.materialized, 1);
   assert.equal(materialized.length, 1);
-  assert.equal(materialized[0].values[0].gross_pnl, 0.1);
+  assert.equal(materialized[0].values[0].gross_pnl, null);
+  assert.equal(materialized[0].values[0].exchange_realized_pnl, null);
   assert.equal(materialized[0].values[0].fees, 0.02);
   assert.equal(materialized[0].values[0].net_pnl, null);
-  assert.equal(materialized[0].values[0].result, 'GROSS WIN · NET UNVERIFIED');
+  assert.equal(materialized[0].values[0].result, 'EXCHANGE P&L UNVERIFIED');
   assert.equal(materialized.some(row => row.table === 'dd_rotation_ledger'), false);
 });
 
@@ -1446,7 +1567,7 @@ test('E-STOP blocks entries but permits closePosition to submit a reduce-only ex
 });
 
 
-test('uses exchange-reported net P&L while keeping incomplete commission data unverified', async () => {
+test('keeps exchange realized P&L but withholds net when commissions or funding are incomplete', async () => {
   const closedPosition = {
     id: 46, symbol: 'BTCUSD', status: 'CLOSED', close_source: 'private_websocket',
     realized_pnl_verified: true, strategy: 'MOMENTUM', side: 'BUY',
@@ -1479,17 +1600,18 @@ test('uses exchange-reported net P&L while keeping incomplete commission data un
   assert.equal(trade.fees, null);
   assert.equal(trade.fees_verified, false);
   assert.ok(Math.abs(trade.gross_pnl - 0.1) < 1e-9);
+  assert.equal(trade.exchange_realized_pnl, 0.1);
   assert.equal(trade.gross_pnl_verified, true);
-  assert.ok(Math.abs(trade.net_pnl - 0.1) < 1e-9);
-  assert.equal(trade.net_pnl_verified, true);
-  assert.ok(Math.abs(trade.pnl_pct - (0.1 / 60 * 100)) < 1e-9);
-  assert.equal(trade.result, 'WIN');
-  assert.ok(Math.abs(materialized.find(row => row.table === 'dd_rotation_ledger').values[0].profit - 0.1) < 1e-9);
+  assert.equal(trade.net_pnl, null);
+  assert.equal(trade.net_pnl_verified, false);
+  assert.equal(trade.funding_verified, false);
+  assert.equal(trade.result, 'EXCHANGE P&L · COSTS UNVERIFIED');
+  assert.equal(materialized.find(row => row.table === 'dd_rotation_ledger'), undefined);
 });
 
 
 
-test('uses exchange-reported net P&L when fill settlement currency is unknown', async () => {
+test('withholds all-in net when fill settlement currency and wallet attribution are unknown', async () => {
   const closedPosition = {
     id: 47, symbol: 'BTCUSD', status: 'CLOSED', close_source: 'private_websocket',
     realized_pnl_verified: true, strategy: 'MOMENTUM', side: 'BUY',
@@ -1521,9 +1643,10 @@ test('uses exchange-reported net P&L when fill settlement currency is unknown', 
   const trade = materialized.find(row => row.table === 'dd_trades').values[0];
   assert.equal(trade.fees, null);
   assert.equal(trade.fees_verified, false);
-  assert.ok(Math.abs(trade.net_pnl - 0.1) < 1e-9);
-  assert.equal(trade.net_pnl_verified, true);
-  assert.equal(trade.result, 'WIN');
-  assert.ok(Math.abs(materialized.find(row => row.table === 'dd_rotation_ledger').values[0].profit - 0.1) < 1e-9);
+  assert.equal(trade.exchange_realized_pnl, 0.1);
+  assert.equal(trade.net_pnl, null);
+  assert.equal(trade.net_pnl_verified, false);
+  assert.equal(trade.result, 'EXCHANGE P&L · COSTS UNVERIFIED');
+  assert.equal(materialized.find(row => row.table === 'dd_rotation_ledger'), undefined);
 });
 

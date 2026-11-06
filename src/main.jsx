@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import './style.css';
 import { apiUrl } from './api-url.js';
 import { indiaDateKey } from './date-utils.js';
+import { filterDeltaTradesByPeriod } from './delta-pnl-period.js';
 import GridStrategy from './GridStrategy.jsx';
 import { DEFAULT_VISIBLE_MARKET_LIMIT, selectOpenPositionSymbols, selectVisibleMarketRows, selectVisibleSignalRows } from './market-view.js';
 import { assessDeltaRange, fmtMultiplier, fmtPrice as fmtRawPrice, fmtRsi, safeNum } from './formatters.js';
@@ -472,7 +473,7 @@ function App() {
     {tab === 'positions' && <Positions rows={positions} accountDataProtected={accountDataProtected} />}
     {tab === 'delta-testnet-positions' && <DeltaTestnetPositions rows={state?.deltaTestnetPositions || []} accountDataProtected={accountDataProtected} mode={executionCoverage?.deltaExecutionMode || 'disabled'} />}
     {tab === 'trade-history' && <TradeHistory trades={trades} title="Trade History · Delta Testnet Ledger" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
-    {tab === 'pnl' && <PNL trades={trades} settings={settings} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} fillSyncState={state?.deltaTestnetFillSyncState || null} fillCount={state?.deltaTestnetFillCount ?? null} />}
+    {tab === 'pnl' && <PNL trades={trades} settings={settings} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.deltaTestnetTradeRowCount ?? null} fillSyncState={state?.deltaTestnetFillSyncState || null} fillCount={state?.deltaTestnetFillCount ?? null} walletSyncState={state?.deltaTestnetWalletTransactionSyncState || null} walletTransactionCount={state?.deltaTestnetWalletTransactionCount ?? null} />}
     {tab === 'paper' && <Panel title="Paper Trading"><div className="lockedText">Scanner is signal-only. Paper execution is not enabled. Direct orders are restricted to Delta Exchange Testnet.</div></Panel>}
     {tab === 'testnet' && <Testnet settings={settings} health={health} currentOpenPositionCount={state?.deltaTestnetOpenPositionCount ?? null} accountDataProtected={accountDataProtected} />}
     {tab === 'live' && <Panel title="Live Trading"><div className="liveLock">🔒 DIRECT DELTA EXECUTION LOCKED<br/><small>Direct production/live Delta orders are hard-locked. Only Delta Exchange Testnet execution is allowed.</small></div></Panel>}
@@ -1023,26 +1024,126 @@ function TradeHistory({ trades = [], title, strategy = undefined, accountDataPro
  const engine=String(title||'Trade History').split('·')[0].replace(/history/i,'').trim()||'Trade';
  const list=(Array.isArray(trades)?trades:[]).filter(row=>!strategy||String(row?.strategy||'').toUpperCase()===String(strategy).toUpperCase());
  return <Panel title={title}>{!tradesComplete?<div className="lockedText">Delta Testnet closed-trade history is unavailable or incomplete. Aggregate totals may therefore be incomplete.</div>:null}
- <div className="tablewrap"><table><thead><tr><th>TIME</th><th>COIN</th><th>MODE</th><th>STRATEGY</th><th>SIDE</th><th>ENTRY</th><th>EXIT</th><th>QTY</th><th>FEES</th><th>GROSS</th><th>NET</th><th>PNL%</th><th>R</th><th>EXIT REASON</th><th>RESULT</th></tr></thead><tbody>
- {list.map(t=><tr key={t.execution_id}><td>{t.closed_at?new Date(t.closed_at).toLocaleString('en-IN'):'—'}</td><td className="symbol">{t.symbol||'—'}</td><td>DELTA TESTNET</td><td>{t.strategy||'—'}</td><td className={t.side==='BUY'?'up':t.side==='SELL'?'down':'muted'}>{t.side||'—'}</td><td>{t.entry_price==null?'—':price(t.entry_price)}</td><td>{t.exit_price==null?'—':price(t.exit_price)}</td><td>{t.qty==null?'—':fmtQty(t.qty)}</td><td>{t.fees_verified===true&&safeNum(t.fees)!==null?money(t.fees):'—'}</td><td>{t.gross_pnl_verified===true&&safeNum(t.gross_pnl)!==null?money(t.gross_pnl):'—'}</td><td className={t.net_pnl_verified!==true||safeNum(t.net_pnl)===null?'muted':safeNum(t.net_pnl)>=0?'up':'down'}>{t.net_pnl_verified===true&&safeNum(t.net_pnl)!==null?money(t.net_pnl):'—'}</td><td>{t.net_pnl_verified===true&&t.pnl_pct!=null?pct(t.pnl_pct):'—'}</td><td>{safeNum(t.r_multiple)===null?'—':safeNum(t.r_multiple).toFixed(2)}</td><td>{t.exit_reason||'—'}</td><td>{t.status === 'CLOSED_EXTERNALLY' ? <span className="badge muted" title="Reconciled against Delta Testnet REST. Net P&L is not published without verified close and fee evidence.">CLOSED EXTERNALLY · P&amp;L NOT VERIFIED</span> : t.net_pnl_verified === true ? (t.result || '—') : (String(t.result||'').includes('NET UNVERIFIED') ? t.result : 'NET UNVERIFIED')}</td></tr>)}
- {!list.length?<tr><td colSpan={15}><HistoryEmptyState engine={engine}/></td></tr>:null}
+ <div className="tablewrap"><table><thead><tr><th>TIME</th><th>COIN</th><th>MODE</th><th>STRATEGY</th><th>SIDE</th><th>ENTRY</th><th>EXIT</th><th>QTY</th><th>REALIZED</th><th>FUNDING</th><th>FEES</th><th>NET</th><th>PNL%</th><th>R</th><th>EXIT REASON</th><th>RESULT</th></tr></thead><tbody>
+ {list.map(t=><tr key={t.execution_id}><td>{t.closed_at?new Date(t.closed_at).toLocaleString('en-IN'):'—'}</td><td className="symbol">{t.symbol||'—'}</td><td>DELTA TESTNET</td><td>{t.strategy||'—'}</td><td className={t.side==='BUY'?'up':t.side==='SELL'?'down':'muted'}>{t.side||'—'}</td><td>{t.entry_price==null?'—':price(t.entry_price)}</td><td>{t.exit_price==null?'—':price(t.exit_price)}</td><td>{t.qty==null?'—':fmtQty(t.qty)}</td><td>{t.gross_pnl_verified===true&&safeNum(t.exchange_realized_pnl??t.gross_pnl)!==null?money(t.exchange_realized_pnl??t.gross_pnl):'—'}</td><td>{t.funding_verified===true&&safeNum(t.realized_funding)!==null?money(t.realized_funding):'—'}</td><td>{t.fees_verified===true&&safeNum(t.fees)!==null?money(t.fees):'—'}</td><td className={t.net_pnl_verified!==true||safeNum(t.net_pnl)===null?'muted':safeNum(t.net_pnl)>=0?'up':'down'}>{t.net_pnl_verified===true&&safeNum(t.net_pnl)!==null?money(t.net_pnl):'—'}</td><td>{t.net_pnl_verified===true&&t.pnl_pct!=null?pct(t.pnl_pct):'—'}</td><td>{safeNum(t.r_multiple)===null?'—':safeNum(t.r_multiple).toFixed(2)}</td><td>{t.exit_reason||'—'}</td><td>{t.status === 'CLOSED_EXTERNALLY' ? <span className="badge muted" title="Reconciled against Delta Testnet REST. Net P&L is not published without verified close and fee evidence.">CLOSED EXTERNALLY · P&amp;L NOT VERIFIED</span> : t.net_pnl_verified === true ? (t.result || '—') : (String(t.result||'').includes('NET UNVERIFIED') ? t.result : 'NET UNVERIFIED')}</td></tr>)}
+ {!list.length?<tr><td colSpan={16}><HistoryEmptyState engine={engine}/></td></tr>:null}
  </tbody></table></div></Panel>;
 }
-function PNL({ trades = [], settings = {}, accountDataProtected = false, tradesComplete = false, fillSyncState = null, fillCount = null }) {
- if(accountDataProtected) return <Panel title="PNL · Protected"><div className="lockedText">Private Delta Testnet P&amp;L and account values are hidden. Enter ENGINE_SECRET in Settings to inspect them.</div></Panel>;
- const closed=Array.isArray(trades)?trades:[], nets=closed.map(t=>t?.net_pnl_verified===true?safeNum(t.net_pnl):null), feesRaw=closed.map(t=>t?.fees_verified===true?safeNum(t.fees):null);
- const netComplete=closed.length>0&&tradesComplete&&nets.every(v=>v!==null), feesComplete=closed.length>0&&tradesComplete&&feesRaw.every(v=>v!==null);
- const net=netComplete?nets.reduce((s,v)=>s+v,0):null, fees=feesComplete?feesRaw.reduce((s,v)=>s+v,0):null;
- const latestSync=fillSyncState?.last_success_at ? new Date(fillSyncState.last_success_at) : null;
- const latestSyncValid=latestSync && Number.isFinite(latestSync.getTime());
- const fillStateLabel=fillSyncState?.last_error?'SYNC DEGRADED':latestSyncValid?'SYNC ACTIVE':'WAITING FOR FIRST SYNC';
- const fillSub=fillSyncState?.last_error
-   ? 'Last sync error: '+String(fillSyncState.last_error).slice(0,100)
-   : latestSyncValid
-     ? ((safeNum(fillCount) ?? 'Unknown')+' fill rows stored · last successful sync '+latestSync.toLocaleString('en-IN',{timeZone:'Asia/Kolkata'}))
-     : 'Authenticated /v2/fills backfill and private user_trades events must be available before fees or trade net P&L can be verified';
- return <><section className="cards"><Card label="REALIZED NET (DELTA)" value={!closed.length?'NO DATA':netComplete?money(net):'INCOMPLETE DATA'} sub={!closed.length?'No verified fill-matched closed-trade rows are available':!tradesComplete?'Testnet close history is incomplete':netComplete?'Sum of exchange-reported net realized P&L for fill-matched closed trades':'One or more net P&L values are missing'}/><Card label="FEES (DELTA)" value={feesComplete?money(fees):'UNAVAILABLE'} sub={feesComplete?'Sum of recorded entry and exit fill commissions':'Fees require complete entry and exit fill commissions'}/><Card label="VERIFIED FILL LEDGER" value={fillCount==null?'NO DATA':fillStateLabel} sub={fillSub}/><Card label="DELTA TESTNET EQUITY" value={settings.equity==null?'—':money(settings.equity)} sub="Latest Testnet account snapshot"/><Card label="DELTA TESTNET UNREALIZED" value={settings.unrealized_pnl==null?'—':money(settings.unrealized_pnl)} sub="Latest Testnet account snapshot"/></section>
- {!closed.length?<div className="lockedText">No verified fill-matched Delta Testnet closed-trade records are available yet. Missing exit prices, gross P&amp;L, fees, and R-multiple are not estimated or treated as zero.</div>:null}</>;
+function DeltaPnlPeriodControls({ period, setPeriod, fromDate, setFromDate, toDate, setToDate }) {
+  const periodLabel = period === 'TODAY' ? 'Today (IST)'
+    : period === '7D' ? 'Rolling 7 days'
+      : period === '30D' ? 'Rolling 30 days'
+        : period === 'CUSTOM' ? 'Custom date range'
+          : 'All history';
+  return <div className="lockedText" style={{display:'flex',gap:12,alignItems:'center',flexWrap:'wrap',marginBottom:12}}>
+    <label>DATE RANGE{' '}
+      <select value={period} onChange={event => setPeriod(event.target.value)}>
+        <option value="ALL">All history</option>
+        <option value="TODAY">Today (IST)</option>
+        <option value="7D">Last 7 days</option>
+        <option value="30D">Last 30 days</option>
+        <option value="CUSTOM">Custom</option>
+      </select>
+    </label>
+    {period === 'CUSTOM' ? <>
+      <label>From{' '}<input type="date" value={fromDate} onChange={event => setFromDate(event.target.value)}/></label>
+      <label>To{' '}<input type="date" value={toDate} onChange={event => setToDate(event.target.value)}/></label>
+    </> : null}
+    <span>{periodLabel}</span>
+  </div>;
+}
+
+function PNL({
+  trades = [], settings = {}, accountDataProtected = false, tradesComplete = false,
+  tradeRowCount = null, fillSyncState = null, fillCount = null,
+  walletSyncState = null, walletTransactionCount = null
+}) {
+  const [period, setPeriod] = useState('ALL');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
+  if (accountDataProtected) return <Panel title="PNL · Protected"><div className="lockedText">Private Delta Testnet P&amp;L and account values are hidden. Enter ENGINE_SECRET in Settings to inspect them.</div></Panel>;
+
+  const allTrades = Array.isArray(trades) ? trades : [];
+  const closed = filterDeltaTradesByPeriod(allTrades, period, fromDate, toDate);
+  const periodLabel = period === 'TODAY' ? 'Today (IST)'
+    : period === '7D' ? 'Rolling 7 days'
+      : period === '30D' ? 'Rolling 30 days'
+        : period === 'CUSTOM' ? ((fromDate || 'Start') + ' to ' + (toDate || 'Today'))
+          : 'All history';
+  const realizedRaw = closed.map(trade =>
+    trade?.gross_pnl_verified === true
+      ? safeNum(trade.exchange_realized_pnl ?? trade.gross_pnl)
+      : null
+  );
+  const fundingRaw = closed.map(trade =>
+    trade?.funding_verified === true ? safeNum(trade.realized_funding) : null
+  );
+  const feesRaw = closed.map(trade =>
+    trade?.fees_verified === true ? safeNum(trade.fees) : null
+  );
+  const netRaw = closed.map(trade =>
+    trade?.net_pnl_verified === true ? safeNum(trade.net_pnl) : null
+  );
+  const complete = values => tradesComplete && values.every(value => value !== null);
+  const realizedComplete = complete(realizedRaw);
+  const fundingComplete = complete(fundingRaw);
+  const feesComplete = complete(feesRaw);
+  const netComplete = complete(netRaw);
+  const sum = values => values.reduce((total, value) => total + value, 0);
+  const realized = realizedComplete ? sum(realizedRaw) : null;
+  const funding = fundingComplete ? sum(fundingRaw) : null;
+  const fees = feesComplete ? sum(feesRaw) : null;
+  const net = netComplete ? sum(netRaw) : null;
+
+  const fillDate = fillSyncState?.last_success_at ? new Date(fillSyncState.last_success_at) : null;
+  const fillDateValid = fillDate && Number.isFinite(fillDate.getTime());
+  const fillStateLabel = fillSyncState?.last_error
+    ? 'SYNC DEGRADED' : fillDateValid ? 'SYNC ACTIVE' : 'WAITING FOR FIRST SYNC';
+  const fillSub = fillSyncState?.last_error
+    ? 'Last sync error: ' + String(fillSyncState.last_error).slice(0, 100)
+    : fillDateValid
+      ? ((safeNum(fillCount) ?? 'Unknown') + ' fill rows stored · last successful sync ' +
+        fillDate.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }))
+      : 'Authenticated Delta /v2/fills history and private fill events are not yet confirmed';
+
+  const walletDate = walletSyncState?.last_success_at ? new Date(walletSyncState.last_success_at) : null;
+  const walletDateValid = walletDate && Number.isFinite(walletDate.getTime());
+  const walletStateLabel = walletSyncState?.last_error
+    ? 'SYNC DEGRADED' : walletDateValid ? 'SYNC ACTIVE' : 'WAITING FOR FIRST SYNC';
+  const walletSub = walletSyncState?.last_error
+    ? 'Last sync error: ' + String(walletSyncState.last_error).slice(0, 100)
+    : walletDateValid
+      ? ((safeNum(walletTransactionCount) ?? 'Unknown') + ' wallet transaction rows stored · last successful sync ' +
+        walletDate.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }))
+      : 'Delta /v2/wallet/transactions funding and fee history is not yet verified';
+
+  return <>
+    <DeltaPnlPeriodControls period={period} setPeriod={setPeriod} fromDate={fromDate} setFromDate={setFromDate} toDate={toDate} setToDate={setToDate}/>
+    <div className="lockedText">Date window: {periodLabel}. USD-denominated exchange values are converted to INR using the configured rate of ₹{USD_INR_RATE.toFixed(2)} per USD.</div>
+    <section className="cards">
+      <Card label="REALIZED P&L (DELTA)" value={tradesComplete ? money(realized) : 'INCOMPLETE DATA'}
+        sub={realizedComplete ? 'Exchange-reported realized P&L before fees and funding'
+          : 'At least one exchange realized P&L value is not verified'}/>
+      <Card label="FUNDING (DELTA)" value={fundingComplete ? money(funding) : 'UNAVAILABLE'}
+        sub={fundingComplete ? 'Signed funding payments from Delta account history'
+          : 'Funding is not assumed to be zero until wallet history is complete'}/>
+      <Card label="FEES (DELTA)" value={feesComplete ? money(fees) : 'UNAVAILABLE'}
+        sub={feesComplete ? 'Matched exchange fill commissions, rebates and verified liquidation fees'
+          : 'Exchange fee evidence is incomplete'}/>
+      <Card label="NET AFTER FEES + FUNDING" value={netComplete ? money(net) : 'INCOMPLETE DATA'}
+        sub={netComplete ? 'Realized P&L + signed funding − fees'
+          : 'Net is withheld until realized P&L, fees, and funding are all verified'}/>
+      <Card label="TRADES IN SELECTED RANGE" value={tradesComplete ? closed.length : 'PARTIAL'}
+        sub={tradesComplete ? 'Canonical Delta position lifecycles in ' + periodLabel
+          : 'Loaded ' + closed.length + ' of ' + (tradeRowCount ?? 'an unknown number') + ' stored rows'}/>
+      <Card label="FILL HISTORY" value={fillCount == null ? 'NO DATA' : fillStateLabel} sub={fillSub}/>
+      <Card label="WALLET HISTORY" value={walletTransactionCount == null ? 'NO DATA' : walletStateLabel} sub={walletSub}/>
+      <Card label="DELTA TESTNET EQUITY" value={settings.equity == null ? '—' : money(settings.equity)} sub="Latest Testnet account snapshot"/>
+      <Card label="DELTA TESTNET UNREALIZED" value={settings.unrealized_pnl == null ? '—' : money(settings.unrealized_pnl)} sub="Latest Testnet account snapshot"/>
+    </section>
+    {!tradesComplete ? <div className="lockedText">Trade history is incomplete or exceeds the loaded history limit. Date-range totals remain provisional.</div> : null}
+    {!closed.length && tradesComplete ? <div className="lockedText">No closed Delta Testnet position lifecycles exist in the selected date range.</div> : null}
+  </>;
 }
 function Rotation({ ledger = [], accountDataProtected = false, ledgerComplete = false, ledgerRowCount = null, fillSyncState = null, fillCount = null }) {
   const [noticeDismissed, setNoticeDismissed] = useState(false);
@@ -1097,23 +1198,75 @@ function Rotation({ ledger = [], accountDataProtected = false, ledgerComplete = 
   </>;
 }
 function Analytics({ trades = [], accountDataProtected = false, tradesComplete = false, tradeRowCount = null }) {
- if(accountDataProtected) return <Panel title="Analytics · Protected"><div className="lockedText">Delta Testnet trade analytics are private. Enter ENGINE_SECRET in Settings to view them.</div></Panel>;
- const engines=['MOMENTUM','SCALPING'].map(engine=>{
-  const rows=trades.filter(t=>t.strategy===engine), pnl=rows.filter(t=>safeNum(t.net_pnl)!==null), wins=pnl.filter(t=>safeNum(t.net_pnl)>0), losses=pnl.filter(t=>safeNum(t.net_pnl)<0);
-  const avgWin=wins.length?wins.reduce((s,t)=>s+safeNum(t.net_pnl),0)/wins.length:null, avgLoss=losses.length?losses.reduce((s,t)=>s+safeNum(t.net_pnl),0)/losses.length:null;
-  const rs=rows.map(t=>safeNum(t.r_multiple)), avgR=rows.length&&rs.every(v=>v!==null)?rs.reduce((s,v)=>s+v,0)/rows.length:null;
-  const net=tradesComplete&&rows.length&&pnl.length===rows.length?pnl.reduce((s,t)=>s+safeNum(t.net_pnl),0):null;
-  return {engine,rows,pnl,wins,avgWin,avgLoss,avgR,net};
- });
- const known=tradesComplete&&trades.length>0&&trades.every(t=>safeNum(t.net_pnl)!==null);
- const sorted=known?[...trades].sort((a,b)=>safeNum(b.net_pnl)-safeNum(a.net_pnl)):[];
- const exTop=known?trades.reduce((s,t)=>s+safeNum(t.net_pnl),0)-sorted.slice(0,5).reduce((s,t)=>s+safeNum(t.net_pnl),0):null;
- const byReason={}; for(const t of trades){const key=t.exit_reason||'UNKNOWN';byReason[key]=(byReason[key]||0)+1;}
- return <><section className="panel"><div className="panelTitle"><h2>Delta Testnet per-engine statistics</h2></div><div className="engineStats">{engines.map(e=><div key={e.engine}><h3>{e.engine}</h3><b>{!e.pnl.length?'NO P&L DATA':(!tradesComplete?'SAMPLE · ':'')+(e.wins.length/e.pnl.length*100).toFixed(1)+'% win rate'}</b><span>{e.rows.length} loaded rows · {e.pnl.length} with P&amp;L · avg win {e.avgWin===null?'—':money(e.avgWin)} · avg loss {e.avgLoss===null?'—':money(e.avgLoss)} · avg R {e.avgR===null?'—':e.avgR.toFixed(2)} · net {e.net===null?'INCOMPLETE DATA':money(e.net)}</span></div>)}</div></section>
- <section className="cards"><Card label="NET EXCLUDING TOP 5 WINNERS" value={exTop===null?(trades.length?'INCOMPLETE DATA':'—'):money(exTop)} sub={tradesComplete?'Available only when every recorded trade has net P&L':'Partial data — loaded records only (history incomplete)'}/><Card label="EXIT REASONS" value={Object.keys(byReason).length} sub={tradesComplete?'Recorded exit reason labels':'Partial data — loaded records only (history incomplete)'}/><Card label="TOTAL DELTA TESTNET TRADES" value={tradesComplete?trades.length:trades.length?'PARTIAL':'—'} sub={tradesComplete?'All stored Delta Testnet closed-trade rows':'Loaded '+trades.length+' of '+(tradeRowCount??'an unknown number')+' stored rows'}/></section>
- {!tradesComplete?<div className="lockedText">Partial data — loaded records only (history incomplete).</div>:null}
- <Panel title="Exits by reason"><div className="chips">{Object.entries(byReason).map(([reason,count])=><span key={reason}>{reason}: {count}</span>)}</div></Panel>
- <Panel title="Equity Curve"><div className="curve">{known?equityPoints(trades).map((p,i)=><span key={i} style={{height:Math.max(4,Math.min(150,70+p.delta))}} title={p.label}></span>):<div className="muted">{trades.length?'Equity curve hidden because P&L values are missing.':'No verified Delta Testnet closed-trade P&L records yet.'}</div>}</div></Panel></>;
+  const [period, setPeriod] = useState('ALL');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
+  if (accountDataProtected) return <Panel title="Analytics · Protected"><div className="lockedText">Delta Testnet trade analytics are private. Enter ENGINE_SECRET in Settings to view them.</div></Panel>;
+  const periodTrades = filterDeltaTradesByPeriod(trades, period, fromDate, toDate);
+  const periodLabel = period === 'TODAY' ? 'Today (IST)'
+    : period === '7D' ? 'Rolling 7 days'
+      : period === '30D' ? 'Rolling 30 days'
+        : period === 'CUSTOM' ? ((fromDate || 'Start') + ' to ' + (toDate || 'Today'))
+          : 'All history';
+  const realizedValue = trade => trade?.gross_pnl_verified === true
+    ? safeNum(trade.exchange_realized_pnl ?? trade.gross_pnl)
+    : null;
+  const engines = ['MOMENTUM', 'SCALPING'].map(engine => {
+    const rows = periodTrades.filter(trade => trade.strategy === engine);
+    const realizedRows = rows.filter(trade => realizedValue(trade) !== null);
+    const wins = realizedRows.filter(trade => realizedValue(trade) > 0);
+    const losses = realizedRows.filter(trade => realizedValue(trade) < 0);
+    const avgWin = wins.length
+      ? wins.reduce((sum, trade) => sum + realizedValue(trade), 0) / wins.length : null;
+    const avgLoss = losses.length
+      ? losses.reduce((sum, trade) => sum + realizedValue(trade), 0) / losses.length : null;
+    const rs = rows.map(trade => safeNum(trade.r_multiple));
+    const avgR = rows.length && rs.every(value => value !== null)
+      ? rs.reduce((sum, value) => sum + value, 0) / rows.length : null;
+    const netRows = rows.filter(trade => trade?.net_pnl_verified === true && safeNum(trade.net_pnl) !== null);
+    const net = tradesComplete && netRows.length === rows.length
+      ? netRows.reduce((sum, trade) => sum + safeNum(trade.net_pnl), 0) : null;
+    return { engine, rows, realizedRows, wins, avgWin, avgLoss, avgR, net };
+  });
+  const realizedKnown = tradesComplete && periodTrades.every(trade => realizedValue(trade) !== null);
+  const netKnown = tradesComplete && periodTrades.every(trade => trade?.net_pnl_verified === true && safeNum(trade.net_pnl) !== null);
+  const sortedNet = netKnown ? [...periodTrades].sort((left, right) => safeNum(right.net_pnl) - safeNum(left.net_pnl)) : [];
+  const netExTopFive = netKnown && periodTrades.length
+    ? periodTrades.reduce((sum, trade) => sum + safeNum(trade.net_pnl), 0) -
+      sortedNet.slice(0, 5).reduce((sum, trade) => sum + safeNum(trade.net_pnl), 0)
+    : null;
+  const byReason = {};
+  for (const trade of periodTrades) {
+    const key = trade.exit_reason || 'UNKNOWN';
+    byReason[key] = (byReason[key] || 0) + 1;
+  }
+  return <>
+    <DeltaPnlPeriodControls period={period} setPeriod={setPeriod} fromDate={fromDate} setFromDate={setFromDate} toDate={toDate} setToDate={setToDate}/>
+    <section className="panel">
+      <div className="panelTitle"><h2>Delta Testnet per-engine statistics</h2></div>
+      <div className="lockedText">Date window: {periodLabel}. Win rate and average win/loss use Delta-reported realized P&amp;L before fees, matching Delta P&amp;L Analytics. Net includes separately verified fees and funding. INR conversion uses ₹{USD_INR_RATE.toFixed(2)} per USD.</div>
+      <div className="engineStats">{engines.map(engine => <div key={engine.engine}>
+        <h3>{engine.engine}</h3>
+        <b>{!engine.realizedRows.length ? 'NO REALIZED P&L DATA'
+          : (!tradesComplete ? 'SAMPLE · ' : '') +
+            (engine.wins.length / engine.realizedRows.length * 100).toFixed(1) + '% win rate'}</b>
+        <span>{engine.rows.length} loaded rows · {engine.realizedRows.length} with realized P&amp;L · avg win {engine.avgWin === null ? '—' : money(engine.avgWin)} · avg loss {engine.avgLoss === null ? '—' : money(engine.avgLoss)} · avg R {engine.avgR === null ? '—' : engine.avgR.toFixed(2)} · net {engine.net === null ? 'INCOMPLETE DATA' : money(engine.net)}</span>
+      </div>)}</div>
+    </section>
+    <section className="cards">
+      <Card label="NET EXCLUDING TOP 5 WINNERS" value={netExTopFive === null ? (periodTrades.length ? 'INCOMPLETE DATA' : '—') : money(netExTopFive)}
+        sub={netKnown ? 'All-in net P&L after verified fees and funding' : 'Net history remains incomplete until every exchange cost is verified'}/>
+      <Card label="EXIT REASONS" value={Object.keys(byReason).length}
+        sub={tradesComplete ? 'Recorded exit reason labels in selected period' : 'Partial data — loaded records only (history incomplete)'}/>
+      <Card label="TOTAL DELTA TESTNET TRADES" value={tradesComplete ? periodTrades.length : periodTrades.length ? 'PARTIAL' : '—'}
+        sub={tradesComplete ? 'Canonical, non-duplicate Delta position lifecycles in selected period' : 'Loaded ' + periodTrades.length + ' of ' + (tradeRowCount ?? 'an unknown number') + ' stored rows'}/>
+    </section>
+    {!tradesComplete ? <div className="lockedText">Partial data — loaded records only (history incomplete).</div> : null}
+    {!realizedKnown ? <div className="lockedText">Realized P&amp;L statistics are incomplete until each closed position has a verified Delta exchange result.</div> : null}
+    <Panel title="Exits by reason"><div className="chips">{Object.entries(byReason).map(([reason, count])=><span key={reason}>{reason}: {count}</span>)}</div></Panel>
+    <Panel title="Equity Curve"><div className="curve">{netKnown && periodTrades.length ? equityPoints(periodTrades).map((point, index) => <span key={index} style={{height:Math.max(4,Math.min(150,70+point.delta))}} title={point.label}></span>)
+      : <div className="muted">{periodTrades.length ? 'Equity curve hidden until all-in net P&L values are verified.' : 'No closed trades in the selected date range.'}</div>}</div></Panel>
+  </>;
 }
 function equityPoints(trades) {
   let total=0;

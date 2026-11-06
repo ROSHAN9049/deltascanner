@@ -142,3 +142,33 @@ describe('Delta Testnet fill ledger migration SQL structure', () => {
     assert.match(migrationRunner, /'dd_delta_fill_sync_state'/);
   });
 });
+
+
+const exchangePnlMigrationPath = fileURLToPath(
+  new URL('../db/migrations/20261106000100_exchange_authoritative_pnl_ledger.sql', import.meta.url)
+);
+const exchangePnlMigration = readFileSync(exchangePnlMigrationPath, 'utf8');
+
+test('exchange-authoritative P&L migration adds private wallet history and verified daily rollups', () => {
+  assert.match(exchangePnlMigration, /^BEGIN;/);
+  assert.match(exchangePnlMigration, /CREATE TABLE IF NOT EXISTS public\.dd_wallet_transactions/i);
+  assert.match(exchangePnlMigration, /CREATE TABLE IF NOT EXISTS public\.dd_wallet_transaction_sync_state/i);
+  assert.match(exchangePnlMigration, /ADD COLUMN IF NOT EXISTS history_start_us BIGINT NULL/i);
+  assert.match(exchangePnlMigration, /ADD COLUMN IF NOT EXISTS exchange_realized_pnl NUMERIC NULL/i);
+  assert.match(exchangePnlMigration, /ADD COLUMN IF NOT EXISTS realized_funding NUMERIC NULL/i);
+  assert.match(exchangePnlMigration, /ADD COLUMN IF NOT EXISTS funding_verified BOOLEAN NOT NULL DEFAULT FALSE/i);
+  assert.match(exchangePnlMigration, /ADD COLUMN IF NOT EXISTS fee_currency TEXT NULL/i);
+  assert.match(exchangePnlMigration, /ALTER TABLE public\.dd_wallet_transactions ENABLE ROW LEVEL SECURITY/i);
+  assert.match(exchangePnlMigration, /REVOKE ALL ON TABLE public\.dd_wallet_transactions FROM anon, authenticated/i);
+  assert.match(exchangePnlMigration, /GRANT ALL ON TABLE public\.dd_wallet_transactions TO service_role/i);
+  assert.match(exchangePnlMigration, /result = 'SUPERSEDED'/i);
+  assert.match(exchangePnlMigration, /CREATE TRIGGER dd_trades_daily_pnl_sync/i);
+  assert.match(exchangePnlMigration, /net_pnl_verified IS TRUE/i);
+  assert.match(exchangePnlMigration, /NOTIFY pgrst/i);
+  assert.match(exchangePnlMigration, /COMMIT;/);
+  const gridIndex = migrationRunner.indexOf('20261105000100_enable_testnet_multi_symbol_grid.sql');
+  const pnlIndex = migrationRunner.indexOf('20261106000100_exchange_authoritative_pnl_ledger.sql');
+  assert.ok(gridIndex >= 0 && pnlIndex > gridIndex, 'exchange P&L migration must run after the Grid settings migration');
+  assert.match(migrationRunner, /'dd_wallet_transactions'/);
+  assert.match(migrationRunner, /'dd_wallet_transaction_sync_state'/);
+});
