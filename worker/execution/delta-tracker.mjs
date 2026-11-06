@@ -1165,14 +1165,15 @@ export class DeltaTestnetTracker {
           // supplement fee types not represented on fills (e.g. liquidation).
           const liquidationFeeAttributionComplete = walletRowsAreCovered && walletCurrencyCompatible &&
             unattributedLiquidationFeeRows.length === 0;
+          const liquidationClose = exitReason === 'LIQUIDATION' || allMatchedFills.some(fill =>
+            stringValue(fill?.fill_type).toLowerCase() === 'liquidation'
+          );
           const liquidationFee = liquidationFeeAttributionComplete
             ? -feeRows.filter(row => stringValue(row?.transaction_type).toLowerCase() === 'liquidation_fee')
               .reduce((sum, row) => sum + (numberOrNull(row?.amount) ?? 0), 0)
             : 0;
           fees = fillCommissionTotal + liquidationFee;
-          feesVerified = !feeRows.some(row =>
-            stringValue(row?.transaction_type).toLowerCase() === 'liquidation_fee'
-          ) || liquidationFeeAttributionComplete;
+          feesVerified = !liquidationClose || liquidationFeeAttributionComplete;
         } else if (walletRowsAreCovered && walletCurrencyCompatible &&
           unattributedLiquidationFeeRows.length === 0 &&
           unattributedPnlWalletRows.filter(row => ['commission', 'commission_rebate'].includes(
