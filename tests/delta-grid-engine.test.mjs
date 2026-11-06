@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sizeDeltaGridEntry, assessDeltaGridEntryFill, hasVerifiedGridBracket, cancelAndVerifyGridOrder, cancelUnverifiedGridEntry } from '../worker/execution/delta-grid-engine.mjs';
+import { applyGlobalGridProtectionHalt } from '../worker/execution/delta-multi-grid-engine.mjs';
 
 const candidate = {
   levelIndex: 6,
@@ -237,4 +238,21 @@ test('Grid accepts a read-after-timeout only when Delta confirms the order is CA
   const result = await cancelAndVerifyGridOrder({ executor, orderId: 321 });
   assert.equal(result.state, 'CANCELLED');
   assert.deepEqual(calls, [['cancel', 321], ['get', 321]]);
+});
+
+
+test('Grid protection failure halts both configured symbols immediately in the same multi-symbol cycle', () => {
+  const states = {
+    PAXGUSD: { status: 'ENTRY_PENDING', pendingEntries: [{ symbol: 'PAXGUSD' }], events: [] },
+    NVDAXUSD: { status: 'HALTED', pausedReason: 'GRID_BRACKET_CANCEL_UNCONFIRMED', events: [] }
+  };
+  const halted = applyGlobalGridProtectionHalt(
+    states, ['PAXGUSD', 'NVDAXUSD'], 'GRID_BRACKET_CANCEL_UNCONFIRMED',
+    '2026-11-06T08:20:00.000Z'
+  );
+  assert.equal(halted.PAXGUSD.status, 'HALTED');
+  assert.equal(halted.PAXGUSD.pausedReason, 'GRID_BRACKET_CANCEL_UNCONFIRMED');
+  assert.equal(halted.NVDAXUSD.status, 'HALTED');
+  assert.equal(halted.NVDAXUSD.pausedReason, 'GRID_BRACKET_CANCEL_UNCONFIRMED');
+  assert.equal(halted.PAXGUSD.pendingEntries.length, 1);
 });
