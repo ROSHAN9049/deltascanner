@@ -4010,110 +4010,63 @@ export class DeltaEngine {
   }
 
   async finalizeClosedTrade(row, fills, orders) {
-    const openedAt = new Date(row.opened_at || Date.now()).getTime();
-    const product = this.productMap.get(row.symbol);
-    const productValue = n(product?.contract_value) || 1;
-    const relevant = fills.filter(f => String(f.product_symbol || '') === row.symbol && new Date(f.created_at || 0).getTime() >= openedAt - 60000);
-    const entrySide = row.side === 'BUY' ? 'buy' : 'sell';
-    const exitSide = sideExit(row.side);
-    const entries = relevant.filter(f => String(f.side).toLowerCase() === entrySide);
-    const exits = relevant.filter(f => String(f.side).toLowerCase() === exitSide);
-    const entryQty = entries.reduce((s, f) => s + n(f.size), 0);
-    const exitQty = exits.reduce((s, f) => s + n(f.size), 0);
-    if (!exitQty) return;
-    const entryNotional = entries.reduce((s, f) => s + Math.abs(n(f.notional)), 0);
-    const exitNotional = exits.reduce((s, f) => s + Math.abs(n(f.notional)), 0);
-    const entryPrice = entryQty ? entries.reduce((s, f) => s + n(f.price) * n(f.size), 0) / entryQty : n(row.entry_price);
-    const exitPrice = exitQty ? exits.reduce((s, f) => s + n(f.price) * n(f.size), 0) / exitQty : n(row.current_price);
-    const gross = row.side === 'BUY'
-      ? (exitNotional - entryNotional)
-      : (entryNotional - exitNotional);
-    const fees = relevant.reduce((s, f) => s + Math.abs(n(f.commission)), 0);
-    const net = gross - fees;
-    const linkedOrders = orders.filter(o => relevant.some(f => String(f.order_id) === String(o.id)));
-    const hasSl = linkedOrders.some(o => o.stop_order_type === 'stop_loss_order' || n(o.bracket_stop_loss_price));
-    const hasTp = linkedOrders.some(o => o.stop_order_type === 'take_profit_order' || n(o.bracket_take_profit_price));
-    const hasTp1 = relevant.some(f => String(f.order_id) === String(row.tp1_order_id));
-    let reason = row.requested_exit_reason || 'MANUAL';
-    if (hasTp1 && exitQty < n(row.initial_qty)) reason = 'TP1';
-    else if (hasTp) reason = 'TP';
-    else if (hasSl) reason = row.tp1_done ? (n(row.stop_price) !== 0 && ((row.side === 'BUY' && n(row.stop_price) > n(row.entry_price)) || (row.side === 'SELL' && n(row.stop_price) < n(row.entry_price))) ? 'TRAIL' : 'BREAKEVEN') : 'SL';
-    if (row.requested_exit_reason) reason = row.requested_exit_reason;
+    const executionId = String(row?.execution_id || '');
+    if (!executionId) return false;
+    const encodedExecutionId = encodeURIComponent(executionId);
 
-    const executionId = row.execution_id;
-
-    // DeltaTestnetTracker owns the exchange-position lifecycle and writes one
-    // canonical dd_trades row keyed by position ID. Do not create a second
-    // price-derived trade keyed by the legacy entry client_order_id.
-    const encodedExecutionId = encodeURIComponent(String(executionId));
-    let deltaPositionRows = await db.select(
-      'dd_delta_positions',
-      'client_order_id=eq.' + encodedExecutionId + '&select=id,status,client_order_id&limit=1'
-    );
-    if (!Array.isArray(deltaPositionRows) || !deltaPositionRows.length) {
-      deltaPositionRows = await db.select(
+    // dd_delta_positions is the canonical exchange lifecycle. The fill/wallet
+    // tracker is the only component allowed to publish Delta trade P&L.
+    let canonicalRows;
+    try {
+      canonicalRows = await db.select(
         'dd_delta_positions',
-        'entry_order_id=eq.' + encodedExecutionId + '&select=id,status,client_order_id&limit=1'
+        'or=(client_order_id.eq.' + encodedExecutionId +
+          ',entry_order_id.eq.' + encodedExecutionId +
+          ')&select=id,status,client_order_id&limit=1'
       );
-    }
-    if (Array.isArray(deltaPositionRows) && deltaPositionRows.length) {
+    } catch (error) {
+      await this.log('WARN', 'Canonical Delta position lookup failed; local P&L projection skipped', {
+        executionId,
+        error: String(error?.message || error).slice(0, 180)
+      });
       await db.update('dd_positions', 'execution_id=eq.' + encodedExecutionId, {
         qty: 0, updated_at: iso()
-      });
-      await db.update('dd_trades', 'execution_id=eq.' + encodedExecutionId, {
-        result: 'SUPERSEDED', net_pnl: null, net_pnl_verified: false
       }).catch(() => {});
-      await db.remove('dd_rotation_ledger', 'execution_id=eq.' + encodedExecutionId).catch(() => {});
-      await this.log('INFO', 'Legacy trade materialization skipped; canonical Delta position ledger owns this lifecycle', {
-        executionId,
-        deltaPositionId: deltaPositionRows[0].id,
-        deltaPositionStatus: deltaPositionRows[0].status
-      });
-      return;
+      return false;
     }
 
-    const exists = await db.select('dd_trades', 'execution_id=eq.' + encodedExecutionId + '&select=execution_id');
-    if (exists && exists.length) {
-      await db.update('dd_positions', 'execution_id=eq.' + encodeURIComponent(executionId), { qty: 0, updated_at: iso() });
-      return;
-    }
-    const rValue = Math.abs(n(row.entry_price) - n(row.stop_price)) * productValue * Math.max(1, n(row.initial_qty));
-    const rMultiple = rValue ? net / rValue : 0;
-    const result = net > 0 ? 'WIN' : net < 0 ? 'LOSS' : 'FLAT';
-    const trade = {
-      execution_id: executionId, symbol: row.symbol, strategy: row.strategy, side: row.side,
-      entry_price: entryPrice, exit_price: exitPrice, qty: Math.max(entryQty, exitQty, n(row.initial_qty)),
-      entry_notional: entryNotional, exit_notional: exitNotional, fees, gross_pnl: gross, net_pnl: net,
-      pnl_pct: entryNotional ? net / entryNotional * 100 : 0, r_multiple: rMultiple,
-      exit_reason: reason, result, entry_fill_ids: entries.map(f => f.id), exit_fill_ids: exits.map(f => f.id),
-      opened_at: row.opened_at, closed_at: iso()
-    };
-    await db.insert('dd_trades', trade);
-    await db.update('dd_positions', 'execution_id=eq.' + encodeURIComponent(executionId), { qty: 0, updated_at: iso() });
-    if (net > 0) {
-      await db.insert('dd_rotation_ledger', {
-        execution_id: executionId, profit: net, released: net * 0.90, retained: net * 0.10,
-        rotation_id: 'ROT-' + Date.now().toString(36)
+    // Even when exchange close reconciliation is delayed, never promote a
+    // local entry/exit price difference to an exchange-authoritative trade row.
+    if (!Array.isArray(canonicalRows) || !canonicalRows.length) {
+      await this.log('WARN', 'Canonical Delta position has not arrived; local trade P&L withheld pending fill reconciliation', {
+        executionId,
+        symbol: row.symbol,
+        strategy: row.strategy
       });
+      await db.update('dd_positions', 'execution_id=eq.' + encodedExecutionId, {
+        qty: 0, updated_at: iso()
+      }).catch(() => {});
+      return false;
     }
-    const counters = (await db.select('dd_counters', 'id=eq.1&select=*'))?.[0] || {};
-    await db.update('dd_counters', 'id=eq.1', {
-      consecutive_losses: net < 0 ? n(counters.consecutive_losses) + 1 : 0,
-      last_loss_at: net < 0 ? iso() : counters.last_loss_at,
-      updated_at: iso()
+
+    // A legacy row may have been created by an older worker before the
+    // canonical fill materializer completed. Mark it inactive; the tracker
+    // owns the one position-keyed row and its verified net result.
+    await db.update('dd_trades', 'execution_id=eq.' + encodedExecutionId, {
+      result: 'SUPERSEDED',
+      net_pnl: null,
+      net_pnl_verified: false
+    }).catch(() => {});
+    await db.remove('dd_rotation_ledger', 'execution_id=eq.' + encodedExecutionId).catch(() => {});
+    await db.update('dd_positions', 'execution_id=eq.' + encodedExecutionId, {
+      qty: 0, updated_at: iso()
+    }).catch(() => {});
+    await this.log('INFO', 'Legacy local P&L projection skipped; canonical Delta position ledger owns this lifecycle', {
+      executionId,
+      deltaPositionId: canonicalRows[0].id,
+      deltaPositionStatus: canonicalRows[0].status
     });
-    const daily = (await db.select('dd_daily_pnl', 'trade_date=eq.' + encodeURIComponent(today())))?.[0];
-    const dayPatch = {
-      trade_date: today(),
-      realized: n(daily?.realized) + net,
-      fees: n(daily?.fees) + fees,
-      wins: n(daily?.wins) + (net > 0 ? 1 : 0),
-      losses: n(daily?.losses) + (net < 0 ? 1 : 0),
-      trades: n(daily?.trades) + 1,
-      updated_at: iso()
-    };
-    await db.upsert('dd_daily_pnl', dayPatch, 'trade_date');
-    await this.log('INFO', 'Real closed trade recorded', { executionId, symbol: row.symbol, reason, gross, fees, net });
+    return true;
   }
 
   syncCandleWebSocketSubscription(socket = this.ws) {
