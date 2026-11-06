@@ -469,17 +469,25 @@ test('historical close-fill backfill skips client-order lookup after three days 
     client_order_id: clientOrderId,
     side: 'BUY'
   });
+  const repeatedDetails = await executor.getRecentCloseDetails('BTCUSD', openedAt, {
+    entry_order_id: null,
+    client_order_id: clientOrderId,
+    side: 'BUY'
+  });
 
   assert.equal(details, null);
+  assert.equal(repeatedDetails, null);
   assert.ok(runtime.httpCalls.some(call => new URL(call.url).pathname === '/v2/fills'));
   assert.ok(!runtime.httpCalls.some(call =>
     new URL(call.url).pathname === '/v2/orders/client_order_id/' + clientOrderId
   ));
-  assert.ok(runtime.logs.some(row =>
-    row.level === 'INFO' &&
-    row.data?.fillResolution === 'UNRESOLVED' &&
-    row.data?.clientOrderLookupSkipped === true
-  ));
+  const unresolvedLogs = runtime.logs.filter(row =>
+    row.message.includes('client-order lookup skipped after 3 days') &&
+    row.data?.fillResolution === 'UNRESOLVED'
+  );
+  assert.equal(unresolvedLogs.length, 1, 'repeated reconciliation must not repeat the same INFO record');
+  assert.equal(unresolvedLogs[0].level, 'INFO');
+  assert.equal(unresolvedLogs[0].data.clientOrderLookupSkipped, true);
   assert.ok(!runtime.logs.some(row =>
     row.level === 'WARN' && /Entry fill identity was not found|Entry order lookup by client ID failed/.test(row.message)
   ));
