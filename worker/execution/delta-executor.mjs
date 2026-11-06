@@ -615,6 +615,7 @@ export function createDeltaExecutor({
       : null;
     const feeCurrency = currencies.length === 1 ? currencies[0] : null;
     const realizedPnl = numberOrNull(closeFill?.meta_data?.new_position?.realized_pnl);
+    const realizedFunding = numberOrNull(closeFill?.meta_data?.new_position?.realized_funding);
 
     let orderHistory = null;
     if (orderId !== null) {
@@ -639,6 +640,7 @@ export function createDeltaExecutor({
       fees,
       fee_currency: feeCurrency,
       realized_pnl: realizedPnl,
+      realized_funding: realizedFunding,
       close_order_id: orderId === null ? null : String(orderId),
       client_order_id: clientOrderId,
       stop_order_type: orderHistory?.stop_order_type ?? null,
