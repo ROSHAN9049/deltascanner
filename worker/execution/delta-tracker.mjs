@@ -595,7 +595,6 @@ export class DeltaTestnetTracker {
           after = nextCursor;
           savedState = await this.saveFillSyncState({
             last_synced_through_us: numberOrNull(state.last_synced_through_us) || null,
-            history_start_us: numberOrNull(state.history_start_us) ?? windowStartUs,
             window_start_us: windowStartUs,
             window_end_us: windowEndUs,
             after_cursor: after,
@@ -608,7 +607,6 @@ export class DeltaTestnetTracker {
         completed = true;
         savedState = await this.saveFillSyncState({
           last_synced_through_us: windowEndUs,
-          history_start_us: numberOrNull(state.history_start_us) ?? windowStartUs,
           window_start_us: null,
           window_end_us: null,
           after_cursor: null,
@@ -648,7 +646,6 @@ export class DeltaTestnetTracker {
       const state = Array.isArray(previous) ? previous[0] || {} : {};
       await this.saveFillSyncState({
         last_synced_through_us: numberOrNull(state.last_synced_through_us) || null,
-        history_start_us: numberOrNull(state.history_start_us) || null,
         window_start_us: numberOrNull(state.window_start_us) || null,
         window_end_us: numberOrNull(state.window_end_us) || null,
         after_cursor: stringValue(state.after_cursor) || null,
