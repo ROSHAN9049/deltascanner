@@ -4,6 +4,14 @@ BEGIN;
 -- realized cashflow, trading commissions, funding and liquidation fees.
 -- Keep amounts signed and retain the raw exchange record; never derive them
 -- from entry/exit prices or mix them into the per-position realized_pnl field.
+ALTER TABLE public.dd_delta_positions
+  ADD COLUMN IF NOT EXISTS realized_funding NUMERIC NULL,
+  ADD COLUMN IF NOT EXISTS realized_funding_verified BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE public.dd_trades
+  ADD COLUMN IF NOT EXISTS realized_funding NUMERIC NULL,
+  ADD COLUMN IF NOT EXISTS realized_funding_verified BOOLEAN NOT NULL DEFAULT FALSE;
+
 CREATE TABLE IF NOT EXISTS public.dd_delta_wallet_transactions (
   id TEXT PRIMARY KEY,
   transaction_type TEXT NOT NULL,
