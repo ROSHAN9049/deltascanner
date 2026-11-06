@@ -103,15 +103,15 @@ const deltaWalletMigration = readFileSync(deltaWalletMigrationPath, 'utf8');
 describe('Delta wallet accounting migration', () => {
   test('stores signed wallet transactions and exchange realized funding without price estimates', () => {
     assert.match(deltaWalletMigration, /^BEGIN;/);
-    assert.match(deltaWalletMigration, /CREATE TABLE IF NOT EXISTS public\\.dd_delta_wallet_transactions/i);
+    assert.match(deltaWalletMigration, /CREATE TABLE IF NOT EXISTS public\.dd_delta_wallet_transactions/i);
     assert.match(deltaWalletMigration, /amount NUMERIC NOT NULL/i);
     assert.match(deltaWalletMigration, /transaction_type TEXT NOT NULL/i);
     assert.match(deltaWalletMigration, /meta_data JSONB NOT NULL/i);
     assert.match(deltaWalletMigration, /ADD COLUMN IF NOT EXISTS realized_funding NUMERIC NULL/i);
     assert.match(deltaWalletMigration, /ADD COLUMN IF NOT EXISTS realized_funding_verified BOOLEAN NOT NULL DEFAULT FALSE/i);
-    assert.match(deltaWalletMigration, /CREATE TABLE IF NOT EXISTS public\\.dd_delta_wallet_sync_state/i);
-    assert.match(deltaWalletMigration, /REVOKE ALL ON TABLE public\\.dd_delta_wallet_transactions FROM anon, authenticated/i);
-    assert.match(deltaWalletMigration, /GRANT ALL ON TABLE public\\.dd_delta_wallet_transactions TO service_role/i);
+    assert.match(deltaWalletMigration, /CREATE TABLE IF NOT EXISTS public\.dd_delta_wallet_sync_state/i);
+    assert.match(deltaWalletMigration, /REVOKE ALL ON TABLE public\.dd_delta_wallet_transactions FROM anon, authenticated/i);
+    assert.match(deltaWalletMigration, /GRANT ALL ON TABLE public\.dd_delta_wallet_transactions TO service_role/i);
     assert.match(deltaWalletMigration, /NOTIFY pgrst/i);
     assert.match(deltaWalletMigration, /COMMIT;/);
   });
