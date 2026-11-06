@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sizeDeltaGridEntry, assessDeltaGridEntryFill } from '../worker/execution/delta-grid-engine.mjs';
+import { sizeDeltaGridEntry, assessDeltaGridEntryFill, hasVerifiedGridBracket, cancelAndVerifyGridOrder, cancelUnverifiedGridEntry } from '../worker/execution/delta-grid-engine.mjs';
+import { applyGlobalGridProtectionHalt } from '../worker/execution/delta-multi-grid-engine.mjs';
 
 const candidate = {
   levelIndex: 6,
@@ -115,4 +116,143 @@ test('Testnet Grid revalidates the actual market fill against its hard stop floo
   });
   assert.equal(riskExceeded.ok, false);
   assert.equal(riskExceeded.reason, 'GRID_FILLED_RISK_BUDGET_EXCEEDED');
+});
+
+
+test('Grid bracket verification rejects a missing or mismatched exchange SL/TP', () => {
+  assert.equal(hasVerifiedGridBracket({
+    bracket_stop_loss_price: '98.50', bracket_take_profit_price: '102.00'
+  }, 98.5, 102, 0.01), true);
+  assert.equal(hasVerifiedGridBracket({
+    bracket_stop_loss_price: '98.49', bracket_take_profit_price: '102.00'
+  }, 98.5, 102, 0.01), false);
+  assert.equal(hasVerifiedGridBracket({
+    bracket_stop_loss_price: '98.50'
+  }, 98.5, 102, 0.01), false);
+});
+
+test('Grid bracket verification failure cancels the exact exchange order and confirms CANCELLED by a fresh read', async () => {
+  const calls = [];
+  const executor = {
+    async cancelOrderById(id) {
+      calls.push(['cancel', id]);
+      return { id, state: 'CANCELLED' };
+    },
+    async getOrderById(id) {
+      calls.push(['get', id]);
+      return { id, state: 'CANCELLED', unfilled_size: 10 };
+    }
+  };
+  const failedOrder = { id: 987, state: 'OPEN', bracket_stop_loss_price: null, bracket_take_profit_price: '102' };
+  assert.equal(hasVerifiedGridBracket(failedOrder, 98.5, 102, 0.01), false);
+  const result = await cancelAndVerifyGridOrder({ executor, orderId: failedOrder.id });
+  assert.equal(result.state, 'CANCELLED');
+  assert.equal(result.orderId, 987);
+  assert.deepEqual(calls, [['cancel', 987], ['get', 987]]);
+});
+
+test('Grid cancellation does not accept a FILLED or still-OPEN response as CANCELLED', async () => {
+  const executor = {
+    async cancelOrderById(id) { return { id, state: 'FILLED' }; },
+    async getOrderById(id) { return { id, state: 'FILLED' }; }
+  };
+  await assert.rejects(
+    cancelAndVerifyGridOrder({ executor, orderId: 987 }),
+    /cancellation is unconfirmed/
+  );
+});
+
+test('Grid releases the reservation only after cancellation is confirmed and halts the strategy', async () => {
+  const updates = [];
+  const logs = [];
+  const state = {
+    status: 'ENTRY_PENDING',
+    pendingEntries: [{ symbol: 'PAXGUSD', exchangeOrderId: '987', clientOrderId: 'DDG-PAXGUSD-X' }],
+    positions: [], events: []
+  };
+  const executor = {
+    async cancelOrderById(id) { return { id, state: 'CANCELLED' }; },
+    async getOrderById(id) { return { id, state: 'CANCELLED', unfilled_size: 10 }; },
+    async getOpenPositions() { return []; }
+  };
+  const database = {
+    async update(table, query, patch) { updates.push({ table, query, patch }); },
+    async log(level, message, data) { logs.push({ level, message, data }); }
+  };
+  const result = await cancelUnverifiedGridEntry({
+    executor, database, state, symbol: 'PAXGUSD', orderId: 987,
+    clientOrderId: 'DDG-PAXGUSD-X', expectedStop: 98.5, expectedTarget: 102,
+    raw: { reservation: true, stop_price: 98.5, tp_price: 102 },
+    now: () => Date.parse('2026-11-06T07:00:00Z')
+  });
+  assert.equal(result.cancelled, true);
+  assert.equal(state.status, 'HALTED');
+  assert.equal(state.pausedReason, 'GRID_BRACKET_UNVERIFIED_CANCELLED');
+  assert.deepEqual(state.pendingEntries, []);
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].patch.state, 'CANCELLED');
+  assert.equal(updates[0].patch.raw.reservation, false);
+  assert.equal(logs[0].level, 'WARN');
+});
+
+test('Grid preserves reservation and emits CRITICAL when exchange cancellation cannot be confirmed', async () => {
+  const updates = [];
+  const logs = [];
+  const state = {
+    status: 'ENTRY_PENDING',
+    pendingEntries: [{ symbol: 'NVDAXUSD', exchangeOrderId: '654', clientOrderId: 'DDG-NVDAXUSD-X' }],
+    positions: [], events: []
+  };
+  const calls = [];
+  const executor = {
+    async cancelOrderById(id) { calls.push(['cancel', id]); throw new Error('exchange timeout'); },
+    async getOrderById(id) { calls.push(['get', id]); return { id, state: 'OPEN' }; },
+    async getOpenPositions() { return []; }
+  };
+  const database = {
+    async update(...args) { updates.push(args); },
+    async log(level, message, data) { logs.push({ level, message, data }); }
+  };
+  const result = await cancelUnverifiedGridEntry({
+    executor, database, state, symbol: 'NVDAXUSD', orderId: 654,
+    clientOrderId: 'DDG-NVDAXUSD-X', expectedStop: 180, expectedTarget: 190,
+    raw: { reservation: true, stop_price: 180, tp_price: 190 },
+    now: () => Date.parse('2026-11-06T07:00:00Z')
+  });
+  assert.equal(result.cancelled, false);
+  assert.equal(state.status, 'HALTED');
+  assert.equal(state.pausedReason, 'GRID_BRACKET_CANCEL_UNCONFIRMED');
+  assert.equal(state.pendingEntries.length, 1);
+  assert.equal(updates.length, 0);
+  assert.equal(logs[0].level, 'CRITICAL');
+  assert.equal(logs[0].data.reservationReleased, false);
+  assert.deepEqual(calls, [['cancel', 654], ['get', 654]]);
+});
+
+test('Grid accepts a read-after-timeout only when Delta confirms the order is CANCELLED', async () => {
+  const calls = [];
+  const executor = {
+    async cancelOrderById(id) { calls.push(['cancel', id]); throw new Error('response timeout after DELETE'); },
+    async getOrderById(id) { calls.push(['get', id]); return { id, state: 'CANCELLED' }; }
+  };
+  const result = await cancelAndVerifyGridOrder({ executor, orderId: 321 });
+  assert.equal(result.state, 'CANCELLED');
+  assert.deepEqual(calls, [['cancel', 321], ['get', 321]]);
+});
+
+
+test('Grid protection failure halts both configured symbols immediately in the same multi-symbol cycle', () => {
+  const states = {
+    PAXGUSD: { status: 'ENTRY_PENDING', pendingEntries: [{ symbol: 'PAXGUSD' }], events: [] },
+    NVDAXUSD: { status: 'HALTED', pausedReason: 'GRID_BRACKET_CANCEL_UNCONFIRMED', events: [] }
+  };
+  const halted = applyGlobalGridProtectionHalt(
+    states, ['PAXGUSD', 'NVDAXUSD'], 'GRID_BRACKET_CANCEL_UNCONFIRMED',
+    '2026-11-06T08:20:00.000Z'
+  );
+  assert.equal(halted.PAXGUSD.status, 'HALTED');
+  assert.equal(halted.PAXGUSD.pausedReason, 'GRID_BRACKET_CANCEL_UNCONFIRMED');
+  assert.equal(halted.NVDAXUSD.status, 'HALTED');
+  assert.equal(halted.NVDAXUSD.pausedReason, 'GRID_BRACKET_CANCEL_UNCONFIRMED');
+  assert.equal(halted.PAXGUSD.pendingEntries.length, 1);
 });

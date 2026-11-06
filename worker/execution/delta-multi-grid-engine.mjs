@@ -21,6 +21,32 @@ function uniqueBy(rows, keyOf) {
   });
 }
 
+const GLOBAL_GRID_PROTECTION_HALT_REASONS = new Set([
+  'GRID_BRACKET_UNVERIFIED_CANCELLED',
+  'GRID_BRACKET_CANCEL_UNCONFIRMED'
+]);
+
+export function applyGlobalGridProtectionHalt(symbolStates, symbols, reason, at) {
+  if (!GLOBAL_GRID_PROTECTION_HALT_REASONS.has(String(reason || ''))) return symbolStates;
+  const next = { ...(symbolStates && typeof symbolStates === 'object' ? symbolStates : {}) };
+  for (const symbolValue of Array.isArray(symbols) ? symbols : []) {
+    const symbol = text(symbolValue).toUpperCase();
+    if (!symbol) continue;
+    const previous = next[symbol] || {};
+    if (previous.status === 'HALTED' && previous.pausedReason === reason) continue;
+    next[symbol] = {
+      ...previous,
+      status: 'HALTED',
+      pausedReason: reason,
+      lastTickAt: at,
+      events: [...(Array.isArray(previous.events) ? previous.events : []), {
+        type: 'HALT', symbol, reason, at
+      }].slice(-80)
+    };
+  }
+  return next;
+}
+
 function aggregateGridState(symbolStates, symbols, previous = {}) {
   const states = symbols.map(symbol => symbolStates[symbol]).filter(Boolean);
   const positions = states.flatMap(state => Array.isArray(state.positions) ? state.positions : []);
@@ -125,6 +151,7 @@ export async function manageDeltaTestnetMultiGrid({
     'EMERGENCY_STOP', 'DAILY_LOSS_LIMIT', 'OVERALL_DRAWDOWN_STOP',
     'GRID_ENTRY_UNCONFIRMED', 'GRID_ORDER_ERROR_REQUIRES_MANUAL_REVIEW',
     'GRID_ORDER_RECONCILIATION_UNAVAILABLE', 'GRID_ORDER_CANCEL_UNCONFIRMED',
+    'GRID_BRACKET_UNVERIFIED_CANCELLED', 'GRID_BRACKET_CANCEL_UNCONFIRMED',
     'GRID_PROTECTION_UNVERIFIED', 'GRID_PROTECTION_UNVERIFIED_EXIT_FAILED',
     'GRID_EXIT_UNCONFIRMED', 'GRID_PNL_UNVERIFIED',
     'GRID_COMBINED_UNREALIZED_PNL_UNAVAILABLE',
@@ -217,6 +244,16 @@ export async function manageDeltaTestnetMultiGrid({
     }
   }
 
+  const globalProtectionFailure = results.find(result =>
+    result.blocked === true && GLOBAL_GRID_PROTECTION_HALT_REASONS.has(String(result.reason || ''))
+  )?.reason;
+  if (globalProtectionFailure) {
+    // Apply the safety halt to both configured symbols in this same cycle,
+    // including when the failing symbol was processed second.
+    Object.assign(symbolStates, applyGlobalGridProtectionHalt(
+      symbolStates, configuredSymbols, globalProtectionFailure, at
+    ));
+  }
   root = aggregateGridState(symbolStates, configuredSymbols, root);
   await persistRoot();
   const blocked = results.some(result => result.blocked === true);
