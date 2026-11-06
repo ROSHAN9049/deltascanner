@@ -41,6 +41,7 @@ export function normalizeDeltaWsPosition(row) {
     current_price: numberOrNull(row?.mark_price ?? row?.current_price ?? row?.last_traded_price),
     unrealized_pnl: numberOrNull(row?.unrealized_pnl ?? row?.unrealizedPnl),
     realized_pnl: numberOrNull(row?.realized_pnl ?? row?.realizedPnl),
+    realized_funding: numberOrNull(row?.realized_funding ?? row?.realizedFunding),
     product_id: numberOrNull(row?.product_id ?? row?.productId),
     order_id: row?.order_id ?? null,
     client_order_id: row?.client_order_id ?? null,
@@ -1075,6 +1076,9 @@ export class DeltaTestnetTracker {
           gross_pnl_verified: grossPnl !== null,
           net_pnl: netPnl,
           net_pnl_verified: netPnl !== null,
+          realized_funding: numberOrNull(position?.realized_funding),
+          realized_funding_verified: position?.realized_funding_verified === true &&
+            numberOrNull(position?.realized_funding) !== null,
           pnl_pct: pnlPct,
           r_multiple: null,
           exit_reason: exitReason,
@@ -1256,7 +1260,9 @@ async syncBracketMetadataOnce(key) {
         unrealized_pnl: 0,
         ...close,
         close_source: closeSource,
-        realized_pnl_verified: realizedPnlVerified
+        realized_pnl_verified: realizedPnlVerified,
+        realized_funding_verified: close.realized_funding !== null &&
+          (closeSource === 'private_websocket' || details?.close_fill_history_complete === true)
       });
       void this.materializeVerifiedClosedTrades().catch(error =>
         this.logSocketWarning('Verified Delta Testnet trade projection deferred', {
@@ -1290,6 +1296,10 @@ async syncBracketMetadataOnce(key) {
     if (row.client_order_id !== null) patch.client_order_id = String(row.client_order_id);
     if (row.entry_price !== null) patch.entry_price = row.entry_price;
     if (row.realized_pnl !== null) patch.realized_pnl = row.realized_pnl;
+    if (row.realized_funding !== null) {
+      patch.realized_funding = row.realized_funding;
+      patch.realized_funding_verified = true;
+    }
     if (row.sl_price !== null) patch.sl_price = row.sl_price;
     if (row.tp_price !== null) patch.tp_price = row.tp_price;
 
