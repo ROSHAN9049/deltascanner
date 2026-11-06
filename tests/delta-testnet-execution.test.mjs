@@ -161,6 +161,44 @@ test('Delta position snapshots normalize realized funding independently from rea
   assert.equal(normalized.realized_funding, -0.08);
 });
 
+
+test('executor fetches signed Delta wallet transaction history using microsecond cursors', async () => {
+  const calls = [];
+  const executor = createDeltaExecutor({
+    env: demoEnv(),
+    now: () => 1762387200000,
+    database: { async log() {} },
+    fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), init });
+      return response({
+        success: true,
+        result: [{
+          id: 88, transaction_type: 'funding', amount: '-0.12',
+          asset_symbol: 'USD', created_at: '2026-11-05T10:00:00Z'
+        }],
+        meta: { after: 'next-wallet-page' }
+      });
+    }
+  });
+
+  const page = await executor.getWalletTransactionsPage({
+    startTime: 1762300800000000,
+    endTime: 1762387200000000,
+    after: 'wallet-cursor',
+    pageSize: 100
+  });
+
+  assert.equal(page.rows.length, 1);
+  assert.equal(page.after, 'next-wallet-page');
+  assert.equal(calls.length, 1);
+  const url = new URL(calls[0].url);
+  assert.equal(url.pathname, '/v2/wallet/transactions');
+  assert.equal(url.searchParams.get('start_time'), '1762300800000000');
+  assert.equal(url.searchParams.get('end_time'), '1762387200000000');
+  assert.equal(url.searchParams.get('after'), 'wallet-cursor');
+  assert.equal(url.searchParams.get('page_size'), '50');
+});
+
 test('Delta wallet transaction normalization preserves the exchange signed amount and metadata', () => {
   const normalized = normalizeDeltaWalletTransaction({
     id: 987654,
@@ -1315,7 +1353,8 @@ test('closed trade projection requires matching entry order, exit side and full 
 test('closed trade projection supports partial exits when total fills match the entry quantity', async () => {
   const closedPosition = {
     id: 45, symbol: 'BTCUSD', status: 'CLOSED', close_source: 'private_websocket',
-    realized_pnl_verified: true, strategy: 'MOMENTUM', side: 'BUY',
+    realized_pnl_verified: true, realized_funding: '-0.02', realized_funding_verified: true,
+    strategy: 'MOMENTUM', side: 'BUY',
     // Position qty may reflect a remaining partial size, and order_id may point to a bracket exit.
     qty: '2', order_id: 'exit-partial-2', client_order_id: 'DDM-BTCUSD-partial', realized_pnl: '0.26',
     opened_at: '2026-10-29T10:00:00.000Z', closed_at: '2026-10-29T10:30:00.000Z'
@@ -1351,6 +1390,8 @@ test('closed trade projection supports partial exits when total fills match the 
   assert.equal(trade.exit_price, 60075);
   assert.ok(Math.abs(trade.gross_pnl - 0.26) < 1e-9);
   assert.equal(trade.net_pnl, 0.26);
+  assert.equal(trade.realized_funding, -0.02);
+  assert.equal(trade.realized_funding_verified, true);
   assert.deepEqual(trade.exit_fill_ids, ['exit-partial-1', 'exit-partial-2']);
 });
 
