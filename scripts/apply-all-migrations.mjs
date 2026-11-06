@@ -21,6 +21,8 @@ const MIGRATIONS = [
   'db/migrations/20261029120000_estop_release_challenge.sql',
   'db/migrations/20261029163000_delta_fill_ledger.sql',
   'db/migrations/20261103000100_add_per_strategy_position_limits.sql',
+  'db/migrations/20261105000100_enable_testnet_multi_symbol_grid.sql',
+  'db/migrations/20261106000100_exchange_authoritative_pnl_ledger.sql',
   'db/migrations/20261105000100_enable_testnet_multi_symbol_grid.sql'
 ];
 
@@ -37,6 +39,8 @@ const EXPECTED_TABLES = [
   'dd_trades',
   'dd_fills',
   'dd_delta_fill_sync_state',
+  'dd_wallet_transactions',
+  'dd_wallet_transaction_sync_state',
   'dd_signal_cache',
   'dd_market_cache',
   'dd_option_cache',
