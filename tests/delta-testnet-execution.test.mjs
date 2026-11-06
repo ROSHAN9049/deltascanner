@@ -167,7 +167,10 @@ test('executor fetches signed Delta wallet transaction history using microsecond
   const executor = createDeltaExecutor({
     env: demoEnv(),
     now: () => 1762387200000,
-    database: { async log() {} },
+    database: {
+      async select() { return []; },
+      async log() {}
+    },
     fetchImpl: async (url, init) => {
       calls.push({ url: String(url), init });
       return response({
