@@ -386,3 +386,50 @@ test('canonical Delta bracket projection refuses to fall back to unverified sign
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'CANONICAL_DELTA_BRACKET_LEVELS_UNAVAILABLE');
 });
+
+
+test('executor preserves mark_price separately and uses it ahead of last-traded fallbacks', async () => {
+  const {
+    createDeltaExecutor,
+    DELTA_TESTNET_REST_BASE,
+    DELTA_TESTNET_PRIVATE_WS_URL
+  } = await import('../worker/execution/delta-executor.mjs');
+  const executor = createDeltaExecutor({
+    env: {
+      DELTA_EXECUTION_MODE: 'testnet',
+      DELTA_TESTNET_API_KEY: 'demo-key-not-real',
+      DELTA_TESTNET_API_SECRET: 'demo-secret-not-real',
+      DELTA_TESTNET_REST_BASE,
+      DELTA_TESTNET_WS_URL: DELTA_TESTNET_PRIVATE_WS_URL
+    },
+    fetchImpl: async () => new Response(JSON.stringify({
+      success: true,
+      result: [{
+        product_symbol: 'SPYXUSD',
+        product_id: 184021,
+        size: -35,
+        entry_price: '730.49',
+        mark_price: '733.92392501',
+        current_price: '734.10',
+        last_traded_price: '734.10',
+        unrealized_pnl: '-1.337'
+      }]
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  });
+  const positions = await executor.getOpenPositions();
+  assert.equal(positions.length, 1);
+  assert.equal(positions[0].mark_price, 733.92392501);
+  assert.equal(positions[0].current_price, 733.92392501);
+});
+
+test('engine position management reads canonical Delta bracket projection before using legacy dd_positions prices', async () => {
+  const engine = await readFile(new URL('../worker/engine.mjs', import.meta.url), 'utf8');
+  const methodStart = engine.indexOf('async managePositionRow(');
+  const methodEnd = engine.indexOf('\n  async reconcile()', methodStart);
+  assert.ok(methodStart >= 0 && methodEnd > methodStart);
+  const method = engine.slice(methodStart, methodEnd);
+  assert.match(method, /dd_delta_positions/);
+  assert.match(method, /projectCanonicalDeltaBrackets\(row, canonicalRows\)/);
+  assert.ok(method.indexOf('projectCanonicalDeltaBrackets') < method.indexOf('const originalRisk'));
+  assert.match(method, /stale engine position levels were not used/);
+});
