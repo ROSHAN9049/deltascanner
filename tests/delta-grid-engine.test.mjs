@@ -314,8 +314,8 @@ test('Trailing Grid market shift cancels pending Grid entries and verifies all G
       raw: { testnet_order_id: 202, reservation: true } }
   ];
   let positions = [
-    { symbol: 'PAXGUSD', side: 'BUY', qty: 2, client_order_id: 'DDG-PAXGUSD-A' },
-    { symbol: 'NVDAXUSD', side: 'BUY', qty: 3, client_order_id: 'DDG-NVDAXUSD-B' }
+    { symbol: 'PAXGUSD', side: 'BUY', qty: 2, entry_price: 4000, client_order_id: 'DDG-PAXGUSD-A' },
+    { symbol: 'NVDAXUSD', side: 'BUY', qty: 3, entry_price: 180, client_order_id: 'DDG-NVDAXUSD-B' }
   ];
   const executor = {
     async getOrderById(id) {
@@ -338,6 +338,16 @@ test('Trailing Grid market shift cancels pending Grid entries and verifies all G
     }
   };
   const database = {
+    async select(table, query) {
+      calls.push(['select', table, query]);
+      const symbol = query.includes('PAXGUSD') ? 'PAXGUSD' : 'NVDAXUSD';
+      return [{
+        id: 'db-' + symbol, symbol, strategy: 'GRID',
+        qty: symbol === 'PAXGUSD' ? 2 : 3, side: 'BUY',
+        entry_price: symbol === 'PAXGUSD' ? 4000 : 180,
+        client_order_id: symbol === 'PAXGUSD' ? 'DDG-PAXGUSD-A' : 'DDG-NVDAXUSD-B'
+      }];
+    },
     async update(table, query, patch) { updates.push({ table, query, patch }); },
     async log(level, message, data) { logs.push({ level, message, data }); }
   };
@@ -403,6 +413,47 @@ test('Trailing Grid halts before a fourth shift in the rolling hour', async () =
   assert.equal(result.reason, 'GRID_TRAILING_SHIFT_LIMIT');
   assert.equal(result.state.status, 'HALTED');
   assert.equal(result.state.pausedReason, 'GRID_TRAILING_SHIFT_LIMIT');
+  assert.equal(updates.length, 1);
+  assert.equal(logs[0].level, 'CRITICAL');
+});
+
+
+test('Trailing Grid refuses to close exchange exposure without a matching Grid-owned database identity', async () => {
+  const updates = [];
+  const logs = [];
+  let cancelCalls = 0;
+  const result = await executeTrailingGridShift({
+    executor: {
+      async getOpenPositions() {
+        return [{
+          symbol: 'PAXGUSD', side: 'BUY', qty: 2, entry_price: 4000,
+          client_order_id: 'SCALP-ENTRY-1'
+        }];
+      },
+      async getOrderById() { return { id: 5, state: 'OPEN' }; },
+      async cancelOrderById() { cancelCalls += 1; }
+    },
+    database: {
+      async select(table, query) {
+        if (query.includes('NVDAXUSD')) return [];
+        return [{
+          id: 'db-paxg', symbol: 'PAXGUSD', strategy: 'SCALPING',
+          qty: 2, side: 'BUY', entry_price: 4000, client_order_id: 'SCALP-ENTRY-1'
+        }];
+      },
+      async update(table, query, patch) { updates.push(patch); },
+      async log(level, message, data) { logs.push({ level, message, data }); }
+    },
+    state: { status: 'ACTIVE', positions: [], pendingEntries: [], events: [] },
+    settings: {},
+    symbol: 'PAXGUSD', configuredSymbols: ['PAXGUSD', 'NVDAXUSD'],
+    currentConfig: { lowerPrice: 100, upperPrice: 120, breakoutExitPct: 1.2 },
+    markPrice: 122, direction: 'UP',
+    now: () => Date.parse('2026-11-07T06:00:00.000Z')
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'GRID_TRAILING_SHIFT_UNCONFIRMED');
+  assert.equal(cancelCalls, 0);
   assert.equal(updates.length, 1);
   assert.equal(logs[0].level, 'CRITICAL');
 });

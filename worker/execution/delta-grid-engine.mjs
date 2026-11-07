@@ -411,6 +411,7 @@ export async function executeTrailingGridShift({
   if (!shift.ok || !symbols.includes(normalizedSymbol) || !(mark > 0) ||
       !executor || typeof executor.getOpenPositions !== 'function' ||
       typeof executor.getOrderById !== 'function' || !database ||
+      typeof database.select !== 'function' ||
       typeof database.update !== 'function' || typeof database.log !== 'function') {
     return fail('GRID_TRAILING_SHIFT_UNCONFIRMED',
       new Error(shift.reason || 'Trailing Grid dependencies or symbol configuration are invalid'));
@@ -418,35 +419,80 @@ export async function executeTrailingGridShift({
 
   try {
     const configured = new Set(symbols);
-    const dbGridSymbols = new Set((Array.isArray(dbOpenGridRows) ? dbOpenGridRows : [])
-      .map(row => text(row?.symbol).toUpperCase()).filter(Boolean));
-    const gridClientIds = new Set((Array.isArray(gridOrders) ? gridOrders : [])
+    const gridOrderClientIds = new Set((Array.isArray(gridOrders) ? gridOrders : [])
       .filter(row => text(row?.strategy).toUpperCase() === 'GRID')
       .map(row => text(row?.client_order_id)).filter(Boolean));
-    const isGridOwned = position => {
-      const positionSymbol = text(position?.symbol).toUpperCase();
-      const clientId = text(position?.client_order_id);
-      return clientId.toUpperCase().startsWith('DDG-') ||
-        dbGridSymbols.has(positionSymbol) || gridClientIds.has(clientId);
-    };
 
-    // Preflight all configured-symbol positions before the first cancellation.
+    // Preflight every configured symbol against both exchange and database state.
+    // A stale Grid row alone is never sufficient to claim another strategy's position.
     const beforePositions = await executor.getOpenPositions();
     if (!Array.isArray(beforePositions)) throw new Error('Exchange position snapshot is malformed before trailing shift');
     const configuredExposure = beforePositions.filter(position =>
       configured.has(text(position?.symbol).toUpperCase()) && n(position?.qty) > 0
     );
-    const unownedExposure = configuredExposure.find(position => !isGridOwned(position));
-    if (unownedExposure) {
-      throw new Error('Unowned Futures position found on ' + text(unownedExposure.symbol).toUpperCase() +
-        '; trailing shift refused to touch another strategy position');
+    const openRowsBySymbol = new Map();
+    for (const configuredSymbol of symbols) {
+      const rows = await database.select(
+        'dd_delta_positions',
+        'symbol=eq.' + encodeURIComponent(configuredSymbol) +
+          '&status=eq.OPEN&select=id,symbol,strategy,qty,side,entry_price,client_order_id,entry_order_id&limit=10'
+      );
+      if (!Array.isArray(rows)) {
+        throw new Error('Database position ownership snapshot is malformed for ' + configuredSymbol);
+      }
+      const activeRows = rows.filter(row => n(row?.qty) > 0);
+      if (activeRows.length > 1) {
+        throw new Error('Multiple open database positions exist for configured Grid symbol ' + configuredSymbol);
+      }
+      if (activeRows.some(row => text(row?.strategy).toUpperCase() !== 'GRID')) {
+        throw new Error('Non-Grid database exposure exists on ' + configuredSymbol +
+          '; trailing shift refused to touch another strategy position');
+      }
+      openRowsBySymbol.set(configuredSymbol, activeRows[0] || null);
     }
-    const wrongSide = configuredExposure.find(position => text(position?.side).toUpperCase() !== 'BUY');
-    if (wrongSide) throw new Error('Unexpected non-BUY Grid exposure found on ' + text(wrongSide.symbol).toUpperCase());
+
+    for (const position of configuredExposure) {
+      const positionSymbol = text(position?.symbol).toUpperCase();
+      const dbPosition = openRowsBySymbol.get(positionSymbol);
+      const positionClientId = text(position?.client_order_id);
+      const dbClientId = text(dbPosition?.client_order_id);
+      const gridIdentityVerified = Boolean(dbPosition) &&
+        dbClientId.toUpperCase().startsWith('DDG-') &&
+        (!positionClientId || positionClientId === dbClientId ||
+          gridOrderClientIds.has(positionClientId));
+      if (!gridIdentityVerified) {
+        throw new Error('Grid ownership could not be verified for exchange position on ' + positionSymbol);
+      }
+      if (Math.abs(n(dbPosition.qty) - n(position.qty)) > 0) {
+        throw new Error('Exchange/database Grid quantity mismatch on ' + positionSymbol);
+      }
+      if (text(dbPosition.side).toUpperCase() !== text(position.side).toUpperCase()) {
+        throw new Error('Exchange/database Grid side mismatch on ' + positionSymbol);
+      }
+      const dbEntry = numberOrNull(dbPosition.entry_price);
+      const exchangeEntry = numberOrNull(position.entry_price);
+      if (dbEntry !== null && exchangeEntry !== null &&
+          Math.abs(dbEntry - exchangeEntry) > Math.max(1e-8, Math.abs(exchangeEntry) * 1e-6)) {
+        throw new Error('Exchange/database Grid entry-price mismatch on ' + positionSymbol);
+      }
+      if (text(position.side).toUpperCase() !== 'BUY') {
+        throw new Error('Unexpected non-BUY Grid exposure found on ' + positionSymbol);
+      }
+    }
+
+    for (const [configuredSymbol, dbPosition] of openRowsBySymbol.entries()) {
+      const exchangePosition = configuredExposure.find(position =>
+        text(position?.symbol).toUpperCase() === configuredSymbol
+      );
+      if (dbPosition && !exchangePosition) {
+        throw new Error('Database reports an open Grid position but Delta reports no matching exposure on ' + configuredSymbol);
+      }
+    }
 
     // Cancel pending Grid ENTRY orders on both configured symbols. If an order
     // filled before cancellation, the subsequent exchange position refresh closes it.
     const pendingGridEntries = (Array.isArray(gridOrders) ? gridOrders : []).filter(row =>
+      configured.has(text(row?.symbol).toUpperCase()) &&
       text(row?.strategy).toUpperCase() === 'GRID' &&
       text(row?.role).toUpperCase() === 'ENTRY' &&
       !terminalOrderStates.has(text(row?.state).toUpperCase())
@@ -496,8 +542,19 @@ export async function executeTrailingGridShift({
     const remainingConfiguredExposure = afterCancels.filter(position =>
       configured.has(text(position?.symbol).toUpperCase()) && n(position?.qty) > 0
     );
-    const remainingUnowned = remainingConfiguredExposure.find(position => !isGridOwned(position));
-    if (remainingUnowned) throw new Error('Unowned Futures exposure appeared during trailing shift; refusing to close it');
+    for (const position of remainingConfiguredExposure) {
+      const positionSymbol = text(position?.symbol).toUpperCase();
+      const dbPosition = openRowsBySymbol.get(positionSymbol);
+      const positionClientId = text(position?.client_order_id);
+      const dbClientId = text(dbPosition?.client_order_id);
+      if (!dbPosition || !dbClientId.toUpperCase().startsWith('DDG-') ||
+          (positionClientId && positionClientId !== dbClientId &&
+            !gridOrderClientIds.has(positionClientId)) ||
+          Math.abs(n(dbPosition.qty) - n(position.qty)) > 0 ||
+          text(dbPosition.side).toUpperCase() !== text(position.side).toUpperCase()) {
+        throw new Error('Grid ownership/reconciliation changed during cancellation on ' + positionSymbol);
+      }
+    }
     const closeSymbols = [...new Set(remainingConfiguredExposure.map(position =>
       text(position?.symbol).toUpperCase()
     ))];
