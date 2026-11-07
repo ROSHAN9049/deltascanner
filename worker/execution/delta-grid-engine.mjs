@@ -290,6 +290,351 @@ function parseOrderRaw(value) {
   return {};
 }
 
+export function calculateTrailingGridRange({
+  direction, lowerPrice, upperPrice, breakoutExitPct = 1.2, shiftPct = 10
+} = {}) {
+  const lower = numberOrNull(lowerPrice);
+  const upper = numberOrNull(upperPrice);
+  const breakoutPct = numberOrNull(breakoutExitPct);
+  const shift = numberOrNull(shiftPct);
+  const normalizedDirection = text(direction).toUpperCase();
+  if (!(lower > 0 && upper > lower && breakoutPct >= 0 && shift > 0) ||
+      !['UP', 'DOWN'].includes(normalizedDirection)) {
+    return { ok: false, reason: 'GRID_TRAILING_RANGE_INVALID' };
+  }
+  const upperBreakPrice = upper * (1 + breakoutPct / 100);
+  const lowerBreakPrice = lower * (1 - breakoutPct / 100);
+  const nextLower = normalizedDirection === 'UP'
+    ? upper * (1 - shift / 100)
+    : lowerBreakPrice * (1 - shift / 100);
+  const nextUpper = normalizedDirection === 'UP'
+    ? upperBreakPrice * (1 + shift / 100)
+    : lower * (1 + shift / 100);
+  if (!(Number.isFinite(nextLower) && nextLower > 0 &&
+      Number.isFinite(nextUpper) && nextUpper > nextLower)) {
+    return { ok: false, reason: 'GRID_TRAILING_RANGE_INVALID' };
+  }
+  return {
+    ok: true,
+    direction: normalizedDirection,
+    breakoutPrice: normalizedDirection === 'UP' ? upperBreakPrice : lowerBreakPrice,
+    lowerPrice: Number(nextLower.toPrecision(12)),
+    upperPrice: Number(nextUpper.toPrecision(12))
+  };
+}
+
+export function getTrailingGridBreakoutDirection(markPrice, config = {}) {
+  const mark = numberOrNull(markPrice);
+  const lower = numberOrNull(config.lowerPrice);
+  const upper = numberOrNull(config.upperPrice);
+  const breakoutPct = numberOrNull(config.breakoutExitPct ?? 1.2);
+  if (!(mark > 0 && lower > 0 && upper > lower && breakoutPct >= 0)) return null;
+  if (mark >= upper * (1 + breakoutPct / 100)) return 'UP';
+  if (mark <= lower * (1 - breakoutPct / 100)) return 'DOWN';
+  return null;
+}
+
+export function pruneTrailingGridShiftTimestamps(values, now = Date.now()) {
+  const current = numberOrNull(now) ?? Date.now();
+  const seen = new Set();
+  return (Array.isArray(values) ? values : [])
+    .map(value => {
+      const parsed = typeof value === 'number' ? value : Date.parse(String(value || ''));
+      return Number.isFinite(parsed) ? parsed : null;
+    })
+    .filter(value => value !== null && value <= current && value > current - 60 * 60 * 1000)
+    .sort((a, b) => a - b)
+    .filter(value => {
+      if (seen.has(value)) return false;
+      seen.add(value);
+      return true;
+    })
+    .map(value => new Date(value).toISOString());
+}
+
+export async function executeTrailingGridShift({
+  executor, database, state, settings = {}, symbol, configuredSymbols = [],
+  currentConfig = {}, markPrice, direction, dbOpenGridRows = [], gridOrders = [],
+  now = () => Date.now()
+} = {}) {
+  const timestamp = now();
+  const at = new Date(timestamp).toISOString();
+  const normalizedSymbol = text(symbol).toUpperCase();
+  const symbols = [...new Set((Array.isArray(configuredSymbols) ? configuredSymbols : [])
+    .map(value => text(value).toUpperCase()).filter(Boolean))];
+  const mark = numberOrNull(markPrice);
+  const shift = calculateTrailingGridRange({
+    direction, lowerPrice: currentConfig.lowerPrice, upperPrice: currentConfig.upperPrice,
+    breakoutExitPct: currentConfig.breakoutExitPct, shiftPct: 10
+  });
+  const fail = async (reason, error = null, level = 'CRITICAL') => {
+    state.status = 'HALTED';
+    state.pausedReason = reason;
+    state.lastTickAt = at;
+    pushEvent(state, {
+      type: 'HALT', reason, symbol: normalizedSymbol, price: mark,
+      ...(error ? { error: String(error?.message || error).slice(0, 220) } : {})
+    }, at);
+    await database.update('dd_settings', 'id=eq.1', {
+      grid_state: state, updated_at: at
+    }).catch(() => {});
+    await database.log(level, 'Grid trailing shift failed closed; manual review/reset is required', {
+      symbol: normalizedSymbol, direction, price: mark, reason,
+      error: error ? String(error?.message || error).slice(0, 220) : null,
+      executionBlocked: true, doNotResumeAutomatically: true
+    }).catch(() => {});
+    return { ok: false, halted: true, reason, state };
+  };
+  const globalTimestamps = Array.isArray(settings.gridGlobalTrailingShiftTimestamps)
+    ? settings.gridGlobalTrailingShiftTimestamps : [];
+  const recentShifts = pruneTrailingGridShiftTimestamps([
+    ...globalTimestamps,
+    ...(Array.isArray(state.trailingShiftTimestamps) ? state.trailingShiftTimestamps : [])
+  ], timestamp);
+  state.trailingShiftTimestamps = recentShifts;
+  if (recentShifts.length >= 3) {
+    state.status = 'HALTED';
+    state.pausedReason = 'GRID_TRAILING_SHIFT_LIMIT';
+    state.lastTickAt = at;
+    pushEvent(state, {
+      type: 'HALT', reason: 'GRID_TRAILING_SHIFT_LIMIT', symbol: normalizedSymbol,
+      direction, price: mark, shiftsInPreviousHour: recentShifts.length, maximumShiftsPerHour: 3
+    }, at);
+    await database.update('dd_settings', 'id=eq.1', { grid_state: state, updated_at: at }).catch(() => {});
+    await database.log('CRITICAL',
+      'Grid halted: maximum of 3 trailing shifts in one hour exceeded; manual reset required',
+      { symbol: normalizedSymbol, direction, price: mark, shiftsInPreviousHour: recentShifts.length,
+        maximumShiftsPerHour: 3, executionBlocked: true }).catch(() => {});
+    return { ok: false, halted: true, reason: 'GRID_TRAILING_SHIFT_LIMIT', state };
+  }
+
+  if (!shift.ok || !symbols.includes(normalizedSymbol) || !(mark > 0) ||
+      !executor || typeof executor.getOpenPositions !== 'function' ||
+      typeof executor.getOrderById !== 'function' || !database ||
+      typeof database.select !== 'function' ||
+      typeof database.update !== 'function' || typeof database.log !== 'function') {
+    return fail('GRID_TRAILING_SHIFT_UNCONFIRMED',
+      new Error(shift.reason || 'Trailing Grid dependencies or symbol configuration are invalid'));
+  }
+
+  try {
+    const configured = new Set(symbols);
+    const gridOrderClientIds = new Set((Array.isArray(gridOrders) ? gridOrders : [])
+      .filter(row => text(row?.strategy).toUpperCase() === 'GRID')
+      .map(row => text(row?.client_order_id)).filter(Boolean));
+
+    // Preflight every configured symbol against both exchange and database state.
+    // A stale Grid row alone is never sufficient to claim another strategy's position.
+    const beforePositions = await executor.getOpenPositions();
+    if (!Array.isArray(beforePositions)) throw new Error('Exchange position snapshot is malformed before trailing shift');
+    const configuredExposure = beforePositions.filter(position =>
+      configured.has(text(position?.symbol).toUpperCase()) && n(position?.qty) > 0
+    );
+    const openRowsBySymbol = new Map();
+    for (const configuredSymbol of symbols) {
+      const rows = await database.select(
+        'dd_delta_positions',
+        'symbol=eq.' + encodeURIComponent(configuredSymbol) +
+          '&status=eq.OPEN&select=id,symbol,strategy,qty,side,entry_price,client_order_id,entry_order_id&limit=10'
+      );
+      if (!Array.isArray(rows)) {
+        throw new Error('Database position ownership snapshot is malformed for ' + configuredSymbol);
+      }
+      const activeRows = rows.filter(row => n(row?.qty) > 0);
+      if (activeRows.length > 1) {
+        throw new Error('Multiple open database positions exist for configured Grid symbol ' + configuredSymbol);
+      }
+      if (activeRows.some(row => text(row?.strategy).toUpperCase() !== 'GRID')) {
+        throw new Error('Non-Grid database exposure exists on ' + configuredSymbol +
+          '; trailing shift refused to touch another strategy position');
+      }
+      openRowsBySymbol.set(configuredSymbol, activeRows[0] || null);
+    }
+
+    for (const position of configuredExposure) {
+      const positionSymbol = text(position?.symbol).toUpperCase();
+      const dbPosition = openRowsBySymbol.get(positionSymbol);
+      const positionClientId = text(position?.client_order_id);
+      const dbClientId = text(dbPosition?.client_order_id);
+      const gridIdentityVerified = Boolean(dbPosition) &&
+        dbClientId.toUpperCase().startsWith('DDG-') &&
+        (!positionClientId || positionClientId === dbClientId ||
+          gridOrderClientIds.has(positionClientId));
+      if (!gridIdentityVerified) {
+        throw new Error('Grid ownership could not be verified for exchange position on ' + positionSymbol);
+      }
+      if (Math.abs(n(dbPosition.qty) - n(position.qty)) > 0) {
+        throw new Error('Exchange/database Grid quantity mismatch on ' + positionSymbol);
+      }
+      if (text(dbPosition.side).toUpperCase() !== text(position.side).toUpperCase()) {
+        throw new Error('Exchange/database Grid side mismatch on ' + positionSymbol);
+      }
+      const dbEntry = numberOrNull(dbPosition.entry_price);
+      const exchangeEntry = numberOrNull(position.entry_price);
+      if (dbEntry !== null && exchangeEntry !== null &&
+          Math.abs(dbEntry - exchangeEntry) > Math.max(1e-8, Math.abs(exchangeEntry) * 1e-6)) {
+        throw new Error('Exchange/database Grid entry-price mismatch on ' + positionSymbol);
+      }
+      if (text(position.side).toUpperCase() !== 'BUY') {
+        throw new Error('Unexpected non-BUY Grid exposure found on ' + positionSymbol);
+      }
+    }
+
+    for (const [configuredSymbol, dbPosition] of openRowsBySymbol.entries()) {
+      const exchangePosition = configuredExposure.find(position =>
+        text(position?.symbol).toUpperCase() === configuredSymbol
+      );
+      if (dbPosition && !exchangePosition) {
+        throw new Error('Database reports an open Grid position but Delta reports no matching exposure on ' + configuredSymbol);
+      }
+    }
+
+    // Cancel pending Grid ENTRY orders on both configured symbols. If an order
+    // filled before cancellation, the subsequent exchange position refresh closes it.
+    const pendingGridEntries = (Array.isArray(gridOrders) ? gridOrders : []).filter(row =>
+      configured.has(text(row?.symbol).toUpperCase()) &&
+      text(row?.strategy).toUpperCase() === 'GRID' &&
+      text(row?.role).toUpperCase() === 'ENTRY' &&
+      !terminalOrderStates.has(text(row?.state).toUpperCase())
+    );
+    for (const row of pendingGridEntries) {
+      const clientOrderId = text(row?.client_order_id);
+      const raw = parseOrderRaw(row?.raw);
+      let orderId = numberOrNull(raw?.testnet_order_id ?? raw?.order_id ?? row?.exchange_order_id ?? row?.order_id);
+      if (!(Number.isSafeInteger(orderId) && orderId > 0) &&
+          clientOrderId && typeof executor.getOrderByClientOrderId === 'function') {
+        const byClientId = await executor.getOrderByClientOrderId(clientOrderId);
+        orderId = numberOrNull(byClientId?.id ?? byClientId?.order_id);
+      }
+      if (!(Number.isSafeInteger(orderId) && orderId > 0)) {
+        throw new Error('Pending Grid entry has no verifiable Delta order ID; reservation was not released');
+      }
+      let confirmedOrder = await executor.getOrderById(orderId);
+      let confirmedState = text(confirmedOrder?.state).toUpperCase();
+      if (!confirmedState) throw new Error('Delta returned no state for pending Grid entry ' + orderId);
+      if (!terminalOrderStates.has(confirmedState)) {
+        const cancellation = await cancelAndVerifyGridOrder({ executor, orderId, clientOrderId });
+        confirmedOrder = cancellation.order;
+        confirmedState = cancellation.state;
+      }
+      if (!terminalOrderStates.has(confirmedState)) {
+        throw new Error('Grid entry order ' + orderId + ' remains active after cancellation attempt');
+      }
+      const rowId = numberOrNull(row?.id);
+      const query = clientOrderId
+        ? 'client_order_id=eq.' + encodeURIComponent(clientOrderId)
+        : rowId !== null ? 'id=eq.' + encodeURIComponent(String(rowId)) : '';
+      if (!query) throw new Error('Cannot persist terminal status for Grid entry without its database identity');
+      await database.update('dd_orders', query, {
+        state: confirmedState, unfilled_size: numberOrNull(confirmedOrder?.unfilled_size), updated_at: at,
+        raw: {
+          ...raw, reservation: false, accepted: true, exchange_state: confirmedState,
+          cancelledByTrailingGrid: confirmedState === 'CANCELLED' || confirmedState === 'CANCELED',
+          trailingGridShiftAt: at
+        }
+      });
+    }
+
+    // Close each Grid-owned position with a reduce-only market exit and verify
+    // each symbol flat from a fresh exchange position snapshot.
+    const afterCancels = await executor.getOpenPositions();
+    if (!Array.isArray(afterCancels)) throw new Error('Exchange position snapshot is malformed after Grid order cancellation');
+    const remainingConfiguredExposure = afterCancels.filter(position =>
+      configured.has(text(position?.symbol).toUpperCase()) && n(position?.qty) > 0
+    );
+    for (const position of remainingConfiguredExposure) {
+      const positionSymbol = text(position?.symbol).toUpperCase();
+      const dbPosition = openRowsBySymbol.get(positionSymbol);
+      const positionClientId = text(position?.client_order_id);
+      const dbClientId = text(dbPosition?.client_order_id);
+      if (!dbPosition || !dbClientId.toUpperCase().startsWith('DDG-') ||
+          (positionClientId && positionClientId !== dbClientId &&
+            !gridOrderClientIds.has(positionClientId)) ||
+          Math.abs(n(dbPosition.qty) - n(position.qty)) > 0 ||
+          text(dbPosition.side).toUpperCase() !== text(position.side).toUpperCase()) {
+        throw new Error('Grid ownership/reconciliation changed during cancellation on ' + positionSymbol);
+      }
+    }
+    const closeSymbols = [...new Set(remainingConfiguredExposure.map(position =>
+      text(position?.symbol).toUpperCase()
+    ))];
+    for (const closeSymbol of closeSymbols) {
+      const position = remainingConfiguredExposure.find(row => text(row?.symbol).toUpperCase() === closeSymbol);
+      const close = await closeAndVerify(executor, closeSymbol, n(position?.qty));
+      if (!close.closed) throw new Error('Market close could not be verified flat for ' + closeSymbol);
+    }
+    const finalPositions = await executor.getOpenPositions();
+    if (!Array.isArray(finalPositions)) throw new Error('Final exchange position snapshot is malformed after trailing shift');
+    const residualExposure = finalPositions.filter(position =>
+      configured.has(text(position?.symbol).toUpperCase()) && n(position?.qty) > 0
+    );
+    if (residualExposure.length) throw new Error('Exchange still reports configured-symbol exposure after trailing shift market closes');
+
+    const oldConfigMap = settings.grid_symbol_configs && typeof settings.grid_symbol_configs === 'object'
+      ? settings.grid_symbol_configs : {};
+    const nextConfigMap = { ...oldConfigMap };
+    const existing = oldConfigMap[normalizedSymbol] || {};
+    const levelsCountValue = Number(existing.levelsCount ?? existing.grid_levels_count ?? settings.grid_levels_count ?? 10);
+    const levelsCount = Number.isInteger(levelsCountValue) && levelsCountValue >= 8 && levelsCountValue <= 12
+      ? levelsCountValue : 10;
+    nextConfigMap[normalizedSymbol] = {
+      ...existing, lowerPrice: shift.lowerPrice, upperPrice: shift.upperPrice, levelsCount
+    };
+    const nextShiftTimestamps = [...recentShifts, at];
+    state.positions = [];
+    state.pendingEntries = [];
+    state.openRiskUsd = 0;
+    state.unrealizedPnl = 0;
+    state.lastPrice = 0;
+    state.currentPrice = mark;
+    state.lastTickAt = at;
+    state.wasEnabled = true;
+    state.status = 'ACTIVE';
+    state.pausedReason = null;
+    state.momentum = { paused: false, direction: 'NONE', movePct: 0, retracementPct: 0 };
+    state.trailingShiftTimestamps = nextShiftTimestamps;
+    state.lastTrailingShiftAt = at;
+    state.lastTrailingShiftSymbol = normalizedSymbol;
+    state.lastTrailingShiftDirection = direction;
+    state.lastTrailingShiftPrice = mark;
+    const event = {
+      type: 'SHIFT', reason: 'TRAILING_GRID_SHIFT_' + direction, direction,
+      symbol: normalizedSymbol, price: mark,
+      previousLowerPrice: numberOrNull(currentConfig.lowerPrice),
+      previousUpperPrice: numberOrNull(currentConfig.upperPrice),
+      newLowerPrice: shift.lowerPrice, newUpperPrice: shift.upperPrice,
+      shiftCountInLastHour: nextShiftTimestamps.length,
+      realizedPnl: null, pnlPendingReconciliation: true
+    };
+    pushEvent(state, event, at);
+    const update = {
+      grid_symbol_configs: nextConfigMap, grid_state: state, updated_at: at
+    };
+    if (symbols[0] === normalizedSymbol) {
+      update.grid_symbol = normalizedSymbol;
+      update.grid_lower_price = shift.lowerPrice;
+      update.grid_upper_price = shift.upperPrice;
+      update.grid_levels_count = levelsCount;
+    }
+    await database.update('dd_settings', 'id=eq.1', update);
+    await database.log('INFO',
+      'Shifted Grid ' + direction + ' at price ' + mark +
+      '; exchange market exits verified flat; realized P&L pending Delta trade-ledger reconciliation',
+      {
+        symbol: normalizedSymbol, direction, markPrice: mark,
+        previousRange: { lowerPrice: numberOrNull(currentConfig.lowerPrice), upperPrice: numberOrNull(currentConfig.upperPrice) },
+        nextRange: { lowerPrice: shift.lowerPrice, upperPrice: shift.upperPrice },
+        closedGridSymbols: closeSymbols, cancelledGridEntryCount: pendingGridEntries.length,
+        shiftCountInLastHour: nextShiftTimestamps.length, realizedPnlVerified: false, orderRoutingAttempted: true
+      }
+    ).catch(() => {});
+    return { ok: true, shifted: true, state, event, closedGridSymbols: closeSymbols };
+  } catch (error) {
+    return fail('GRID_TRAILING_SHIFT_UNCONFIRMED', error);
+  }
+}
+
+
 export async function cancelUnverifiedGridEntry({
   executor, database, state, symbol, orderId, clientOrderId,
   expectedStop, expectedTarget, raw = {}, now = () => Date.now(), mark = null,
@@ -705,6 +1050,31 @@ export async function manageDeltaTestnetGrid({
     text(row?.role).toUpperCase() === 'ENTRY' &&
     !terminalOrderStates.has(text(row?.state).toUpperCase())
   ) || null;
+  const trailingDirection = getTrailingGridBreakoutDirection(mark, config);
+  const canExecuteTrailingShift = settings.grid_enabled === true &&
+    settings.gridTrailingEnvironmentEnabled === true &&
+    settings.grid_trailing_enabled === true &&
+    dataFresh === true && pnl.complete === true &&
+    sharedCurrentEquity !== null && state.highWaterEquity > 0 &&
+    settings.emergency_stop !== true &&
+    !settings.gridGlobalHardStopReason && !settings.gridGlobalPauseReason &&
+    !sharedGridStopReason && !state.pausedReason &&
+    Boolean(trailingDirection);
+  if (canExecuteTrailingShift) {
+    const shifted = await executeTrailingGridShift({
+      executor, database, state, settings, symbol,
+      configuredSymbols: configuredGridSymbols, currentConfig: config,
+      markPrice: mark, direction: trailingDirection,
+      dbOpenGridRows, gridOrders, now
+    });
+    state = shifted.state;
+    if (!shifted.ok) return block(shifted.reason);
+    await persist();
+    safety.trailingShift = {
+      shifted: true, symbol, direction: trailingDirection, at: state.lastTrailingShiftAt
+    };
+    return { state, safety, trailingShift: safety.trailingShift };
+  }
 
   if (exchangeSymbolPosition && !exchangeLooksGrid) {
     state.status = 'BLOCKED';

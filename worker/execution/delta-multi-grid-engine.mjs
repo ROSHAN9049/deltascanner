@@ -23,7 +23,9 @@ function uniqueBy(rows, keyOf) {
 
 const GLOBAL_GRID_PROTECTION_HALT_REASONS = new Set([
   'GRID_BRACKET_UNVERIFIED_CANCELLED',
-  'GRID_BRACKET_CANCEL_UNCONFIRMED'
+  'GRID_BRACKET_CANCEL_UNCONFIRMED',
+  'GRID_TRAILING_SHIFT_LIMIT',
+  'GRID_TRAILING_SHIFT_UNCONFIRMED'
 ]);
 
 export function applyGlobalGridProtectionHalt(symbolStates, symbols, reason, at) {
@@ -57,6 +59,11 @@ function aggregateGridState(symbolStates, symbols, previous = {}) {
     row => [row.symbol || '', row.at || '', row.type || '', row.reason || '', row.levelIndex ?? ''].join('|'))
     .slice(-80);
   const latest = [...states].reverse().find(state => state.lastTickAt) || states.at(-1) || {};
+  const trailingShiftTimestamps = [...new Set([
+    ...(Array.isArray(previous.trailingShiftTimestamps) ? previous.trailingShiftTimestamps : []),
+    ...states.flatMap(state => Array.isArray(state.trailingShiftTimestamps) ? state.trailingShiftTimestamps : [])
+  ])].sort((a, b) => Date.parse(String(a)) - Date.parse(String(b)));
+
   const statuses = states.map(state => String(state.status || 'OFF').toUpperCase());
   const status = statuses.includes('HALTED') ? 'HALTED'
     : statuses.includes('BLOCKED') ? 'BLOCKED'
@@ -89,6 +96,11 @@ function aggregateGridState(symbolStates, symbols, previous = {}) {
     pendingEntries,
     trades,
     events,
+    trailingShiftTimestamps,
+    lastTrailingShiftAt: latest.lastTrailingShiftAt || previous.lastTrailingShiftAt || null,
+    lastTrailingShiftSymbol: latest.lastTrailingShiftSymbol || previous.lastTrailingShiftSymbol || null,
+    lastTrailingShiftDirection: latest.lastTrailingShiftDirection || previous.lastTrailingShiftDirection || null,
+    lastTrailingShiftPrice: latest.lastTrailingShiftPrice ?? previous.lastTrailingShiftPrice ?? null,
     realizedPnl: latest.realizedPnl ?? null,
     dayPnl: latest.dayPnl ?? null,
     strategyStartEquity: n(latest.strategyStartEquity),
@@ -156,7 +168,8 @@ export async function manageDeltaTestnetMultiGrid({
     'GRID_EXIT_UNCONFIRMED', 'GRID_PNL_UNVERIFIED',
     'GRID_COMBINED_UNREALIZED_PNL_UNAVAILABLE',
     'GRID_MULTI_SYMBOL_RECONCILIATION_FAILED',
-    'GRID_FILLED_ORDER_WITHOUT_POSITION', 'GRID_SYMBOL_CYCLE_ERROR'
+    'GRID_FILLED_ORDER_WITHOUT_POSITION', 'GRID_SYMBOL_CYCLE_ERROR',
+    'GRID_TRAILING_SHIFT_LIMIT', 'GRID_TRAILING_SHIFT_UNCONFIRMED'
   ]);
   const globalHardStopReasons = new Set([
     'EMERGENCY_STOP', 'DAILY_LOSS_LIMIT', 'OVERALL_DRAWDOWN_STOP'
@@ -196,11 +209,15 @@ export async function manageDeltaTestnetMultiGrid({
       grid_max_positions: 1,
       gridGlobalOpenRiskUsd,
       gridGlobalPauseReason: priorGlobalPause,
-      gridGlobalHardStopReason
+      gridGlobalHardStopReason,
+      gridGlobalTrailingShiftTimestamps: root.trailingShiftTimestamps || []
     };
 
     const scopedDatabase = Object.create(database);
     scopedDatabase.update = async (table, query, patch) => {
+      if (table === 'dd_settings' && patch && patch.grid_symbol_configs) {
+        settings.grid_symbol_configs = patch.grid_symbol_configs;
+      }
       if (table === 'dd_settings' && patch && patch.grid_state) {
         symbolStates[symbol] = patch.grid_state;
         root = aggregateGridState(symbolStates, configuredSymbols, root);
@@ -223,6 +240,25 @@ export async function manageDeltaTestnetMultiGrid({
       });
       symbolStates[symbol] = result.state;
       results.push({ symbol, ...result.safety });
+      if (result.trailingShift?.shifted === true) {
+        // All configured-symbol Grid exposure and pending entries were verified flat.
+        for (const otherSymbol of configuredSymbols) {
+          if (otherSymbol === symbol) continue;
+          const other = symbolStates[otherSymbol];
+          if (!other) continue;
+          symbolStates[otherSymbol] = {
+            ...other,
+            positions: [],
+            pendingEntries: [],
+            openRiskUsd: 0,
+            unrealizedPnl: 0,
+            status: other.pausedReason ? other.status : 'PAUSED',
+            lastTickAt: at
+          };
+        }
+        await persistRoot();
+        break;
+      }
       await persistRoot();
     } catch (error) {
       const existing = symbolStates[symbol] || {};

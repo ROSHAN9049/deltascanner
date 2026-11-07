@@ -54,6 +54,7 @@ const signalOnly = environment === 'SIGNAL_ONLY';
 
 const gridSymbols = parseDeltaTestnetGridSymbols(process.env.GRID_SYMBOLS);
 const gridExecutionRequested = String(process.env.GRID_EXECUTION_ALLOWED || '').trim().toLowerCase() === 'true';
+const gridTrailingEnabled = String(process.env.GRID_TRAILING_ENABLED || '').trim().toLowerCase() === 'true';
 const directDeltaExecutionEnabled = resolveDirectDeltaExecutionEnabled(environment, deltaExecutionMode);
 // Grid has an additional explicit opt-in, and can never run outside the
 // worker's already-locked Delta India TESTNET execution profile.
@@ -109,6 +110,7 @@ export const CONFIG = Object.freeze({
   // Direct order routing is enabled only in the explicit Demo/Testnet profile.
   directDeltaExecutionEnabled,
   gridExecutionAllowed,
+  gridTrailingEnabled,
   gridSymbols,
   // Keep private REST operations on the environment-specific API base. Public
   // scanner data has an explicit production feed, independent of execution mode.
