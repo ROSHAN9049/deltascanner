@@ -385,14 +385,6 @@ export async function executeTrailingGridShift({
     }).catch(() => {});
     return { ok: false, halted: true, reason, state };
   };
-  if (!shift.ok || !symbols.includes(normalizedSymbol) || !(mark > 0) ||
-      !executor || typeof executor.getOpenPositions !== 'function' ||
-      typeof executor.getOrderById !== 'function' || !database ||
-      typeof database.update !== 'function' || typeof database.log !== 'function') {
-    return fail('GRID_TRAILING_SHIFT_UNCONFIRMED',
-      new Error(shift.reason || 'Trailing Grid dependencies or symbol configuration are invalid'));
-  }
-
   const globalTimestamps = Array.isArray(settings.gridGlobalTrailingShiftTimestamps)
     ? settings.gridGlobalTrailingShiftTimestamps : [];
   const recentShifts = pruneTrailingGridShiftTimestamps([
@@ -414,6 +406,14 @@ export async function executeTrailingGridShift({
       { symbol: normalizedSymbol, direction, price: mark, shiftsInPreviousHour: recentShifts.length,
         maximumShiftsPerHour: 3, executionBlocked: true }).catch(() => {});
     return { ok: false, halted: true, reason: 'GRID_TRAILING_SHIFT_LIMIT', state };
+  }
+
+  if (!shift.ok || !symbols.includes(normalizedSymbol) || !(mark > 0) ||
+      !executor || typeof executor.getOpenPositions !== 'function' ||
+      typeof executor.getOrderById !== 'function' || !database ||
+      typeof database.update !== 'function' || typeof database.log !== 'function') {
+    return fail('GRID_TRAILING_SHIFT_UNCONFIRMED',
+      new Error(shift.reason || 'Trailing Grid dependencies or symbol configuration are invalid'));
   }
 
   try {

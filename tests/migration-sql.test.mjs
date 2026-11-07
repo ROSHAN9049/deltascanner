@@ -101,7 +101,7 @@ test('Trailing Grid preference migration adds a safe default-off dashboard setti
   const migration = readFileSync(path, 'utf8');
   assert.match(migration, /^BEGIN;/);
   assert.match(migration, /ADD COLUMN IF NOT EXISTS grid_trailing_enabled BOOLEAN NOT NULL DEFAULT FALSE/i);
-  assert.match(migration, /COMMENT ON COLUMN public\\.dd_settings\\.grid_trailing_enabled/i);
+  assert.match(migration, /COMMENT ON COLUMN public\.dd_settings\.grid_trailing_enabled/i);
   assert.match(migration, /NOTIFY pgrst/i);
   assert.match(migration, /COMMIT;/);
   assert.ok(deltaMigrationRunner.indexOf('20261107000100_add_trailing_grid_settings.sql') >
