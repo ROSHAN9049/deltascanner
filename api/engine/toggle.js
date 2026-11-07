@@ -93,6 +93,30 @@ export default async function handler(req, res) {
     }
 
     const patch = {};
+    if (body.gridTrailingEnabled !== undefined) {
+      if (typeof body.gridTrailingEnabled !== 'boolean') {
+        return res.status(400).json({ success: false, error: 'gridTrailingEnabled must be a boolean.' });
+      }
+      if (body.gridTrailingEnabled && CONFIG.gridTrailingEnabled !== true) {
+        return res.status(409).json({
+          success: false,
+          error: 'Trailing Grid is locked. Set GRID_TRAILING_ENABLED=true in both the Hostless API and Worker environments first.'
+        });
+      }
+      if (body.gridTrailingEnabled && (
+        CONFIG.gridExecutionAllowed !== true ||
+        CONFIG.directDeltaExecutionEnabled !== true ||
+        CONFIG.deltaExecutionMode !== 'testnet' ||
+        CONFIG.environment !== 'TESTNET'
+      )) {
+        return res.status(409).json({
+          success: false,
+          error: 'Trailing Grid requires the explicit Delta India TESTNET execution profile.'
+        });
+      }
+      patch.grid_trailing_enabled = body.gridTrailingEnabled;
+    }
+
     if (body.enabled !== undefined) patch.enabled = !!body.enabled;
     if (body.autoTrade !== undefined) patch.auto_trade = !!body.autoTrade;
     if (body.emergencyStop !== undefined) {
@@ -187,11 +211,33 @@ export default async function handler(req, res) {
       if (gridState.pausedReason === 'OVERALL_DRAWDOWN_STOP') {
         return res.status(409).json({ success: false, error: 'The 5% overall drawdown stop is terminal for this grid run. Do not restart this run with the same capital baseline.' });
       }
+      const resetSymbolStates = gridState.symbolStates && typeof gridState.symbolStates === 'object'
+        ? Object.fromEntries(Object.entries(gridState.symbolStates).map(([symbol, symbolState]) => [
+            symbol,
+            {
+              ...symbolState,
+              status: 'OFF',
+              positions: [],
+              pendingEntries: [],
+              openRiskUsd: 0,
+              unrealizedPnl: 0,
+              pausedReason: null,
+              trailingShiftTimestamps: []
+            }
+          ]))
+        : gridState.symbolStates;
       patch.grid_enabled = false;
       patch.grid_state = {
         ...gridState,
+        symbolStates: resetSymbolStates,
+        trailingShiftTimestamps: [],
+        lastTrailingShiftAt: null,
+        lastTrailingShiftSymbol: null,
+        lastTrailingShiftDirection: null,
+        lastTrailingShiftPrice: null,
         status: 'OFF',
         positions: [],
+        pendingEntries: [],
         pausedReason: null,
         lastPrice: 0,
         wasEnabled: false,

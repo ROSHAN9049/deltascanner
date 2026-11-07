@@ -96,6 +96,18 @@ test('multi-symbol Grid settings migration is registered and adds per-symbol con
     deltaMigrationRunner.indexOf('20261103000100_add_per_strategy_position_limits.sql'));
 });
 
+test('Trailing Grid preference migration adds a safe default-off dashboard setting', () => {
+  const path = fileURLToPath(new URL('../db/migrations/20261107000100_add_trailing_grid_settings.sql', import.meta.url));
+  const migration = readFileSync(path, 'utf8');
+  assert.match(migration, /^BEGIN;/);
+  assert.match(migration, /ADD COLUMN IF NOT EXISTS grid_trailing_enabled BOOLEAN NOT NULL DEFAULT FALSE/i);
+  assert.match(migration, /COMMENT ON COLUMN public\\.dd_settings\\.grid_trailing_enabled/i);
+  assert.match(migration, /NOTIFY pgrst/i);
+  assert.match(migration, /COMMIT;/);
+  assert.ok(deltaMigrationRunner.indexOf('20261107000100_add_trailing_grid_settings.sql') >
+    deltaMigrationRunner.indexOf('20261106000100_exchange_authoritative_pnl_ledger.sql'));
+});
+
 test('Delta position-close migration stays between worker lease and E-STOP safety migrations', () => {
   const leaseIndex = deltaMigrationRunner.indexOf('20261029100000_worker_lease_ownership.sql');
   const closeDetailsIndex = deltaMigrationRunner.indexOf('20261029110000_delta_position_close_details.sql');

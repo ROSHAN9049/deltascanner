@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sizeDeltaGridEntry, assessDeltaGridEntryFill, hasVerifiedGridBracket, cancelAndVerifyGridOrder, cancelUnverifiedGridEntry } from '../worker/execution/delta-grid-engine.mjs';
+import { sizeDeltaGridEntry, assessDeltaGridEntryFill, hasVerifiedGridBracket, cancelAndVerifyGridOrder, cancelUnverifiedGridEntry, calculateTrailingGridRange, getTrailingGridBreakoutDirection, pruneTrailingGridShiftTimestamps, executeTrailingGridShift } from '../worker/execution/delta-grid-engine.mjs';
 import { applyGlobalGridProtectionHalt } from '../worker/execution/delta-multi-grid-engine.mjs';
 
 const candidate = {
@@ -255,4 +255,154 @@ test('Grid protection failure halts both configured symbols immediately in the s
   assert.equal(halted.NVDAXUSD.status, 'HALTED');
   assert.equal(halted.NVDAXUSD.pausedReason, 'GRID_BRACKET_CANCEL_UNCONFIRMED');
   assert.equal(halted.PAXGUSD.pendingEntries.length, 1);
+});
+
+
+test('Trailing Grid shifts the breached range outward by the configured 10% bands', () => {
+  const up = calculateTrailingGridRange({
+    direction: 'UP', lowerPrice: 90, upperPrice: 100, breakoutExitPct: 1.2
+  });
+  assert.equal(up.ok, true);
+  assert.equal(up.lowerPrice, 90);
+  assert.ok(up.upperPrice > 111.31 && up.upperPrice < 111.33);
+
+  const down = calculateTrailingGridRange({
+    direction: 'DOWN', lowerPrice: 90, upperPrice: 100, breakoutExitPct: 1.2
+  });
+  assert.equal(down.ok, true);
+  assert.ok(down.lowerPrice > 80.02 && down.lowerPrice < 80.04);
+  assert.equal(down.upperPrice, 99);
+  assert.ok(down.upperPrice > down.lowerPrice);
+});
+
+test('Trailing Grid breakout triggers at the configured 1.2% upper and lower thresholds', () => {
+  const config = { lowerPrice: 100, upperPrice: 200, breakoutExitPct: 1.2 };
+  assert.equal(getTrailingGridBreakoutDirection(202.4, config), 'UP');
+  assert.equal(getTrailingGridBreakoutDirection(98.8, config), 'DOWN');
+  assert.equal(getTrailingGridBreakoutDirection(201, config), null);
+  assert.equal(getTrailingGridBreakoutDirection(99, config), null);
+});
+
+test('Trailing Grid counts only distinct shifts inside the preceding rolling hour', () => {
+  const now = Date.parse('2026-11-07T06:00:00.000Z');
+  const retained = pruneTrailingGridShiftTimestamps([
+    '2026-11-07T04:59:59.999Z',
+    '2026-11-07T05:00:00.000Z',
+    '2026-11-07T05:30:00.000Z',
+    '2026-11-07T05:30:00.000Z',
+    '2026-11-07T06:00:01.000Z'
+  ], now);
+  assert.deepEqual(retained, ['2026-11-07T05:30:00.000Z']);
+});
+
+test('Trailing Grid market shift cancels pending Grid entries and verifies all Grid positions flat before saving new bounds', async () => {
+  const calls = [];
+  const updates = [];
+  const logs = [];
+  const state = {
+    version: 2, executionMode: 'DELTA_TESTNET', status: 'ACTIVE',
+    positions: [{ symbol: 'PAXGUSD', qty: 1 }], pendingEntries: [],
+    trailingShiftTimestamps: [], events: []
+  };
+  const orderStates = new Map([[101, 'OPEN'], [202, 'OPEN']]);
+  const orders = [
+    { id: 1, strategy: 'GRID', role: 'ENTRY', symbol: 'PAXGUSD',
+      client_order_id: 'DDG-PAXGUSD-A', state: 'OPEN',
+      raw: { testnet_order_id: 101, reservation: true } },
+    { id: 2, strategy: 'GRID', role: 'ENTRY', symbol: 'NVDAXUSD',
+      client_order_id: 'DDG-NVDAXUSD-B', state: 'OPEN',
+      raw: { testnet_order_id: 202, reservation: true } }
+  ];
+  let positions = [
+    { symbol: 'PAXGUSD', side: 'BUY', qty: 2, client_order_id: 'DDG-PAXGUSD-A' },
+    { symbol: 'NVDAXUSD', side: 'BUY', qty: 3, client_order_id: 'DDG-NVDAXUSD-B' }
+  ];
+  const executor = {
+    async getOrderById(id) {
+      calls.push(['getOrder', id]);
+      return { id, state: orderStates.get(id) || 'UNKNOWN' };
+    },
+    async cancelOrderById(id) {
+      calls.push(['cancelOrder', id]);
+      orderStates.set(id, 'CANCELLED');
+      return { id, state: 'CANCELLED' };
+    },
+    async getOpenPositions() {
+      calls.push(['positions']);
+      return positions.map(row => ({ ...row }));
+    },
+    async closePosition(symbol, qty) {
+      calls.push(['closeMarket', symbol, qty]);
+      positions = positions.filter(row => row.symbol !== symbol);
+      return { id: 'close-' + symbol, state: 'FILLED', order_type: 'market_order', reduce_only: true };
+    }
+  };
+  const database = {
+    async update(table, query, patch) { updates.push({ table, query, patch }); },
+    async log(level, message, data) { logs.push({ level, message, data }); }
+  };
+  const result = await executeTrailingGridShift({
+    executor, database, state,
+    settings: {
+      grid_symbol_configs: {
+        PAXGUSD: { lowerPrice: 4000, upperPrice: 4200, levelsCount: 10 },
+        NVDAXUSD: { lowerPrice: 175, upperPrice: 190, levelsCount: 10 }
+      },
+      gridGlobalTrailingShiftTimestamps: []
+    },
+    symbol: 'PAXGUSD',
+    configuredSymbols: ['PAXGUSD', 'NVDAXUSD'],
+    currentConfig: { lowerPrice: 4000, upperPrice: 4200, levelsCount: 10, breakoutExitPct: 1.2 },
+    markPrice: 4250.4,
+    direction: 'UP',
+    dbOpenGridRows: [
+      { symbol: 'PAXGUSD', strategy: 'GRID' },
+      { symbol: 'NVDAXUSD', strategy: 'GRID' }
+    ],
+    gridOrders: orders,
+    now: () => Date.parse('2026-11-07T06:00:00.000Z')
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls.filter(row => row[0] === 'cancelOrder').map(row => row[1]), [101, 202]);
+  assert.deepEqual(calls.filter(row => row[0] === 'closeMarket').map(row => row.slice(1)), [
+    ['PAXGUSD', 2], ['NVDAXUSD', 3]
+  ]);
+  assert.equal(positions.length, 0);
+  const settingsUpdate = updates.find(row => row.table === 'dd_settings');
+  assert.equal(settingsUpdate.patch.grid_symbol_configs.PAXGUSD.lowerPrice, 3780);
+  assert.ok(settingsUpdate.patch.grid_symbol_configs.PAXGUSD.upperPrice > 4660);
+  assert.equal(result.state.positions.length, 0);
+  assert.equal(result.state.pendingEntries.length, 0);
+  assert.equal(result.state.events.at(-1).type, 'SHIFT');
+  assert.equal(result.state.events.at(-1).pnlPendingReconciliation, true);
+  assert.ok(logs.some(row => row.message.includes('Shifted Grid UP')));
+});
+
+test('Trailing Grid halts before a fourth shift in the rolling hour', async () => {
+  const now = Date.parse('2026-11-07T06:00:00.000Z');
+  const updates = [];
+  const logs = [];
+  const result = await executeTrailingGridShift({
+    executor: { async getOpenPositions() { throw new Error('must not reach exchange'); } },
+    database: {
+      async update(table, query, patch) { updates.push(patch); },
+      async log(level, message, data) { logs.push({ level, message, data }); }
+    },
+    state: { status: 'ACTIVE', positions: [], pendingEntries: [], events: [] },
+    settings: { gridGlobalTrailingShiftTimestamps: [
+      '2026-11-07T05:10:00.000Z',
+      '2026-11-07T05:20:00.000Z',
+      '2026-11-07T05:40:00.000Z'
+    ] },
+    symbol: 'PAXGUSD', configuredSymbols: ['PAXGUSD', 'NVDAXUSD'],
+    currentConfig: { lowerPrice: 100, upperPrice: 120, breakoutExitPct: 1.2 },
+    markPrice: 122, direction: 'UP',
+    now: () => now
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'GRID_TRAILING_SHIFT_LIMIT');
+  assert.equal(result.state.status, 'HALTED');
+  assert.equal(result.state.pausedReason, 'GRID_TRAILING_SHIFT_LIMIT');
+  assert.equal(updates.length, 1);
+  assert.equal(logs[0].level, 'CRITICAL');
 });
