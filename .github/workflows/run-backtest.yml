@@ -26,6 +26,9 @@ jobs:
         with:
           node-version: 22
 
+      - name: Install dependencies
+        run: npm install
+
       - name: Validate backtest script
         run: node --check scripts/backtest-volatility-breakout.mjs
 
