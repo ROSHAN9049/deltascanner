@@ -65,6 +65,7 @@ export default function GridStrategy({
   executionMode = 'disabled',
   testnetDiagnostics = null,
   apiGridExecutionAllowed = false,
+  apiGridTrailingEnvironmentEnabled = false,
   apiGridSymbols = []
 }) {
   const gridSymbols = useMemo(() => {
@@ -133,6 +134,12 @@ export default function GridStrategy({
   });
   const gridSafetyBlocked = gridEntrySafety?.blocked === true;
   const gridSafetyReason = gridEntrySafety?.reason || 'SNAPSHOT_NOT_VERIFIED';
+  const trailingSettingEnabled = settings.grid_trailing_enabled === true;
+  const trailingCapabilityEnabled = apiGridTrailingEnvironmentEnabled === true &&
+    testnetDiagnostics?.gridTrailingEnvironmentEnabled === true &&
+    deltaTestnetGrid && gridExecutionAllowed;
+  const trailingActive = trailingSettingEnabled && trailingCapabilityEnabled;
+  const lastShiftEvent = events.find(event => event.type === 'SHIFT') || null;
   const lastTrade = trades[0];
 
   if (accountDataProtected) return <Panel title="Grid Strategy · Protected"><div className="lockedText">Grid position state, exchange orders, symbol ranges and risk locks are private. Enter the configured engine key in Settings before reviewing or changing Grid configuration.</div></Panel>;
@@ -190,6 +197,7 @@ export default function GridStrategy({
       <div className="card"><small>DAY PNL</small><strong className={totalDayPnl === null ? 'muted' : totalDayPnl >= 0 ? 'up' : 'down'}>{usd(totalDayPnl)}</strong><span>Realized + combined mark-to-market · daily stop fixed at 2.0%.</span></div>
       <div className="card"><small>STRATEGY EQUITY</small><strong>{usd(currentEquity)}</strong><span>Delta Testnet account equity at Grid start · drawdown {drawdownPct === null ? 'NO DATA' : drawdownPct.toFixed(2) + '%'} · hard stop 5%.</span></div>
       <div className="card"><small>EXECUTION GATE</small><strong>{deltaTestnetGrid ? (gridExecutionAllowed ? 'TESTNET LIMIT ORDERS ENABLED' : 'TESTNET ORDERS LOCKED') : 'SIMULATOR'}</strong><span>{deltaTestnetGrid ? (gridExecutionAllowed ? 'Runtime opt-in verified. Entries still require fresh market data, an available Testnet product, global safety checks and a free symbol slot.' : 'Set GRID_EXECUTION_ALLOWED=true in the Delta TESTNET worker and API environments. The default is false.') : 'Offline simulator; no exchange orders are sent.'}</span></div>
+      <div className="card"><small>TRAILING GRID</small><strong>{trailingActive ? 'GRID TRAILING ACTIVE' : trailingSettingEnabled ? 'ENVIRONMENT GATE OFF' : 'DISABLED'}</strong><span>{trailingActive ? 'Breakouts close all Grid exposure at market, cancel pending Grid entries, shift the breached symbol range by 10%, and resume on the next verified tick.' : 'Requires the dashboard toggle plus GRID_TRAILING_ENABLED=true in both API and Worker runtimes.'}{lastShiftEvent ? ' Last shift: ' + lastShiftEvent.direction + ' · ' + (lastShiftEvent.at ? new Date(lastShiftEvent.at).toLocaleString('en-IN') : 'time unavailable') + '.' : ''}</span></div>
     </section>
 
     <Panel title="Grid Configuration · Two Independent Symbols">
@@ -214,6 +222,8 @@ export default function GridStrategy({
         <label>Momentum Pause<select value={draft.gridMomentumPausePct} onChange={event => updateGlobal('gridMomentumPausePct', Number(event.target.value))}><option value={2.5}>2.5% one-way move</option><option value={2.75}>2.75% one-way move</option><option value={3}>3.0% one-way move</option></select></label>
       </div>
       <label className="gridCheck"><input type="checkbox" checked={draft.gridReduceAfterLosses} onChange={event => updateGlobal('gridReduceAfterLosses', event.target.checked)}/> Reduce position sizing by 50% after 2 consecutive losses</label>
+      <label className="gridCheck"><input type="checkbox" checked={trailingSettingEnabled} disabled={busy || (!trailingCapabilityEnabled && !trailingSettingEnabled)} onChange={event => mutate({ gridTrailingEnabled: event.target.checked })}/> Trailing Grid (Auto-Shift on Breakout)</label>
+      {!trailingCapabilityEnabled ? <div className="lockedText">Trailing Grid is unavailable until GRID_TRAILING_ENABLED=true is present in both the API and Worker environments and the worker heartbeat confirms it. The 2% daily-loss and 5% drawdown stops remain absolute.</div> : null}
       <div className="gridButtons">
         {gridSafetyBlocked ? <div className="errorText">Grid entries are blocked by worker safety ({gridSafetyReason}). Review the latest heartbeat and exchange position reconciliation before restarting. Existing positions remain protected by exchange-side SL/TP.</div> : null}
         <button className="action" disabled={busy || !allRangesValid || lockedConfig} onClick={save}>Save Configuration</button>
@@ -261,7 +271,7 @@ export default function GridStrategy({
         <div className="gridLockRow"><b>Open risk</b><span>{usd(openRisk === null && positions.length === 0 ? 0 : openRisk)}</span></div>
         <div className="gridLockRow"><b>Drawdown</b><span>{drawdownPct === null ? 'NO DATA' : drawdownPct.toFixed(2) + '%'} / 5.00%</span></div>
         <div className="gridLockRow"><b>Hard-stop reason</b><span className={gridState.pausedReason ? 'down' : 'up'}>{gridState.pausedReason || 'None'}</span></div>
-        <div className="gridEvents">{events.length ? events.map((event, index) => <div key={String(event.at) + String(event.symbol || '') + index}><small>{event.at ? new Date(event.at).toLocaleTimeString('en-IN') : '—'}</small><b>{event.symbol || 'GRID'} · {event.type || 'INFO'}</b><span>{event.reason || (event.type === 'ENTRY' ? 'Entry' : event.type === 'EXIT' ? 'Exit' : 'Grid update')}{event.levelIndex != null ? ' · G' + (Number(event.levelIndex)+1) : ''}{event.price ? ' · ' + price(event.price) : ''}{event.pnl != null ? ' · ' + usd(event.pnl) : ''}</span></div>) : <span>No Grid events yet.</span>}</div>
+        <div className="gridEvents">{events.length ? events.map((event, index) => <div key={String(event.at) + String(event.symbol || '') + index}><small>{event.at ? new Date(event.at).toLocaleTimeString('en-IN') : '—'}</small><b>{event.symbol || 'GRID'} · {event.type || 'INFO'}</b><span>{event.type === 'SHIFT' ? 'Shifted Grid ' + (event.direction || '—') + ' · new range ' + price(event.newLowerPrice) + '–' + price(event.newUpperPrice) + ' · realized P&L pending verified Delta ledger' : event.reason || (event.type === 'ENTRY' ? 'Entry' : event.type === 'EXIT' ? 'Exit' : 'Grid update')}{event.levelIndex != null ? ' · G' + (Number(event.levelIndex)+1) : ''}{event.price ? ' · ' + price(event.price) : ''}{event.pnl != null ? ' · ' + usd(event.pnl) : ''}</span></div>) : <span>No Grid events yet.</span>}</div>
       </Panel>
       <Panel title="Recent Verified Grid Trades">
         {trades.length ? <div className="tablewrap"><table className="gridLevelsTable"><thead><tr><th>SYMBOL</th><th>CLOSED</th><th>LEVEL</th><th>ENTRY</th><th>EXIT</th><th>QTY</th><th>NET PNL</th><th>REASON</th></tr></thead><tbody>{trades.slice(0,20).map((trade,index) => <tr key={trade.id || trade.executionId || index}><td>{trade.symbol || '—'}</td><td>{trade.closedAt ? new Date(trade.closedAt).toLocaleString('en-IN') : '—'}</td><td>G{Number(trade.levelIndex)+1}</td><td>{price(trade.entryPrice)}</td><td>{price(trade.exitPrice)}</td><td>{safeNum(trade.qty) === null ? '—' : safeNum(trade.qty)}</td><td className={safeNum(trade.netPnl) === null ? 'muted' : safeNum(trade.netPnl) >= 0 ? 'up' : 'down'}>{usd(trade.netPnl)}</td><td>{trade.reason}</td></tr>)}</tbody></table></div> : <div className="lockedText">No completed Grid trades yet.</div>}

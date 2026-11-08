@@ -44,6 +44,8 @@ Set these as **private runtime variables on the Hostless App**:
 
 The API App needs the Delta India **Testnet-only** API key and secret because the authenticated manual Options preview/execution handlers resolve Testnet products, refresh quotes, and sign orders. The Worker retains its existing private Testnet credentials for its current execution responsibilities. Use Testnet credentials only; production/live credentials are not supported. Keep the Options flag false or absent during deployment verification.
 
+For the optional Trailing Grid capability, set `GRID_TRAILING_ENABLED=true` on **both** the Hostless API App and the Hostless Worker after the database migration has been applied. The default is false; the dashboard's separate **Trailing Grid (Auto-Shift on Breakout)** setting must also be enabled. Do not add this flag to the Site. With either runtime flag absent/false, automatic shifts remain unavailable and the existing range-break halt behavior is retained. The environment variable does not change the existing 2% daily-loss, 5% strategy drawdown, Testnet-only, exchange-bracket, E-STOP, or position-size limits.
+
 Never put `SUPABASE_SERVICE_ROLE_KEY`, `ENGINE_SECRET`, or Delta API credentials in Site variables or Vite build variables.
 
 ## 3. Connect the Site to the API App

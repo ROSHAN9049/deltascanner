@@ -238,6 +238,11 @@ function App() {
           (typeof data.persisted?.emergency_stop !== 'boolean' || data.persisted.emergency_stop !== patch.emergencyStop)) {
         throw new Error('E-STOP save could not be verified against the persisted database value.');
       }
+      if (patch.gridTrailingEnabled !== undefined &&
+          (typeof data.persisted?.grid_trailing_enabled !== 'boolean' ||
+            data.persisted.grid_trailing_enabled !== patch.gridTrailingEnabled)) {
+        throw new Error('Trailing Grid setting could not be verified against the persisted database value.');
+      }
       const strategyLimitPersistenceChecks = [
         ['maxMomentumPositions', 'max_momentum_positions'],
         ['maxScalpingPositions', 'max_scalping_positions'],
@@ -467,7 +472,7 @@ function App() {
     {tab === 'momentum' && <EngineView engine="MOMENTUM" signals={signals} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols} />}
     {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" strategy="MOMENTUM" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'scalping' && <EngineView engine="SCALPING" signals={signals} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols} />}
-    {tab === 'grid' && <GridStrategy settings={settings} market={market} busy={busy} mutate={mutate} accountDataProtected={accountDataProtected} gridEntrySafety={executionCoverage?.gridEntrySafety || null} executionMode={executionCoverage?.deltaExecutionMode || 'disabled'} testnetDiagnostics={executionCoverage?.gridTestnetDiagnostics || null} apiGridExecutionAllowed={executionCoverage?.gridExecutionAllowed === true} apiGridSymbols={executionCoverage?.gridSymbols || []} />}
+    {tab === 'grid' && <GridStrategy settings={settings} market={market} busy={busy} mutate={mutate} accountDataProtected={accountDataProtected} gridEntrySafety={executionCoverage?.gridEntrySafety || null} executionMode={executionCoverage?.deltaExecutionMode || 'disabled'} testnetDiagnostics={executionCoverage?.gridTestnetDiagnostics || null} apiGridExecutionAllowed={executionCoverage?.gridExecutionAllowed === true} apiGridTrailingEnvironmentEnabled={executionCoverage?.gridTrailingEnvironmentEnabled === true} apiGridSymbols={executionCoverage?.gridSymbols || []} />}
     {tab === 'options' && <OptionsView settings={settings} optionCache={optionCache} executionCoverage={state?.executionCoverage || null} apiHealth={health} accountDataProtected={accountDataProtected} optionsBusy={optionsBusy} onPreview={requestOptionsPreview} />}
     {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" strategy="SCALPING" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'positions' && <Positions rows={positions} accountDataProtected={accountDataProtected} />}

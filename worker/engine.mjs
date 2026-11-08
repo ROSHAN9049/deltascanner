@@ -797,7 +797,7 @@ export class DeltaEngine {
     }
 
     const result = await manageDeltaTestnetMultiGrid({
-      settings,
+      settings: { ...settings, gridTrailingEnvironmentEnabled: CONFIG.gridTrailingEnabled === true },
       account,
       symbols,
       tickers,
@@ -822,6 +822,8 @@ export class DeltaEngine {
       gridExecutionAllowed: true,
       symbols,
       enabled: settings.grid_enabled === true,
+      gridTrailingEnvironmentEnabled: CONFIG.gridTrailingEnabled === true,
+      gridTrailingEnabled: CONFIG.gridTrailingEnabled === true && settings.grid_trailing_enabled === true,
       executionLocked: result.safety?.blocked === true,
       status: result.state?.status || 'UNKNOWN',
       orderRoutingAttempted,
@@ -829,6 +831,10 @@ export class DeltaEngine {
       symbolSummaries: result.state?.symbolSummaries || {},
       openPositions: Array.isArray(result.state?.positions) ? result.state.positions.length : 0,
       pendingEntries: Array.isArray(result.state?.pendingEntries) ? result.state.pendingEntries.length : 0,
+      lastTrailingShiftAt: result.state?.lastTrailingShiftAt || null,
+      lastTrailingShiftSymbol: result.state?.lastTrailingShiftSymbol || null,
+      lastTrailingShiftDirection: result.state?.lastTrailingShiftDirection || null,
+      lastTrailingShiftPrice: result.state?.lastTrailingShiftPrice ?? null,
       updatedAt: iso()
     };
     await this.log(
