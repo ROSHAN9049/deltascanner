@@ -1,0 +1,55 @@
+name: Volatility Breakout Backtest
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: volatility-breakout-backtest
+  cancel-in-progress: false
+
+jobs:
+  backtest:
+    name: Run 12-month volatility breakout backtest
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate backtest script
+        run: node --check scripts/backtest-volatility-breakout.mjs
+
+      - name: Run volatility breakout backtest
+        run: node scripts/backtest-volatility-breakout.mjs
+
+      - name: Add CSV summary to workflow run summary
+        if: always()
+        shell: bash
+        run: |
+          summary="volatility-breakout-output/volatility-breakout-summary.csv"
+          echo "## Volatility Breakout Backtest" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$summary" ]; then
+            echo "### Summary CSV" >> "$GITHUB_STEP_SUMMARY"
+            cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Summary CSV was not generated. Check the backtest step logs; any partial output is included in the artifact when available." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload volatility breakout output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: volatility-breakout-output-${{ github.run_id }}
+          path: volatility-breakout-output/
+          if-no-files-found: warn
+          retention-days: 14
