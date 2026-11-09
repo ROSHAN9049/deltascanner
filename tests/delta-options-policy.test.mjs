@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   calculateLongOptionSizing,
+  normalizeDeltaOptionTicker,
   parseDeltaOptionSymbol,
   selectOptionContractsForScan
 } from '../worker/execution/delta-options-policy.mjs';
@@ -123,4 +124,60 @@ test('fails closed when contract value, fee, balance or risk cap is unknown', ()
     assert.equal(sized.qty, 0);
     assert.ok(sized.reason);
   }
+});
+
+
+test('normalizes Delta ticker contract counts and separate USD liquidity values', () => {
+  const market = normalizeDeltaOptionTicker({
+    oi: '10035',
+    oi_value_usd: '750220',
+    oi_value_symbol: 'USD',
+    volume: '10447',
+    turnover_usd: '781640',
+    turnover_symbol: 'USD'
+  });
+  assert.equal(market.oi, 10035);
+  assert.equal(market.open_interest, 10035);
+  assert.equal(market.volume, 10447);
+  assert.equal(market.oi_value_usd, 750220);
+  assert.equal(market.turnover_usd, 781640);
+});
+
+test('a zero legacy OI field does not mask a positive Delta oi alias', () => {
+  const market = normalizeDeltaOptionTicker({
+    open_interest: 0,
+    oi: '10035',
+    volume: 0,
+    turnover_usd: '781640'
+  });
+  assert.equal(market.oi, 10035);
+  assert.equal(market.volume, 0);
+  assert.equal(market.turnover_usd, 781640);
+});
+
+test('sub-day expiry contracts can be retained for cache diagnostics without changing execution DTE settings', () => {
+  const rows = [{
+    symbol: 'C-BTC-90000-301026',
+    mark_price: 100,
+    quotes: { best_bid: 99, best_ask: 101 },
+    greeks: { delta: 0.55 },
+    oi: '100',
+    oi_value_usd: '750220',
+    volume: '10',
+    turnover_usd: '781640'
+  }];
+  const selected = selectOptionContractsForScan({
+    rows,
+    underlying: 'BTC',
+    spotPrice: 90000,
+    now: NOW,
+    minDays: 0,
+    maxDays: 14,
+    maxContracts: 10,
+    maxMoneynessPct: 20
+  });
+  assert.equal(selected.length, 1);
+  assert.ok(selected[0].dte > 0 && selected[0].dte < 1);
+  // The production execution rule remains a separate >=2 DTE analysis gate.
+  assert.ok(selected[0].dte < 2);
 });
