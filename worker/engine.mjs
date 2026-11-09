@@ -774,17 +774,20 @@ export class DeltaEngine {
         return defer('GRID_AUTO_RANGE_SYMBOL_CONFIGURATION_INVALID');
       }
       const symbolFilter = normalizedSymbols.join(',');
-      const [exchangePositions, exchangeOrders, databasePositions, databaseOrders] = await Promise.all([
+      const [exchangePositions, exchangeOrders, databasePositions, deltaDatabasePositions, databaseOrders] = await Promise.all([
         deltaExecutor.getOpenPositions(),
         deltaExecutor.getOpenOrders(),
         db.select('dd_positions', 'symbol=in.(' + symbolFilter + ')&select=symbol,qty&order=updated_at.desc&limit=500'),
+        db.select('dd_delta_positions', 'symbol=in.(' + symbolFilter + ')&status=eq.OPEN&select=symbol,qty&limit=500'),
         db.select('dd_orders', 'symbol=in.(' + symbolFilter + ')&select=symbol,state&order=updated_at.desc&limit=500')
       ]);
       const terminalOrderStates = new Set([
         'closed', 'cancelled', 'canceled', 'filled', 'rejected', 'expired', 'failed', 'complete', 'completed'
       ]);
-      const positiveDatabasePositions = (Array.isArray(databasePositions) ? databasePositions : [])
-        .filter(row => Number(row?.qty) > 0);
+      const positiveDatabasePositions = [
+        ...(Array.isArray(databasePositions) ? databasePositions : []),
+        ...(Array.isArray(deltaDatabasePositions) ? deltaDatabasePositions : [])
+      ].filter(row => Number(row?.qty) > 0);
       const activeDatabaseOrders = (Array.isArray(databaseOrders) ? databaseOrders : [])
         .filter(row => !terminalOrderStates.has(String(row?.state || '').trim().toLowerCase()));
       if (hasGridAutoRangeExposure({
