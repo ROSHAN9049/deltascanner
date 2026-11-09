@@ -73,7 +73,7 @@ export function inferAdaptiveVolatilityShadowSide(signal, impulseSide) {
 export function buildAdaptiveVolatilityShadowObservation(signal, candles5m, {
   strategy,
   baseEmaDistanceMax = null,
-  takerFeeRate = 0,
+  takerFeeRate = null,
   maxHoldMinutes = 240,
   maxAntiChasePct = 15,
   rangeAtrMax = 4,
@@ -189,12 +189,15 @@ export function buildAdaptiveVolatilityShadowObservation(signal, candles5m, {
     shadowBlocks.push('Valid directional initial stop unavailable');
   }
 
+  const feeRateInput = numberOrNull(takerFeeRate);
+  if (feeRateInput === null) shadowBlocks.push('Taker fee rate unavailable');
+
   const uniqueBlocks = [...new Set(shadowBlocks)];
   const symbol = upper(signal?.symbol);
   if (!symbol) return null;
 
   const holdMinutes = Math.max(1, Math.min(1440, Math.floor(Number(maxHoldMinutes) || 240)));
-  const feeRate = Math.max(0, numberOrNull(takerFeeRate) || 0);
+  const feeRate = Math.max(0, feeRateInput ?? 0);
   const capturedSpreadPct = Math.max(0, numberOrNull(signal?.spreadPct) || 0);
   const initialStopDistance = price > 0 && sl > 0 ? Math.abs(price - sl) : null;
   const status = uniqueBlocks.length ? 'BLOCKED' : 'PENDING_ENTRY';
@@ -234,6 +237,7 @@ export function buildAdaptiveVolatilityShadowObservation(signal, candles5m, {
       emaRelaxation: 'base_limit_plus_30_percent_capped_at_plus_1_ATR',
       trailingModel: 'activate_at_1R_then_trail_by_1R',
       exitModel: 'initial_stop_then_trailing_stop_or_time_exit; no_fixed_take_profit',
+      takerFeeRateAvailable: feeRateInput !== null,
       execution: 'SHADOW_ONLY'
     }
   };

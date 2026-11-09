@@ -3194,7 +3194,10 @@ export class DeltaEngine {
           const observation = buildAdaptiveVolatilityShadowObservation(shadowSignal, c5, {
             strategy: spec.strategy,
             baseEmaDistanceMax: spec.emaMax,
-            takerFeeRate: n(p.taker_commission_rate),
+            takerFeeRate: p.taker_commission_rate === undefined ||
+              p.taker_commission_rate === null || p.taker_commission_rate === ''
+              ? null
+              : n(p.taker_commission_rate),
             maxHoldMinutes: n(settings.max_hold_minutes || 240),
             maxAntiChasePct: n(settings.anti_chase_pct || 15),
             rangeAtrMax: spec.strategy === 'MOMENTUM'

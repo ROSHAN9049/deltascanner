@@ -128,7 +128,7 @@ test('adaptive shadow checks Scalp VWAP and the BUY RSI ceiling independently', 
   const scalp = buildAdaptiveVolatilityShadowObservation(
     makeSignal({ price: 96.5, rsi: 16, emaDistanceAtr: 3.2 }),
     makeFiveMinuteCandles(),
-    { strategy: 'SCALPING', baseEmaDistanceMax: 2.5, rangeAtrMax: 3, spreadMaxPct: 0.35, costGateRatio: 0.25, volumeMin: 1.25 }
+    { strategy: 'SCALPING', baseEmaDistanceMax: 2.5, takerFeeRate: 0.0005, rangeAtrMax: 3, spreadMaxPct: 0.35, costGateRatio: 0.25, volumeMin: 1.25 }
   );
   assert.equal(scalp.shadow_status, 'PENDING_ENTRY');
 
