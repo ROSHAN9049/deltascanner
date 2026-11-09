@@ -140,7 +140,8 @@ test('adaptive shadow checks Scalp VWAP and the BUY RSI ceiling independently', 
       blocked: ['RSI/VWAP', 'Price > 2.50x ATR from entry EMA21']
     }),
     makeFiveMinuteCandles({ movePct: 3.5, lastVolume: 400 }),
-    { strategy: 'SCALPING', baseEmaDistanceMax: 2.5 }
+    { strategy: 'SCALPING', baseEmaDistanceMax: 2.5, takerFeeRate: 0.0005,
+      rangeAtrMax: 3, spreadMaxPct: 0.35, costGateRatio: 0.25, volumeMin: 1.25 }
   );
   assert.equal(buy.shadow_status, 'PENDING_ENTRY');
   assert.equal(buy.side, 'BUY');
@@ -176,6 +177,18 @@ test('shadow trailing stop activates at +1R and closes on a reversal without a f
   assert.equal(second.exit_reason, 'TRAILING_STOP');
   assert.equal(second.exit_price, 105);
   assert.ok(second.net_pnl_pct > 0);
+});
+
+test('shadow refuses to model net profitability when product taker fee metadata is missing', () => {
+  const observation = buildAdaptiveVolatilityShadowObservation(
+    makeSignal(),
+    makeFiveMinuteCandles(),
+    { strategy: 'MOMENTUM', baseEmaDistanceMax: 3.5,
+      rangeAtrMax: 4, spreadMaxPct: 0.35, costGateRatio: 0.2, volumeMin: 0.75 }
+  );
+  assert.equal(observation.shadow_status, 'BLOCKED');
+  assert.ok(observation.shadow_blocked_reasons.includes('Taker fee rate unavailable'));
+  assert.equal(observation.details.takerFeeRateAvailable, false);
 });
 
 test('shadow retains anti-chase and BTC regime vetoes', () => {
