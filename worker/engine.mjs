@@ -22,6 +22,7 @@ import {
   OPTIONS_DATABASE_EXECUTION_LOCK_REASON
 } from './options-execution-lock.mjs';
 import { countOptionProductsByUnderlying, replaceOptionCacheSnapshot } from './options-cache-snapshot.mjs';
+import { selectBestOptionCandidates } from './options-candidate-selection.mjs';
 import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from './signal-failure-diagnostics.mjs';
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
 import { buildApiDerivedTrackingPlan, strategyForDerivedTrade } from './tradetron-derived-trades.mjs';
@@ -3510,13 +3511,7 @@ export class DeltaEngine {
     });
     await this.removeStaleUniverseRows('dd_signal_cache', signalCacheRows.map(row => row.symbol));
 
-    const optionCache = new Map();
-    for (const s of optionSignals) {
-      const underlying = String(s.underlyingSymbol || '').toUpperCase().replace(/USD$/, '');
-      const key = underlying + ':' + s.strategy;
-      const previous = optionCache.get(key);
-      if (!previous || n(s.score) > n(previous.score)) optionCache.set(key, s);
-    }
+    const optionCache = selectBestOptionCandidates(optionSignals);
     const optionSnapshotAt = iso();
     const optionCacheRows = [...optionCache.values()].map(s => ({
       cache_key: String(s.underlyingSymbol || '').toUpperCase().replace(/USD$/, '') + ':' + s.strategy,
