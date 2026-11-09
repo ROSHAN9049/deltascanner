@@ -10,6 +10,46 @@ function finiteNonNegative(value) {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
+// Delta's public Ticker schema exposes OI/volume in contracts and their
+// USD-valued counterparts separately. Prefer a positive alias over a zero
+// placeholder so an empty legacy field cannot mask a populated API field.
+function firstNonZeroFinite(values) {
+  const parsed = values.map(finiteNonNegative).filter(value => value !== null);
+  return parsed.find(value => value > 0) ?? parsed[0] ?? null;
+}
+
+export function normalizeDeltaOptionTicker(ticker = {}) {
+  const oiValue = firstNonZeroFinite([
+    ticker.oi,
+    ticker.open_interest,
+    ticker.openInterest
+  ]);
+  const volumeValue = firstNonZeroFinite([
+    ticker.volume,
+    ticker.volume_contracts,
+    ticker.volumeContracts
+  ]);
+  const oiValueUsd = firstNonZeroFinite([
+    ticker.oi_value_usd,
+    ticker.oiValueUsd,
+    String(ticker.oi_value_symbol || '').toUpperCase() === 'USD' ? ticker.oi_value : null
+  ]);
+  const volumeUsd = firstNonZeroFinite([
+    ticker.turnover_usd,
+    ticker.volume_usd,
+    String(ticker.turnover_symbol || '').toUpperCase() === 'USD' ? ticker.turnover : null
+  ]);
+
+  return {
+    ...ticker,
+    oi: oiValue,
+    open_interest: oiValue,
+    volume: volumeValue,
+    oi_value_usd: oiValueUsd,
+    turnover_usd: volumeUsd
+  };
+}
+
 function tickerBid(ticker) {
   return finitePositive(ticker?.quotes?.best_bid ?? ticker?.best_bid ?? ticker?.bid);
 }
@@ -31,8 +71,9 @@ function contractQuality(row, now) {
   const mid = bid && ask ? (bid + ask) / 2 : 0;
   const spreadPct = mid > 0 ? ((ask - bid) / mid) * 100 : 99;
   const delta = tickerDelta(row);
-  const oi = Math.max(0, Number(row?.open_interest ?? row?.openInterest ?? row?.oi) || 0);
-  const volume = Math.max(0, Number(row?.volume) || 0);
+  const market = normalizeDeltaOptionTicker(row);
+  const oi = Math.max(0, Number(market.oi) || 0);
+  const volume = Math.max(0, Number(market.volume) || 0);
   return {
     parsed,
     spreadPct,
@@ -96,7 +137,9 @@ export function selectOptionContractsForScan({
   const asset = String(underlying || '').trim().toUpperCase();
   const spot = finitePositive(spotPrice);
   const limit = Math.max(2, Math.min(60, Math.floor(Number(maxContracts) || 24)));
-  const minDte = Math.max(1, Number(minDays) || 2);
+  const requestedMinDte = minDays === undefined || minDays === null || minDays === ''
+    ? 2 : Number(minDays);
+  const minDte = Number.isFinite(requestedMinDte) ? Math.max(0, requestedMinDte) : 2;
   const maxDte = Math.max(minDte, Number(maxDays) || 14);
   const moneynessLimit = Math.max(1, Number(maxMoneynessPct) || 20) / 100;
   if (!asset || !spot || !Array.isArray(rows)) return [];
@@ -105,7 +148,10 @@ export function selectOptionContractsForScan({
   for (const row of rows) {
     const symbol = String(row?.symbol || '').toUpperCase();
     const parsed = parseDeltaOptionSymbol(symbol, asset, now);
-    if (!parsed || parsed.dte < minDte || parsed.dte > maxDte) continue;
+    // Never retain an already expired contract, but allow positive sub-day
+    // DTE for cache visibility. The strategy layer still applies configured
+    // minDays before any candidate can become CONFIRMED or executable.
+    if (!parsed || parsed.dte <= 0 || parsed.dte < minDte || parsed.dte > maxDte) continue;
 
     const mark = finitePositive(row?.mark_price ?? row?.close);
     const bid = tickerBid(row);
