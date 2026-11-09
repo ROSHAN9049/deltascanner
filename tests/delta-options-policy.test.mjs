@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { analyseOption } from '../worker/strategy.mjs';
 import {
   calculateLongOptionSizing,
   normalizeDeltaOptionTicker,
@@ -180,4 +181,45 @@ test('sub-day expiry contracts can be retained for cache diagnostics without cha
   assert.ok(selected[0].dte > 0 && selected[0].dte < 1);
   // The production execution rule remains a separate >=2 DTE analysis gate.
   assert.ok(selected[0].dte < 2);
+});
+
+
+test('sub-day expiry rows remain blocked by the configured two-day execution minimum', () => {
+  const expiryDate = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  const dd = String(expiryDate.getUTCDate()).padStart(2, '0');
+  const mm = String(expiryDate.getUTCMonth() + 1).padStart(2, '0');
+  const yy = String(expiryDate.getUTCFullYear()).slice(-2);
+  const ticker = {
+    symbol: 'C-BTC-90000-' + dd + mm + yy,
+    contract_type: 'call_options',
+    mark_price: 100,
+    quotes: { best_bid: 99, best_ask: 101 },
+    oi: '100',
+    oi_value_usd: '750220',
+    volume: '10',
+    turnover_usd: '781640',
+    greeks: { delta: '0.55' }
+  };
+  const underlying = {
+    symbol: 'BTCUSD',
+    side: 'BUY',
+    stage: 'CONFIRMED',
+    score: 90,
+    normalizedScore: 90,
+    change: 0
+  };
+  const signal = analyseOption(ticker, underlying, 'OPTIONS_BUY', {
+    minDays: 2,
+    maxDays: 14,
+    minOi: 50,
+    minVolume: 1,
+    maxSpreadPct: 1.5,
+    buyMinDelta: 0.45,
+    buyMaxDelta: 0.65,
+    scoreMin: 80
+  });
+  assert.ok(signal.dte > 0 && signal.dte < 1);
+  assert.ok(signal.blocked.includes('Expiry outside configured DTE'));
+  assert.equal(signal.ready, false);
+  assert.notEqual(signal.stage, 'CONFIRMED');
 });
