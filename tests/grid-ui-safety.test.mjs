@@ -13,6 +13,9 @@ test('Grid UI exposes two allowlisted Testnet symbols and keeps execution behind
   assert.match(source, /gridSymbolConfigs/);
   assert.match(source, /gridExecutionAllowed/);
   assert.match(source, /Trailing Grid \(Auto-Shift on Breakout\)/);
+  assert.match(source, /Auto-Set Range \(1D High\/Low\)/);
+  assert.match(source, /selectLatestCompletedDailyCandle/);
+  assert.match(source, /Save Configuration to persist/);
   assert.match(source, /GRID TRAILING ACTIVE/);
   assert.match(source, /apiGridTrailingEnvironmentEnabled === true/);
   assert.match(source, /testnetDiagnostics\?\.gridTrailingEnvironmentEnabled === true/);
