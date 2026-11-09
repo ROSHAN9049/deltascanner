@@ -3590,7 +3590,7 @@ export class DeltaEngine {
       await this.log('INFO', 'Options candidate cache replaced with a complete scan snapshot', {
         candidateRows: optionCacheRows.length,
         cachedAt: optionSnapshotAt,
-        executionLocked: true,
+        cacheOnly: true,
         orderRoutingAttempted: false
       });
     } catch (error) {
