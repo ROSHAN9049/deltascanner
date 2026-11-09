@@ -205,6 +205,12 @@ export function advanceAdaptiveShadowPosition(position, candle) {
     const costPct = (2 * feeRate * 100) + spreadPct;
     return {
       shadow_status: 'CLOSED',
+      best_price: numberOrNull(position?.best_price) ?? entry,
+      worst_price: numberOrNull(position?.worst_price) ?? entry,
+      trailing_activated: position?.trailing_activated === true,
+      trailing_stop_price: currentStop,
+      max_favorable_excursion_pct: numberOrNull(position?.max_favorable_excursion_pct),
+      max_adverse_excursion_pct: numberOrNull(position?.max_adverse_excursion_pct),
       exit_at: new Date((candleTime + 60) * 1000).toISOString(),
       exit_price: exitPrice,
       exit_reason: position?.trailing_activated === true ? 'TRAILING_STOP' : 'INITIAL_STOP',
@@ -346,9 +352,11 @@ export async function processAdaptiveVolatilityShadowCycle({
     if (row.shadow_status === 'PENDING_ENTRY') {
       const signalAtMs = Date.parse(row.signal_at || '');
       if (!Number.isFinite(signalAtMs)) continue;
+      // The signal is timestamped at the close of a 5m candle. Use only the
+      // immediately following 1m bucket; never enter late using a later bar.
       const entryCandle = candles.find(candle => {
         const seconds = normalizeEpochSeconds(candle?.time);
-        return seconds !== null && seconds * 1000 >= signalAtMs;
+        return seconds !== null && seconds * 1000 === signalAtMs;
       });
       if (!entryCandle) {
         if (currentTime > signalAtMs + 10 * 60_000) {

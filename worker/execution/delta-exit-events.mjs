@@ -78,17 +78,21 @@ export function deltaCloseFields(event = {}, details = null) {
   const reasonEvent = {
     ...source,
     ...detail,
+    meta_data: detail.meta_data ?? event?.meta_data ?? source.meta_data,
+    metadata: detail.metadata ?? event?.metadata ?? source.metadata,
     close_order_history_found: detail.close_order_history_found ??
-      detail.closeOrderHistoryFound ?? source.close_order_history_found,
-    requested_exit_reason: detail.requested_exit_reason ?? source.requested_exit_reason,
+      detail.closeOrderHistoryFound ?? event?.close_order_history_found ?? source.close_order_history_found,
+    requested_exit_reason: detail.requested_exit_reason ??
+      event?.requested_exit_reason ?? source.requested_exit_reason,
     stop_order_type: detail.stop_order_type ?? detail.stopOrderType ??
-      source.stop_order_type ?? source.meta_data?.stop_order_type ?? source.metadata?.stop_order_type,
+      event?.stop_order_type ?? source.stop_order_type ?? source.meta_data?.stop_order_type ?? source.metadata?.stop_order_type,
     fill_type: detail.fill_type ?? detail.fillType ??
-      source.fill_type ?? source.meta_data?.fill_type ?? source.metadata?.fill_type,
+      event?.fill_type ?? source.fill_type ?? source.meta_data?.fill_type ?? source.metadata?.fill_type,
     order_type: detail.order_type ?? detail.orderType ??
-      source.order_type ?? source.meta_data?.order_type ?? source.metadata?.order_type,
-    client_order_id: detail.client_order_id ?? detail.clientOrderId ?? source.client_order_id,
-    reduce_only: detail.reduce_only ?? source.reduce_only
+      event?.order_type ?? source.order_type ?? source.meta_data?.order_type ?? source.metadata?.order_type,
+    client_order_id: detail.client_order_id ?? detail.clientOrderId ??
+      event?.client_order_id ?? source.client_order_id,
+    reduce_only: detail.reduce_only ?? event?.reduce_only ?? source.reduce_only
   };
 
   const closeOrderId = detail.close_order_id ??
