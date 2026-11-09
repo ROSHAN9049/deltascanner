@@ -2234,8 +2234,9 @@ export class DeltaEngine {
       const value = ticker?.greeks?.delta ?? ticker?.delta;
       return value !== undefined && value !== null && value !== '' && Number.isFinite(Number(value));
     };
-    // Fetch one underlying at a time and retain only a small, near-the-money
-    // 2–14 DTE chain so the Hostless 256 MB worker does not cache full chains.
+    // Fetch one underlying at a time and retain a small, near-the-money chain
+    // through the configured maximum DTE. Positive sub-day DTE is cached for
+    // visibility; analyseOption still enforces the configured minimum DTE.
     for (const underlying of underlyings) {
       try {
         const spotTicker = this.tickerMap.get(underlying + 'USD');
