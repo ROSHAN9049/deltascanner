@@ -151,7 +151,7 @@ export function createOptionsAutoTrigger({
           ),
           database.select(
             'dd_option_positions',
-            'status=in.(OPEN,HEDGE_CLOSE_PENDING,RECONCILIATION_REQUIRED)&select=symbol,status&limit=500'
+            'status=in.(ENTRY_PENDING,OPEN,HEDGE_CLOSE_PENDING,RECONCILIATION_REQUIRED)&select=symbol,status&limit=500'
           ),
           database.select(
             'dd_orders',

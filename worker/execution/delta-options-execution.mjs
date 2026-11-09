@@ -513,7 +513,7 @@ export function createDeltaOptionsExecution({
       ),
       database.select(
         'dd_option_positions',
-        'status=in.(OPEN,HEDGE_CLOSE_PENDING,RECONCILIATION_REQUIRED)&select=symbol,status&limit=500'
+        'status=in.(ENTRY_PENDING,OPEN,HEDGE_CLOSE_PENDING,RECONCILIATION_REQUIRED)&select=symbol,status&limit=500'
       ),
       request('GET', '/v2/positions/margined', { contract_types: 'call_options,put_options' })
     ]);
@@ -793,6 +793,24 @@ export function createDeltaOptionsExecution({
     return { ...unwindOrder, confirmedFilledQty: unwindFill.filledQty };
   }
 
+  async function reserveOptionPosition({ executionKey, preview, candidate, product, hedgeProduct = null } = {}) {
+    if (typeof database.insert !== 'function') throw new Error('Options position ledger insert is unavailable; entry blocked');
+    const row = {
+      position_key: executionKey, symbol: preview.symbol, strategy: preview.strategy,
+      market_regime: candidate.marketRegime, side: preview.strategy === 'OPTIONS_BUY' ? 'BUY' : 'SELL',
+      qty: preview.qty, contract_size: product.contractValue, entry_premium: preview.premium,
+      hedge_symbol: hedgeProduct?.symbol || null, hedge_contract_size: hedgeProduct?.contractValue ?? null,
+      hedge_entry_premium: preview.hedgePremium ?? null,
+      expiry_ms: product.parsed.expiryMs, dte: product.parsed.dte,
+      peak_premium: preview.premium, current_premium: preview.premium, status: 'ENTRY_PENDING',
+      realized_pnl_verified: false, opened_at: new Date(now()).toISOString(), updated_at: new Date(now()).toISOString(),
+      raw: { environment: 'testnet', iv_rank: candidate.ivRank, regime: candidate.marketRegime, entry_pending: true }
+    };
+    const inserted = await database.insert('dd_option_positions', row);
+    if (Array.isArray(inserted) && inserted.length === 0) throw new Error('Options position reservation was not confirmed; entry blocked');
+    return row;
+  }
+
   async function recordOptionPosition({
     executionKey, preview, candidate, product, hedgeProduct = null,
     order, fill, hedgeOrder = null, hedgeFill = null
@@ -821,8 +839,12 @@ export function createDeltaOptionsExecution({
         entry_order_state: order?.state ?? null, hedge_entry_order_state: hedgeOrder?.state ?? null,
         exit_policy: preview.strategy === 'OPTIONS_BUY' ? 'TP_50_SL_30_BREAKEVEN_AFTER_1R' : 'TP_50_DECAY_SL_2X_DTE_0_5' }
     };
-    const inserted = await database.insert('dd_option_positions', row);
-    if (Array.isArray(inserted) && inserted.length === 0) throw new Error('Options position ledger did not confirm its inserted row');
+    const updated = await database.update('dd_option_positions',
+      'position_key=eq.' + encodeURIComponent(executionKey) + '&status=eq.ENTRY_PENDING', {
+        ...row, status: 'OPEN', updated_at: new Date(now()).toISOString(),
+        raw: { ...row.raw, entry_pending: false }
+      });
+    if (Array.isArray(updated) && updated.length === 0) throw new Error('Entry fill confirmed but the Options position reservation could not be finalized');
     return row;
   }
 
@@ -865,13 +887,16 @@ export function createDeltaOptionsExecution({
       }
       await assertEntrySafety(preview);
       const product = await resolveProduct(preview.symbol);
-      if (isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED)) {
+      const regimeBased = isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED);
+      const hedgeProduct = preview.strategy === 'OPTIONS_SELL' ? await resolveProduct(preview.hedgeSymbol) : null;
+      if (regimeBased) {
         const minimumDte = preview.strategy === 'OPTIONS_BUY' ? 3 : 1;
         const maximumDte = preview.strategy === 'OPTIONS_BUY' ? 10 : 3;
         if (product.parsed.dte < 0.5 || product.parsed.dte < minimumDte || product.parsed.dte > maximumDte) {
           throw new Error('Options contract DTE is outside the regime-based expiry window');
         }
       }
+      if (regimeBased) await reserveOptionPosition({ executionKey, preview, candidate, product, hedgeProduct });
       if (preview.strategy === 'OPTIONS_BUY') {
         const order = await submitLeg(product, 'BUY', preview.qty, preview.premium, {
           strategy: 'OPTIONS_BUY', role: 'ENTRY', maxLossUsd: preview.maxLossUsd, executionKey,
@@ -898,7 +923,6 @@ export function createDeltaOptionsExecution({
         };
       }
 
-      const hedgeProduct = await resolveProduct(preview.hedgeSymbol);
       const lifecycle = await executeHedgedOptionSpread({
         qty: preview.qty,
         placeProtectiveBuy: () => submitLeg(
@@ -928,23 +952,23 @@ export function createDeltaOptionsExecution({
         }
       });
       const hedgeOrderId = lifecycle.hedgeOrder?.id ?? null;
-      if (isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED)) {
+      if (regimeBased) {
         if (lifecycle.success) {
           await recordOptionPosition({ executionKey, preview, candidate, product, hedgeProduct,
             order: lifecycle.shortOrder, fill: lifecycle.shortOrder?._shortFill,
             hedgeOrder: lifecycle.hedgeOrder, hedgeFill: lifecycle.shortOrder?._hedgeFill });
-        } else if (lifecycle.hedgeExposureRemains === true && typeof database.insert === 'function') {
-          await database.insert('dd_option_positions', {
-            position_key: executionKey, symbol: preview.symbol, strategy: 'OPTIONS_SELL', market_regime: 'SIDEWAYS',
-            side: 'SELL', qty: preview.qty, contract_size: product.contractValue, entry_premium: preview.premium,
-            hedge_symbol: hedgeProduct.symbol, hedge_contract_size: hedgeProduct.contractValue,
-            hedge_entry_premium: preview.hedgePremium, entry_order_id: lifecycle.shortOrder?.id ? String(lifecycle.shortOrder.id) : null,
-            hedge_entry_order_id: lifecycle.hedgeOrder?.id ? String(lifecycle.hedgeOrder.id) : null,
-            expiry_ms: product.parsed.expiryMs, dte: product.parsed.dte, peak_premium: preview.premium,
-            status: 'RECONCILIATION_REQUIRED', realized_pnl_verified: false,
-            opened_at: new Date(now()).toISOString(), updated_at: new Date(now()).toISOString(),
-            raw: { state: lifecycle.state, reason: lifecycle.reason || null, hedge_exposure_remains: true }
-          }).catch(() => {});
+        } else {
+          const hasUnresolvedExposure = lifecycle.hedgeExposureRemains === true || lifecycle.shortSubmitted === true;
+          await database.update('dd_option_positions',
+            'position_key=eq.' + encodeURIComponent(executionKey) + '&status=eq.ENTRY_PENDING', {
+              status: hasUnresolvedExposure ? 'RECONCILIATION_REQUIRED' : 'CLOSED',
+              realized_pnl: hasUnresolvedExposure ? null : 0,
+              realized_pnl_verified: !hasUnresolvedExposure,
+              closed_at: hasUnresolvedExposure ? null : new Date(now()).toISOString(),
+              exit_reason: hasUnresolvedExposure ? null : 'ENTRY_ABORTED',
+              updated_at: new Date(now()).toISOString(),
+              raw: { state: lifecycle.state, reason: lifecycle.reason || null, hedge_exposure_remains: hasUnresolvedExposure }
+            });
         }
       }
       await logExecutor(lifecycle.success ? 'INFO' : 'ERROR',

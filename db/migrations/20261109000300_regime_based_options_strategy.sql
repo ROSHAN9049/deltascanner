@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS public.dd_option_positions (
   short_exit_premium NUMERIC NULL,
   hedge_exit_premium NUMERIC NULL,
   status TEXT NOT NULL DEFAULT 'OPEN'
-    CHECK (status IN ('OPEN', 'HEDGE_CLOSE_PENDING', 'RECONCILIATION_REQUIRED', 'CLOSED')),
+    CHECK (status IN ('ENTRY_PENDING', 'OPEN', 'HEDGE_CLOSE_PENDING', 'RECONCILIATION_REQUIRED', 'CLOSED')),
   exit_reason TEXT NULL,
   realized_pnl NUMERIC NULL,
   realized_pnl_verified BOOLEAN NOT NULL DEFAULT FALSE,
