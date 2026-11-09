@@ -232,13 +232,16 @@ export function createOptionsAutoTrigger({
           return { status: 'BLOCKED_PREVIEW', previewRequested: true, candidate: upper(candidate.symbol) };
         }
 
+        const fullAutoExecute = isEnabled(env.FULL_AUTO_EXECUTE);
         await logger(
           'INFO',
-          '[AUTO-TRIGGER] Candidate ready for execution. Token acquired. Waiting for manual execution.',
+          fullAutoExecute
+            ? '[AUTO-TRIGGER] Executing automatically...'
+            : '[AUTO-TRIGGER] Candidate ready for execution. Token acquired. Waiting for manual execution.',
           {
             symbol: upper(candidate.symbol),
             strategy: upper(candidate.strategy),
-            mode: 'PREVIEW_ONLY',
+            mode: fullAutoExecute ? 'AUTO_EXECUTE' : 'PREVIEW_ONLY',
             tokenAcquired: true,
             orderSubmitted: false
           }
@@ -250,9 +253,9 @@ export function createOptionsAutoTrigger({
           orderSubmitted: false
         });
         // ==========================================
-// FULL AUTO EXECUTE LOGIC (ADDED)
+// FULL AUTO EXECUTE LOGIC
 // ==========================================
-if (isEnabled(env.FULL_AUTO_EXECUTE)) {
+if (fullAutoExecute) {
   const executeUrl = previewUrl.replace('/preview', '/execute');
   await logger('INFO', '[AUTO-TRIGGER] FULL_AUTO_EXECUTE is ON. Submitting order...', { symbol: upper(candidate.symbol) });
   
@@ -288,8 +291,6 @@ if (isEnabled(env.FULL_AUTO_EXECUTE)) {
     await writeHeartbeat('EXECUTION_ERROR', { error: execMsg });
     return { status: 'EXECUTION_ERROR', previewRequested: true, orderSubmitted: false, error: execMsg };
   }
-} else {
-  await logger('INFO', '[AUTO-TRIGGER] FULL_AUTO_EXECUTE is OFF. Waiting for manual execution.', { symbol: upper(candidate.symbol) });
 }
 // ==========================================
         // The short-lived quote token is intentionally not persisted or logged.

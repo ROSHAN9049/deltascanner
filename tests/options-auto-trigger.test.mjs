@@ -224,3 +224,16 @@ test('Options auto-trigger health only reports fresh, enabled preview-only heart
   assert.equal(autoExecute.mode, 'AUTO_EXECUTE');
   assert.equal(autoExecute.fullAutoExecute, true);
 });
+test('full-auto candidate logs automatic execution before calling the execute endpoint', async () => {
+  const { worker, calls, logs } = harness({
+    envPatch: { FULL_AUTO_EXECUTE: 'true' }
+  });
+  const result = await worker.runOnce();
+  assert.equal(result.status, 'ORDER_EXECUTED');
+  const requests = calls.filter(call => call.kind === 'fetch');
+  assert.equal(requests.length, 2);
+  assert.ok(requests[0].url.endsWith('/api/options/preview'));
+  assert.ok(requests[1].url.endsWith('/api/options/execute'));
+  assert.ok(logs.some(args => args[1] === '[AUTO-TRIGGER] Executing automatically...'));
+  assert.ok(logs.every(args => args[1] !== '[AUTO-TRIGGER] Candidate ready for execution. Token acquired. Waiting for manual execution.'));
+});
