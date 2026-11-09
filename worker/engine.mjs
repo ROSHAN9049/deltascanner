@@ -3,7 +3,7 @@ import WebSocket from 'ws';
 import { CONFIG } from '../server/config.js';
 import { DeltaAdapter } from './delta-adapter.mjs';
 import { analyse, analyseOption, trimDetails, atr as calculateAtr, calculateNormalizedScores } from './strategy.mjs';
-import { calculateLongOptionSizing, parseDeltaOptionSymbol, selectOptionContractsForScan } from './execution/delta-options-policy.mjs';
+import { calculateLongOptionSizing, normalizeDeltaOptionTicker, parseDeltaOptionSymbol, selectOptionContractsForScan } from './execution/delta-options-policy.mjs';
 import * as db from '../server/db.js';
 import { SIGNAL_RESERVATION_TTL_MS, TradetronBridge, withSignalReservations } from '../server/tradetron.js';
 import { buildTradetronPnlHistoryRows, TradetronDeveloperApi } from '../server/tradetron-developer-api.mjs';
@@ -2194,7 +2194,7 @@ export class DeltaEngine {
           const parsed = parseDeltaOptionSymbol(symbol, match[1], now);
           const productId = n(product.id ?? product.product_id);
           if (!parsed || !Number.isSafeInteger(productId) || productId <= 0 ||
-              parsed.dte < Math.max(2, n(settings.options_min_days_to_expiry) || 2) ||
+              parsed.dte <= 0 ||
               parsed.dte > Math.max(2, n(settings.options_max_days_to_expiry) || 14) ||
               !(spot > 0) || Math.abs(parsed.strike - spot) / spot > 0.20) continue;
 
@@ -2252,11 +2252,21 @@ export class DeltaEngine {
           if (!symbol || !/^[CP]-/.test(symbol)) continue;
           const product = testnetMode ? this.optionProductMap.get(symbol) : null;
           if (testnetMode && !product) continue;
+          const marketTicker = normalizeDeltaOptionTicker(ticker);
           joined.push({
-            ...ticker,
             ...(product || {}),
+            ...marketTicker,
             symbol,
-            underlying
+            underlying,
+            // The ticker response is public production market data; only the
+            // product ID/specifications used for execution come from Testnet.
+            ...(testnetMode ? {
+              product_id: product.product_id,
+              contract_value: product.contract_value,
+              tick_size: product.tick_size,
+              taker_commission_rate: product.taker_commission_rate,
+              testnet_product_verified: true
+            } : {})
           });
         }
 
@@ -2265,7 +2275,10 @@ export class DeltaEngine {
           underlying,
           spotPrice: spot,
           now,
-          minDays: settings.options_min_days_to_expiry,
+          // Load positive-DTE contracts for market-cache visibility. analyseOption
+          // continues to enforce settings.options_min_days_to_expiry (currently 2)
+          // before a candidate can become CONFIRMED or reach the execution route.
+          minDays: 0,
           maxDays: settings.options_max_days_to_expiry,
           maxContracts: 24,
           maxMoneynessPct: 20
@@ -3358,6 +3371,9 @@ export class DeltaEngine {
       spread_pct: s.spreadPct,
       oi: s.oi,
       volume: s.volume,
+      oi_value_usd: s.oiValueUsd,
+      volume_usd: s.volumeUsd,
+      market_data_source: 'production_public',
       delta: s.delta,
       gamma: s.gamma,
       theta: s.theta,
@@ -3382,6 +3398,11 @@ export class DeltaEngine {
         ask: s.ask,
         volume: s.volume,
         openInterest: s.oi,
+        oiValueUsd: s.oiValueUsd,
+        volumeUsd: s.volumeUsd,
+        oiValueSymbol: s.ticker?.oi_value_symbol || null,
+        turnoverSymbol: s.ticker?.turnover_symbol || null,
+        marketDataSource: 'production_public',
         // Keep cached detail fields aligned with the top-level Greek columns so
         // the dashboard and any detail-based consumers read the same values.
         delta: s.delta,
