@@ -40,7 +40,7 @@ import { cleanupWebSocketListeners } from './websocket-lifecycle.mjs';
 import { evaluateGlobalPositionCap, routeUnlessGlobalPositionCapBlocked } from './global-position-cap.mjs';
 import { createConfirmedSignalTelegramNotifier } from './telegram-alerts.mjs';
 import { createLeaseManager, getLeaseTtlSeconds } from './lease-manager.mjs';
-import { buildAdaptiveVolatilityShadowObservation, processAdaptiveVolatilityShadowCycle } from './adaptive-volatility-shadow.mjs';
+import { buildAdaptiveVolatilityShadowObservation, getAdaptiveVolatilityImpulse, inferAdaptiveVolatilityShadowSide, processAdaptiveVolatilityShadowCycle } from './adaptive-volatility-shadow.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const n = v => Number.isFinite(+v) ? +v : 0;
@@ -3065,6 +3065,7 @@ export class DeltaEngine {
     // The final analysis pass consumes each score for the normalized readiness
     // gate; feature extraction in this pre-pass does not depend on stage/ready.
     const normalizationUniverses = { MOMENTUM: [], SCALPING: [] };
+    const adaptiveShadowNormalizationUniverses = { MOMENTUM: [], SCALPING: [] };
     for (const ticker of tickers) {
       const product = this.productMap.get(ticker.symbol);
       if (!product) continue;
@@ -3097,6 +3098,13 @@ export class DeltaEngine {
       });
       normalizationUniverses.MOMENTUM.push(momShadow);
       normalizationUniverses.SCALPING.push(scalpShadow);
+      if (adaptiveShadowEnabled) {
+        const impulse = getAdaptiveVolatilityImpulse(c5);
+        const momSide = impulse ? inferAdaptiveVolatilityShadowSide(momShadow, impulse.side) : momShadow.side;
+        const scalpSide = impulse ? inferAdaptiveVolatilityShadowSide(scalpShadow, impulse.side) : scalpShadow.side;
+        adaptiveShadowNormalizationUniverses.MOMENTUM.push({ ...momShadow, side: momSide });
+        adaptiveShadowNormalizationUniverses.SCALPING.push({ ...scalpShadow, side: scalpSide });
+      }
     }
     const normalizedScores = new Map();
     for (const strategyName of ['MOMENTUM', 'SCALPING']) {
@@ -3104,6 +3112,17 @@ export class DeltaEngine {
       const scores = calculateNormalizedScores(universe);
       for (const signal of universe) {
         normalizedScores.set(strategyName + ':' + signal.symbol, scores.get(String(signal.symbol || '').toUpperCase()) ?? null);
+      }
+    }
+    const adaptiveShadowNormalizedScores = new Map();
+    if (adaptiveShadowEnabled) {
+      for (const strategyName of ['MOMENTUM', 'SCALPING']) {
+        const universe = adaptiveShadowNormalizationUniverses[strategyName];
+        const scores = calculateNormalizedScores(universe);
+        for (const signal of universe) {
+          adaptiveShadowNormalizedScores.set(strategyName + ':' + signal.symbol,
+            scores.get(String(signal.symbol || '').toUpperCase()) ?? null);
+        }
       }
     }
 
@@ -3157,14 +3176,33 @@ export class DeltaEngine {
       if (adaptiveShadowEnabled) {
         const shadowSpecs = [
           { signal: mom, strategy: 'MOMENTUM', emaMax: n(settings.ema_distance_max || 3.5) },
-          { signal: scalp, strategy: 'SCALPING', emaMax: n(settings.scalping_ema_distance_max || 2.5) }
+          { signal: scalp, strategy: 'SCALPING', emaMax: n(settings.ema_distance_max || 2.5) }
         ];
         for (const spec of shadowSpecs) {
-          const observation = buildAdaptiveVolatilityShadowObservation(spec.signal, c5, {
+          const impulse = getAdaptiveVolatilityImpulse(c5);
+          const inferredSide = impulse
+            ? inferAdaptiveVolatilityShadowSide(spec.signal, impulse.side)
+            : spec.signal.side;
+          const shadowScore = adaptiveShadowNormalizedScores.get(spec.strategy + ':' + ticker.symbol) ?? null;
+          const shadowSignal = {
+            ...spec.signal,
+            originalSignalSide: spec.signal.side || '',
+            side: inferredSide || spec.signal.side,
+            normalizedScore: shadowScore,
+            adaptiveVolatilityShadowDirectionInferred: !spec.signal.side && !!inferredSide
+          };
+          const observation = buildAdaptiveVolatilityShadowObservation(shadowSignal, c5, {
             strategy: spec.strategy,
             baseEmaDistanceMax: spec.emaMax,
             takerFeeRate: n(p.taker_commission_rate),
-            maxHoldMinutes: n(settings.max_hold_minutes || 240)
+            maxHoldMinutes: n(settings.max_hold_minutes || 240),
+            maxAntiChasePct: n(settings.anti_chase_pct || 15),
+            rangeAtrMax: spec.strategy === 'MOMENTUM'
+              ? n(settings.range_atr_max || 4.0)
+              : n(settings.range_atr_max || 3.0),
+            spreadMaxPct: n(settings.spread_max_pct || 0.35),
+            costGateRatio: spec.strategy === 'MOMENTUM' ? 0.20 : 0.25,
+            volumeMin: n(settings.volume_min || (spec.strategy === 'MOMENTUM' ? 0.75 : 1.25))
           });
           if (observation) adaptiveShadowObservations.push(observation);
         }

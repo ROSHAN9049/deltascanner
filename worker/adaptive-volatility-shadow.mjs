@@ -16,12 +16,51 @@ function directionalPriceChange(side, entry, exit) {
   return (side === 'BUY' ? (exit / entry) - 1 : (entry / exit) - 1) * 100;
 }
 
-function normalizeRequestedReason(value) {
-  const reason = upper(value).replace(/[\s-]+/g, '_');
-  if (reason === 'STOP_LOSS' || reason === 'SL') return 'SL';
-  if (reason === 'TAKE_PROFIT' || reason === 'TP') return 'TP';
-  if (reason === 'TIMEOUT' || reason === 'MANUAL' || reason === 'BOT') return reason;
-  return null;
+/**
+ * Return a completed 5m high-volatility impulse. Relative volume is compared
+ * with the mean volume of the preceding twenty completed 5m candles.
+ */
+export function getAdaptiveVolatilityImpulse(candles5m) {
+  const candles = isClosedSeries(candles5m);
+  if (candles.length < 22) return null;
+  const latest = candles.at(-1);
+  const previous = candles.at(-2);
+  const previousVolume = candles.slice(-21, -1)
+    .reduce((sum, candle) => sum + Math.max(0, numberOrNull(candle?.volume) || 0), 0) / 20;
+  const currentVolume = Math.max(0, numberOrNull(latest?.volume) || 0);
+  const moveBase = numberOrNull(previous?.close);
+  const moveClose = numberOrNull(latest?.close);
+  if (!(moveBase > 0) || !(moveClose > 0) || !(previousVolume > 0)) return null;
+  const movePct = ((moveClose / moveBase) - 1) * 100;
+  const relativeVolume = currentVolume / previousVolume;
+  if (!(Math.abs(movePct) > 2.5) || !(relativeVolume > 3)) return null;
+  const candleStart = normalizeEpochSeconds(latest?.time);
+  if (candleStart === null) return null;
+  return {
+    side: movePct < 0 ? 'SELL' : 'BUY',
+    movePct,
+    relativeVolume,
+    signalAtSeconds: candleStart + 300
+  };
+}
+
+/**
+ * Infer a missing directional signal only if the existing 5m/15m trend stack
+ * supports the high-volume impulse. This is shadow-only; live signal unchanged.
+ */
+export function inferAdaptiveVolatilityShadowSide(signal, impulseSide) {
+  const wanted = upper(impulseSide);
+  const current = upper(signal?.side);
+  if (current) return current;
+  const trend5 = upper(signal?.trend);
+  const trend15 = upper(signal?.confirmTrend);
+  if (wanted === 'SELL' &&
+      (trend5 === 'BEAR' || (trend5 === 'FLAT' && trend15 === 'BEAR')) &&
+      trend15 !== 'BULL') return 'SELL';
+  if (wanted === 'BUY' &&
+      (trend5 === 'BULL' || (trend5 === 'FLAT' && trend15 === 'BULL')) &&
+      trend15 !== 'BEAR') return 'BUY';
+  return '';
 }
 
 /**
@@ -33,29 +72,22 @@ export function buildAdaptiveVolatilityShadowObservation(signal, candles5m, {
   strategy,
   baseEmaDistanceMax = null,
   takerFeeRate = 0,
-  maxHoldMinutes = 240
+  maxHoldMinutes = 240,
+  maxAntiChasePct = 15,
+  rangeAtrMax = 4,
+  spreadMaxPct = 0.35,
+  costGateRatio = 0.20,
+  volumeMin = 0
 } = {}) {
-  const candles = isClosedSeries(candles5m);
-  if (candles.length < 22) return null;
-
-  const latest = candles.at(-1);
-  const previous = candles.at(-2);
-  const previousVolume = candles.slice(-21, -1)
-    .reduce((sum, candle) => sum + Math.max(0, numberOrNull(candle?.volume) || 0), 0) / 20;
-  const currentVolume = Math.max(0, numberOrNull(latest?.volume) || 0);
-  const moveBase = numberOrNull(previous?.close);
-  const moveClose = numberOrNull(latest?.close);
-  if (!(moveBase > 0) || !(moveClose > 0) || !(previousVolume > 0)) return null;
-
-  const movePct = ((moveClose / moveBase) - 1) * 100;
-  const relativeVolume = currentVolume / previousVolume;
-  if (!(Math.abs(movePct) > 2.5) || !(relativeVolume > 3)) return null;
+  const impulse = getAdaptiveVolatilityImpulse(candles5m);
+  if (!impulse) return null;
+  const { side: impulseSide, movePct, relativeVolume, signalAtSeconds } = impulse;
 
   const normalizedStrategy = upper(strategy || signal?.strategy);
   if (!['MOMENTUM', 'SCALPING'].includes(normalizedStrategy)) return null;
-  const impulseSide = movePct < 0 ? 'SELL' : 'BUY';
   const signalSide = upper(signal?.side);
   const directionalMatch = signalSide === impulseSide;
+  const inferredDirection = signal?.adaptiveVolatilityShadowDirectionInferred === true;
   const isScalping = normalizedStrategy === 'SCALPING';
 
   const minRsi = isScalping ? 40 : 45;
@@ -63,7 +95,7 @@ export function buildAdaptiveVolatilityShadowObservation(signal, candles5m, {
   const rsi = numberOrNull(signal?.rsi);
   const adaptiveRsiPass = rsi !== null && (impulseSide === 'SELL'
     ? rsi >= 15 && rsi <= maxRsi
-    : rsi >= minRsi && rsi <= 85);
+    : rsi >= minRsi && rsi <= 80);
 
   const price = numberOrNull(signal?.price);
   const vwap = numberOrNull(signal?.vwap);
@@ -72,8 +104,10 @@ export function buildAdaptiveVolatilityShadowObservation(signal, candles5m, {
     atrEntry > 0 ? atrEntry * (isScalping ? 0.35 : 0.25) : 0,
     price > 0 ? price * (isScalping ? 0.0025 : 0.0020) : 0
   );
-  const vwapPass = !isScalping || !(vwap > 0) ||
-    (impulseSide === 'SELL' ? price <= vwap + vwapTolerance : price >= vwap - vwapTolerance);
+  const vwapPass = !isScalping || (
+    price > 0 && vwap > 0 &&
+    (impulseSide === 'SELL' ? price <= vwap + vwapTolerance : price >= vwap - vwapTolerance)
+  );
 
   const configuredEmaMax = numberOrNull(baseEmaDistanceMax) ??
     (isScalping ? 2.5 : 3.5);
@@ -85,6 +119,7 @@ export function buildAdaptiveVolatilityShadowObservation(signal, candles5m, {
   const shadowBlocks = sourceBlocks.filter(reason => {
     if (reason === 'RSI/VWAP' && adaptiveRsiPass && vwapPass) return false;
     if (reason.includes('from entry EMA21') && emaDistancePass) return false;
+    if (reason === 'No directional trigger' && inferredDirection && directionalMatch) return false;
     return true;
   });
 
@@ -97,6 +132,36 @@ export function buildAdaptiveVolatilityShadowObservation(signal, candles5m, {
     shadowBlocks.push('EMA21 distance exceeds adaptive volatility limit');
   }
 
+  const change24h = numberOrNull(signal?.change);
+  const antiChaseLimit = Math.max(0, numberOrNull(maxAntiChasePct) ?? 15);
+  const antiChasePass = change24h !== null && (
+    impulseSide === 'BUY' ? change24h <= antiChaseLimit : change24h >= -antiChaseLimit
+  );
+  if (!antiChasePass) shadowBlocks.push('24h anti-chase');
+
+  const btcTrend5 = upper(signal?.btcTrend);
+  const btcTrend15 = upper(signal?.btcConfirmTrend);
+  const btcOpposed = impulseSide === 'BUY'
+    ? btcTrend5 === 'BEAR' && btcTrend15 === 'BEAR'
+    : btcTrend5 === 'BULL' && btcTrend15 === 'BULL';
+  if (btcOpposed) shadowBlocks.push('BTC regime');
+
+  const rangeAtr = numberOrNull(signal?.rangeAtr);
+  const rangeMax = Math.max(0, numberOrNull(rangeAtrMax) ?? 4);
+  if (rangeAtr === null || rangeAtr > rangeMax) shadowBlocks.push('Entry candle range exceeds strategy limit');
+
+  const volumeSpike = numberOrNull(signal?.volumeSpike);
+  const minimumVolume = Math.max(0, numberOrNull(volumeMin) ?? 0);
+  if (volumeSpike === null || volumeSpike < minimumVolume) shadowBlocks.push('Strategy volume threshold');
+
+  const spreadPct = Math.max(0, numberOrNull(signal?.spreadPct) ?? 99);
+  const spreadLimit = Math.max(0, numberOrNull(spreadMaxPct) ?? 0.35);
+  if (spreadPct > spreadLimit) shadowBlocks.push('Spread exceeds configured limit');
+
+  const feeRiskRatio = numberOrNull(signal?.feeRiskRatio);
+  const feeRiskLimit = Math.max(0, numberOrNull(costGateRatio) ?? 0.20);
+  if (feeRiskRatio === null || feeRiskRatio > feeRiskLimit) shadowBlocks.push('Fee + spread exceeds allowed 1R cost');
+
   const localScore = numberOrNull(signal?.score);
   if (localScore === null || localScore < 45) shadowBlocks.push('Local strategy score below 45');
 
@@ -106,22 +171,23 @@ export function buildAdaptiveVolatilityShadowObservation(signal, candles5m, {
   }
   if (signal?.candlesFresh !== true) shadowBlocks.push('Fresh closed candles unavailable');
 
-  const rangeAtr = numberOrNull(signal?.rangeAtr);
-  const rangeMax = numberOrNull(signal?.rangeAtrMax);
-  if (rangeAtr !== null && rangeMax !== null && rangeAtr > rangeMax) {
-    shadowBlocks.push('Entry candle range exceeds strategy limit');
+  let sl = numberOrNull(signal?.sl);
+  if (!(price > 0) || !(sl > 0)) {
+    const stopPct = numberOrNull(signal?.stopPct);
+    if (stopPct !== null && stopPct > 0 && stopPct < 0.5) {
+      const rawStop = impulseSide === 'BUY' ? price * (1 - stopPct) : price * (1 + stopPct);
+      const tick = Math.max(0, numberOrNull(signal?.tickSize) ?? 0);
+      sl = tick > 0
+        ? (impulseSide === 'BUY' ? Math.floor(rawStop / tick) * tick : Math.ceil(rawStop / tick) * tick)
+        : rawStop;
+    }
   }
-
-  const sl = numberOrNull(signal?.sl);
   if (!(price > 0) || !(sl > 0) ||
       (impulseSide === 'BUY' ? sl >= price : sl <= price)) {
     shadowBlocks.push('Valid directional initial stop unavailable');
   }
 
   const uniqueBlocks = [...new Set(shadowBlocks)];
-  const candleStart = normalizeEpochSeconds(latest?.time);
-  if (candleStart === null) return null;
-  const signalAtSeconds = candleStart + 300;
   const symbol = upper(signal?.symbol);
   if (!symbol) return null;
 
@@ -137,7 +203,7 @@ export function buildAdaptiveVolatilityShadowObservation(signal, candles5m, {
     strategy: normalizedStrategy,
     side: impulseSide,
     impulse_side: impulseSide,
-    source_signal_side: signalSide || null,
+    source_signal_side: upper(signal?.originalSignalSide ?? signalSide) || null,
     signal_at: new Date(signalAtSeconds * 1000).toISOString(),
     signal_price: price,
     move_5m_pct: Number(movePct.toFixed(8)),
@@ -162,7 +228,7 @@ export function buildAdaptiveVolatilityShadowObservation(signal, candles5m, {
       sourceTrend5m: upper(signal?.trend),
       sourceTrend15m: upper(signal?.confirmTrend),
       adaptiveRsiMinimum: impulseSide === 'SELL' ? 15 : minRsi,
-      adaptiveRsiMaximum: impulseSide === 'BUY' ? 85 : maxRsi,
+      adaptiveRsiMaximum: impulseSide === 'BUY' ? 80 : maxRsi,
       emaRelaxation: 'base_limit_plus_30_percent_capped_at_plus_1_ATR',
       trailingModel: 'activate_at_1R_then_trail_by_1R',
       exitModel: 'initial_stop_then_trailing_stop_or_time_exit; no_fixed_take_profit',

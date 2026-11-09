@@ -65,6 +65,7 @@ CREATE INDEX IF NOT EXISTS dd_shadow_signals_symbol_created_idx
 ALTER TABLE public.dd_shadow_signals ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE public.dd_shadow_signals FROM anon, authenticated;
 GRANT ALL ON TABLE public.dd_shadow_signals TO service_role;
+GRANT USAGE, SELECT ON SEQUENCE public.dd_shadow_signals_id_seq TO service_role;
 
 NOTIFY pgrst, 'reload schema';
 COMMIT;
