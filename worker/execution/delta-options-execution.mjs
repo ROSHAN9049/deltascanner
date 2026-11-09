@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { parseDeltaOptionSymbol } from './delta-options-policy.mjs';
+import { evaluateIvRank, evaluateOptionsExit } from '../options-regime-strategy.mjs';
 import {
   assertOptionsExecutionAllowed,
   getOptionsExecutionGate,
@@ -25,6 +26,7 @@ const positive = value => {
   return parsed !== null && parsed > 0 ? parsed : null;
 };
 const lower = value => clean(value).toLowerCase();
+const isEnabled = value => lower(value) === 'true';
 const terminalOrderStates = new Set(['filled','closed','cancelled','canceled','rejected','expired','failed']);
 
 function assertTickAligned(price, tickSize, symbol) {
@@ -110,7 +112,7 @@ export function createDeltaOptionsExecution({
   async function resolveProduct(symbol) {
     const normalized = clean(symbol).toUpperCase();
     const parsed = parseDeltaOptionSymbol(normalized, undefined, now());
-    if (!parsed || parsed.dte <= 0 || !['BTC','ETH'].includes(parsed.underlying)) {
+    if (!parsed || parsed.dte < 0.5 || !['BTC','ETH'].includes(parsed.underlying)) {
       throw new Error('Options contract is invalid, expired or outside the verified BTC/ETH Testnet universe: ' + normalized);
     }
     const expectedType = parsed.optionType === 'CALL' ? 'call_options' : 'put_options';
@@ -155,7 +157,7 @@ export function createDeltaOptionsExecution({
       'dd_option_cache',
       'symbol=eq.' + encodeURIComponent(symbol) +
         '&strategy=eq.' + encodeURIComponent(strategy) +
-        '&select=symbol,strategy,score,stage,cached_at,details&limit=2'
+        '&select=symbol,strategy,score,stage,cached_at,details,market_regime,iv_rank&limit=2'
     );
     if (!Array.isArray(rows) || rows.length !== 1) {
       throw new Error('A unique current Options candidate is not present in dd_option_cache');
@@ -166,13 +168,24 @@ export function createDeltaOptionsExecution({
       throw new Error('Options candidate snapshot is stale or its timestamp is untrusted');
     }
     const details = parseDetails(row.details);
+    const ivRank = number(row.iv_rank ?? details.ivRank);
+    const ivRankGate = evaluateIvRank(strategy, ivRank);
+    if (!ivRankGate.allowed) throw new Error(ivRankGate.reason);
+    const marketRegime = clean(row.market_regime || details.marketRegime).toUpperCase();
+    if (isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED)) {
+      const expectedRegime = strategy === 'OPTIONS_BUY' ? 'TRENDING' : 'SIDEWAYS';
+      if (marketRegime !== expectedRegime) throw new Error('Market regime does not permit this Options strategy');
+      if (!isEnabled(env.OPTIONS_EXIT_MONITOR_ENABLED)) {
+        throw new Error('60-second Options exit monitor must be enabled before regime-based entries');
+      }
+    }
     if (!manualTestOverride &&
         (clean(row.stage).toUpperCase() !== 'CONFIRMED' ||
          !(number(row.score) >= 80) || details.analysisReady !== true)) {
       throw new Error('Options candidate is not confirmed by the worker analysis gates');
     }
     return {
-      ...row, details, cachedAt: new Date(cachedAtMs).toISOString(),
+      ...row, details, ivRank, marketRegime, cachedAt: new Date(cachedAtMs).toISOString(),
       manualTestOverride: manualTestOverride === true
     };
   }
@@ -202,9 +215,10 @@ export function createDeltaOptionsExecution({
         (isBuy ? 'BUY' : 'SELL') + ' band');
     }
 
-    const minDays = number(settings.options_min_days_to_expiry);
-    const maxDays = number(settings.options_max_days_to_expiry);
-    if (minDays === null || maxDays === null || minDays < 0 || maxDays < minDays ||
+    const regimeBased = isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED);
+    const minDays = regimeBased ? (isBuy ? 3 : 1) : number(settings.options_min_days_to_expiry);
+    const maxDays = regimeBased ? (isBuy ? 10 : 3) : number(settings.options_max_days_to_expiry);
+    if (minDays === null || maxDays === null || minDays < 0.5 || maxDays < minDays ||
         parsed.dte < minDays || parsed.dte > maxDays) {
       throw new Error('Manual test override blocked: option expiry is outside the configured DTE range');
     }
@@ -425,6 +439,38 @@ export function createDeltaOptionsExecution({
     return preview;
   }
 
+  async function assertDailyOptionsLossLimit(equity) {
+    const accountEquity = positive(equity);
+    const configuredPct = number(env.OPTIONS_DAILY_LOSS_LIMIT_PCT ?? 2);
+    if (!accountEquity || configuredPct === null || configuredPct <= 0 || configuredPct > 2) {
+      throw new Error('Separate Options daily-loss limit is missing or exceeds the hard 2% cap; entry blocked');
+    }
+    const shifted = new Date(now() + 5.5 * 60 * 60 * 1000);
+    const dayStartUtc = Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate()) - 5.5 * 60 * 60 * 1000;
+    const rows = await database.select(
+      'dd_option_positions',
+      'status=eq.CLOSED&closed_at=gte.' + encodeURIComponent(new Date(dayStartUtc).toISOString()) +
+        '&select=realized_pnl,realized_pnl_verified'
+    );
+    if (!Array.isArray(rows)) throw new Error('Options daily P&L ledger unavailable; entry blocked');
+    let realized = 0;
+    for (const row of rows) {
+      const pnl = number(row?.realized_pnl);
+      if (row?.realized_pnl_verified !== true || pnl === null) {
+        throw new Error('Options daily P&L includes an unverified close; new entries blocked');
+      }
+      realized += pnl;
+    }
+    const maxDailyLoss = accountEquity * configuredPct / 100;
+    if (realized <= -maxDailyLoss) {
+      const error = new Error('Options daily loss limit reached (' + configuredPct + '% of equity); new entries blocked');
+      error.code = 'OPTIONS_DAILY_LOSS_LIMIT';
+      error.statusCode = 409;
+      throw error;
+    }
+    return { realizedPnl: realized, maxDailyLoss, configuredPct };
+  }
+
   async function assertEntrySafety(preview) {
     assertTestnetProfile();
     const settingsRows = await database.select(
@@ -441,6 +487,10 @@ export function createDeltaOptionsExecution({
     if (!getOptionsDatabaseExecutionGate(settings).allowed) {
       throw new Error(OPTIONS_DATABASE_EXECUTION_LOCK_REASON + ' Options entry blocked');
     }
+    if (isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED) && !isEnabled(env.OPTIONS_EXIT_MONITOR_ENABLED)) {
+      throw new Error('Options regime entries require OPTIONS_EXIT_MONITOR_ENABLED=true');
+    }
+    await assertDailyOptionsLossLimit(preview.equity);
     if (!isMarketTickFresh(settings.last_tick_at, now())) {
       throw new Error('Persisted market tick is stale or unavailable; Options entry blocked');
     }
@@ -502,7 +552,8 @@ export function createDeltaOptionsExecution({
     manualTestOverride = false
   } = {}) {
     const roleSuffix = role === 'PROTECTIVE_HEDGE' ? 'H' :
-      role === 'UNWIND' ? 'U' : role === 'SHORT' ? 'S' : 'B';
+      role === 'UNWIND' ? 'U' : role === 'SHORT' ? 'S' :
+        role === 'EXIT' ? 'X' : role === 'HEDGE_EXIT' ? 'HX' : 'B';
     const clientOrderId = buildClientOrderId(
       executionKey ? 'DOP-' + executionKey + '-' + roleSuffix : null,
       'DDO',
@@ -677,7 +728,7 @@ export function createDeltaOptionsExecution({
       : reportedFilled !== null && reportedFilled >= 0 ? reportedFilled : null;
     const fullyFilled = ['filled','closed'].includes(state) && unfilled === 0 &&
       positive(order?.average_fill_price ?? order?.avg_fill_price) !== null;
-    return { state, filledQty, fullyFilled };
+    return { state, filledQty, fullyFilled, averageFillPrice: positive(order?.average_fill_price ?? order?.avg_fill_price) };
   }
 
   async function waitForProtectiveFill(order, qty) {
@@ -736,6 +787,39 @@ export function createDeltaOptionsExecution({
     return { ...unwindOrder, confirmedFilledQty: unwindFill.filledQty };
   }
 
+  async function recordOptionPosition({
+    executionKey, preview, candidate, product, hedgeProduct = null,
+    order, fill, hedgeOrder = null, hedgeFill = null
+  } = {}) {
+    if (typeof database.insert !== 'function') {
+      throw new Error('Options position ledger insert is unavailable after entry fill; reconcile the exchange position');
+    }
+    const actualQty = Number(fill?.filledQty);
+    const entryPremium = positive(fill?.averageFillPrice);
+    const hedgePremium = hedgeProduct ? positive(hedgeFill?.averageFillPrice) : null;
+    if (!Number.isSafeInteger(actualQty) || actualQty < 1 || !entryPremium ||
+        (hedgeProduct && (!hedgePremium || Number(hedgeFill?.filledQty) !== actualQty))) {
+      throw new Error('Filled Option entry/hedge quantities or average prices are not fully verified');
+    }
+    const row = {
+      position_key: executionKey, symbol: preview.symbol, strategy: preview.strategy,
+      market_regime: candidate.marketRegime, side: preview.strategy === 'OPTIONS_BUY' ? 'BUY' : 'SELL',
+      qty: actualQty, contract_size: product.contractValue, entry_premium: entryPremium,
+      hedge_symbol: hedgeProduct?.symbol || null, hedge_contract_size: hedgeProduct?.contractValue ?? null,
+      hedge_entry_premium: hedgePremium, entry_order_id: order?.id ? String(order.id) : null,
+      hedge_entry_order_id: hedgeOrder?.id ? String(hedgeOrder.id) : null,
+      expiry_ms: product.parsed.expiryMs, dte: product.parsed.dte,
+      peak_premium: entryPremium, current_premium: entryPremium, status: 'OPEN',
+      realized_pnl_verified: false, opened_at: new Date(now()).toISOString(), updated_at: new Date(now()).toISOString(),
+      raw: { environment: 'testnet', iv_rank: candidate.ivRank, regime: candidate.marketRegime,
+        entry_order_state: order?.state ?? null, hedge_entry_order_state: hedgeOrder?.state ?? null,
+        exit_policy: preview.strategy === 'OPTIONS_BUY' ? 'TP_50_SL_30_BREAKEVEN_AFTER_1R' : 'TP_50_DECAY_SL_2X_DTE_0_5' }
+    };
+    const inserted = await database.insert('dd_option_positions', row);
+    if (Array.isArray(inserted) && inserted.length === 0) throw new Error('Options position ledger did not confirm its inserted row');
+    return row;
+  }
+
   async function placeOptionsOrder({ symbol, strategy, qty = 1, quoteToken, manualTestOverride = false } = {}) {
     assertOptionsExecutionAllowed(env);
     const useManualTestOverride = manualTestOverride === true;
@@ -775,11 +859,26 @@ export function createDeltaOptionsExecution({
       }
       await assertEntrySafety(preview);
       const product = await resolveProduct(preview.symbol);
+      if (isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED)) {
+        const minimumDte = preview.strategy === 'OPTIONS_BUY' ? 3 : 1;
+        const maximumDte = preview.strategy === 'OPTIONS_BUY' ? 10 : 3;
+        if (product.parsed.dte < 0.5 || product.parsed.dte < minimumDte || product.parsed.dte > maximumDte) {
+          throw new Error('Options contract DTE is outside the regime-based expiry window');
+        }
+      }
       if (preview.strategy === 'OPTIONS_BUY') {
         const order = await submitLeg(product, 'BUY', preview.qty, preview.premium, {
           strategy: 'OPTIONS_BUY', role: 'ENTRY', maxLossUsd: preview.maxLossUsd, executionKey,
           manualTestOverride: preview.manualTestOverride === true
         });
+        if (isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED)) {
+          const fill = await waitForProtectiveFill(order, preview.qty);
+          if (fill?.fullyFilled !== true || Number(fill.filledQty) !== preview.qty || !positive(fill.averageFillPrice)) {
+            const error = new Error('Long option fill is not fully confirmed; position requires exchange reconciliation');
+            error.ambiguous = true; throw error;
+          }
+          await recordOptionPosition({ executionKey, preview, candidate, product, order, fill });
+        }
         await logExecutor('INFO', '[OptionsExecutor] Long Options Testnet order submitted', {
           symbol: preview.symbol, contract_id: product.id,
           hedge_order_id: null, max_loss: preview.maxLossUsd,
@@ -807,15 +906,41 @@ export function createDeltaOptionsExecution({
         cancelProtectiveOrder: cancelProtective,
         unwindProtectiveFill: (order, filledQty) =>
           submitAndConfirmReduceOnlyUnwind(hedgeProduct, order, filledQty, preview, executionKey),
-        placeShortSell: hedgeOrder => submitLeg(
-          product, 'SELL', preview.qty, preview.premium, {
-            strategy: 'OPTIONS_SELL', role: 'SHORT',
-            maxLossUsd: preview.maxLossUsd, hedgeOrderId: hedgeOrder?.id ?? null,
-            executionKey, manualTestOverride: preview.manualTestOverride === true
+        placeShortSell: async (hedgeOrder, hedgeFill) => {
+          const shortOrder = await submitLeg(product, 'SELL', preview.qty, preview.premium, {
+            strategy: 'OPTIONS_SELL', role: 'SHORT', maxLossUsd: preview.maxLossUsd,
+            hedgeOrderId: hedgeOrder?.id ?? null, executionKey,
+            manualTestOverride: preview.manualTestOverride === true
+          });
+          if (!isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED)) return shortOrder;
+          const shortFill = await waitForProtectiveFill(shortOrder, preview.qty);
+          if (shortFill?.fullyFilled !== true || Number(shortFill.filledQty) !== preview.qty || !positive(shortFill.averageFillPrice)) {
+            const error = new Error('Short option fill is not fully confirmed; protective BUY remains until reconciliation');
+            error.ambiguous = true; throw error;
           }
-        )
+          return { ...shortOrder, _shortFill: shortFill, _hedgeFill: hedgeFill };
+        }
       });
       const hedgeOrderId = lifecycle.hedgeOrder?.id ?? null;
+      if (isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED)) {
+        if (lifecycle.success) {
+          await recordOptionPosition({ executionKey, preview, candidate, product, hedgeProduct,
+            order: lifecycle.shortOrder, fill: lifecycle.shortOrder?._shortFill,
+            hedgeOrder: lifecycle.hedgeOrder, hedgeFill: lifecycle.shortOrder?._hedgeFill });
+        } else if (lifecycle.hedgeExposureRemains === true && typeof database.insert === 'function') {
+          await database.insert('dd_option_positions', {
+            position_key: executionKey, symbol: preview.symbol, strategy: 'OPTIONS_SELL', market_regime: 'SIDEWAYS',
+            side: 'SELL', qty: preview.qty, contract_size: product.contractValue, entry_premium: preview.premium,
+            hedge_symbol: hedgeProduct.symbol, hedge_contract_size: hedgeProduct.contractValue,
+            hedge_entry_premium: preview.hedgePremium, entry_order_id: lifecycle.shortOrder?.id ? String(lifecycle.shortOrder.id) : null,
+            hedge_entry_order_id: lifecycle.hedgeOrder?.id ? String(lifecycle.hedgeOrder.id) : null,
+            expiry_ms: product.parsed.expiryMs, dte: product.parsed.dte, peak_premium: preview.premium,
+            status: 'RECONCILIATION_REQUIRED', realized_pnl_verified: false,
+            opened_at: new Date(now()).toISOString(), updated_at: new Date(now()).toISOString(),
+            raw: { state: lifecycle.state, reason: lifecycle.reason || null, hedge_exposure_remains: true }
+          }).catch(() => {});
+        }
+      }
       await logExecutor(lifecycle.success ? 'INFO' : 'ERROR',
         '[OptionsExecutor] Defined-risk Testnet spread lifecycle result', {
           symbol: preview.symbol,
@@ -843,5 +968,124 @@ export function createDeltaOptionsExecution({
     }
   }
 
-  return Object.freeze({ previewOptionsOrder, placeOptionsOrder });
+  async function closeBuyOptionPosition(position, reason) {
+    const product = await resolveProduct(position.symbol);
+    const executionKey = crypto.createHash('sha256').update(String(position.position_key) + ':BUY_EXIT:' + String(now())).digest('hex').slice(0, 18);
+    const order = await submitLeg(product, 'SELL', Number(position.qty), null, {
+      strategy: 'OPTIONS_BUY', role: 'EXIT', maxLossUsd: 0, reduceOnly: true, executionKey
+    });
+    const fill = await waitForProtectiveFill(order, Number(position.qty));
+    if (fill?.fullyFilled !== true || Number(fill.filledQty) !== Number(position.qty) || !positive(fill.averageFillPrice)) {
+      const error = new Error('Long Options reduce-only exit is not fully confirmed; reconciliation required'); error.ambiguous = true; throw error;
+    }
+    const realized = (Number(fill.averageFillPrice) - Number(position.entry_premium)) * Number(position.qty) * Number(position.contract_size);
+    await database.update('dd_option_positions', 'position_key=eq.' + encodeURIComponent(position.position_key) + '&status=eq.OPEN', {
+      status: 'CLOSED', current_premium: fill.averageFillPrice, short_exit_premium: fill.averageFillPrice,
+      exit_reason: reason, realized_pnl: realized, realized_pnl_verified: true,
+      closed_at: new Date(now()).toISOString(), updated_at: new Date(now()).toISOString(),
+      raw: { ...(position.raw || {}), exit_order_id: order.id ?? null, exit_fill_price: fill.averageFillPrice }
+    });
+    return { closed: true, realizedPnl: realized };
+  }
+
+  async function closeSellHedge(position, reason) {
+    const hedgeProduct = await resolveProduct(position.hedge_symbol);
+    const executionKey = crypto.createHash('sha256').update(String(position.position_key) + ':HEDGE_EXIT:' + String(now())).digest('hex').slice(0, 18);
+    const order = await submitLeg(hedgeProduct, 'SELL', Number(position.qty), null, {
+      strategy: 'OPTIONS_SELL', role: 'HEDGE_EXIT', maxLossUsd: 0,
+      hedgeOrderId: position.hedge_entry_order_id || null, reduceOnly: true, executionKey
+    });
+    const fill = await waitForProtectiveFill(order, Number(position.qty));
+    if (fill?.fullyFilled !== true || Number(fill.filledQty) !== Number(position.qty) || !positive(fill.averageFillPrice)) {
+      const error = new Error('Protective hedge exit is not fully confirmed; hedge exposure remains for reconciliation'); error.ambiguous = true; throw error;
+    }
+    const shortPnl = (Number(position.entry_premium) - Number(position.short_exit_premium)) * Number(position.qty) * Number(position.contract_size);
+    const hedgePnl = (Number(fill.averageFillPrice) - Number(position.hedge_entry_premium)) * Number(position.qty) * Number(position.hedge_contract_size);
+    const realized = shortPnl + hedgePnl;
+    await database.update('dd_option_positions', 'position_key=eq.' + encodeURIComponent(position.position_key) + '&status=eq.HEDGE_CLOSE_PENDING', {
+      status: 'CLOSED', hedge_exit_premium: fill.averageFillPrice,
+      exit_reason: reason || position.exit_reason || 'OPTIONS_SELL_EXIT',
+      realized_pnl: realized, realized_pnl_verified: true,
+      closed_at: new Date(now()).toISOString(), updated_at: new Date(now()).toISOString(),
+      raw: { ...(position.raw || {}), hedge_exit_order_id: order.id ?? null, hedge_exit_fill_price: fill.averageFillPrice }
+    });
+    return { closed: true, realizedPnl: realized };
+  }
+
+  async function closeSellOptionPosition(position, reason) {
+    const shortProduct = await resolveProduct(position.symbol);
+    const executionKey = crypto.createHash('sha256').update(String(position.position_key) + ':SHORT_EXIT:' + String(now())).digest('hex').slice(0, 18);
+    const order = await submitLeg(shortProduct, 'BUY', Number(position.qty), null, {
+      strategy: 'OPTIONS_SELL', role: 'EXIT', maxLossUsd: 0,
+      hedgeOrderId: position.hedge_entry_order_id || null, reduceOnly: true, executionKey
+    });
+    const fill = await waitForProtectiveFill(order, Number(position.qty));
+    if (fill?.fullyFilled !== true || Number(fill.filledQty) !== Number(position.qty) || !positive(fill.averageFillPrice)) {
+      await database.update('dd_option_positions', 'position_key=eq.' + encodeURIComponent(position.position_key) + '&status=eq.OPEN', {
+        status: 'RECONCILIATION_REQUIRED', exit_reason: reason, updated_at: new Date(now()).toISOString(),
+        raw: { ...(position.raw || {}), close_short_order_id: order.id ?? null, close_state: 'SHORT_EXIT_UNCONFIRMED' }
+      }).catch(() => {});
+      const error = new Error('Short option buyback is not fully confirmed; protective BUY is retained and reconciliation is required');
+      error.ambiguous = true; throw error;
+    }
+    const updated = { ...position, short_exit_premium: fill.averageFillPrice, status: 'HEDGE_CLOSE_PENDING', exit_reason: reason };
+    await database.update('dd_option_positions', 'position_key=eq.' + encodeURIComponent(position.position_key) + '&status=eq.OPEN', {
+      status: 'HEDGE_CLOSE_PENDING', short_exit_premium: fill.averageFillPrice,
+      current_premium: fill.averageFillPrice, exit_reason: reason, updated_at: new Date(now()).toISOString(),
+      raw: { ...(position.raw || {}), close_short_order_id: order.id ?? null, close_short_fill_price: fill.averageFillPrice }
+    });
+    return closeSellHedge(updated, reason);
+  }
+
+  async function monitorOptionsExits() {
+    if (!isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED) || !isEnabled(env.OPTIONS_EXIT_MONITOR_ENABLED)) {
+      return { status: 'DISABLED', monitored: 0, exits: 0 };
+    }
+    assertTestnetProfile();
+    const rows = await database.select('dd_option_positions', 'status=in.(OPEN,HEDGE_CLOSE_PENDING)&select=*&order=opened_at.asc&limit=100');
+    if (!Array.isArray(rows)) throw new Error('Options exit monitor position snapshot is malformed');
+    let exits = 0;
+    for (const position of rows) {
+      try {
+        if (upper(position.status) === 'HEDGE_CLOSE_PENDING') {
+          const result = await closeSellHedge(position, position.exit_reason || 'OPTIONS_SELL_EXIT');
+          if (result.closed) exits += 1;
+          continue;
+        }
+        const quoteResponse = await request('GET', '/v2/tickers/' + encodeURIComponent(position.symbol));
+        const ticker = quoteResponse?.result ?? quoteResponse;
+        if (!ticker || clean(ticker.symbol).toUpperCase() !== clean(position.symbol).toUpperCase()) throw new Error('Options exit quote did not match the open contract');
+        const bid = positive(ticker?.quotes?.best_bid ?? ticker?.best_bid ?? ticker?.bid);
+        const ask = positive(ticker?.quotes?.best_ask ?? ticker?.best_ask ?? ticker?.ask);
+        if (!bid || !ask || ask < bid) throw new Error('Options exit bid/ask is unavailable');
+        const isBuy = upper(position.strategy) === 'OPTIONS_BUY';
+        const currentPremium = isBuy ? bid : ask;
+        const dte = (Number(position.expiry_ms) - now()) / 86_400_000;
+        const decision = evaluateOptionsExit({
+          strategy: position.strategy, entryPremium: position.entry_premium,
+          currentPremium, peakPremium: position.peak_premium, dte,
+          openedAt: position.opened_at, now: now()
+        });
+        await database.update('dd_option_positions', 'position_key=eq.' + encodeURIComponent(position.position_key) + '&status=eq.OPEN', {
+          current_premium: currentPremium,
+          peak_premium: Math.max(Number(position.peak_premium) || 0, currentPremium),
+          dte, updated_at: new Date(now()).toISOString()
+        });
+        if (!decision.exit) continue;
+        const result = isBuy
+          ? await closeBuyOptionPosition(position, decision.reason)
+          : await closeSellOptionPosition(position, decision.reason);
+        if (result.closed) exits += 1;
+      } catch (error) {
+        await logExecutor('ERROR', '[OptionsExitMonitor] Position exit check failed; position remains tracked', {
+          positionKey: position.position_key, symbol: position.symbol,
+          strategy: position.strategy, status: position.status,
+          reason: String(error?.message || error).slice(0, 240)
+        }).catch(() => {});
+      }
+    }
+    return { status: 'OK', monitored: rows.length, exits };
+  }
+
+  return Object.freeze({ previewOptionsOrder, placeOptionsOrder, monitorOptionsExits });
 }
