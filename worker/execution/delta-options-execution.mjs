@@ -815,8 +815,8 @@ export function createDeltaOptionsExecution({
     executionKey, preview, candidate, product, hedgeProduct = null,
     order, fill, hedgeOrder = null, hedgeFill = null
   } = {}) {
-    if (typeof database.insert !== 'function') {
-      throw new Error('Options position ledger insert is unavailable after entry fill; reconcile the exchange position');
+    if (typeof database.update !== 'function') {
+      throw new Error('Options position ledger update is unavailable after entry fill; reconcile the exchange position');
     }
     const actualQty = Number(fill?.filledQty);
     const entryPremium = positive(fill?.averageFillPrice);

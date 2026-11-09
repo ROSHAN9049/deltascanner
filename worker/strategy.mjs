@@ -372,7 +372,8 @@ export function analyseOption(ticker, underlying, strategy, cfg = {}) {
   );
   if (!directionOk) blocked.push('Underlying direction / option type mismatch');
   if (!deltaOk) blocked.push('Delta outside target band');
-  if (!dteOk) blocked.push('Expiry outside configured DTE or below 0.5 days');
+  if (!dteOk) blocked.push('Expiry outside configured DTE');
+  if (dte < 0.5) blocked.push('Expiry below 0.5 days; gamma risk');
   if (!liqOk) blocked.push('Option liquidity / spread / OI');
   if (!regimeOk) blocked.push('Market regime does not permit this Options strategy');
   if (!ivRankOk) blocked.push(ivRankDecision.reason);

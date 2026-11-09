@@ -17,6 +17,7 @@ const baseTicker = {
   contract_type: 'call_options',
   mark_price: 100,
   quotes: { best_bid: 99, best_ask: 101 },
+  iv_rank: 25,
   open_interest: 1000,
   volume: 10
 };
