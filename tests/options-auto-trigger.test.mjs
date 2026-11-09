@@ -12,8 +12,10 @@ const CANDIDATE = {
   strategy: 'OPTIONS_BUY',
   score: 95,
   stage: 'CONFIRMED',
+  market_regime: 'TRENDING',
+  iv_rank: 30,
   cached_at: new Date(NOW).toISOString(),
-  details: { analysisReady: true }
+  details: { analysisReady: true, marketRegime: 'TRENDING', ivRank: 30 }
 };
 
 function harness({
@@ -33,6 +35,8 @@ function harness({
   const env = {
     AUTO_EXECUTE_OPTIONS: 'true',
     FULL_AUTO_EXECUTE: 'false',
+    OPTIONS_REGIME_STRATEGY_ENABLED: 'true',
+    OPTIONS_EXIT_MONITOR_ENABLED: 'true',
     DELTA_EXECUTION_MODE: 'testnet',
     ENGINE_SECRET: 'worker-secret',
     OPTIONS_AUTO_TRIGGER_API_URL: 'https://deltascanner-api-v2.hostless.app',
@@ -51,6 +55,7 @@ function harness({
       }];
       if (table === 'dd_option_cache') return cacheRows;
       if (table === 'dd_delta_positions') return openPositions;
+      if (table === 'dd_option_positions') return [];
       if (table === 'dd_orders' && query.includes('state=eq.FILLED')) return recentFilledOrders;
       if (table === 'dd_orders') return activeOrders;
       return [];

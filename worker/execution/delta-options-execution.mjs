@@ -112,7 +112,7 @@ export function createDeltaOptionsExecution({
   async function resolveProduct(symbol) {
     const normalized = clean(symbol).toUpperCase();
     const parsed = parseDeltaOptionSymbol(normalized, undefined, now());
-    if (!parsed || parsed.dte < 0.5 || !['BTC','ETH'].includes(parsed.underlying)) {
+    if (!parsed || !['BTC','ETH'].includes(parsed.underlying)) {
       throw new Error('Options contract is invalid, expired or outside the verified BTC/ETH Testnet universe: ' + normalized);
     }
     const expectedType = parsed.optionType === 'CALL' ? 'call_options' : 'put_options';
@@ -317,6 +317,7 @@ export function createDeltaOptionsExecution({
     ]);
     const settings = Array.isArray(settingsRows) && settingsRows.length === 1 ? settingsRows[0] : null;
     if (!settings) throw new Error('Options risk settings are unavailable; preview blocked');
+    if (product.parsed.dte < 0.5) throw new Error('Options contract has less than 0.5 days to expiry; gamma-risk entry blocked');
     if (useManualTestOverride) {
       assertManualCandidateQualification(candidate, product, settings, strategyKey);
     }
@@ -496,7 +497,7 @@ export function createDeltaOptionsExecution({
     }
     const keys = [preview.symbol, preview.hedgeSymbol].filter(Boolean);
     const recentFilledAfter = encodeURIComponent(new Date(now() - 120_000).toISOString());
-    const [activeOrders, recentFilledOrders, positions, exchangePositionsResponse] = await Promise.all([
+    const [activeOrders, recentFilledOrders, positions, optionPositions, exchangePositionsResponse] = await Promise.all([
       database.select(
         'dd_orders',
         'strategy=in.(OPTIONS_BUY,OPTIONS_SELL)&state=in.(PENDING,UNKNOWN,NEW,OPEN,PARTIALLY_FILLED)&select=symbol,state&limit=500'
@@ -510,10 +511,14 @@ export function createDeltaOptionsExecution({
         'dd_delta_positions',
         'strategy=in.(OPTIONS_BUY,OPTIONS_SELL,OPTIONS)&status=eq.OPEN&select=symbol&limit=500'
       ),
+      database.select(
+        'dd_option_positions',
+        'status=in.(OPEN,HEDGE_CLOSE_PENDING,RECONCILIATION_REQUIRED)&select=symbol,status&limit=500'
+      ),
       request('GET', '/v2/positions/margined', { contract_types: 'call_options,put_options' })
     ]);
     if (!Array.isArray(activeOrders) || !Array.isArray(recentFilledOrders) ||
-        !Array.isArray(positions) || !Array.isArray(exchangePositionsResponse?.result)) {
+        !Array.isArray(positions) || !Array.isArray(optionPositions) || !Array.isArray(exchangePositionsResponse?.result)) {
       throw new Error('Options exchange/database position and reservation snapshot is incomplete; order blocked');
     }
     const exchangeOptionSymbols = [];
@@ -527,7 +532,7 @@ export function createDeltaOptionsExecution({
       }
       if (Math.abs(size) > 0) exchangeOptionSymbols.push(positionSymbol);
     }
-    if ([...activeOrders, ...positions, ...recentFilledOrders].some(row =>
+    if ([...activeOrders, ...positions, ...optionPositions, ...recentFilledOrders].some(row =>
       keys.includes(clean(row.symbol).toUpperCase())
     ) || exchangeOptionSymbols.some(symbol => keys.includes(symbol))) {
       throw new Error('An Options order, reservation or exchange position already exists for this contract');
@@ -538,6 +543,7 @@ export function createDeltaOptionsExecution({
     }
     const occupied = new Set([
       ...positions.map(row => clean(row.symbol).toUpperCase()),
+      ...optionPositions.map(row => clean(row.symbol).toUpperCase()),
       ...exchangeOptionSymbols,
       ...activeOrders.map(row => clean(row.symbol).toUpperCase()),
       ...recentFilledOrders.map(row => clean(row.symbol).toUpperCase())

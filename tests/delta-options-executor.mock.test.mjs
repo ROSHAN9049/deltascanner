@@ -26,6 +26,8 @@ function harness({
   const candidate = {
     symbol: SHORT, strategy, score: 95, stage: 'CONFIRMED',
     cached_at: new Date(NOW).toISOString(),
+    market_regime: strategy === 'OPTIONS_BUY' ? 'TRENDING' : 'SIDEWAYS',
+    iv_rank: strategy === 'OPTIONS_BUY' ? 30 : 60,
     details: {
       analysisReady: true, optionType: 'CALL', strike: 80000,
       delta: strategy === 'OPTIONS_BUY' ? 0.55 : 0.30,
@@ -62,6 +64,7 @@ function harness({
         ...settingsPatch
       }];
       if (table === 'dd_delta_positions') return [];
+      if (table === 'dd_option_positions') return [];
       if (table === 'dd_orders') {
         const idMatch = query.match(/client_order_id=eq.([^&]+)/);
         if (idMatch) {

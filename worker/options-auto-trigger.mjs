@@ -140,7 +140,7 @@ export function createOptionsAutoTrigger({
 
         const scanAt = now();
         const recentFilledAfter = encodeURIComponent(new Date(scanAt - 120_000).toISOString());
-        const [cacheRows, openPositions, activeOrders, recentFilledOrders] = await Promise.all([
+        const [cacheRows, openPositions, optionPositions, activeOrders, recentFilledOrders] = await Promise.all([
           database.select(
             'dd_option_cache',
             'stage=eq.CONFIRMED&select=symbol,strategy,score,stage,cached_at,details,market_regime,iv_rank&order=score.desc&limit=100'
@@ -148,6 +148,10 @@ export function createOptionsAutoTrigger({
           database.select(
             'dd_delta_positions',
             'strategy=in.(OPTIONS_BUY,OPTIONS_SELL,OPTIONS)&status=eq.OPEN&select=symbol&limit=500'
+          ),
+          database.select(
+            'dd_option_positions',
+            'status=in.(OPEN,HEDGE_CLOSE_PENDING,RECONCILIATION_REQUIRED)&select=symbol,status&limit=500'
           ),
           database.select(
             'dd_orders',
@@ -159,13 +163,14 @@ export function createOptionsAutoTrigger({
               recentFilledAfter + '&select=symbol,state&limit=500'
           )
         ]);
-        if (!Array.isArray(cacheRows) || !Array.isArray(openPositions) ||
+        if (!Array.isArray(cacheRows) || !Array.isArray(openPositions) || !Array.isArray(optionPositions) ||
             !Array.isArray(activeOrders) || !Array.isArray(recentFilledOrders)) {
           throw new Error('Options cache or position/reservation snapshot is incomplete');
         }
 
         const occupied = new Set([
           ...openPositions.map(row => upper(row?.symbol)),
+          ...optionPositions.map(row => upper(row?.symbol)),
           ...activeOrders.map(row => upper(row?.symbol)),
           ...recentFilledOrders.map(row => upper(row?.symbol))
         ].filter(Boolean));
