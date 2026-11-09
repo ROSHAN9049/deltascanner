@@ -193,7 +193,7 @@ export function buildAdaptiveVolatilityShadowObservation(signal, candles5m, {
 
   const holdMinutes = Math.max(1, Math.min(1440, Math.floor(Number(maxHoldMinutes) || 240)));
   const feeRate = Math.max(0, numberOrNull(takerFeeRate) || 0);
-  const spreadPct = Math.max(0, numberOrNull(signal?.spreadPct) || 0);
+  const capturedSpreadPct = Math.max(0, numberOrNull(signal?.spreadPct) || 0);
   const initialStopDistance = price > 0 && sl > 0 ? Math.abs(price - sl) : null;
   const status = uniqueBlocks.length ? 'BLOCKED' : 'PENDING_ENTRY';
 
@@ -213,7 +213,7 @@ export function buildAdaptiveVolatilityShadowObservation(signal, candles5m, {
     ema_distance_limit_atr: Number(adaptiveEmaMax.toFixed(4)),
     normalized_score: normalizedScore,
     taker_fee_rate: feeRate,
-    spread_pct: spreadPct,
+    spread_pct: capturedSpreadPct,
     max_hold_minutes: holdMinutes,
     base_blocked_reasons: sourceBlocks,
     shadow_blocked_reasons: uniqueBlocks,
