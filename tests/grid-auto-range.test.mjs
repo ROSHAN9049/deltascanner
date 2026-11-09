@@ -35,13 +35,13 @@ test('Auto-Range rejects malformed and non-positive daily candles', () => {
 test('daily candle selector returns the previous completed UTC day, not the current partial candle', () => {
   const now = Date.parse('2026-11-09T10:00:00.000Z');
   const candles = [
-    { time: 1794182400, low: 100, high: 110 },
-    { time: 1794268800, low: 105, high: 115 },
-    { time: 1794355200, low: 111, high: 112 }
+    { time: 1794009600, low: 100, high: 110 },
+    { time: 1794096000, low: 105, high: 115 },
+    { time: 1794182400, low: 111, high: 112 }
   ];
   const selected = selectLatestCompletedDailyCandle(candles, now);
   assert.equal(utcDayKey(now), '2026-11-09');
-  assert.equal(selected?.time, 1794268800);
+  assert.equal(selected?.time, 1794096000);
   assert.equal(selectLatestCompletedDailyCandle([{ time: 1794355200, low: 1, high: 2 }], now), null);
 });
 
