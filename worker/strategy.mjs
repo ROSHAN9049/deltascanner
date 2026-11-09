@@ -1,4 +1,5 @@
 import { resolveMinimumStopDistancePct, roundStopLossAwayFromEntry } from '../shared/delta-risk-policy.js';
+import { normalizeDeltaOptionTicker } from './execution/delta-options-policy.mjs';
 const n = v => Number.isFinite(+v) ? +v : 0;
 const optionalNumber = value => {
   if (value === null || value === undefined || (typeof value === 'string' && value.trim() === '')) return null;
@@ -308,8 +309,11 @@ export function analyseOption(ticker, underlying, strategy, cfg = {}) {
   const bid = n(ticker?.quotes?.best_bid ?? ticker?.best_bid ?? ticker?.bid);
   const ask = n(ticker?.quotes?.best_ask ?? ticker?.best_ask ?? ticker?.ask);
   const spreadPct = bid > 0 && ask > 0 ? (ask - bid) / ((ask + bid) / 2) * 100 : 99;
-  const oi = n(ticker?.open_interest ?? ticker?.openInterest ?? ticker?.oi);
-  const volume = n(ticker?.volume);
+  const marketMetrics = normalizeDeltaOptionTicker(ticker);
+  const oi = n(marketMetrics.oi);
+  const volume = n(marketMetrics.volume);
+  const oiValueUsd = optionalNumber(marketMetrics.oi_value_usd);
+  const volumeUsd = optionalNumber(marketMetrics.turnover_usd);
   const greeks = optionGreeks(ticker);
   const delta = Math.abs(greeks.delta ?? 0);
   const minDte = Math.max(1, n(cfg.minDays) || 2);
@@ -370,6 +374,7 @@ export function analyseOption(ticker, underlying, strategy, cfg = {}) {
   const tp = isBuy && mark > 0 ? mark * (1 + tpPct / 100) : 0;
   return {
     symbol, optionType, strike, expiryMs, dte, mark, bid, ask, spreadPct, oi, volume,
+    oiValueUsd, volumeUsd,
     delta: greeks.delta, gamma: greeks.gamma, theta: greeks.theta, vega: greeks.vega,
     targetType, strategy, side: isBuy ? 'BUY' : 'SELL', score, stage, blocked,
     ready: stage === 'CONFIRMED' && blocked.length === 0,
