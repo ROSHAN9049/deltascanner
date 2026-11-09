@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { safeNum } from './formatters.js';
+import { apiUrl } from './api-url.js';
+import { calculateAutoGridRange, selectLatestCompletedDailyCandle } from '../shared/grid-auto-range.js';
 import { GRID_BRIDGE_MAX_POSITIONS, GRID_RISK_PER_TRADE_CHOICES, getGridDisplayStatus, normalizeGridRiskPerTradePct } from '../shared/grid-settings.js';
 
 const DEFAULT_GRID_SYMBOLS = Object.freeze(['PAXGUSD', 'NVDAXUSD']);
@@ -66,6 +68,7 @@ export default function GridStrategy({
   testnetDiagnostics = null,
   apiGridExecutionAllowed = false,
   apiGridTrailingEnvironmentEnabled = false,
+  apiGridAutoRangeEnvironmentEnabled = false,
   apiGridSymbols = []
 }) {
   const gridSymbols = useMemo(() => {
@@ -74,6 +77,9 @@ export default function GridStrategy({
     return resolveSymbols(settings, testnetDiagnostics);
   }, [apiGridSymbols.join(','), testnetDiagnostics?.symbols?.join(','), settings.grid_symbol_configs]);
   const [draft, setDraft] = useState(() => parseDraft(settings, gridSymbols));
+  const [autoRangeBusy, setAutoRangeBusy] = useState(false);
+  const [autoRangeMessage, setAutoRangeMessage] = useState('');
+  const [autoRangeError, setAutoRangeError] = useState('');
   const gridState = settings.grid_state && typeof settings.grid_state === 'object' ? settings.grid_state : {};
   const positions = Array.isArray(gridState.positions) ? gridState.positions : [];
   const pendingEntries = Array.isArray(gridState.pendingEntries) ? gridState.pendingEntries : [];
@@ -169,6 +175,56 @@ export default function GridStrategy({
   };
   const globalSafetyAllowsStart = settings.emergency_stop !== true && settings.auto_trade === true && settings.enabled === true && settings.continuous_mode !== false;
   const readyToStart = allRangesValid && (!deltaTestnetGrid || gridExecutionAllowed) && globalSafetyAllowsStart;
+  const autoSetRangeFromDailyCandles = async () => {
+    if (autoRangeBusy || lockedConfig) return;
+    setAutoRangeBusy(true);
+    setAutoRangeMessage('');
+    setAutoRangeError('');
+    try {
+      const end = Math.floor(Date.now() / 1000);
+      const start = end - 4 * 24 * 60 * 60;
+      const calculated = await Promise.all(gridSymbols.map(async symbol => {
+        const query = new URLSearchParams({
+          type: 'candles',
+          resolution: '1d',
+          symbol,
+          start: String(start),
+          end: String(end)
+        });
+        const response = await fetch(apiUrl('/api/market') + '?' + query.toString(), { cache: 'no-store' });
+        const data = await response.json();
+        if (!response.ok || data?.success !== true || !Array.isArray(data.result)) {
+          throw new Error(data?.error || ('Daily candle data unavailable for ' + symbol));
+        }
+        const candle = selectLatestCompletedDailyCandle(data.result, Date.now());
+        if (!candle) throw new Error('No completed previous-UTC-day 1D candle is available for ' + symbol);
+        const range = calculateAutoGridRange(candle, { bufferPct: 3, minimumWidthPct: 2 });
+        return {
+          symbol,
+          lowerPrice: String(range.lowerPrice),
+          upperPrice: String(range.upperPrice)
+        };
+      }));
+      setDraft(current => ({
+        ...current,
+        gridSymbolConfigs: {
+          ...current.gridSymbolConfigs,
+          ...Object.fromEntries(calculated.map(row => [row.symbol, {
+            ...(current.gridSymbolConfigs?.[row.symbol] || {}),
+            lowerPrice: row.lowerPrice,
+            upperPrice: row.upperPrice
+          }]))
+        }
+      }));
+      setAutoRangeMessage('Daily ranges loaded for ' + calculated.map(row => row.symbol).join(' and ') +
+        ' from the previous completed UTC 1D candle. Review the prices, then click Save Configuration to persist them.');
+    } catch (error) {
+      setAutoRangeError(String(error?.message || 'Could not calculate daily Grid ranges.'));
+    } finally {
+      setAutoRangeBusy(false);
+    }
+  };
+
   const save = () => {
     if (!allRangesValid) return;
     mutate({ ...payload, gridEnabled: settings.grid_enabled === true });
@@ -201,6 +257,14 @@ export default function GridStrategy({
     </section>
 
     <Panel title="Grid Configuration · Two Independent Symbols">
+      <div className="gridButtons">
+        <button className="action" disabled={busy || autoRangeBusy || lockedConfig} onClick={autoSetRangeFromDailyCandles}>
+          {autoRangeBusy ? 'Fetching Daily High / Low…' : 'Auto-Set Range (1D High/Low)'}
+        </button>
+      </div>
+      <div className="lockedText">Uses the previous completed UTC daily candle with a 3% lower/upper buffer and a 2% minimum range. This only fills the draft; click Save Configuration to persist the new ranges.</div>
+      {autoRangeMessage ? <div className="statusLine">{autoRangeMessage}</div> : null}
+      {autoRangeError ? <div className="errorText">{autoRangeError}</div> : null}
       <div className="grid2">
         {views.map(view => <div className="card" key={view.symbol}>
           <strong>{view.symbol}</strong>
@@ -224,6 +288,8 @@ export default function GridStrategy({
       <label className="gridCheck"><input type="checkbox" checked={draft.gridReduceAfterLosses} onChange={event => updateGlobal('gridReduceAfterLosses', event.target.checked)}/> Reduce position sizing by 50% after 2 consecutive losses</label>
       <label className="gridCheck"><input type="checkbox" checked={trailingSettingEnabled} disabled={busy || (!trailingCapabilityEnabled && !trailingSettingEnabled)} onChange={event => mutate({ gridTrailingEnabled: event.target.checked })}/> Trailing Grid (Auto-Shift on Breakout)</label>
       {!trailingCapabilityEnabled ? <div className="lockedText">Trailing Grid is unavailable until GRID_TRAILING_ENABLED=true is present in both the API and Worker environments and the worker heartbeat confirms it. The 2% daily-loss and 5% drawdown stops remain absolute.</div> : null}
+      <div className="lockedText">Daily Auto-Range environment: {apiGridAutoRangeEnvironmentEnabled ? 'ENABLED' : 'DISABLED'} · Worker auto-refresh: {apiGridAutoRangeEnvironmentEnabled ? (trailingCapabilityEnabled && trailingSettingEnabled ? 'awaiting next UTC day; refresh waits for both symbols to be flat' : 'initial auto-set only; daily rollover requires Trailing Grid and its environment gate') : 'manual preview only; set GRID_AUTO_RANGE_ENABLED=true in the Worker to enable automatic updates'}{gridState.autoRangeLastAppliedUtcDay ? ' · last applied UTC day: ' + gridState.autoRangeLastAppliedUtcDay : ''}</div>
+
       <div className="gridButtons">
         {gridSafetyBlocked ? <div className="errorText">Grid entries are blocked by worker safety ({gridSafetyReason}). Review the latest heartbeat and exchange position reconciliation before restarting. Existing positions remain protected by exchange-side SL/TP.</div> : null}
         <button className="action" disabled={busy || !allRangesValid || lockedConfig} onClick={save}>Save Configuration</button>

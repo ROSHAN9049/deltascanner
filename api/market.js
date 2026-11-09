@@ -1,4 +1,4 @@
-import { publicGet } from '../server/public.js';
+import { publicGet, publicMarketDataGet } from '../server/public.js';
 import { getDeltaTestnetProducts } from '../server/delta-testnet-products.js';
 
 const PAGE_SIZE = 100;
@@ -56,8 +56,19 @@ export default async function handler(req, res) {
       });
     }
     if (type === 'candles') {
-      const out = await publicGet('/v2/history/candles', req.query || {});
-      return res.status(200).json({ success: true, environment: 'SIGNAL_ONLY', result: out.result || [] });
+      const params = { ...(req.query || {}) };
+      delete params.type;
+      const symbol = String(params.symbol || '').trim().toUpperCase();
+      const resolution = String(params.resolution || '').trim().toLowerCase();
+      const start = Number(params.start);
+      const end = Number(params.end);
+      if (!/^[A-Z0-9]+USD$/.test(symbol) ||
+          !['1m', '5m', '15m', '1h', '1d'].includes(resolution) ||
+          !Number.isFinite(start) || !Number.isFinite(end) || start <= 0 || end <= start) {
+        return res.status(400).json({ success: false, error: 'Candle request requires a valid symbol, resolution, start and end.' });
+      }
+      const out = await publicMarketDataGet('/v2/history/candles', params);
+      return res.status(200).json({ success: true, environment: 'PUBLIC_MARKET_DATA', result: out.result || [] });
     }
     const out = await publicGet('/v2/tickers', { contract_types: 'perpetual_futures' });
     const rows = Array.isArray(out.result) ? out.result.filter(x => x.contract_type === 'perpetual_futures') : [];

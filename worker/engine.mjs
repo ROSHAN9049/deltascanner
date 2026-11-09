@@ -28,6 +28,7 @@ import { buildApiDerivedTrackingPlan, strategyForDerivedTrade } from './tradetro
 import { deltaExecutor } from './execution/delta-executor.mjs';
 import { projectCanonicalDeltaBrackets } from './execution/delta-position-projection.mjs';
 import { manageDeltaTestnetMultiGrid } from './execution/delta-multi-grid-engine.mjs';
+import { calculateAutoGridRange, hasGridAutoRangeExposure, isAutoGridRangeRefreshDue, selectLatestCompletedDailyCandle, utcDayKey } from '../shared/grid-auto-range.js';
 import { assertDirectDeltaExecutionMode, getExecutionRouteBlockReason, DELTA_TESTNET_FUTURES_ALLOWLIST, isAllowedDeltaTestnetFutureSymbol, isEligibleDeltaTestnetPerpetualProduct, isMarketTickFresh, canStartWorkerInExecutionProfile } from './execution/execution-route-policy.mjs';
 import { canExecuteDeltaTestnetOrders, checkDeltaTestnetPrivateApi, isPrivateApiConnectivityError } from './execution/testnet-private-api-health.mjs';
 import {
@@ -739,6 +740,160 @@ export class DeltaEngine {
     }
   }
 
+  async refreshAutoGridRanges(settings = {}, symbols = []) {
+    if (CONFIG.gridAutoRangeEnabled !== true) return { settings, blocked: false, applied: false };
+    const timestamp = Date.now();
+    const nowIso = new Date(timestamp).toISOString();
+    const dayKey = utcDayKey(timestamp);
+    let gridState = settings.grid_state;
+    if (typeof gridState === 'string') {
+      try { gridState = JSON.parse(gridState); } catch { gridState = null; }
+    }
+    if (!gridState || typeof gridState !== 'object' || Array.isArray(gridState)) gridState = {};
+    const trailingRefreshEnabled = CONFIG.gridTrailingEnabled === true && settings.grid_trailing_enabled === true;
+    const due = isAutoGridRangeRefreshDue({
+      enabled: true,
+      trailingEnvironmentEnabled: CONFIG.gridTrailingEnabled === true,
+      trailingSettingEnabled: settings.grid_trailing_enabled === true,
+      lastAppliedUtcDay: gridState.autoRangeLastAppliedUtcDay || null,
+      timestamp
+    });
+    if (!due) return { settings, blocked: false, applied: false };
+
+    const normalizedSymbols = [...new Set((Array.isArray(symbols) ? symbols : [])
+      .map(value => String(value || '').trim().toUpperCase()).filter(Boolean))];
+    const defer = async (reason, detail = {}) => {
+      await this.log('WARN', 'Grid daily Auto-Range deferred; new entries remain blocked until a safe refresh completes', {
+        reason, utcDay: dayKey, symbols: normalizedSymbols, trailingRefreshEnabled, ...detail
+      }).catch(() => {});
+      return { settings, blocked: true, applied: false, reason };
+    };
+
+    try {
+      if (normalizedSymbols.length !== 2) {
+        return defer('GRID_AUTO_RANGE_SYMBOL_CONFIGURATION_INVALID');
+      }
+      const symbolFilter = normalizedSymbols.join(',');
+      const [exchangePositions, exchangeOrders, databasePositions, deltaDatabasePositions, databaseOrders] = await Promise.all([
+        deltaExecutor.getOpenPositions(),
+        deltaExecutor.getOpenOrders(),
+        db.select('dd_positions', 'symbol=in.(' + symbolFilter + ')&select=symbol,qty&order=updated_at.desc&limit=500'),
+        db.select('dd_delta_positions', 'symbol=in.(' + symbolFilter + ')&status=eq.OPEN&select=symbol,qty&limit=500'),
+        db.select('dd_orders', 'symbol=in.(' + symbolFilter + ')&select=symbol,state&order=updated_at.desc&limit=500')
+      ]);
+      const terminalOrderStates = new Set([
+        'closed', 'cancelled', 'canceled', 'filled', 'rejected', 'expired', 'failed', 'complete', 'completed'
+      ]);
+      const positiveDatabasePositions = [
+        ...(Array.isArray(databasePositions) ? databasePositions : []),
+        ...(Array.isArray(deltaDatabasePositions) ? deltaDatabasePositions : [])
+      ].filter(row => Number(row?.qty) > 0);
+      const activeDatabaseOrders = (Array.isArray(databaseOrders) ? databaseOrders : [])
+        .filter(row => !terminalOrderStates.has(String(row?.state || '').trim().toLowerCase()));
+      if (hasGridAutoRangeExposure({
+        symbols: normalizedSymbols,
+        exchangePositions,
+        exchangeOrders,
+        databasePositions: positiveDatabasePositions,
+        databaseOrders: activeDatabaseOrders,
+        gridState
+      })) {
+        return defer('GRID_AUTO_RANGE_WAITING_FOR_FLAT', {
+          exchangePositionCount: Array.isArray(exchangePositions) ? exchangePositions.length : null,
+          exchangeOpenOrderCount: Array.isArray(exchangeOrders) ? exchangeOrders.length : null,
+          databasePositionCount: positiveDatabasePositions.length,
+          databaseActiveOrderCount: activeDatabaseOrders.length
+        });
+      }
+
+      const dailyRanges = await Promise.all(normalizedSymbols.map(async symbol => {
+        const candles = await this.adapter.candles(symbol, '1d', 4);
+        const candle = selectLatestCompletedDailyCandle(candles, timestamp);
+        if (!candle) throw new Error('No completed previous-UTC-day 1D candle is available for ' + symbol);
+        const range = calculateAutoGridRange(candle, { bufferPct: 3, minimumWidthPct: 2 });
+        return { symbol, candle, range };
+      }));
+
+      const existingConfigs = settings.grid_symbol_configs && typeof settings.grid_symbol_configs === 'object'
+        ? settings.grid_symbol_configs : {};
+      const nextConfigs = { ...existingConfigs };
+      const appliedRanges = {};
+      for (const row of dailyRanges) {
+        const previous = existingConfigs[row.symbol] && typeof existingConfigs[row.symbol] === 'object'
+          ? existingConfigs[row.symbol] : {};
+        const levelsCount = Number(previous.levelsCount ?? previous.grid_levels_count ?? 10);
+        nextConfigs[row.symbol] = {
+          ...previous,
+          lowerPrice: row.range.lowerPrice,
+          upperPrice: row.range.upperPrice,
+          levelsCount: Number.isInteger(levelsCount) && levelsCount >= 8 && levelsCount <= 12 ? levelsCount : 10
+        };
+        appliedRanges[row.symbol] = {
+          dailyLow: row.range.dailyLow,
+          dailyHigh: row.range.dailyHigh,
+          lowerPrice: row.range.lowerPrice,
+          upperPrice: row.range.upperPrice,
+          candleTime: row.candle.time ?? row.candle.timestamp ?? null,
+          widthPct: row.range.widthPct
+        };
+      }
+
+      const nextGridState = {
+        ...gridState,
+        autoRangeLastAppliedUtcDay: dayKey,
+        autoRangeLastAppliedAt: nowIso,
+        autoRangeLastCandleBySymbol: Object.fromEntries(
+          dailyRanges.map(row => [row.symbol, row.candle.time ?? row.candle.timestamp ?? null])
+        )
+      };
+      const firstConfig = nextConfigs[normalizedSymbols[0]];
+      await db.update('dd_settings', 'id=eq.1', {
+        grid_symbol_configs: nextConfigs,
+        grid_symbol: normalizedSymbols[0],
+        grid_lower_price: firstConfig.lowerPrice,
+        grid_upper_price: firstConfig.upperPrice,
+        grid_levels_count: firstConfig.levelsCount,
+        grid_state: nextGridState,
+        updated_at: nowIso
+      });
+      const verifiedRows = await db.select('dd_settings', 'id=eq.1&select=grid_symbol_configs,grid_state');
+      const persisted = Array.isArray(verifiedRows) ? verifiedRows[0] : null;
+      const verifiedConfigs = persisted?.grid_symbol_configs;
+      const verifiedDay = persisted?.grid_state?.autoRangeLastAppliedUtcDay;
+      const verified = !!persisted && verifiedDay === dayKey &&
+        normalizedSymbols.every(symbol =>
+          Number(verifiedConfigs?.[symbol]?.lowerPrice) === nextConfigs[symbol].lowerPrice &&
+          Number(verifiedConfigs?.[symbol]?.upperPrice) === nextConfigs[symbol].upperPrice
+        );
+      if (!verified) return defer('GRID_AUTO_RANGE_PERSISTENCE_UNVERIFIED', { appliedRanges });
+
+      await this.log('INFO', 'Grid daily Auto-Range applied from completed UTC 1D candles', {
+        utcDay: dayKey,
+        symbols: normalizedSymbols,
+        ranges: appliedRanges,
+        trailingRefreshEnabled
+      }).catch(() => {});
+      return {
+        settings: {
+          ...settings,
+          grid_symbol_configs: nextConfigs,
+          grid_state: nextGridState,
+          grid_lower_price: firstConfig.lowerPrice,
+          grid_upper_price: firstConfig.upperPrice,
+          grid_levels_count: firstConfig.levelsCount
+        },
+        blocked: false,
+        applied: true,
+        appliedRanges,
+        utcDay: dayKey
+      };
+    } catch (error) {
+      return defer('GRID_AUTO_RANGE_REFRESH_FAILED', {
+        error: String(error?.message || error).slice(0, 220)
+      });
+    }
+  }
+
   async runTestnetGridExecution(settings = {}, account = {}) {
     const symbols = Array.isArray(CONFIG.gridSymbols) ? CONFIG.gridSymbols : [];
     if (CONFIG.gridExecutionAllowed !== true || CONFIG.directDeltaExecutionEnabled !== true ||
@@ -756,6 +911,8 @@ export class DeltaEngine {
       return this.lastGridTestnetDiagnostics;
     }
 
+    const autoRangeResult = await this.refreshAutoGridRanges(settings, symbols);
+    const executionSettings = autoRangeResult.settings || settings;
     const tickers = {};
     const products = {};
     const candlesBySymbol = {};
@@ -779,7 +936,8 @@ export class DeltaEngine {
         }
       }
       candlesBySymbol[symbol] = this.getCandles(symbol, '1m');
-      freshnessBySymbol[symbol] = Date.now() - (this.gridCandleRefreshBySymbol.get(symbol) || 0) < 60_000 &&
+      freshnessBySymbol[symbol] = autoRangeResult.blocked !== true &&
+        Date.now() - (this.gridCandleRefreshBySymbol.get(symbol) || 0) < 60_000 &&
         Array.isArray(candlesBySymbol[symbol]) && candlesBySymbol[symbol].length >= 6 &&
         n(tickers[symbol]?.mark_price || tickers[symbol]?.close || tickers[symbol]?.price) > 0;
       try {
@@ -798,7 +956,7 @@ export class DeltaEngine {
     }
 
     const result = await manageDeltaTestnetMultiGrid({
-      settings: { ...settings, gridTrailingEnvironmentEnabled: CONFIG.gridTrailingEnabled === true },
+      settings: { ...executionSettings, gridTrailingEnvironmentEnabled: CONFIG.gridTrailingEnabled === true, gridAutoRangeEnvironmentEnabled: CONFIG.gridAutoRangeEnabled === true },
       account,
       symbols,
       tickers,
@@ -822,8 +980,12 @@ export class DeltaEngine {
       executionMode: 'testnet',
       gridExecutionAllowed: true,
       symbols,
-      enabled: settings.grid_enabled === true,
+      enabled: executionSettings.grid_enabled === true,
       gridTrailingEnvironmentEnabled: CONFIG.gridTrailingEnabled === true,
+      gridAutoRangeEnvironmentEnabled: CONFIG.gridAutoRangeEnabled === true,
+      gridAutoRangeBlocked: autoRangeResult.blocked === true,
+      gridAutoRangeApplied: autoRangeResult.applied === true,
+      gridAutoRangeLastAppliedUtcDay: executionSettings.grid_state?.autoRangeLastAppliedUtcDay || null,
       gridTrailingEnabled: CONFIG.gridTrailingEnabled === true && settings.grid_trailing_enabled === true,
       executionLocked: result.safety?.blocked === true,
       status: result.state?.status || 'UNKNOWN',

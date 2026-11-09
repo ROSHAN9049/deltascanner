@@ -238,7 +238,8 @@ export class DeltaAdapter {
       '1m': 60,
       '5m': 300,
       '15m': 900,
-      '1h': 3600
+      '1h': 3600,
+      '1d': 86400
     })[resolution] || 300;
     const end = Math.floor((Date.now() + this.offsetMs) / 1000);
     const start = end - seconds * ((limit || 120) + 3);

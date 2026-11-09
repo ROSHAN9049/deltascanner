@@ -34,7 +34,8 @@ test('candles() preserves 1m, 5m, 15m behavior', async (t) => {
   const secondsByResolution = {
     '1m': 60,
     '5m': 300,
-    '15m': 900
+    '15m': 900,
+    '1d': 86400
   };
   const limit = 250;
 
