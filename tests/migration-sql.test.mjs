@@ -184,3 +184,24 @@ test('exchange-authoritative P&L migration adds private wallet history and verif
   assert.match(migrationRunner, /'dd_wallet_transactions'/);
   assert.match(migrationRunner, /'dd_wallet_transaction_sync_state'/);
 });
+
+
+test('regime-based Options migration adds fail-closed regime and IV Rank cache fields plus private exit ledger', () => {
+  const migration = readFileSync(
+    fileURLToPath(new URL('../db/migrations/20261109000300_regime_based_options_strategy.sql', import.meta.url)),
+    'utf8'
+  );
+  assert.match(migration, /^BEGIN;/);
+  assert.match(migration, /ADD COLUMN IF NOT EXISTS market_regime TEXT NOT NULL DEFAULT 'UNKNOWN'/i);
+  assert.match(migration, /ADD COLUMN IF NOT EXISTS iv_rank NUMERIC NULL/i);
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS public\.dd_option_positions/i);
+  assert.match(migration, /REVOKE ALL ON TABLE public\.dd_option_positions FROM anon, authenticated/i);
+  assert.match(migration, /GRANT ALL ON TABLE public\.dd_option_positions TO service_role/i);
+  assert.match(migration, /CHECK \(market_regime IN \('TRENDING', 'SIDEWAYS', 'UNKNOWN'\)\)/i);
+  assert.match(migration, /NOTIFY pgrst/i);
+  assert.match(migration, /COMMIT;/);
+  assert.ok(
+    migrationRunner.indexOf('20261109000300_regime_based_options_strategy.sql') >
+    migrationRunner.indexOf('20261109000100_adaptive_volatility_shadow_and_exit_reason.sql')
+  );
+});

@@ -1,5 +1,6 @@
 import { resolveMinimumStopDistancePct, roundStopLossAwayFromEntry } from '../shared/delta-risk-policy.js';
 import { normalizeDeltaOptionTicker } from './execution/delta-options-policy.mjs';
+import { normalizeIvRank, evaluateIvRank } from './options-regime-strategy.mjs';
 const n = v => Number.isFinite(+v) ? +v : 0;
 const optionalNumber = value => {
   if (value === null || value === undefined || (typeof value === 'string' && value.trim() === '')) return null;
@@ -48,7 +49,9 @@ const OPTIONS_BUY_DETAIL_FIELDS = Object.freeze([
   'underlyingScore',
   'underlyingRawScore',
   'underlyingStage',
-  'executionLocked'
+  'executionLocked',
+  'marketRegime',
+  'ivRank'
 ]);
 
 const OPTIONS_SELL_DETAIL_FIELDS = Object.freeze([
@@ -72,7 +75,9 @@ const OPTIONS_SELL_DETAIL_FIELDS = Object.freeze([
   'hedgeStrike',
   'hedgeDelta',
   'credit',
-  'maxRiskPerSpread'
+  'maxRiskPerSpread',
+  'marketRegime',
+  'ivRank'
 ]);
 
 function trimAllowedDetails(details, allowlist, maxFields) {
@@ -316,7 +321,7 @@ export function analyseOption(ticker, underlying, strategy, cfg = {}) {
   const volumeUsd = optionalNumber(marketMetrics.turnover_usd);
   const greeks = optionGreeks(ticker);
   const delta = Math.abs(greeks.delta ?? 0);
-  const minDte = Math.max(1, n(cfg.minDays) || 2);
+  const minDte = Math.max(0.5, n(cfg.minDays) || 2);
   const maxDte = Math.max(minDte, n(cfg.maxDays) || 14);
   const minOi = Math.max(0, n(cfg.minOi) || 50);
   const minVol = Math.max(0, n(cfg.minVolume) || 1);
@@ -342,8 +347,14 @@ export function analyseOption(ticker, underlying, strategy, cfg = {}) {
   const underlyingOk = underlyingStageConfirmed && underlyingScoreOk;
   const directionOk = !!underlying?.side && optionType === targetType;
   const deltaOk = greeks.delta !== null && delta >= deltaMin && delta <= deltaMax;
-  const dteOk = dte >= minDte && dte <= maxDte;
+  const dteOk = dte >= 0.5 && dte >= minDte && dte <= maxDte;
   const liqOk = mark > 0 && bid > 0 && ask > 0 && spreadPct <= maxSpread && oi >= minOi && volume >= minVol;
+  const marketRegime = String(cfg.marketRegime || 'UNKNOWN').trim().toUpperCase();
+  const regimeBased = cfg.regimeBased === true;
+  const regimeOk = !regimeBased || marketRegime === (isBuy ? 'TRENDING' : 'SIDEWAYS');
+  const ivRank = normalizeIvRank(ticker);
+  const ivRankDecision = evaluateIvRank(strategy, ivRank);
+  const ivRankOk = ivRankDecision.allowed;
   const antiChaseOk = Math.abs(n(underlying?.change)) <= (isBuy ? 12 : 8);
   const noExpiryRisk = dte >= minDte;
   const score = Math.min(100, Math.round(
@@ -361,8 +372,10 @@ export function analyseOption(ticker, underlying, strategy, cfg = {}) {
   );
   if (!directionOk) blocked.push('Underlying direction / option type mismatch');
   if (!deltaOk) blocked.push('Delta outside target band');
-  if (!dteOk) blocked.push('Expiry outside configured DTE');
+  if (!dteOk) blocked.push('Expiry outside configured DTE or below 0.5 days');
   if (!liqOk) blocked.push('Option liquidity / spread / OI');
+  if (!regimeOk) blocked.push('Market regime does not permit this Options strategy');
+  if (!ivRankOk) blocked.push(ivRankDecision.reason);
   if (!antiChaseOk) blocked.push(isBuy ? '24h anti-chase' : 'Short-option breakout risk');
   if (!noExpiryRisk) blocked.push('Expiry risk');
   const stage = score >= 80 && blocked.length === 0 ? 'CONFIRMED' : (score >= 55 ? 'SETUP' : 'WATCH');
@@ -374,7 +387,7 @@ export function analyseOption(ticker, underlying, strategy, cfg = {}) {
   const tp = isBuy && mark > 0 ? mark * (1 + tpPct / 100) : 0;
   return {
     symbol, optionType, strike, expiryMs, dte, mark, bid, ask, spreadPct, oi, volume,
-    oiValueUsd, volumeUsd,
+    oiValueUsd, volumeUsd, marketRegime, ivRank,
     delta: greeks.delta, gamma: greeks.gamma, theta: greeks.theta, vega: greeks.vega,
     targetType, strategy, side: isBuy ? 'BUY' : 'SELL', score, stage, blocked,
     ready: stage === 'CONFIRMED' && blocked.length === 0,

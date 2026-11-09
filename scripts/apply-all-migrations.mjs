@@ -24,7 +24,8 @@ const MIGRATIONS = [
   'db/migrations/20261105000100_enable_testnet_multi_symbol_grid.sql',
   'db/migrations/20261106000100_exchange_authoritative_pnl_ledger.sql',
   'db/migrations/20261107000100_add_trailing_grid_settings.sql',
-  'db/migrations/20261109000100_adaptive_volatility_shadow_and_exit_reason.sql'
+  'db/migrations/20261109000100_adaptive_volatility_shadow_and_exit_reason.sql',
+  'db/migrations/20261109000300_regime_based_options_strategy.sql'
 ];
 
 // These are the four "already exists" SQLSTATEs explicitly approved for skipping.
@@ -45,6 +46,7 @@ const EXPECTED_TABLES = [
   'dd_signal_cache',
   'dd_market_cache',
   'dd_option_cache',
+  'dd_option_positions',
   'dd_engine_logs',
   'dd_engine_lease',
   'dd_tradetron_events',

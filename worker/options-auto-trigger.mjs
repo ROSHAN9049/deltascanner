@@ -106,6 +106,12 @@ export function createOptionsAutoTrigger({
           throw new Error('Options auto-trigger settings are missing or ambiguous');
         }
         const settings = settingsRows[0];
+        if (!isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED) || !isEnabled(env.OPTIONS_EXIT_MONITOR_ENABLED)) {
+          await writeHeartbeat('BLOCKED_REGIME_OR_EXIT_MONITOR_DISABLED', {
+            reason: 'Regime strategy and 60-second Options exit monitor must both be enabled'
+          });
+          return { status: 'BLOCKED_REGIME_OR_EXIT_MONITOR_DISABLED', previewRequested: false };
+        }
         if (settings.enabled !== true) {
           await writeHeartbeat('BLOCKED_ENGINE_DISABLED');
           return { status: 'BLOCKED_ENGINE_DISABLED', previewRequested: false };
@@ -137,7 +143,7 @@ export function createOptionsAutoTrigger({
         const [cacheRows, openPositions, activeOrders, recentFilledOrders] = await Promise.all([
           database.select(
             'dd_option_cache',
-            'stage=eq.CONFIRMED&select=symbol,strategy,score,stage,cached_at,details&order=score.desc&limit=100'
+            'stage=eq.CONFIRMED&select=symbol,strategy,score,stage,cached_at,details,market_regime,iv_rank&order=score.desc&limit=100'
           ),
           database.select(
             'dd_delta_positions',
@@ -176,8 +182,16 @@ export function createOptionsAutoTrigger({
           const strategy = upper(row?.strategy);
           const cachedAt = Date.parse(row?.cached_at || '');
           const details = parseDetails(row?.details);
+          const marketRegime = upper(row?.market_regime || details.marketRegime);
+          const ivRank = finite(row?.iv_rank ?? details.ivRank);
+          const regimeRouteOk = strategy === 'OPTIONS_BUY'
+            ? marketRegime === 'TRENDING'
+            : marketRegime === 'SIDEWAYS';
+          const ivRankOk = ivRank !== null && ivRank >= 0 && ivRank <= 100 &&
+            (strategy === 'OPTIONS_BUY' ? ivRank < 40 : ivRank > 50);
           return symbol &&
             OPTION_STRATEGIES.has(strategy) &&
+            regimeRouteOk && ivRankOk &&
             upper(row?.stage) === 'CONFIRMED' &&
             finite(row?.score) >= 80 &&
             details.analysisReady === true &&
