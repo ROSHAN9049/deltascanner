@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DeltaAdapter } from '../worker/delta-adapter.mjs';
+import { DeltaAdapter, resolveDeltaRequestBase } from '../worker/delta-adapter.mjs';
 
 function captureRequest(adapter) {
   let captured = null;
-  adapter.request = async (method, path, params, body, auth) => {
-    captured = { method, path, params, body, auth };
+  adapter.request = async (method, path, params, body, auth, options) => {
+    captured = { method, path, params, body, auth, options };
     return [];
   };
   return () => captured;
@@ -69,4 +69,30 @@ test('optionProducts() requests live call and put option contracts from the conf
   assert.equal(request.params.states, 'live');
   assert.equal(request.params.page_size, 100);
   assert.equal(request.auth, false);
+});
+
+
+test('optionTickers() always uses production public India market data', async () => {
+  const adapter = new DeltaAdapter();
+  const getRequest = captureRequest(adapter);
+  await adapter.optionTickers('BTC');
+  const request = getRequest();
+  assert.ok(request, 'optionTickers() should call request()');
+  assert.equal(request.method, 'GET');
+  assert.equal(request.path, '/v2/tickers');
+  assert.equal(request.params.contract_types, 'call_options,put_options');
+  assert.equal(request.params.underlying_asset_symbols, 'BTC');
+  assert.equal(request.auth, false);
+  assert.equal(request.options.marketData, true);
+  assert.notEqual(request.options.productCatalog, true);
+});
+
+test('market-data routing remains separate from the Testnet product catalogue route', () => {
+  const routes = {
+    base: 'https://cdn-ind.testnet.deltaex.org',
+    marketDataBase: 'https://api.india.delta.exchange',
+    productCatalogBase: 'https://cdn-ind.testnet.deltaex.org'
+  };
+  assert.equal(resolveDeltaRequestBase({ marketData: true }, routes), routes.marketDataBase);
+  assert.equal(resolveDeltaRequestBase({ productCatalog: true }, routes), routes.productCatalogBase);
 });
