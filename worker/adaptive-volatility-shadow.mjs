@@ -31,8 +31,10 @@ export function getAdaptiveVolatilityImpulse(candles5m) {
   const moveBase = numberOrNull(previous?.close);
   const moveClose = numberOrNull(latest?.close);
   if (!(moveBase > 0) || !(moveClose > 0) || !(previousVolume > 0)) return null;
-  const movePct = ((moveClose / moveBase) - 1) * 100;
-  const relativeVolume = currentVolume / previousVolume;
+  // Round only for deterministic threshold comparisons: binary floating
+  // point must not turn an exact 2.5% / 3.0x boundary into a qualifying event.
+  const movePct = Number((((moveClose / moveBase) - 1) * 100).toFixed(8));
+  const relativeVolume = Number((currentVolume / previousVolume).toFixed(8));
   if (!(Math.abs(movePct) > 2.5) || !(relativeVolume > 3)) return null;
   const candleStart = normalizeEpochSeconds(latest?.time);
   if (candleStart === null) return null;
