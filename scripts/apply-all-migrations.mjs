@@ -23,7 +23,8 @@ const MIGRATIONS = [
   'db/migrations/20261103000100_add_per_strategy_position_limits.sql',
   'db/migrations/20261105000100_enable_testnet_multi_symbol_grid.sql',
   'db/migrations/20261106000100_exchange_authoritative_pnl_ledger.sql',
-  'db/migrations/20261107000100_add_trailing_grid_settings.sql'
+  'db/migrations/20261107000100_add_trailing_grid_settings.sql',
+  'db/migrations/20261109000100_adaptive_volatility_shadow_and_exit_reason.sql'
 ];
 
 // These are the four "already exists" SQLSTATEs explicitly approved for skipping.
@@ -54,7 +55,8 @@ const EXPECTED_TABLES = [
   'dd_tradetron_developer_sync_state',
   'dd_tradetron_developer_notifications',
   'dd_tradetron_developer_notification_sync_state',
-  'dd_tradetron_developer_pnl_history'
+  'dd_tradetron_developer_pnl_history',
+  'dd_shadow_signals'
 ];
 
 function sanitizeError(error) {

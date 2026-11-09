@@ -67,6 +67,15 @@ export const insertMany = (table, rows) => {
     body: JSON.stringify(list)
   });
 };
+export const insertManyIgnore = (table, rows, conflict) => {
+  const list = Array.isArray(rows) ? rows.filter(Boolean) : [];
+  if (!list.length) return Promise.resolve([]);
+  return call(table + '?on_conflict=' + encodeURIComponent(conflict), {
+    method: 'POST',
+    headers: { Prefer: 'resolution=ignore-duplicates,return=minimal' },
+    body: JSON.stringify(list)
+  });
+};
 // Insert a row once using the database's unique conflict target. The representation
 // is non-empty for a new row and empty when the unique event ID already exists.
 export const insertIgnore = (table, row, conflict) => call(table + '?on_conflict=' + encodeURIComponent(conflict), {

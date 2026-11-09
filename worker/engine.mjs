@@ -40,6 +40,7 @@ import { cleanupWebSocketListeners } from './websocket-lifecycle.mjs';
 import { evaluateGlobalPositionCap, routeUnlessGlobalPositionCapBlocked } from './global-position-cap.mjs';
 import { createConfirmedSignalTelegramNotifier } from './telegram-alerts.mjs';
 import { createLeaseManager, getLeaseTtlSeconds } from './lease-manager.mjs';
+import { buildAdaptiveVolatilityShadowObservation, getAdaptiveVolatilityImpulse, inferAdaptiveVolatilityShadowSide, processAdaptiveVolatilityShadowCycle } from './adaptive-volatility-shadow.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const n = v => Number.isFinite(+v) ? +v : 0;
@@ -3052,6 +3053,10 @@ export class DeltaEngine {
     const out = [];
     const signalCacheRows = [];
     const signalHistoryRows = [];
+    const adaptiveShadowEnabled = envBoolean('ADAPTIVE_VOLATILITY_SHADOW_ENABLED', false) &&
+      settings.adaptive_volatility_shadow_enabled === true;
+    const adaptiveShadowObservations = [];
+    const adaptiveShadowCandlesBySymbol = new Map();
     const tickers = [...this.tickerMap.values()].filter(ticker =>
       this.candleCacheSymbols.has(String(ticker.symbol || '').toUpperCase())
     );
@@ -3060,6 +3065,7 @@ export class DeltaEngine {
     // The final analysis pass consumes each score for the normalized readiness
     // gate; feature extraction in this pre-pass does not depend on stage/ready.
     const normalizationUniverses = { MOMENTUM: [], SCALPING: [] };
+    const adaptiveShadowNormalizationUniverses = { MOMENTUM: [], SCALPING: [] };
     for (const ticker of tickers) {
       const product = this.productMap.get(ticker.symbol);
       if (!product) continue;
@@ -3092,6 +3098,13 @@ export class DeltaEngine {
       });
       normalizationUniverses.MOMENTUM.push(momShadow);
       normalizationUniverses.SCALPING.push(scalpShadow);
+      if (adaptiveShadowEnabled) {
+        const impulse = getAdaptiveVolatilityImpulse(c5);
+        const momSide = impulse ? inferAdaptiveVolatilityShadowSide(momShadow, impulse.side) : momShadow.side;
+        const scalpSide = impulse ? inferAdaptiveVolatilityShadowSide(scalpShadow, impulse.side) : scalpShadow.side;
+        adaptiveShadowNormalizationUniverses.MOMENTUM.push({ ...momShadow, side: momSide });
+        adaptiveShadowNormalizationUniverses.SCALPING.push({ ...scalpShadow, side: scalpSide });
+      }
     }
     const normalizedScores = new Map();
     for (const strategyName of ['MOMENTUM', 'SCALPING']) {
@@ -3099,6 +3112,17 @@ export class DeltaEngine {
       const scores = calculateNormalizedScores(universe);
       for (const signal of universe) {
         normalizedScores.set(strategyName + ':' + signal.symbol, scores.get(String(signal.symbol || '').toUpperCase()) ?? null);
+      }
+    }
+    const adaptiveShadowNormalizedScores = new Map();
+    if (adaptiveShadowEnabled) {
+      for (const strategyName of ['MOMENTUM', 'SCALPING']) {
+        const universe = adaptiveShadowNormalizationUniverses[strategyName];
+        const scores = calculateNormalizedScores(universe);
+        for (const signal of universe) {
+          adaptiveShadowNormalizedScores.set(strategyName + ':' + signal.symbol,
+            scores.get(String(signal.symbol || '').toUpperCase()) ?? null);
+        }
       }
     }
 
@@ -3109,6 +3133,7 @@ export class DeltaEngine {
       const c1 = this.getCandles(ticker.symbol, '1m');
       const c5 = this.getCandles(ticker.symbol, '5m');
       const c15 = this.getCandles(ticker.symbol, '15m');
+      if (adaptiveShadowEnabled) adaptiveShadowCandlesBySymbol.set(String(ticker.symbol || '').toUpperCase(), c1);
       const momNormalizedScore =
         normalizedScores.get('MOMENTUM:' + ticker.symbol) ?? null;
       const scalpNormalizedScore =
@@ -3145,6 +3170,47 @@ export class DeltaEngine {
       this.applyTestnetCandleFreshness(scalp, '1m');
       this.recordAtrDiagnostics(mom);
       this.recordAtrDiagnostics(scalp);
+
+      // Separate opt-in evaluation. It never mutates live signals, risk gates,
+      // position sizing, or the Delta order-routing path.
+      if (adaptiveShadowEnabled) {
+        const shadowSpecs = [
+          { signal: mom, strategy: 'MOMENTUM', emaMax: n(settings.ema_distance_max || 3.5) },
+          { signal: scalp, strategy: 'SCALPING', emaMax: n(settings.ema_distance_max || 2.5) }
+        ];
+        for (const spec of shadowSpecs) {
+          const impulse = getAdaptiveVolatilityImpulse(c5);
+          const inferredSide = impulse
+            ? inferAdaptiveVolatilityShadowSide(spec.signal, impulse.side)
+            : spec.signal.side;
+          const shadowScore = adaptiveShadowNormalizedScores.get(spec.strategy + ':' + ticker.symbol) ?? null;
+          const shadowSignal = {
+            ...spec.signal,
+            originalSignalSide: spec.signal.side || '',
+            side: inferredSide || spec.signal.side,
+            normalizedScore: shadowScore,
+            adaptiveVolatilityShadowDirectionInferred: !spec.signal.side && !!inferredSide
+          };
+          const observation = buildAdaptiveVolatilityShadowObservation(shadowSignal, c5, {
+            strategy: spec.strategy,
+            baseEmaDistanceMax: spec.emaMax,
+            takerFeeRate: p.taker_commission_rate === undefined ||
+              p.taker_commission_rate === null || p.taker_commission_rate === ''
+              ? null
+              : n(p.taker_commission_rate),
+            maxHoldMinutes: n(settings.max_hold_minutes || 240),
+            maxAntiChasePct: n(settings.anti_chase_pct || 15),
+            rangeAtrMax: spec.strategy === 'MOMENTUM'
+              ? n(settings.range_atr_max || 4.0)
+              : n(settings.range_atr_max || 3.0),
+            spreadMaxPct: n(settings.spread_max_pct || 0.35),
+            costGateRatio: spec.strategy === 'MOMENTUM' ? 0.20 : 0.25,
+            volumeMin: n(settings.volume_min || (spec.strategy === 'MOMENTUM' ? 0.75 : 1.25))
+          });
+          if (observation) adaptiveShadowObservations.push(observation);
+        }
+      }
+
       for (const s of [mom, scalp]) {
         const sizingCandidate = String(s?.stage || '').toUpperCase() === 'CONFIRMED' && s?.ready === true;
         const size = sizingCandidate ? this.positionSizing(s, account, settings) : null;
@@ -3222,6 +3288,29 @@ export class DeltaEngine {
       }
       out.push({ ticker, product: p, mom, scalp });
     }
+
+    if (adaptiveShadowEnabled) {
+      try {
+        const shadowResult = await processAdaptiveVolatilityShadowCycle({
+          database: db,
+          observations: adaptiveShadowObservations,
+          candlesBySymbol: adaptiveShadowCandlesBySymbol
+        });
+        if (shadowResult.observationsInserted || shadowResult.entriesOpened ||
+            shadowResult.positionsUpdated || shadowResult.exitsClosed) {
+          await this.log('INFO', 'Adaptive volatility shadow cycle updated; order routing was not invoked', {
+            ...shadowResult, execution: 'SHADOW_ONLY',
+            liveSignalMutation: false, orderRoutingAttempted: false
+          });
+        }
+      } catch (error) {
+        await this.log('WARN', 'Adaptive volatility shadow cycle failed; live Momentum/Scalping analysis continues unchanged', {
+          error: String(error?.message || error).slice(0, 240),
+          execution: 'SHADOW_ONLY', orderRoutingAttempted: false
+        }).catch(() => {});
+      }
+    }
+
     // Persist compact stage history in one request before caching/routing.
     // Unchanged observations (including WATCH) are filtered by the dedup cache.
     await this.persistSignalHistorySafely(signalHistoryRows);
@@ -3693,8 +3782,14 @@ export class DeltaEngine {
   }
 
   async closePosition(symbol, productId, qty, side, reason) {
+    const requestedReason = String(reason || '').trim().toUpperCase();
+    if (requestedReason) {
+      await db.update('dd_delta_positions',
+        'symbol=eq.' + encodeURIComponent(symbol) + '&status=eq.OPEN',
+        { requested_exit_reason: requestedReason, updated_at: iso() });
+    }
     const rows = await db.select('dd_positions', 'symbol=eq.' + encodeURIComponent(symbol) + '&qty=gt.0&limit=1');
-    if (rows && rows[0]) await db.update('dd_positions', 'execution_id=eq.' + encodeURIComponent(rows[0].execution_id), { requested_exit_reason: reason, updated_at: iso() });
+    if (rows && rows[0]) await db.update('dd_positions', 'execution_id=eq.' + encodeURIComponent(rows[0].execution_id), { requested_exit_reason: requestedReason || reason, updated_at: iso() });
     const cid = clientId('CLS', symbol);
     if (await this.findExistingClient(cid)) return;
     await this.adapter.placeOrder({
