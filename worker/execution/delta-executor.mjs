@@ -644,6 +644,7 @@ export function createDeltaExecutor({
       realized_pnl: realizedPnl,
       close_order_id: orderId === null ? null : String(orderId),
       client_order_id: clientOrderId,
+      requested_exit_reason: position?.requested_exit_reason ?? null,
       stop_order_type: orderHistory?.stop_order_type ?? null,
       order_type: orderHistory?.order_type ?? closeFill?.meta_data?.order_type ?? null,
       fill_type: closeFill?.fill_type ?? null,

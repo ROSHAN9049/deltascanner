@@ -53,3 +53,24 @@ test('verified close details take precedence over unverified event fields', () =
   assert.equal(fields.exit_reason, 'TP');
   assert.equal(fields.close_order_id, '9001');
 });
+
+test('explicit requested exit reason fills UNKNOWN client-order attribution without overriding exchange stop evidence', () => {
+  assert.equal(normalizeDeltaExitReason({
+    client_order_id: 'CLS-BTCUSD-timeout',
+    requested_exit_reason: 'TIMEOUT'
+  }), 'TIMEOUT');
+  assert.equal(normalizeDeltaExitReason({
+    client_order_id: 'CLS-BTCUSD-timeout',
+    requested_exit_reason: 'TIMEOUT',
+    stop_order_type: 'stop_loss_order'
+  }), 'SL');
+});
+
+test('nested Delta fill metadata is used to classify stop and take-profit exits', () => {
+  assert.equal(normalizeDeltaExitReason({
+    meta_data: { order_type: 'stop_loss_order' }
+  }), 'SL');
+  assert.equal(normalizeDeltaExitReason({
+    metadata: { stop_order_type: 'take_profit_order' }
+  }), 'TP');
+});

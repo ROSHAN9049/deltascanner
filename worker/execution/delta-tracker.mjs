@@ -845,6 +845,7 @@ export class DeltaTestnetTracker {
         let realizedPnlVerified = position?.realized_pnl_verified === true && realizedPnl !== null;
         let exitReason = deltaCloseFields({}, {
           exit_reason: position?.exit_reason,
+          requested_exit_reason: position?.requested_exit_reason,
           close_order_id: position?.close_order_id
         }).exit_reason;
         const openedMs = Date.parse(position?.opened_at || '');
@@ -1001,7 +1002,11 @@ export class DeltaTestnetTracker {
         const nextPosition = rawClose?.meta_data?.new_position ?? rawClose?.metadata?.new_position ?? {};
         const fillRealizedPnl = numberOrNull(nextPosition.realized_pnl ?? rawClose.realized_pnl);
         if (fillRealizedPnl !== null && !realizedPnlVerified && typeof this.database.update === 'function') {
-          const fillReason = deltaCloseFields({}, { ...rawClose, close_order_id: flatCloseFill?.order_id ?? null }).exit_reason;
+          const fillReason = deltaCloseFields({}, {
+            ...rawClose,
+            requested_exit_reason: position?.requested_exit_reason,
+            close_order_id: flatCloseFill?.order_id ?? null
+          }).exit_reason;
           const patch = {
             realized_pnl: fillRealizedPnl,
             realized_pnl_verified: true,
@@ -1474,9 +1479,10 @@ async syncBracketMetadataOnce(key) {
       const close = deltaCloseFields({
         ...rawRow,
         action: envelope?.action ?? rawRow?.action,
-        reason: envelope?.reason ?? rawRow?.reason
+        reason: envelope?.reason ?? rawRow?.reason,
+        requested_exit_reason: active.requested_exit_reason
       }, details);
-      const botManagedExit = ['BOT', 'SL', 'TP'].includes(close.exit_reason);
+      const botManagedExit = ['BOT', 'SL', 'TP', 'TIMEOUT'].includes(close.exit_reason);
       const closeSource = stringValue(envelope?.source).toLowerCase() || 'private_websocket';
       const closeDetailsVerified = details?.close_fill_history_complete === true && close.realized_pnl !== null;
       const realizedPnlVerified = close.realized_pnl !== null &&

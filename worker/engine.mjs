@@ -40,6 +40,7 @@ import { cleanupWebSocketListeners } from './websocket-lifecycle.mjs';
 import { evaluateGlobalPositionCap, routeUnlessGlobalPositionCapBlocked } from './global-position-cap.mjs';
 import { createConfirmedSignalTelegramNotifier } from './telegram-alerts.mjs';
 import { createLeaseManager, getLeaseTtlSeconds } from './lease-manager.mjs';
+import { buildAdaptiveVolatilityShadowObservation, processAdaptiveVolatilityShadowCycle } from './adaptive-volatility-shadow.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const n = v => Number.isFinite(+v) ? +v : 0;
@@ -3052,6 +3053,10 @@ export class DeltaEngine {
     const out = [];
     const signalCacheRows = [];
     const signalHistoryRows = [];
+    const adaptiveShadowEnabled = envBoolean('ADAPTIVE_VOLATILITY_SHADOW_ENABLED', false) &&
+      settings.adaptive_volatility_shadow_enabled === true;
+    const adaptiveShadowObservations = [];
+    const adaptiveShadowCandlesBySymbol = new Map();
     const tickers = [...this.tickerMap.values()].filter(ticker =>
       this.candleCacheSymbols.has(String(ticker.symbol || '').toUpperCase())
     );
@@ -3109,6 +3114,7 @@ export class DeltaEngine {
       const c1 = this.getCandles(ticker.symbol, '1m');
       const c5 = this.getCandles(ticker.symbol, '5m');
       const c15 = this.getCandles(ticker.symbol, '15m');
+      if (adaptiveShadowEnabled) adaptiveShadowCandlesBySymbol.set(String(ticker.symbol || '').toUpperCase(), c1);
       const momNormalizedScore =
         normalizedScores.get('MOMENTUM:' + ticker.symbol) ?? null;
       const scalpNormalizedScore =
@@ -3145,6 +3151,25 @@ export class DeltaEngine {
       this.applyTestnetCandleFreshness(scalp, '1m');
       this.recordAtrDiagnostics(mom);
       this.recordAtrDiagnostics(scalp);
+
+      // Separate opt-in evaluation. It never mutates live signals, risk gates,
+      // position sizing, or the Delta order-routing path.
+      if (adaptiveShadowEnabled) {
+        const shadowSpecs = [
+          { signal: mom, strategy: 'MOMENTUM', emaMax: n(settings.ema_distance_max || 3.5) },
+          { signal: scalp, strategy: 'SCALPING', emaMax: n(settings.scalping_ema_distance_max || 2.5) }
+        ];
+        for (const spec of shadowSpecs) {
+          const observation = buildAdaptiveVolatilityShadowObservation(spec.signal, c5, {
+            strategy: spec.strategy,
+            baseEmaDistanceMax: spec.emaMax,
+            takerFeeRate: n(p.taker_commission_rate),
+            maxHoldMinutes: n(settings.max_hold_minutes || 240)
+          });
+          if (observation) adaptiveShadowObservations.push(observation);
+        }
+      }
+
       for (const s of [mom, scalp]) {
         const sizingCandidate = String(s?.stage || '').toUpperCase() === 'CONFIRMED' && s?.ready === true;
         const size = sizingCandidate ? this.positionSizing(s, account, settings) : null;
@@ -3222,6 +3247,29 @@ export class DeltaEngine {
       }
       out.push({ ticker, product: p, mom, scalp });
     }
+
+    if (adaptiveShadowEnabled) {
+      try {
+        const shadowResult = await processAdaptiveVolatilityShadowCycle({
+          database: db,
+          observations: adaptiveShadowObservations,
+          candlesBySymbol: adaptiveShadowCandlesBySymbol
+        });
+        if (shadowResult.observationsInserted || shadowResult.entriesOpened ||
+            shadowResult.positionsUpdated || shadowResult.exitsClosed) {
+          await this.log('INFO', 'Adaptive volatility shadow cycle updated; order routing was not invoked', {
+            ...shadowResult, execution: 'SHADOW_ONLY',
+            liveSignalMutation: false, orderRoutingAttempted: false
+          });
+        }
+      } catch (error) {
+        await this.log('WARN', 'Adaptive volatility shadow cycle failed; live Momentum/Scalping analysis continues unchanged', {
+          error: String(error?.message || error).slice(0, 240),
+          execution: 'SHADOW_ONLY', orderRoutingAttempted: false
+        }).catch(() => {});
+      }
+    }
+
     // Persist compact stage history in one request before caching/routing.
     // Unchanged observations (including WATCH) are filtered by the dedup cache.
     await this.persistSignalHistorySafely(signalHistoryRows);
@@ -3693,8 +3741,14 @@ export class DeltaEngine {
   }
 
   async closePosition(symbol, productId, qty, side, reason) {
+    const requestedReason = String(reason || '').trim().toUpperCase();
+    if (requestedReason) {
+      await db.update('dd_delta_positions',
+        'symbol=eq.' + encodeURIComponent(symbol) + '&status=eq.OPEN',
+        { requested_exit_reason: requestedReason, updated_at: iso() });
+    }
     const rows = await db.select('dd_positions', 'symbol=eq.' + encodeURIComponent(symbol) + '&qty=gt.0&limit=1');
-    if (rows && rows[0]) await db.update('dd_positions', 'execution_id=eq.' + encodeURIComponent(rows[0].execution_id), { requested_exit_reason: reason, updated_at: iso() });
+    if (rows && rows[0]) await db.update('dd_positions', 'execution_id=eq.' + encodeURIComponent(rows[0].execution_id), { requested_exit_reason: requestedReason || reason, updated_at: iso() });
     const cid = clientId('CLS', symbol);
     if (await this.findExistingClient(cid)) return;
     await this.adapter.placeOrder({

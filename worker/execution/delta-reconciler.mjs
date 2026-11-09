@@ -231,14 +231,17 @@ export function createDeltaPositionReconciler({
               });
             }
           }
-          const close = deltaCloseFields({}, details);
+          const close = deltaCloseFields({}, {
+            ...(details && typeof details === 'object' ? details : {}),
+            requested_exit_reason: row.requested_exit_reason
+          });
           // A REST absence check may not find a close fill. Do not erase an
           // exchange-reported realized P&L already captured from a position event.
           const existingRealizedPnl = numberOrNull(row.realized_pnl);
           if (close.realized_pnl === null && existingRealizedPnl !== null) {
             close.realized_pnl = existingRealizedPnl;
           }
-          const botManagedExit = ['BOT', 'SL', 'TP'].includes(close.exit_reason);
+          const botManagedExit = ['BOT', 'SL', 'TP', 'TIMEOUT'].includes(close.exit_reason);
           const closeStatus = botManagedExit ? 'CLOSED' : 'CLOSED_EXTERNALLY';
           const closeDetailsVerified = details?.close_fill_history_complete === true &&
             close.realized_pnl !== null;

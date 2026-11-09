@@ -228,6 +228,35 @@ test('REST reconciliation persists close-fill details only when they are verifia
   assert.equal(rt.rows[0].close_order_id, '9001');
 });
 
+test('explicit TIMEOUT close intent is retained when exchange order history has no stop type', async () => {
+  const rt = runtime({
+    openRows: [{
+      id: 1, symbol: 'BTCUSD', qty: 1, side: 'SELL',
+      opened_at: '2026-10-25T20:00:00.000Z',
+      requested_exit_reason: 'TIMEOUT'
+    }],
+    exchangePositions: []
+  });
+  rt.executor.getRecentCloseDetails = async (_symbol, _openedAt, position) => ({
+    exit_price: 99000,
+    fees: 0.2,
+    fee_currency: 'USD',
+    realized_pnl: -10,
+    close_order_id: '9002',
+    client_order_id: 'CLS-BTCUSD-timeout',
+    close_fill_history_complete: true,
+    requested_exit_reason: position.requested_exit_reason
+  });
+  const reconciler = createDeltaPositionReconciler({
+    env: rt.env, database: rt.database, executor: rt.executor, now: fixedNow
+  });
+  await reconciler.reconcile();
+  assert.equal(rt.rows[0].status, 'CLOSED');
+  assert.equal(rt.rows[0].exit_reason, 'TIMEOUT');
+  assert.equal(rt.rows[0].realized_pnl, -10);
+  assert.equal(rt.rows[0].realized_pnl_verified, true);
+});
+
 test('quantity and side mismatches sync local DB to the exchange; missing DB rows are hydrated', async () => {
   const rt = runtime({
     openRows: [
