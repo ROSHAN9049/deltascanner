@@ -996,7 +996,8 @@ export class DeltaEngine {
         updatedAt: iso()
       };
       return this.lastGridTestnetDiagnostics;
-    }    const tickers = {};
+    }
+    const tickers = {};
     const products = {};
     const candlesBySymbol = {};
     const freshnessBySymbol = {};
