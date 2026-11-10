@@ -32,7 +32,7 @@ import { buildApiDerivedTrackingPlan, strategyForDerivedTrade } from './tradetro
 import { deltaExecutor } from './execution/delta-executor.mjs';
 import { projectCanonicalDeltaBrackets } from './execution/delta-position-projection.mjs';
 import { manageDeltaTestnetMultiGrid } from './execution/delta-multi-grid-engine.mjs';
-import { calculateAutoGridRange, calculateAtrGridRange, hasGridAutoRangeExposure, isAutoGridRangeRefreshDue, selectLatestCompletedDailyCandle, utcDayKey } from '../shared/grid-auto-range.js';
+import { calculateAutoGridRange, calculateAtrGridRange, hasGridAutoRangeExposure, isAutoGridRangeRefreshDue, isGridAtrSnapshotRefreshRequired, selectLatestCompletedDailyCandle, utcDayKey } from '../shared/grid-auto-range.js';
 import { assertDirectDeltaExecutionMode, getExecutionRouteBlockReason, DELTA_TESTNET_FUTURES_ALLOWLIST, isAllowedDeltaTestnetFutureSymbol, isEligibleDeltaTestnetPerpetualProduct, isMarketTickFresh, canStartWorkerInExecutionProfile } from './execution/execution-route-policy.mjs';
 import { canExecuteDeltaTestnetOrders, checkDeltaTestnetPrivateApi, isPrivateApiConnectivityError } from './execution/testnet-private-api-health.mjs';
 import {
@@ -761,12 +761,11 @@ export class DeltaEngine {
     const trailingRefreshEnabled = CONFIG.gridTrailingEnabled === true && settings.grid_trailing_enabled === true;
     const existingConfigs = settings.grid_symbol_configs && typeof settings.grid_symbol_configs === 'object'
       ? settings.grid_symbol_configs : {};
-    const snapshotMissing = normalizedSymbols.some(symbol => {
-      const config = existingConfigs[symbol] && typeof existingConfigs[symbol] === 'object'
-        ? existingConfigs[symbol] : {};
-      return !Number.isFinite(Number(config.atr_14d ?? config.atr)) ||
-        !Number.isFinite(Number(config.atr_pct ?? config.atrPct)) ||
-        config.atr_snapshot_status == null && config.atrSnapshotStatus == null;
+    const snapshotMissing = isGridAtrSnapshotRefreshRequired({
+      initialized: this.gridAtrSnapshotInitialized === true,
+      force: forceSnapshot === true,
+      symbols: normalizedSymbols,
+      configs: existingConfigs
     });
     const due = isAutoGridRangeRefreshDue({
       enabled: true,
@@ -777,7 +776,7 @@ export class DeltaEngine {
     });
     // A new worker process always refreshes the ATR snapshot once. Missing or
     // legacy camelCase-only snapshots also force a write even within the same UTC day.
-    const shouldRefresh = due || forceSnapshot === true || !this.gridAtrSnapshotInitialized || snapshotMissing;
+    const shouldRefresh = due || snapshotMissing;
     if (!shouldRefresh) return { settings, blocked: false, applied: false };
 
     const defer = async (reason, detail = {}, nextSettings = settings) => {
