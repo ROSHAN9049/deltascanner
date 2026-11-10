@@ -6,7 +6,7 @@ test('uses the Worker diagnostic when the heartbeat is fresh', () => {
   const now = Date.parse('2026-11-10T05:00:00.000Z');
   const result = resolveWorkerGridAutoRangeStatus({
     created_at: '2026-11-10T04:59:30.000Z',
-    data: { gridTestnetDiagnostics: { gridAutoRangeEnvironmentEnabled: true } }
+    data: { gridAutoRangeEnvironmentEnabled: true, gridTestnetDiagnostics: {} }
   }, { now });
   assert.equal(result.enabled, true);
   assert.equal(result.heartbeatFresh, true);
@@ -16,7 +16,7 @@ test('reports an explicit fresh Worker false flag as disabled', () => {
   const now = Date.parse('2026-11-10T05:00:00.000Z');
   const result = resolveWorkerGridAutoRangeStatus({
     created_at: '2026-11-10T04:59:30.000Z',
-    data: { gridTestnetDiagnostics: { gridAutoRangeEnvironmentEnabled: false } }
+    data: { gridAutoRangeEnvironmentEnabled: false, gridTestnetDiagnostics: { gridAutoRangeEnvironmentEnabled: true } }
   }, { now });
   assert.equal(result.enabled, false);
   assert.equal(result.heartbeatFresh, true);
@@ -35,4 +35,18 @@ test('does not trust stale or missing Worker diagnostic values', () => {
   }, { now });
   assert.equal(missing.enabled, null);
   assert.equal(missing.heartbeatFresh, true);
+});
+
+
+test('prefers the direct heartbeat flag when nested diagnostics disagree', () => {
+  const now = Date.parse('2026-11-10T05:00:00.000Z');
+  const result = resolveWorkerGridAutoRangeStatus({
+    created_at: '2026-11-10T04:59:30.000Z',
+    data: {
+      gridAutoRangeEnvironmentEnabled: true,
+      gridTestnetDiagnostics: { gridAutoRangeEnvironmentEnabled: false }
+    }
+  }, { now });
+  assert.equal(result.enabled, true);
+  assert.equal(result.heartbeatFresh, true);
 });
