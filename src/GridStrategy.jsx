@@ -169,7 +169,9 @@ export default function GridStrategy({
       return [symbol, {
         lowerPrice: Number(config.lowerPrice),
         upperPrice: Number(config.upperPrice),
-        levelsCount: Number(config.levelsCount)
+        levelsCount: Number(config.levelsCount),
+        atr: config.atr, atrPct: config.atrPct, multiplier: config.multiplier,
+        widthPct: config.widthPct, atrFallback: config.atrFallback === true
       }];
     })),
     gridMaxPositions: GRID_BRIDGE_MAX_POSITIONS,
@@ -294,7 +296,7 @@ export default function GridStrategy({
           </div>
           <span>{view.valid ? view.levels.length + ' geometric levels · ' + (((Math.pow(n(view.config.upperPrice) / n(view.config.lowerPrice), 1 / Math.max(1, view.levels.length - 1))) - 1) * 100).toFixed(3) + '% per step' : 'Range not configured · upper must exceed lower'}</span>
           <span>14d ATR: {view.config.atr ? usd(view.config.atr) + ' (' + n(view.config.atrPct).toFixed(2) + '%)' : 'Awaiting worker ATR snapshot'}</span>
-          <span>Calculated Range: {price(view.config.lowerPrice)} - {price(view.config.upperPrice)} (Width: {view.config.widthPct ? n(view.config.widthPct).toFixed(2) : (n(view.config.upperPrice)-n(view.config.lowerPrice))/Math.max(1,n(view.currentPrice))*100 .toFixed?.(2)}%)</span>
+          <span>Calculated Range: {price(view.config.lowerPrice)} - {price(view.config.upperPrice)} (Width: {view.config.widthPct ? n(view.config.widthPct).toFixed(2) : ((n(view.config.upperPrice)-n(view.config.lowerPrice))/Math.max(1,n(view.currentPrice))*100).toFixed(2)}%)</span>
           <span>Multiplier: {n(view.config.multiplier || 2.5).toFixed(1)}x {view.config.atrFallback ? '· 3% fallback active' : ''}</span>
           <span>{view.symbolPositions.length} open position(s) · {view.symbolPending.length} pending limit entry(ies)</span>
           {view.symbolState.pausedReason ? <span className="down">Status: {view.symbolState.pausedReason}</span> : null}
