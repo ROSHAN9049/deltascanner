@@ -39,3 +39,16 @@ test('shows the deliberate fallback status without inventing a numeric ATR', () 
   assert.equal(result.fallback, true);
   assert.equal(result.status, 'FALLBACK_3PCT');
 });
+
+
+test('reads canonical ATR values directly from saved symbol config while draft is empty', () => {
+  const result = resolveGridAtrSnapshot({
+    grid_symbol_configs: {
+      PAXGUSD: { atr_14d: 65.223571, atr_pct: 1.588297, atr_snapshot_status: 'READY' },
+      NVDAXUSD: { atr_14d: 8.505714, atr_pct: 4.688513, atr_snapshot_status: 'READY' }
+    }
+  }, 'NVDAXUSD', {});
+  assert.equal(result.atr, 8.505714);
+  assert.equal(result.atrPct, 4.688513);
+  assert.equal(result.status, 'READY');
+});
