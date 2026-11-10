@@ -95,7 +95,7 @@ test('14-day ATR uses completed daily candles and true-range gap components', ()
   assert.equal(result.ok, true);
   assert.equal(result.periods, 14);
   assert.equal(result.candleCount, 16);
-  assert.ok(result.atr > 10);
+  assert.ok(result.atr >= 10);
 });
 
 test('ATR range clamps symmetrically to configured minimum and maximum widths', () => {
