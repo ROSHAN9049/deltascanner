@@ -863,7 +863,8 @@ export async function manageDeltaTestnetGrid({
   dataFresh = true,
   database,
   executor,
-  now = () => Date.now()
+  now = () => Date.now(),
+  sleepFn = defaultGridPnlSleep
 } = {}) {
   const timestamp = now();
   const at = new Date(timestamp).toISOString();
@@ -934,25 +935,29 @@ export async function manageDeltaTestnetGrid({
         request: 'closed_positions',
         read: () => database.select('dd_delta_positions', closedPositionQuery),
         validate: Array.isArray,
-        database
+        database,
+        sleepFn
       }),
       retryGridPnlRead({
         request: 'closed_positions_count',
         read: () => database.count('dd_delta_positions', 'strategy=eq.GRID&status=in.(CLOSED,CLOSED_EXTERNALLY)&select=id'),
         validate: value => Number.isInteger(value) && value >= 0,
-        database
+        database,
+        sleepFn
       }),
       retryGridPnlRead({
         request: 'grid_trades',
         read: () => database.select('dd_trades', tradeQuery),
         validate: Array.isArray,
-        database
+        database,
+        sleepFn
       }),
       retryGridPnlRead({
         request: 'grid_trades_count',
         read: () => database.count('dd_trades', 'strategy=eq.GRID&select=id'),
         validate: value => Number.isInteger(value) && value >= 0,
-        database
+        database,
+        sleepFn
       })
     ]);
     const failedPnlRead = pnlReadResults.find(result => result.status === 'rejected');
