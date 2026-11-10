@@ -872,7 +872,11 @@ export class DeltaEngine {
             : Number(verifiedConfigs?.[symbol]?.atr_14d) === Number(configs[symbol].atr_14d)) &&
           (configs[symbol].atr_pct == null
             ? verifiedConfigs?.[symbol]?.atr_pct == null
-            : Number(verifiedConfigs?.[symbol]?.atr_pct) === Number(configs[symbol].atr_pct))
+            : Number(verifiedConfigs?.[symbol]?.atr_pct) === Number(configs[symbol].atr_pct)) &&
+          (configs[symbol].lowerPrice == null ||
+            Number(verifiedConfigs?.[symbol]?.lowerPrice) === Number(configs[symbol].lowerPrice)) &&
+          (configs[symbol].upperPrice == null ||
+            Number(verifiedConfigs?.[symbol]?.upperPrice) === Number(configs[symbol].upperPrice))
         );
         if (!verified) throw new Error('ATR snapshot persistence verification failed');
         this.gridAtrSnapshotInitialized = true;
