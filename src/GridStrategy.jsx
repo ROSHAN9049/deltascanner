@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { safeNum } from './formatters.js';
 import { apiUrl } from './api-url.js';
 import { calculateAtrGridRange, selectLatestCompletedDailyCandle } from '../shared/grid-auto-range.js';
+import { resolveGridAtrSnapshot } from './grid-atr-snapshot.js';
 import { GRID_BRIDGE_MAX_POSITIONS, GRID_RISK_PER_TRADE_CHOICES, getGridDisplayStatus, normalizeGridRiskPerTradePct } from '../shared/grid-settings.js';
 
 const DEFAULT_GRID_SYMBOLS = Object.freeze(['PAXGUSD', 'NVDAXUSD']);
@@ -43,13 +44,18 @@ function parseDraft(settings, symbols) {
     const config = saved[symbol] || {};
     const legacyLower = index === 0 ? settings.grid_lower_price : null;
     const legacyUpper = index === 0 ? settings.grid_upper_price : null;
+    const snapshot = resolveGridAtrSnapshot(settings, symbol, config);
     return [symbol, {
       lowerPrice: String(config.lowerPrice ?? config.grid_lower_price ?? legacyLower ?? ''),
       upperPrice: String(config.upperPrice ?? config.grid_upper_price ?? legacyUpper ?? ''),
       levelsCount: Number(config.levelsCount ?? config.grid_levels_count ?? (index === 0 ? settings.grid_levels_count : 10) ?? 10),
-      atr: config.atr_14d ?? config.atr ?? null, atrPct: config.atr_pct ?? config.atrPct ?? null, atrSnapshotStatus: config.atr_snapshot_status ?? config.atrSnapshotStatus ?? null,
-      multiplier: config.multiplier ?? 2.5, widthPct: config.widthPct ?? null,
-      atrFallback: config.atr_fallback === true || config.atrFallback === true
+      atr: snapshot.atr,
+      atrPct: snapshot.atrPct,
+      atrSnapshotStatus: snapshot.status,
+      atrFallback: snapshot.fallback,
+      atrSnapshotAt: snapshot.snapshotAt,
+      multiplier: config.multiplier ?? 2.5,
+      widthPct: config.widthPct ?? null
     }];
   }));
   return {
@@ -73,7 +79,8 @@ export default function GridStrategy({
   testnetDiagnostics = null,
   apiGridExecutionAllowed = false,
   apiGridTrailingEnvironmentEnabled = false,
-  apiGridAutoRangeEnvironmentEnabled = false,
+  workerGridAutoRangeEnvironmentEnabled = null,
+  workerGridAutoRangeHeartbeatFresh = false,
   apiGridSymbols = []
 }) {
   const gridSymbols = useMemo(() => {
@@ -109,7 +116,7 @@ export default function GridStrategy({
     const symbolPending = pendingEntries.filter(order => String(order.symbol || '').toUpperCase() === symbol);
     const symbolState = gridState.symbolStates?.[symbol] || gridState.symbolSummaries?.[symbol] || {};
     return {
-      symbol, config, currentPrice, levels, symbolPositions, symbolPending, symbolState,
+      symbol, config, atrSnapshot: resolveGridAtrSnapshot(settings, symbol, config), currentPrice, levels, symbolPositions, symbolPending, symbolState,
       valid: levels.length >= 8 && n(config.lowerPrice) > 0 && n(config.upperPrice) > n(config.lowerPrice)
     };
   });
@@ -150,6 +157,15 @@ export default function GridStrategy({
     testnetDiagnostics?.gridTrailingEnvironmentEnabled === true &&
     deltaTestnetGrid && gridExecutionAllowed;
   const trailingActive = trailingSettingEnabled && trailingCapabilityEnabled;
+  const workerAutoRangeFlag = typeof workerGridAutoRangeEnvironmentEnabled === 'boolean'
+    ? workerGridAutoRangeEnvironmentEnabled
+    : typeof testnetDiagnostics?.gridAutoRangeEnvironmentEnabled === 'boolean'
+      ? testnetDiagnostics.gridAutoRangeEnvironmentEnabled : null;
+  const workerAutoRangeHeartbeatIsFresh = workerGridAutoRangeHeartbeatFresh === true;
+  const dailyAutoRangeStatus = !workerAutoRangeHeartbeatIsFresh
+    ? 'WORKER HEARTBEAT STALE'
+    : workerAutoRangeFlag === true ? 'ENABLED'
+      : workerAutoRangeFlag === false ? 'DISABLED' : 'AWAITING WORKER FLAG';
   const lastShiftEvent = events.find(event => event.type === 'SHIFT') || null;
   const lastTrade = trades[0];
 
@@ -295,7 +311,7 @@ export default function GridStrategy({
             <label>{view.symbol} Grid Levels<select value={view.config.levelsCount} onChange={event => updateSymbol(view.symbol, 'levelsCount', Number(event.target.value))} disabled={lockedConfig}>{[8,9,10,11,12].map(value => <option key={value} value={value}>{value} levels</option>)}</select></label>
           </div>
           <span>{view.valid ? view.levels.length + ' geometric levels · ' + (((Math.pow(n(view.config.upperPrice) / n(view.config.lowerPrice), 1 / Math.max(1, view.levels.length - 1))) - 1) * 100).toFixed(3) + '% per step' : 'Range not configured · upper must exceed lower'}</span>
-          <span>14d ATR: {view.config.atr ? usd(view.config.atr) + ' (' + n(view.config.atrPct).toFixed(2) + '%)' : view.config.atrFallback || view.config.atrSnapshotStatus === 'FALLBACK_3PCT' ? 'Insufficient daily candles · 3% fallback active' : view.config.atrSnapshotStatus === 'READY' ? 'ATR snapshot ready' : 'Awaiting worker ATR snapshot'}</span>
+          <span>14d ATR: {view.atrSnapshot.atr !== null ? usd(view.atrSnapshot.atr) + ' (' + (view.atrSnapshot.atrPct === null ? 'ATR% unavailable' : view.atrSnapshot.atrPct.toFixed(2) + '%') + ')' : view.atrSnapshot.fallback ? 'Insufficient daily candles · 3% fallback active' : view.atrSnapshot.status === 'READY' ? 'Snapshot marked READY · numeric ATR unavailable' : 'Awaiting worker ATR snapshot'}</span>
           <span>Calculated Range: {price(view.config.lowerPrice)} - {price(view.config.upperPrice)} (Width: {view.config.widthPct ? n(view.config.widthPct).toFixed(2) : ((n(view.config.upperPrice)-n(view.config.lowerPrice))/Math.max(1,n(view.currentPrice))*100).toFixed(2)}%)</span>
           <span>Multiplier: {n(view.config.multiplier || 2.5).toFixed(1)}x {view.config.atrFallback ? '· 3% fallback active' : ''}</span>
           <span>{view.symbolPositions.length} open position(s) · {view.symbolPending.length} pending limit entry(ies)</span>
@@ -311,7 +327,7 @@ export default function GridStrategy({
       <label className="gridCheck"><input type="checkbox" checked={draft.gridReduceAfterLosses} onChange={event => updateGlobal('gridReduceAfterLosses', event.target.checked)}/> Reduce position sizing by 50% after 2 consecutive losses</label>
       <label className="gridCheck"><input type="checkbox" checked={trailingSettingEnabled} disabled={busy || (!trailingCapabilityEnabled && !trailingSettingEnabled)} onChange={event => mutate({ gridTrailingEnabled: event.target.checked })}/> Trailing Grid (Auto-Shift on Breakout)</label>
       {!trailingCapabilityEnabled ? <div className="lockedText">Trailing Grid is unavailable until GRID_TRAILING_ENABLED=true is present in both the API and Worker environments and the worker heartbeat confirms it. The 2% daily-loss and 5% drawdown stops remain absolute.</div> : null}
-      <div className="lockedText">Daily Auto-Range environment: {apiGridAutoRangeEnvironmentEnabled ? 'ENABLED' : 'DISABLED'} · Worker auto-refresh: {apiGridAutoRangeEnvironmentEnabled ? (trailingCapabilityEnabled && trailingSettingEnabled ? 'awaiting next UTC day; refresh waits for both symbols to be flat' : 'initial auto-set only; daily rollover requires Trailing Grid and its environment gate') : 'manual preview only; set GRID_AUTO_RANGE_ENABLED=true in the Worker to enable automatic updates'}{gridState.autoRangeLastAppliedUtcDay ? ' · last applied UTC day: ' + gridState.autoRangeLastAppliedUtcDay : ''}</div>
+      <div className="lockedText">Daily Auto-Range environment: {dailyAutoRangeStatus} · Worker-reported flag: {workerAutoRangeFlag === null ? 'not available' : String(workerAutoRangeFlag)} · Worker auto-refresh: {dailyAutoRangeStatus === 'ENABLED' ? (trailingCapabilityEnabled && trailingSettingEnabled ? 'awaiting next UTC day; refresh waits for both symbols to be flat' : 'startup snapshot refresh is active; daily range rollover still requires Trailing Grid and its Worker gate') : dailyAutoRangeStatus === 'DISABLED' ? 'Worker heartbeat confirms GRID_AUTO_RANGE_ENABLED=false; automatic updates are off' : 'waiting for a fresh Worker heartbeat that includes the GRID_AUTO_RANGE_ENABLED diagnostic'}{gridState.autoRangeLastAppliedUtcDay ? ' · last applied UTC day: ' + gridState.autoRangeLastAppliedUtcDay : ''}</div>
 
       <div className="gridButtons">
         {gridSafetyBlocked ? <div className="errorText">Grid entries are blocked by worker safety ({gridSafetyReason}). Review the latest heartbeat and exchange position reconciliation before restarting. Existing positions remain protected by exchange-side SL/TP.</div> : null}

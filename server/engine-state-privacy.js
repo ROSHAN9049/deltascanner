@@ -20,6 +20,17 @@ export function findWorkerHeartbeatRow(logs) {
   ) || null;
 }
 
+export function resolveWorkerGridAutoRangeStatus(row, { now = Date.now(), maxAgeMs = 180000 } = {}) {
+  const heartbeatAtMs = row?.created_at ? Date.parse(row.created_at) : NaN;
+  const heartbeatFresh = Number.isFinite(heartbeatAtMs) && heartbeatAtMs <= now && now - heartbeatAtMs < maxAgeMs;
+  const flag = row?.data?.gridTestnetDiagnostics?.gridAutoRangeEnvironmentEnabled;
+  return {
+    enabled: heartbeatFresh && typeof flag === 'boolean' ? flag : null,
+    heartbeatFresh,
+    heartbeatAt: Number.isFinite(heartbeatAtMs) ? new Date(heartbeatAtMs).toISOString() : null
+  };
+}
+
 export function normalizeWorkerExecutionMode(row) {
   const mode = String(row?.data?.executionMode || row?.data?.deltaExecutionMode || '').trim().toLowerCase();
   return ['testnet', 'disabled'].includes(mode) ? mode : 'unknown';
@@ -54,6 +65,8 @@ function publicGridTestnetDiagnostics(value) {
     marketDataAvailable: value.marketDataAvailable === true,
     testnetProductAvailable: value.testnetProductAvailable === true,
     executionLocked: true,
+    gridAutoRangeEnvironmentEnabled: typeof value.gridAutoRangeEnvironmentEnabled === 'boolean'
+      ? value.gridAutoRangeEnvironmentEnabled : null,
     status,
     candlesAvailable: safeDiagnosticCount(value.candlesAvailable),
     candlesFresh: value.candlesFresh === true,
@@ -170,6 +183,10 @@ export function protectEngineState(payload, authorized) {
       deltaExecutionMode: payload?.executionCoverage?.deltaExecutionMode || 'unknown',
       deltaExecutionModeSource: payload?.executionCoverage?.deltaExecutionModeSource || 'unavailable',
       gridEntrySafety: null,
+      gridAutoRangeEnvironmentEnabled: payload?.executionCoverage?.workerGridAutoRangeEnvironmentEnabled ?? null,
+      workerGridAutoRangeEnvironmentEnabled: payload?.executionCoverage?.workerGridAutoRangeEnvironmentEnabled ?? null,
+      workerGridAutoRangeHeartbeatFresh: payload?.executionCoverage?.workerGridAutoRangeHeartbeatFresh === true,
+      workerGridAutoRangeHeartbeatAt: payload?.executionCoverage?.workerGridAutoRangeHeartbeatAt || null,
       gridTestnetDiagnostics: publicGridTestnetDiagnostics(payload?.executionCoverage?.gridTestnetDiagnostics),
       optionsTestnetDiagnostics: publicOptionsTestnetDiagnostics(payload?.executionCoverage?.optionsTestnetDiagnostics)
     },
