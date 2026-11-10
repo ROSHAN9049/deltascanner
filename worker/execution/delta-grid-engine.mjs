@@ -927,6 +927,7 @@ export async function manageDeltaTestnetGrid({
   const tradeQuery = 'strategy=eq.GRID&select=id,execution_id,symbol,qty,entry_price,exit_price,fees,net_pnl,net_pnl_verified,exit_reason,result,opened_at,closed_at&order=closed_at.desc&limit=1000';
   let pnl;
   let allTrades = [];
+  let gridPnlPauseRecovered = false;
   try {
     const pnlReadResults = await Promise.allSettled([
       retryGridPnlRead({
@@ -1039,6 +1040,7 @@ export async function manageDeltaTestnetGrid({
     const hasPendingGridReservation = pendingGridOrders.length > 0 ||
       (Array.isArray(state.pendingEntries) && state.pendingEntries.length > 0);
     if (pnl.complete && !hasOpenGridExposure && !hasPendingGridReservation) {
+      gridPnlPauseRecovered = true;
       state.pausedReason = null;
       state.positions = [];
       state.pendingEntries = [];
@@ -1559,8 +1561,11 @@ export async function manageDeltaTestnetGrid({
     await persist();
     return block('EMERGENCY_STOP');
   }
-  if (sharedGridStopReason || settings.gridGlobalPauseReason) {
-    const reason = settings.gridGlobalPauseReason || sharedGridStopReason;
+  const gridGlobalPauseReason = gridPnlPauseRecovered &&
+    settings.gridGlobalPauseReason === 'GRID_PNL_UNVERIFIED'
+    ? null : settings.gridGlobalPauseReason;
+  if (sharedGridStopReason || gridGlobalPauseReason) {
+    const reason = gridGlobalPauseReason || sharedGridStopReason;
     state.pausedReason = reason;
     state.status = 'HALTED';
     pushEvent(state, { type: 'HALT', reason, symbol, price: mark }, at);
