@@ -17,6 +17,7 @@
     "db:migrate": "node scripts/apply-migration.mjs",
     "btc:regime:compare": "node scripts/btc-regime-compare.mjs",
     "db:diagnose-disk": "node scripts/diagnose-disk.mjs",
+    "options:iv:seed": "node scripts/backfill-iv-history.mjs",
     "db:prune-signals": "node scripts/prune-signals-safe.mjs",
     "db:retention:test": "node scripts/test-retention.mjs",
     "diagnose:failed-signals": "node scripts/diagnose-failed-signals.mjs",
