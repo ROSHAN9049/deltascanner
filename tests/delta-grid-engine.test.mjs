@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sizeDeltaGridEntry, assessDeltaGridEntryFill, hasVerifiedGridBracket, cancelAndVerifyGridOrder, cancelUnverifiedGridEntry, calculateTrailingGridRange, getTrailingGridBreakoutDirection, pruneTrailingGridShiftTimestamps, executeTrailingGridShift } from '../worker/execution/delta-grid-engine.mjs';
+import { sizeDeltaGridEntry, assessDeltaGridEntryFill, hasVerifiedGridBracket, cancelAndVerifyGridOrder, cancelUnverifiedGridEntry, calculateTrailingGridRange, getTrailingGridBreakoutDirection, pruneTrailingGridShiftTimestamps, executeTrailingGridShift, retryGridPnlRead, manageDeltaTestnetGrid } from '../worker/execution/delta-grid-engine.mjs';
 import { applyGlobalGridProtectionHalt } from '../worker/execution/delta-multi-grid-engine.mjs';
 
 const candidate = {
@@ -486,4 +486,198 @@ test('global 1.2% Grid range break halts every configured symbol', () => {
   assert.equal(halted.PAXGUSD.status, 'HALTED');
   assert.equal(halted.NVDAXUSD.status, 'HALTED');
   assert.equal(halted.PAXGUSD.pausedReason, 'GRID_RANGE_BREAK');
+});
+
+
+test('Grid P&L verifier retries a transient read failure and succeeds without persisting a halt', async () => {
+  let calls = 0;
+  const delays = [];
+  const logs = [];
+  const result = await retryGridPnlRead({
+    request: 'closed_positions',
+    read: async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('temporary fetch failed');
+      return [];
+    },
+    validate: Array.isArray,
+    sleepFn: async ms => delays.push(ms),
+    database: { async log(...args) { logs.push(args); } }
+  });
+  assert.deepEqual(result, []);
+  assert.equal(calls, 2);
+  assert.deepEqual(delays, [500]);
+  assert.equal(logs.length, 0);
+});
+
+test('Grid P&L verifier fails closed and logs the exact request after bounded retries', async () => {
+  let calls = 0;
+  const delays = [];
+  const logs = [];
+  await assert.rejects(
+    retryGridPnlRead({
+      request: 'grid_trades_count',
+      read: async () => {
+        calls += 1;
+        throw new Error('count endpoint unavailable');
+      },
+      validate: value => Number.isInteger(value) && value >= 0,
+      sleepFn: async ms => delays.push(ms),
+      database: { async log(...args) { logs.push(args); } }
+    }),
+    error => error.request === 'grid_trades_count' && /failed after 4 attempts/.test(error.message)
+  );
+  assert.equal(calls, 4);
+  assert.deepEqual(delays, [500, 1000, 2000]);
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0][2].event, 'grid_pnl_verify_failed');
+  assert.equal(logs[0][2].request, 'grid_trades_count');
+  assert.match(logs[0][2].error, /count endpoint unavailable/);
+});
+
+function makeGridPnlRecoveryFixture({ exchangePositions = [], dbOpenGridRows = [], gridOrders = [] } = {}) {
+  const now = Date.parse('2026-11-10T08:00:00.000Z');
+  const updates = [];
+  const logs = [];
+  const database = {
+    async select(table, query) {
+      if (table === 'dd_delta_positions' && query.startsWith('strategy=eq.GRID&status=in.')) return [];
+      if (table === 'dd_delta_positions' && query.startsWith('strategy=eq.GRID&status=eq.OPEN')) return dbOpenGridRows;
+      if (table === 'dd_delta_positions' && query.startsWith('symbol=eq.')) return [];
+      if (table === 'dd_trades') return [];
+      if (table === 'dd_orders') return gridOrders;
+      return [];
+    },
+    async count() { return 0; },
+    async update(table, query, patch) { updates.push({ table, query, patch }); },
+    async log(level, message, data) { logs.push({ level, message, data }); }
+  };
+  const executor = {
+    async getOpenPositions() { return exchangePositions; }
+  };
+  const state = {
+    version: 2,
+    executionMode: 'DELTA_TESTNET',
+    symbol: 'PAXGUSD',
+    status: 'HALTED',
+    pausedReason: 'GRID_PNL_UNVERIFIED',
+    positions: [{ symbol: 'PAXGUSD', qty: 1, riskUsd: 5 }],
+    pendingEntries: [],
+    trades: [],
+    events: [],
+    realizedPnl: null,
+    dayPnl: null,
+    strategyStartEquity: 1000,
+    dayStartEquity: 1000,
+    currentEquity: 1000,
+    highWaterEquity: 1000,
+    tradeDate: '2026-11-10',
+    wasEnabled: false,
+    lastPrice: 0
+  };
+  const settings = {
+    grid_symbol: 'PAXGUSD',
+    grid_lower_price: 100,
+    grid_upper_price: 110,
+    grid_levels_count: 10,
+    grid_max_positions: 1,
+    grid_risk_per_trade_pct: 0.3,
+    grid_enabled: true,
+    auto_trade: true,
+    enabled: true,
+    continuous_mode: true,
+    max_leverage: 3,
+    grid_state: state,
+    gridSymbols: ['PAXGUSD', 'NVDAXUSD'],
+    // Multi-symbol manager propagates a per-symbol P&L pause through this field.
+    gridGlobalPauseReason: 'GRID_PNL_UNVERIFIED'
+  };
+  return {
+    now, database, executor, state, settings, updates, logs,
+    input: {
+      settings,
+      account: { privateApiAvailable: true, equity: 1000, available: 1000 },
+      ticker: { mark_price: 105 },
+      product: { contract_value: 1, tick_size: 0.01, taker_commission_rate: 0.0005 },
+      candles: Array.from({ length: 6 }, () => ({ open: 105, high: 105, low: 105, close: 105 })),
+      dataFresh: true,
+      database,
+      executor,
+      now: () => now
+    }
+  };
+}
+
+test('Grid automatically resumes after P&L verification succeeds and all configured symbols are flat', async () => {
+  const fixture = makeGridPnlRecoveryFixture();
+  const result = await manageDeltaTestnetGrid(fixture.input);
+  assert.equal(result.state.pausedReason, null);
+  assert.equal(result.state.status, 'ACTIVE');
+  assert.deepEqual(result.state.positions, []);
+  assert.deepEqual(result.state.pendingEntries, []);
+  assert.equal(result.safety.blocked, false);
+  assert.ok(fixture.logs.some(row =>
+    row.message === '[GRID] P&L verification recovered; resuming Grid cycle'
+  ));
+});
+
+test('Grid P&L recovery remains blocked when an exchange position is still open', async () => {
+  const fixture = makeGridPnlRecoveryFixture({
+    exchangePositions: [{
+      symbol: 'PAXGUSD', side: 'BUY', qty: 1, entry_price: 104,
+      client_order_id: 'DDG-PAXGUSD-OPEN'
+    }]
+  });
+  const result = await manageDeltaTestnetGrid(fixture.input);
+  assert.equal(result.state.pausedReason, 'GRID_PNL_UNVERIFIED');
+  assert.equal(result.state.status, 'HALTED');
+  assert.equal(result.safety.blocked, true);
+  assert.equal(result.safety.reason, 'GRID_PNL_UNVERIFIED');
+  assert.equal(fixture.logs.some(row =>
+    row.message === '[GRID] P&L verification recovered; resuming Grid cycle'
+  ), false);
+});
+
+test('Grid P&L recovery remains blocked when an active Grid order or reservation remains', async () => {
+  const fixture = makeGridPnlRecoveryFixture({
+    gridOrders: [{
+      id: 'grid-entry-1', symbol: 'NVDAXUSD', strategy: 'GRID',
+      role: 'ENTRY', state: 'OPEN', client_order_id: 'DDG-NVDAXUSD-OPEN'
+    }]
+  });
+  const result = await manageDeltaTestnetGrid(fixture.input);
+  assert.equal(result.state.pausedReason, 'GRID_PNL_UNVERIFIED');
+  assert.equal(result.state.status, 'HALTED');
+  assert.equal(result.safety.blocked, true);
+  assert.equal(fixture.logs.some(row =>
+    row.message === '[GRID] P&L verification recovered; resuming Grid cycle'
+  ), false);
+});
+
+
+test('Grid remains fail-closed when the P&L database request fails persistently', async () => {
+  const fixture = makeGridPnlRecoveryFixture();
+  let failedReadCalls = 0;
+  fixture.database.select = async (table, query) => {
+    if (table === 'dd_delta_positions' && query.startsWith('strategy=eq.GRID&status=in.')) {
+      failedReadCalls += 1;
+      throw new Error('persistent Supabase fetch failure');
+    }
+    if (table === 'dd_delta_positions' && query.startsWith('strategy=eq.GRID&status=eq.OPEN')) return [];
+    if (table === 'dd_delta_positions' && query.startsWith('symbol=eq.')) return [];
+    if (table === 'dd_trades') return [];
+    if (table === 'dd_orders') return [];
+    return [];
+  };
+  fixture.input.sleepFn = async () => {};
+  const result = await manageDeltaTestnetGrid(fixture.input);
+  assert.equal(failedReadCalls, 4);
+  assert.equal(result.state.pausedReason, 'GRID_PNL_UNVERIFIED');
+  assert.equal(result.state.status, 'HALTED');
+  assert.equal(result.safety.blocked, true);
+  assert.equal(result.safety.reason, 'GRID_PNL_UNVERIFIED');
+  assert.ok(fixture.logs.some(row =>
+    row.data?.event === 'grid_pnl_verify_failed' &&
+    row.data?.request === 'closed_positions'
+  ));
 });

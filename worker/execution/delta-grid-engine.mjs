@@ -49,6 +49,53 @@ function samePrice(a, b, tickSize) {
 
 const cancelledOrderStates = new Set(['CANCELLED', 'CANCELED']);
 
+const GRID_PNL_VERIFY_RETRY_DELAYS_MS = Object.freeze([500, 1000, 2000]);
+const defaultGridPnlSleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * Retry one Grid-only ledger read independently so a failed request is
+ * identified precisely. Three backoff retries (500/1000/2000ms) follow the
+ * initial request; all four ledger reads must still return validated results.
+ */
+export async function retryGridPnlRead({
+  request, read, validate = () => true, database, sleepFn = defaultGridPnlSleep
+} = {}) {
+  if (typeof read !== 'function') throw new Error('Grid P&L read function is required');
+  let lastError = null;
+  for (let attempt = 0; attempt <= GRID_PNL_VERIFY_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      const value = await read();
+      if (!validate(value)) {
+        throw new Error('Grid P&L read returned an incomplete or non-exact response');
+      }
+      return value;
+    } catch (error) {
+      lastError = error;
+      if (attempt < GRID_PNL_VERIFY_RETRY_DELAYS_MS.length) {
+        await sleepFn(GRID_PNL_VERIFY_RETRY_DELAYS_MS[attempt]);
+      }
+    }
+  }
+  const detail = String(lastError?.message || lastError || 'Unknown database read failure').slice(0, 240);
+  const diagnostic = {
+    event: 'grid_pnl_verify_failed',
+    request: String(request || 'unknown'),
+    error: detail,
+    attempts: GRID_PNL_VERIFY_RETRY_DELAYS_MS.length + 1
+  };
+  try {
+    await database?.log?.(
+      'WARN',
+      'Grid P&L verification request failed after bounded retries',
+      diagnostic
+    );
+  } catch {}
+  const finalError = new Error('Grid P&L verification request ' +
+    diagnostic.request + ' failed after ' + diagnostic.attempts + ' attempts: ' + detail);
+  finalError.request = diagnostic.request;
+  throw finalError;
+}
+
 export function hasVerifiedGridBracket(order, expectedStop, expectedTarget, tickSize) {
   const actualStop = numberOrNull(order?.bracket_stop_loss_price);
   const actualTarget = numberOrNull(order?.bracket_take_profit_price);
@@ -816,7 +863,8 @@ export async function manageDeltaTestnetGrid({
   dataFresh = true,
   database,
   executor,
-  now = () => Date.now()
+  now = () => Date.now(),
+  sleepFn = defaultGridPnlSleep
 } = {}) {
   const timestamp = now();
   const at = new Date(timestamp).toISOString();
@@ -880,13 +928,42 @@ export async function manageDeltaTestnetGrid({
   const tradeQuery = 'strategy=eq.GRID&select=id,execution_id,symbol,qty,entry_price,exit_price,fees,net_pnl,net_pnl_verified,exit_reason,result,opened_at,closed_at&order=closed_at.desc&limit=1000';
   let pnl;
   let allTrades = [];
+  let gridPnlPauseRecovered = false;
   try {
-    const [closedPositions, closedPositionCount, trades, tradeCount] = await Promise.all([
-      database.select('dd_delta_positions', closedPositionQuery),
-      database.count('dd_delta_positions', 'strategy=eq.GRID&status=in.(CLOSED,CLOSED_EXTERNALLY)&select=id'),
-      database.select('dd_trades', tradeQuery),
-      database.count('dd_trades', 'strategy=eq.GRID&select=id')
+    const pnlReadResults = await Promise.allSettled([
+      retryGridPnlRead({
+        request: 'closed_positions',
+        read: () => database.select('dd_delta_positions', closedPositionQuery),
+        validate: Array.isArray,
+        database,
+        sleepFn
+      }),
+      retryGridPnlRead({
+        request: 'closed_positions_count',
+        read: () => database.count('dd_delta_positions', 'strategy=eq.GRID&status=in.(CLOSED,CLOSED_EXTERNALLY)&select=id'),
+        validate: value => Number.isInteger(value) && value >= 0,
+        database,
+        sleepFn
+      }),
+      retryGridPnlRead({
+        request: 'grid_trades',
+        read: () => database.select('dd_trades', tradeQuery),
+        validate: Array.isArray,
+        database,
+        sleepFn
+      }),
+      retryGridPnlRead({
+        request: 'grid_trades_count',
+        read: () => database.count('dd_trades', 'strategy=eq.GRID&select=id'),
+        validate: value => Number.isInteger(value) && value >= 0,
+        database,
+        sleepFn
+      })
     ]);
+    const failedPnlRead = pnlReadResults.find(result => result.status === 'rejected');
+    if (failedPnlRead) throw failedPnlRead.reason;
+    const [closedPositions, closedPositionCount, trades, tradeCount] =
+      pnlReadResults.map(result => result.value);
     allTrades = Array.isArray(trades) ? trades : [];
     pnl = verifiedPnlSnapshot({
       closedPositions,
@@ -897,7 +974,9 @@ export async function manageDeltaTestnetGrid({
     });
   } catch (error) {
     await database.log('WARN', 'Delta Testnet Grid P&L verification unavailable; entries remain blocked', {
-      symbol, error: String(error?.message || error).slice(0, 220)
+      symbol,
+      request: error?.request || null,
+      error: String(error?.message || error).slice(0, 260)
     }).catch(() => {});
     return block('GRID_PNL_UNVERIFIED');
   }
@@ -950,6 +1029,40 @@ export async function manageDeltaTestnetGrid({
       dbOpenGridRows.some(position => text(position?.symbol).toUpperCase() === rowSymbol)
     );
   });
+
+  // A prior P&L network failure is recoverable only after a complete fresh
+  // ledger verification and an authoritative flat/no-pending snapshot across
+  // every configured Grid symbol. Unrelated strategies' ledger rows are never
+  // queried or modified here.
+  if (state.pausedReason === 'GRID_PNL_UNVERIFIED') {
+    const exchangeConfiguredPositions = exchangePositions.filter(row =>
+      configuredGridSymbols.includes(text(row?.symbol).toUpperCase()) && n(row?.qty) > 0
+    );
+    const pendingGridOrders = gridOrders.filter(row =>
+      !terminalOrderStates.has(text(row?.state).toUpperCase())
+    );
+    const hasOpenGridExposure = dbOpenGridRows.length > 0 || exchangeConfiguredPositions.length > 0;
+    const hasPendingGridReservation = pendingGridOrders.length > 0 ||
+      (Array.isArray(state.pendingEntries) && state.pendingEntries.length > 0);
+    if (pnl.complete && !hasOpenGridExposure && !hasPendingGridReservation) {
+      gridPnlPauseRecovered = true;
+      state.pausedReason = null;
+      state.positions = [];
+      state.pendingEntries = [];
+      state.openRiskUsd = 0;
+      state.unrealizedPnl = 0;
+      state.status = 'PAUSED';
+      pushEvent(state, { type: 'INFO', reason: 'GRID_PNL_VERIFY_RECOVERED', symbol }, at);
+      await database.log('INFO', '[GRID] P&L verification recovered; resuming Grid cycle', {
+        event: 'grid_pnl_verify_recovered',
+        symbol,
+        verifiedTradeCount: allTrades.length
+      }).catch(() => {});
+    } else {
+      state.status = 'HALTED';
+      return block('GRID_PNL_UNVERIFIED');
+    }
+  }
   const capOpenPositions = [
     ...dbOpenGridRows,
     ...exchangeGridPositions.filter(exchangePosition =>
@@ -1452,8 +1565,11 @@ export async function manageDeltaTestnetGrid({
     await persist();
     return block('EMERGENCY_STOP');
   }
-  if (sharedGridStopReason || settings.gridGlobalPauseReason) {
-    const reason = settings.gridGlobalPauseReason || sharedGridStopReason;
+  const gridGlobalPauseReason = gridPnlPauseRecovered &&
+    settings.gridGlobalPauseReason === 'GRID_PNL_UNVERIFIED'
+    ? null : settings.gridGlobalPauseReason;
+  if (sharedGridStopReason || gridGlobalPauseReason) {
+    const reason = gridGlobalPauseReason || sharedGridStopReason;
     state.pausedReason = reason;
     state.status = 'HALTED';
     pushEvent(state, { type: 'HALT', reason, symbol, price: mark }, at);
