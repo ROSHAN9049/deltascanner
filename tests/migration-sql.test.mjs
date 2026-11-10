@@ -221,3 +221,24 @@ test('regime Options settings migration adds IV and a hard-capped daily loss con
   assert.ok(deltaMigrationRunner.indexOf('20261110000100_regime_options_iv_and_loss_settings.sql') >
     deltaMigrationRunner.indexOf('20261109000300_regime_based_options_strategy.sql'));
 });
+
+
+test('rolling IV history and canonical Options P&L migration is private and linked', () => {
+  const path = fileURLToPath(new URL('../db/migrations/20261110000200_options_iv_history_and_canonical_pnl.sql', import.meta.url));
+  const migration = readFileSync(path, 'utf8');
+  assert.match(migration, /^BEGIN;/);
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS public\.dd_iv_history/i);
+  assert.match(migration, /symbol TEXT NOT NULL/i);
+  assert.match(migration, /iv_current NUMERIC NOT NULL/i);
+  assert.match(migration, /observed_at TIMESTAMPTZ NOT NULL/i);
+  assert.match(migration, /REVOKE ALL ON TABLE public\.dd_iv_history FROM anon, authenticated/i);
+  assert.match(migration, /GRANT ALL ON TABLE public\.dd_iv_history TO service_role/i);
+  assert.match(migration, /ADD COLUMN IF NOT EXISTS delta_position_id BIGINT NULL/i);
+  assert.match(migration, /ADD COLUMN IF NOT EXISTS exit_price NUMERIC NULL/i);
+  assert.match(migration, /ADD COLUMN IF NOT EXISTS close_reason TEXT NULL/i);
+  assert.match(migration, /'OPTIONS_BUY', 'OPTIONS_SELL'/i);
+  assert.match(migration, /NOTIFY pgrst/i);
+  assert.match(migration, /COMMIT;/);
+  assert.ok(deltaMigrationRunner.indexOf('20261110000200_options_iv_history_and_canonical_pnl.sql') >
+    deltaMigrationRunner.indexOf('20261110000100_regime_options_iv_and_loss_settings.sql'));
+});
