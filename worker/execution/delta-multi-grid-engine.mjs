@@ -160,7 +160,7 @@ export async function manageDeltaTestnetMultiGrid({
   let root = aggregateGridState(symbolStates, configuredSymbols, previousRoot);
   const results = [];
   const globalPauseReasons = new Set([
-    'EMERGENCY_STOP', 'DAILY_LOSS_LIMIT', 'OVERALL_DRAWDOWN_STOP',
+    'EMERGENCY_STOP', 'DAILY_LOSS_LIMIT', 'OVERALL_DRAWDOWN_STOP', 'GRID_RANGE_BREAK',
     'GRID_ENTRY_UNCONFIRMED', 'GRID_ORDER_ERROR_REQUIRES_MANUAL_REVIEW',
     'GRID_ORDER_RECONCILIATION_UNAVAILABLE', 'GRID_ORDER_CANCEL_UNCONFIRMED',
     'GRID_BRACKET_UNVERIFIED_CANCELLED', 'GRID_BRACKET_CANCEL_UNCONFIRMED',
@@ -172,7 +172,7 @@ export async function manageDeltaTestnetMultiGrid({
     'GRID_TRAILING_SHIFT_LIMIT', 'GRID_TRAILING_SHIFT_UNCONFIRMED'
   ]);
   const globalHardStopReasons = new Set([
-    'EMERGENCY_STOP', 'DAILY_LOSS_LIMIT', 'OVERALL_DRAWDOWN_STOP'
+    'EMERGENCY_STOP', 'DAILY_LOSS_LIMIT', 'OVERALL_DRAWDOWN_STOP', 'GRID_RANGE_BREAK'
   ]);
 
   const persistRoot = async () => {
