@@ -440,9 +440,9 @@ export function createDeltaOptionsExecution({
     return preview;
   }
 
-  async function assertDailyOptionsLossLimit(equity) {
+  async function assertDailyOptionsLossLimit(equity, databaseLimitPct = null) {
     const accountEquity = positive(equity);
-    const configuredPct = number(env.OPTIONS_DAILY_LOSS_LIMIT_PCT ?? 2);
+    const configuredPct = number(databaseLimitPct ?? env.OPTIONS_DAILY_LOSS_LIMIT_PCT ?? 2);
     if (!accountEquity || configuredPct === null || configuredPct <= 0 || configuredPct > 2) {
       throw new Error('Separate Options daily-loss limit is missing or exceeds the hard 2% cap; entry blocked');
     }
@@ -476,7 +476,7 @@ export function createDeltaOptionsExecution({
     assertTestnetProfile();
     const settingsRows = await database.select(
       'dd_settings',
-      'id=eq.1&select=id,enabled,auto_trade,emergency_stop,options_execution_enabled,last_tick_at,max_options_positions'
+      'id=eq.1&select=id,enabled,auto_trade,emergency_stop,options_execution_enabled,last_tick_at,max_options_positions,options_daily_loss_limit_pct'
     );
     if (!Array.isArray(settingsRows) || settingsRows.length !== 1) {
       throw new Error('Options entry settings are unavailable; order blocked');
@@ -491,7 +491,7 @@ export function createDeltaOptionsExecution({
     if (isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED) && !isEnabled(env.OPTIONS_EXIT_MONITOR_ENABLED)) {
       throw new Error('Options regime entries require OPTIONS_EXIT_MONITOR_ENABLED=true');
     }
-    await assertDailyOptionsLossLimit(preview.equity);
+    await assertDailyOptionsLossLimit(preview.equity, settings.options_daily_loss_limit_pct);
     if (!isMarketTickFresh(settings.last_tick_at, now())) {
       throw new Error('Persisted market tick is stale or unavailable; Options entry blocked');
     }
