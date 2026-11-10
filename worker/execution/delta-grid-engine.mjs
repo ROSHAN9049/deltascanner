@@ -152,7 +152,8 @@ export function sizeDeltaGridEntry({
   const floorStop = entry * (1 - floorPct / 100);
   // Grid targets the next rung. Normalize the protective stop to the shared 1.50% floor
   // so symmetric rung spacing does not become negative net R:R after fees and slippage.
-  const stop = roundStopLossAwayFromEntry(floorStop, tick, 'BUY');
+  const atrBufferedStop = Math.min(nativeStop, floorStop);
+  const stop = roundStopLossAwayFromEntry(atrBufferedStop, tick, 'BUY');
   const target = roundPriceUp(nativeTarget, tick);
   if (!(stop > 0 && stop < entry && target > entry)) {
     return { ok: false, reason: 'GRID_TICK_ROUNDED_BRACKET_INVALID' };
