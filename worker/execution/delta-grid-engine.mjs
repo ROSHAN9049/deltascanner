@@ -152,7 +152,8 @@ export function sizeDeltaGridEntry({
   const floorStop = entry * (1 - floorPct / 100);
   // Grid targets the next rung. Normalize the protective stop to the shared 1.50% floor
   // so symmetric rung spacing does not become negative net R:R after fees and slippage.
-  const stop = roundStopLossAwayFromEntry(floorStop, tick, 'BUY');
+  const atrBufferedStop = candidate.atrBufferedStop === true ? Math.min(nativeStop, floorStop) : floorStop;
+  const stop = roundStopLossAwayFromEntry(atrBufferedStop, tick, 'BUY');
   const target = roundPriceUp(nativeTarget, tick);
   if (!(stop > 0 && stop < entry && target > entry)) {
     return { ok: false, reason: 'GRID_TICK_ROUNDED_BRACKET_INVALID' };
@@ -291,7 +292,8 @@ function parseOrderRaw(value) {
 }
 
 export function calculateTrailingGridRange({
-  direction, lowerPrice, upperPrice, breakoutExitPct = 1.2, shiftPct = 10
+  direction, lowerPrice, upperPrice, breakoutExitPct = 1.2, shiftPct = 10,
+  minRangePct = 2, maxRangePct = 20
 } = {}) {
   const lower = numberOrNull(lowerPrice);
   const upper = numberOrNull(upperPrice);
@@ -307,19 +309,33 @@ export function calculateTrailingGridRange({
   const nextLower = normalizedDirection === 'UP'
     ? upper * (1 - shift / 100)
     : lowerBreakPrice * (1 - shift / 100);
-  const nextUpper = normalizedDirection === 'UP'
+  let nextUpper = normalizedDirection === 'UP'
     ? upperBreakPrice * (1 + shift / 100)
     : lower * (1 + shift / 100);
   if (!(Number.isFinite(nextLower) && nextLower > 0 &&
       Number.isFinite(nextUpper) && nextUpper > nextLower)) {
     return { ok: false, reason: 'GRID_TRAILING_RANGE_INVALID' };
   }
+  const minPct = numberOrNull(minRangePct) ?? 2;
+  const maxPct = numberOrNull(maxRangePct) ?? 20;
+  if (!(minPct > 0 && maxPct >= minPct && maxPct < 100)) {
+    return { ok: false, reason: 'GRID_TRAILING_RANGE_LIMITS_INVALID' };
+  }
+  const center = (nextLower + nextUpper) / 2;
+  const rawWidthPct = (nextUpper - nextLower) / center * 100;
+  const clampedWidthPct = Math.max(minPct, Math.min(maxPct, rawWidthPct));
+  const halfWidth = center * clampedWidthPct / 200;
+  nextUpper = center + halfWidth;
+  const clampedLower = center - halfWidth;
   return {
     ok: true,
     direction: normalizedDirection,
     breakoutPrice: normalizedDirection === 'UP' ? upperBreakPrice : lowerBreakPrice,
-    lowerPrice: Number(nextLower.toPrecision(12)),
-    upperPrice: Number(nextUpper.toPrecision(12))
+    lowerPrice: Number(clampedLower.toPrecision(12)),
+    upperPrice: Number(nextUpper.toPrecision(12)),
+    widthPct: clampedWidthPct,
+    rawWidthPct,
+    clamped: Math.abs(clampedWidthPct - rawWidthPct) > 1e-9
   };
 }
 
@@ -365,7 +381,9 @@ export async function executeTrailingGridShift({
   const mark = numberOrNull(markPrice);
   const shift = calculateTrailingGridRange({
     direction, lowerPrice: currentConfig.lowerPrice, upperPrice: currentConfig.upperPrice,
-    breakoutExitPct: currentConfig.breakoutExitPct, shiftPct: 10
+    breakoutExitPct: currentConfig.breakoutExitPct, shiftPct: 10,
+    minRangePct: Number(settings.grid_min_range_pct ?? process.env.GRID_MIN_RANGE_PCT ?? 2),
+    maxRangePct: Number(settings.grid_max_range_pct ?? process.env.GRID_MAX_RANGE_PCT ?? 20)
   });
   const fail = async (reason, error = null, level = 'CRITICAL') => {
     state.status = 'HALTED';
@@ -607,6 +625,12 @@ export async function executeTrailingGridShift({
       realizedPnl: null, pnlPendingReconciliation: true
     };
     pushEvent(state, event, at);
+    await database.log('INFO', '[GRID] Trailing Shift triggered. New Range: [' +
+      shift.lowerPrice + '] - [' + shift.upperPrice + '] (Width: ' +
+      Number(shift.widthPct).toFixed(2) + '%)', {
+      symbol: normalizedSymbol, direction, lowerPrice: shift.lowerPrice,
+      upperPrice: shift.upperPrice, widthPct: shift.widthPct, atrClamped: shift.clamped
+    }).catch(() => {});
     const update = {
       grid_symbol_configs: nextConfigMap, grid_state: state, updated_at: at
     };

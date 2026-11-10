@@ -56,6 +56,12 @@ const gridSymbols = parseDeltaTestnetGridSymbols(process.env.GRID_SYMBOLS);
 const gridExecutionRequested = String(process.env.GRID_EXECUTION_ALLOWED || '').trim().toLowerCase() === 'true';
 const gridTrailingEnabled = String(process.env.GRID_TRAILING_ENABLED || '').trim().toLowerCase() === 'true';
 const gridAutoRangeEnabled = String(process.env.GRID_AUTO_RANGE_ENABLED || '').trim().toLowerCase() === 'true';
+const gridAtrMultiplier = Number.isFinite(Number(process.env.GRID_ATR_MULTIPLIER)) && Number(process.env.GRID_ATR_MULTIPLIER) > 0
+  ? Number(process.env.GRID_ATR_MULTIPLIER) : 2.5;
+const gridMinRangePct = Number.isFinite(Number(process.env.GRID_MIN_RANGE_PCT)) && Number(process.env.GRID_MIN_RANGE_PCT) > 0
+  ? Number(process.env.GRID_MIN_RANGE_PCT) : 2;
+const gridMaxRangePct = Number.isFinite(Number(process.env.GRID_MAX_RANGE_PCT)) && Number(process.env.GRID_MAX_RANGE_PCT) >= gridMinRangePct
+  ? Number(process.env.GRID_MAX_RANGE_PCT) : 20;
 const directDeltaExecutionEnabled = resolveDirectDeltaExecutionEnabled(environment, deltaExecutionMode);
 // Grid has an additional explicit opt-in, and can never run outside the
 // worker's already-locked Delta India TESTNET execution profile.
@@ -113,6 +119,9 @@ export const CONFIG = Object.freeze({
   gridExecutionAllowed,
   gridTrailingEnabled,
   gridAutoRangeEnabled,
+  gridAtrMultiplier,
+  gridMinRangePct,
+  gridMaxRangePct,
   gridSymbols,
   // Keep private REST operations on the environment-specific API base. Public
   // scanner data has an explicit production feed, independent of execution mode.

@@ -118,3 +118,71 @@ export function hasGridAutoRangeExposure({
     ])
   ].some(matchesSymbol);
 }
+
+
+/** Calculate the 14-period Wilder-style ATR as the arithmetic mean of the
+ * latest 14 true ranges. Only completed daily candles are eligible. */
+export function calculateDailyAtr(candles, { periods = 14, timestamp = Date.now() } = {}) {
+  const cutoff = utcDayStartSeconds(timestamp);
+  const rows = (Array.isArray(candles) ? candles : [])
+    .map(row => ({ ...row, _time: toEpochSeconds(row?.time ?? row?.timestamp) }))
+    .filter(row => row._time !== null && row._time < cutoff)
+    .sort((a, b) => a._time - b._time);
+  const valid = rows.filter(row => {
+    const high = Number(row.high), low = Number(row.low), close = Number(row.close);
+    return Number.isFinite(high) && Number.isFinite(low) && Number.isFinite(close) &&
+      high > 0 && low > 0 && high >= low && close > 0;
+  });
+  if (!Number.isInteger(periods) || periods < 1 || valid.length < periods) {
+    return { ok: false, reason: 'INSUFFICIENT_DAILY_CANDLES', periods, available: valid.length };
+  }
+  const trueRanges = [];
+  for (let i = 0; i < valid.length; i++) {
+    const high = Number(valid[i].high), low = Number(valid[i].low);
+    if (i === 0) trueRanges.push(high - low);
+    else {
+      const previousClose = Number(valid[i - 1].close);
+      trueRanges.push(Math.max(high - low, Math.abs(high - previousClose), Math.abs(low - previousClose)));
+    }
+  }
+  const selected = trueRanges.slice(-periods);
+  if (selected.length !== periods || selected.some(value => !Number.isFinite(value) || value < 0)) {
+    return { ok: false, reason: 'INVALID_DAILY_CANDLE_RANGE', periods, available: valid.length };
+  }
+  const atr = selected.reduce((sum, value) => sum + value, 0) / periods;
+  const close = Number(valid.at(-1).close);
+  return { ok: atr > 0 && close > 0, atr, atrPct: atr / close * 100, close, periods, candleCount: valid.length };
+}
+
+/** Center an ATR-derived band on the current mark and clamp its percentage
+ * width symmetrically around that mark. The legacy daily-candle buffer is
+ * retained only as a fail-safe when the ATR history is insufficient. */
+export function calculateAtrGridRange(candles, {
+  currentPrice, multiplier = 2.5, minRangePct = 2, maxRangePct = 20,
+  fallbackCandle = null, timestamp = Date.now()
+} = {}) {
+  const price = Number(currentPrice);
+  const mult = Number(multiplier), minPct = Number(minRangePct), maxPct = Number(maxRangePct);
+  if (!(Number.isFinite(price) && price > 0 && Number.isFinite(mult) && mult > 0 &&
+      Number.isFinite(minPct) && minPct > 0 && Number.isFinite(maxPct) && maxPct >= minPct && maxPct < 100)) {
+    throw new Error('ATR Grid range inputs are invalid');
+  }
+  const atr = calculateDailyAtr(candles, { periods: 14, timestamp });
+  if (!atr.ok) {
+    if (!fallbackCandle) return { ok: false, reason: atr.reason, atr, fallback: true };
+    const legacy = calculateAutoGridRange(fallbackCandle, { bufferPct: 3, minimumWidthPct: minPct });
+    return { ok: true, ...legacy, atr: null, atrPct: null, multiplier: mult, fallback: true,
+      warning: 'Fewer than 14 completed daily candles; using legacy 3% buffer' };
+  }
+  const rawWidthPct = atr.atr / price * 100 * mult;
+  const widthPct = Math.max(minPct, Math.min(maxPct, rawWidthPct));
+  const half = price * widthPct / 200;
+  const lowerPrice = price - half, upperPrice = price + half;
+  return {
+    ok: true, lowerPrice: Number(lowerPrice.toPrecision(12)),
+    upperPrice: Number(upperPrice.toPrecision(12)), widthPct,
+    rawWidthPct, currentPrice: price, atr: atr.atr, atrPct: atr.atr / price * 100,
+    multiplier: mult, clamped: Math.abs(widthPct - rawWidthPct) > 1e-9,
+    fallback: false, candleCount: atr.candleCount
+  };
+}

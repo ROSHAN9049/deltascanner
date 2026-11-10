@@ -260,14 +260,14 @@ test('Grid protection failure halts both configured symbols immediately in the s
 
 test('Trailing Grid shifts the breached range outward by the configured 10% bands', () => {
   const up = calculateTrailingGridRange({
-    direction: 'UP', lowerPrice: 90, upperPrice: 100, breakoutExitPct: 1.2
+    direction: 'UP', lowerPrice: 90, upperPrice: 100, breakoutExitPct: 1.2, maxRangePct: 50
   });
   assert.equal(up.ok, true);
   assert.equal(up.lowerPrice, 90);
   assert.ok(up.upperPrice > 111.31 && up.upperPrice < 111.33);
 
   const down = calculateTrailingGridRange({
-    direction: 'DOWN', lowerPrice: 90, upperPrice: 100, breakoutExitPct: 1.2
+    direction: 'DOWN', lowerPrice: 90, upperPrice: 100, breakoutExitPct: 1.2, maxRangePct: 50
   });
   assert.equal(down.ok, true);
   assert.ok(down.lowerPrice > 80.02 && down.lowerPrice < 80.04);
@@ -358,7 +358,8 @@ test('Trailing Grid market shift cancels pending Grid entries and verifies all G
         PAXGUSD: { lowerPrice: 4000, upperPrice: 4200, levelsCount: 10 },
         NVDAXUSD: { lowerPrice: 175, upperPrice: 190, levelsCount: 10 }
       },
-      gridGlobalTrailingShiftTimestamps: []
+      gridGlobalTrailingShiftTimestamps: [],
+      grid_min_range_pct: 2, grid_max_range_pct: 50
     },
     symbol: 'PAXGUSD',
     configuredSymbols: ['PAXGUSD', 'NVDAXUSD'],
@@ -456,4 +457,33 @@ test('Trailing Grid refuses to close exchange exposure without a matching Grid-o
   assert.equal(cancelCalls, 0);
   assert.equal(updates.length, 1);
   assert.equal(logs[0].level, 'CRITICAL');
+});
+
+
+test('Trailing Grid shifts retain the 10% shift but clamp width to configured ATR limits', () => {
+  const narrow = calculateTrailingGridRange({
+    direction: 'UP', lowerPrice: 100, upperPrice: 101,
+    breakoutExitPct: 1.2, shiftPct: 10, minRangePct: 2, maxRangePct: 20
+  });
+  assert.equal(narrow.ok, true);
+  assert.equal(narrow.clamped, true);
+  assert.ok(narrow.widthPct >= 2 && narrow.widthPct <= 20);
+  const wide = calculateTrailingGridRange({
+    direction: 'UP', lowerPrice: 100, upperPrice: 140,
+    breakoutExitPct: 1.2, shiftPct: 10, minRangePct: 2, maxRangePct: 20
+  });
+  assert.equal(wide.ok, true);
+  assert.equal(wide.clamped, true);
+  assert.ok(wide.widthPct <= 20 + 1e-8);
+});
+
+test('global 1.2% Grid range break halts every configured symbol', () => {
+  const states = {
+    PAXGUSD: { status: 'ACTIVE', positions: [{ symbol: 'PAXGUSD', qty: 1 }] },
+    NVDAXUSD: { status: 'ACTIVE', positions: [{ symbol: 'NVDAXUSD', qty: 1 }] }
+  };
+  const halted = applyGlobalGridProtectionHalt(states, ['PAXGUSD', 'NVDAXUSD'], 'GRID_RANGE_BREAK', '2026-11-10T00:00:00.000Z');
+  assert.equal(halted.PAXGUSD.status, 'HALTED');
+  assert.equal(halted.NVDAXUSD.status, 'HALTED');
+  assert.equal(halted.PAXGUSD.pausedReason, 'GRID_RANGE_BREAK');
 });

@@ -32,7 +32,7 @@ import { buildApiDerivedTrackingPlan, strategyForDerivedTrade } from './tradetro
 import { deltaExecutor } from './execution/delta-executor.mjs';
 import { projectCanonicalDeltaBrackets } from './execution/delta-position-projection.mjs';
 import { manageDeltaTestnetMultiGrid } from './execution/delta-multi-grid-engine.mjs';
-import { calculateAutoGridRange, hasGridAutoRangeExposure, isAutoGridRangeRefreshDue, selectLatestCompletedDailyCandle, utcDayKey } from '../shared/grid-auto-range.js';
+import { calculateAutoGridRange, calculateAtrGridRange, hasGridAutoRangeExposure, isAutoGridRangeRefreshDue, selectLatestCompletedDailyCandle, utcDayKey } from '../shared/grid-auto-range.js';
 import { assertDirectDeltaExecutionMode, getExecutionRouteBlockReason, DELTA_TESTNET_FUTURES_ALLOWLIST, isAllowedDeltaTestnetFutureSymbol, isEligibleDeltaTestnetPerpetualProduct, isMarketTickFresh, canStartWorkerInExecutionProfile } from './execution/execution-route-policy.mjs';
 import { canExecuteDeltaTestnetOrders, checkDeltaTestnetPrivateApi, isPrivateApiConnectivityError } from './execution/testnet-private-api-health.mjs';
 import {
@@ -811,13 +811,34 @@ export class DeltaEngine {
         });
       }
 
-      const dailyRanges = await Promise.all(normalizedSymbols.map(async symbol => {
-        const candles = await this.adapter.candles(symbol, '1d', 4);
+      const [dailyCandlesBySymbol, marketTickers] = await Promise.all([
+        Promise.all(normalizedSymbols.map(async symbol => ({
+          symbol, candles: await this.adapter.candles(symbol, '1d', 20)
+        }))),
+        this.adapter.tickers()
+      ]);
+      const tickerRows = Array.isArray(marketTickers) ? marketTickers : [];
+      const dailyRanges = dailyCandlesBySymbol.map(({ symbol, candles }) => {
         const candle = selectLatestCompletedDailyCandle(candles, timestamp);
         if (!candle) throw new Error('No completed previous-UTC-day 1D candle is available for ' + symbol);
-        const range = calculateAutoGridRange(candle, { bufferPct: 3, minimumWidthPct: 2 });
+        const ticker = tickerRows.find(row => String(row?.symbol || '').toUpperCase() === symbol) || {};
+        const currentPrice = Number(ticker.mark_price ?? ticker.close ?? ticker.last_price ?? candle.close);
+        const range = calculateAtrGridRange(candles, {
+          currentPrice,
+          multiplier: CONFIG.gridAtrMultiplier,
+          minRangePct: CONFIG.gridMinRangePct,
+          maxRangePct: CONFIG.gridMaxRangePct,
+          fallbackCandle: candle,
+          timestamp
+        });
+        if (!range.ok) throw new Error('ATR range calculation failed for ' + symbol + ': ' + range.reason);
+        if (range.fallback) {
+          void this.log('WARN', '[GRID] Fewer than 14 completed daily candles; using legacy 3% fixed buffer', {
+            symbol, availableCandles: range.atr?.available ?? 0
+          }).catch(() => {});
+        }
         return { symbol, candle, range };
-      }));
+      });
 
       const existingConfigs = settings.grid_symbol_configs && typeof settings.grid_symbol_configs === 'object'
         ? settings.grid_symbol_configs : {};
@@ -831,7 +852,12 @@ export class DeltaEngine {
           ...previous,
           lowerPrice: row.range.lowerPrice,
           upperPrice: row.range.upperPrice,
-          levelsCount: Number.isInteger(levelsCount) && levelsCount >= 8 && levelsCount <= 12 ? levelsCount : 10
+          levelsCount: Number.isInteger(levelsCount) && levelsCount >= 8 && levelsCount <= 12 ? levelsCount : 10,
+          atr: row.range.atr ?? null,
+          atrPct: row.range.atrPct ?? null,
+          multiplier: row.range.multiplier ?? CONFIG.gridAtrMultiplier,
+          widthPct: row.range.widthPct,
+          atrFallback: row.range.fallback === true
         };
         appliedRanges[row.symbol] = {
           dailyLow: row.range.dailyLow,
@@ -839,7 +865,11 @@ export class DeltaEngine {
           lowerPrice: row.range.lowerPrice,
           upperPrice: row.range.upperPrice,
           candleTime: row.candle.time ?? row.candle.timestamp ?? null,
-          widthPct: row.range.widthPct
+          widthPct: row.range.widthPct,
+          atr: row.range.atr ?? null,
+          atrPct: row.range.atrPct ?? null,
+          multiplier: row.range.multiplier ?? CONFIG.gridAtrMultiplier,
+          fallback: row.range.fallback === true
         };
       }
 
