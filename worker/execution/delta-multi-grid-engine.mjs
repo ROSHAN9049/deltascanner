@@ -207,6 +207,7 @@ export async function manageDeltaTestnetMultiGrid({
       grid_lower_price: lowerPrice,
       grid_upper_price: upperPrice,
       grid_levels_count: levelsCount,
+      grid_atr: Number(config.atr) || 0,
       grid_max_positions: 1,
       gridGlobalOpenRiskUsd,
       gridGlobalPauseReason: priorGlobalPause,
