@@ -358,7 +358,8 @@ test('Trailing Grid market shift cancels pending Grid entries and verifies all G
         PAXGUSD: { lowerPrice: 4000, upperPrice: 4200, levelsCount: 10 },
         NVDAXUSD: { lowerPrice: 175, upperPrice: 190, levelsCount: 10 }
       },
-      gridGlobalTrailingShiftTimestamps: []
+      gridGlobalTrailingShiftTimestamps: [],
+      grid_min_range_pct: 2, grid_max_range_pct: 50
     },
     symbol: 'PAXGUSD',
     configuredSymbols: ['PAXGUSD', 'NVDAXUSD'],
