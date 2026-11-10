@@ -24,6 +24,7 @@ import {
 import { countOptionProductsByUnderlying, replaceOptionCacheSnapshot } from './options-cache-snapshot.mjs';
 import { detectOptionsMarketRegime } from './options-regime-strategy.mjs';
 import { calculateRollingIvRank, extractCurrentImpliedVolatility } from './options-iv-rank.mjs';
+import { buildIvHistoryGroup, groupIvHistoryByBucket, ivHistoryGroupKey } from './options-iv-grouping.mjs';
 import { selectBestOptionCandidates } from './options-candidate-selection.mjs';
 import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from './signal-failure-diagnostics.mjs';
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
@@ -2454,51 +2455,66 @@ export class DeltaEngine {
         // Build our own rolling IV Rank from timestamped Delta ticker/Greeks IV
         // observations. Missing history, an unavailable DB, or <7 days of data
         // deliberately leaves iv_rank NULL so the candidate is blocked.
-        const ivObservations = joined.map(ticker => ({
-          ticker,
-          iv: extractCurrentImpliedVolatility(ticker)
-        })).filter(item => item.iv !== null);
+        const ivObservations = joined.map(ticker => {
+          const iv = extractCurrentImpliedVolatility(ticker);
+          const group = buildIvHistoryGroup(ticker, underlying, now);
+          return iv !== null && group ? { ticker, iv, group } : null;
+        }).filter(Boolean);
         for (const ticker of selected) {
           ticker.iv_current = extractCurrentImpliedVolatility(ticker);
           ticker.iv_rank = null;
+          const group = buildIvHistoryGroup(ticker, underlying, now);
+          ticker.iv_delta_bucket = group?.delta_bucket ?? null;
+          ticker.iv_dte_bucket = group?.dte_bucket ?? null;
+          ticker.iv_rank_block_reason = ticker.iv_current === null
+            ? 'IV_CURRENT_UNAVAILABLE'
+            : group ? 'IV_GROUP_HISTORY_NOT_READY' : 'IV_GROUP_UNAVAILABLE';
         }
         if (ivObservations.length && typeof db.insertMany === 'function') {
           try {
             const observedAt = new Date(now).toISOString();
-            await db.insertMany('dd_iv_history', ivObservations.map(({ ticker, iv }) => ({
+            await db.insertMany('dd_iv_history', ivObservations.map(({ ticker, iv, group }) => ({
               symbol: ticker.symbol,
-              underlying,
+              ...group,
               iv_current: iv,
               observed_at: observedAt,
               source: 'delta_public_option_ticker'
             })));
-            const symbols = selected.filter(ticker => ticker.iv_current !== null)
-              .map(ticker => ticker.symbol)
-              .filter(symbol => /^[CP]-[A-Z0-9]+-[0-9.]+-\d{6}$/.test(symbol));
-            if (symbols.length) {
-              const cutoff = encodeURIComponent(new Date(now - 30 * 86_400_000).toISOString());
-              const history = await db.select('dd_iv_history',
-                'symbol=in.(' + symbols.join(',') + ')&observed_at=gte.' + cutoff +
-                '&select=symbol,iv_current,observed_at&order=observed_at.asc&limit=10000');
-              if (!Array.isArray(history)) throw new Error('IV history query returned an invalid response');
-              const bySymbol = new Map();
-              for (const row of history) {
-                if (!bySymbol.has(row.symbol)) bySymbol.set(row.symbol, []);
-                bySymbol.get(row.symbol).push(row);
+
+            // Fetch the rolling history for this underlying once, then reuse it
+            // across contracts sharing the same normalized market-risk bucket.
+            // This deliberately bridges contract-symbol changes at expiry.
+            const cutoff = encodeURIComponent(new Date(now - 30 * 86_400_000).toISOString());
+            const history = await db.select('dd_iv_history',
+              'underlying=eq.' + encodeURIComponent(underlying) +
+              '&observed_at=gte.' + cutoff +
+              '&select=underlying,option_type,delta_bucket,dte_bucket,iv_current,observed_at' +
+              '&order=observed_at.asc&limit=10000');
+            if (!Array.isArray(history)) throw new Error('IV grouped history query returned an invalid response');
+            const byGroup = groupIvHistoryByBucket(history);
+            for (const ticker of selected) {
+              if (ticker.iv_current === null) continue;
+              const group = buildIvHistoryGroup(ticker, underlying, now);
+              const key = group ? ivHistoryGroupKey(group) : null;
+              if (!key) {
+                ticker.iv_rank = null;
+                ticker.iv_history_days = 0;
+                ticker.iv_rank_block_reason = 'IV_GROUP_UNAVAILABLE';
+                continue;
               }
-              for (const ticker of selected) {
-                const result = calculateRollingIvRank(bySymbol.get(ticker.symbol) || [], ticker.iv_current, now);
-                ticker.iv_rank = result.ivRank;
-                ticker.iv_history_days = result.historyDays;
-                ticker.iv_rank_block_reason = result.reason;
-              }
+              const result = calculateRollingIvRank(byGroup.get(key) || [], ticker.iv_current, now);
+              ticker.iv_rank = result.ivRank;
+              ticker.iv_history_days = result.historyDays;
+              ticker.iv_rank_block_reason = result.reason;
+              ticker.iv_delta_bucket = group.delta_bucket;
+              ticker.iv_dte_bucket = group.dte_bucket;
             }
           } catch (error) {
             for (const ticker of selected) {
               ticker.iv_rank = null;
               ticker.iv_rank_block_reason = 'IV_HISTORY_PERSISTENCE_OR_QUERY_FAILED';
             }
-            await this.log('WARN', 'Rolling Options IV Rank unavailable; all affected entries fail closed', {
+            await this.log('WARN', 'Grouped rolling Options IV Rank unavailable; all affected entries fail closed', {
               underlying, observations: ivObservations.length,
               error: String(error?.message || error).slice(0, 240),
               orderRoutingAttempted: false
@@ -3651,6 +3667,8 @@ export class DeltaEngine {
       market_regime: s.marketRegime || 'UNKNOWN',
       iv_rank: s.ivRank,
       iv_current: n(s.ticker?.iv_current) || null,
+      iv_delta_bucket: s.ticker?.iv_delta_bucket || null,
+      iv_dte_bucket: s.ticker?.iv_dte_bucket || null,
       market_data_source: 'production_public',
       delta: s.delta,
       gamma: s.gamma,
@@ -3684,6 +3702,8 @@ export class DeltaEngine {
         marketRegime: s.marketRegime || 'UNKNOWN',
         ivRank: s.ivRank ?? null,
         ivCurrent: s.ticker?.iv_current ?? null,
+        ivDeltaBucket: s.ticker?.iv_delta_bucket ?? null,
+        ivDteBucket: s.ticker?.iv_dte_bucket ?? null,
         ivHistoryDays: s.ticker?.iv_history_days ?? 0,
         ivRankBlockReason: s.ticker?.iv_rank_block_reason ?? null,
         // Keep cached detail fields aligned with the top-level Greek columns so
