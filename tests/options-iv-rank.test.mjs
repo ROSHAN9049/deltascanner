@@ -11,6 +11,9 @@ test('normalizes decimal and percentage implied volatility', () => {
   assert.equal(normalizeImpliedVolatility(0.65), 65);
   assert.equal(normalizeImpliedVolatility(65), 65);
   assert.equal(extractCurrentImpliedVolatility({ greeks: { iv: 0.42 } }), 42);
+  assert.equal(extractCurrentImpliedVolatility({ quotes: { bid_iv: '0.22', ask_iv: '0.26' } }), 24);
+  assert.equal(extractCurrentImpliedVolatility({ quotes: { bid_iv: '0.22' } }), 22);
+  assert.equal(extractCurrentImpliedVolatility({ mark_iv: '0.31', quotes: { bid_iv: '0.22', ask_iv: '0.26' } }), 31);
   assert.equal(extractCurrentImpliedVolatility({}), null);
 });
 
