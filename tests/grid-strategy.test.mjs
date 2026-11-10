@@ -282,3 +282,19 @@ test('Grid default risk matches the futures scanner base risk and never clamps b
   });
   assert.equal(low.riskPerTradePct, 0.3);
 });
+
+
+test('individual Grid stop includes a 0.1 ATR buffer below the next geometric rung', () => {
+  const settings = { ...baseSettings, grid_atr: 1, grid_levels_count: 8 };
+  const first = evaluateGridTick({
+    settings, state: createGridState(), price: 111, equity: 5000,
+    available: 5000, contractValue: 1, timestamp: Date.parse('2026-10-09T05:00:00Z')
+  });
+  const next = evaluateGridTick({
+    settings, state: first.state, price: 104, equity: 5000,
+    available: 5000, contractValue: 1, timestamp: Date.parse('2026-10-09T05:00:15Z')
+  });
+  assert.equal(next.entered.length, 1);
+  const lowerRung = next.config.levels[next.entered[0].levelIndex - 1].price;
+  assert.ok(Math.abs(next.entered[0].stopPrice - (lowerRung - 0.1)) < 1e-8);
+});
