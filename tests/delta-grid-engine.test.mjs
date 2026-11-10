@@ -653,3 +653,31 @@ test('Grid P&L recovery remains blocked when an active Grid order or reservation
     row.message === '[GRID] P&L verification recovered; resuming Grid cycle'
   ), false);
 });
+
+
+test('Grid remains fail-closed when the P&L database request fails persistently', async () => {
+  const fixture = makeGridPnlRecoveryFixture();
+  let failedReadCalls = 0;
+  fixture.database.select = async (table, query) => {
+    if (table === 'dd_delta_positions' && query.startsWith('strategy=eq.GRID&status=in.')) {
+      failedReadCalls += 1;
+      throw new Error('persistent Supabase fetch failure');
+    }
+    if (table === 'dd_delta_positions' && query.startsWith('strategy=eq.GRID&status=eq.OPEN')) return [];
+    if (table === 'dd_delta_positions' && query.startsWith('symbol=eq.')) return [];
+    if (table === 'dd_trades') return [];
+    if (table === 'dd_orders') return [];
+    return [];
+  };
+  fixture.input.sleepFn = async () => {};
+  const result = await manageDeltaTestnetGrid(fixture.input);
+  assert.equal(failedReadCalls, 4);
+  assert.equal(result.state.pausedReason, 'GRID_PNL_UNVERIFIED');
+  assert.equal(result.state.status, 'HALTED');
+  assert.equal(result.safety.blocked, true);
+  assert.equal(result.safety.reason, 'GRID_PNL_UNVERIFIED');
+  assert.ok(fixture.logs.some(row =>
+    row.data?.event === 'grid_pnl_verify_failed' &&
+    row.data?.request === 'closed_positions'
+  ));
+});
