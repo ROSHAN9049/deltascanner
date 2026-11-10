@@ -67,7 +67,7 @@ function harness({
       }];
       if (table === 'dd_delta_positions') {
         if (query.includes('status=eq.OPEN')) return canonicalRows.filter(row => row.status === 'OPEN');
-        const idMatch = query.match(/id=eq.(\\d+)/);
+        const idMatch = query.match(/id=eq.(\d+)/);
         if (idMatch) return canonicalRows.filter(row => row.id === Number(idMatch[1]));
         return canonicalRows;
       }
@@ -107,7 +107,7 @@ function harness({
     },
     async update(table, query, patch) {
       if (table === 'dd_delta_positions') {
-        const id = Number(query.match(/id=eq.(\\d+)/)?.[1]);
+        const id = Number(query.match(/id=eq.(\d+)/)?.[1]);
         const row = canonicalRows.find(item => item.id === id && (!query.includes('status=eq.OPEN') || item.status === 'OPEN'));
         if (row) Object.assign(row, patch);
         return row ? [row] : [];
