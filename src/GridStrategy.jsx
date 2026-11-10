@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { safeNum } from './formatters.js';
 import { apiUrl } from './api-url.js';
 import { calculateAtrGridRange, selectLatestCompletedDailyCandle } from '../shared/grid-auto-range.js';
-import { resolveGridAtrSnapshot } from './grid-atr-snapshot.js';
+import { readGridSymbolConfig, resolveGridAtrSnapshot } from './grid-atr-snapshot.js';
 import { GRID_BRIDGE_MAX_POSITIONS, GRID_RISK_PER_TRADE_CHOICES, getGridDisplayStatus, normalizeGridRiskPerTradePct } from '../shared/grid-settings.js';
 
 const DEFAULT_GRID_SYMBOLS = Object.freeze(['PAXGUSD', 'NVDAXUSD']);
@@ -51,9 +51,13 @@ function parseDraft(settings, symbols) {
       levelsCount: Number(config.levelsCount ?? config.grid_levels_count ?? (index === 0 ? settings.grid_levels_count : 10) ?? 10),
       atr: snapshot.atr,
       atrPct: snapshot.atrPct,
+      atr_14d: snapshot.atr,
+      atr_pct: snapshot.atrPct,
       atrSnapshotStatus: snapshot.status,
+      atr_snapshot_status: snapshot.status,
       atrFallback: snapshot.fallback,
       atrSnapshotAt: snapshot.snapshotAt,
+      atr_snapshot_at: snapshot.snapshotAt,
       multiplier: config.multiplier ?? 2.5,
       widthPct: config.widthPct ?? null
     }];
@@ -112,11 +116,22 @@ export default function GridStrategy({
     const ticker = market.find(row => String(row.symbol || '').toUpperCase() === symbol) || {};
     const currentPrice = n(ticker.mark_price || ticker.price || ticker.close);
     const levels = levelsFor(config.lowerPrice, config.upperPrice, config.levelsCount);
+    // Read the database's canonical snake_case fields directly. Keep draft/legacy
+    // aliases as fallbacks so the ATR card remains populated during UI edits.
+    const savedSymbolConfig = readGridSymbolConfig(settings, symbol);
+    const resolvedAtrSnapshot = resolveGridAtrSnapshot(settings, symbol, config);
+    const atrSnapshot = {
+      ...resolvedAtrSnapshot,
+      atr: safeNum(savedSymbolConfig.atr_14d ?? savedSymbolConfig.atr) ??
+        safeNum(config.atr_14d ?? config.atr) ?? resolvedAtrSnapshot.atr,
+      atrPct: safeNum(savedSymbolConfig.atr_pct ?? savedSymbolConfig.atrPct) ??
+        safeNum(config.atr_pct ?? config.atrPct) ?? resolvedAtrSnapshot.atrPct
+    };
     const symbolPositions = positions.filter(position => String(position.symbol || '').toUpperCase() === symbol);
     const symbolPending = pendingEntries.filter(order => String(order.symbol || '').toUpperCase() === symbol);
     const symbolState = gridState.symbolStates?.[symbol] || gridState.symbolSummaries?.[symbol] || {};
     return {
-      symbol, config, atrSnapshot: resolveGridAtrSnapshot(settings, symbol, config), currentPrice, levels, symbolPositions, symbolPending, symbolState,
+      symbol, config, atrSnapshot, currentPrice, levels, symbolPositions, symbolPending, symbolState,
       valid: levels.length >= 8 && n(config.lowerPrice) > 0 && n(config.upperPrice) > n(config.lowerPrice)
     };
   });

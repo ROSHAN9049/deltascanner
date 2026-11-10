@@ -23,7 +23,9 @@ export function findWorkerHeartbeatRow(logs) {
 export function resolveWorkerGridAutoRangeStatus(row, { now = Date.now(), maxAgeMs = 180000 } = {}) {
   const heartbeatAtMs = row?.created_at ? Date.parse(row.created_at) : NaN;
   const heartbeatFresh = Number.isFinite(heartbeatAtMs) && heartbeatAtMs <= now && now - heartbeatAtMs < maxAgeMs;
-  const flag = row?.data?.gridTestnetDiagnostics?.gridAutoRangeEnvironmentEnabled;
+  const flag = typeof row?.data?.gridAutoRangeEnvironmentEnabled === 'boolean'
+    ? row.data.gridAutoRangeEnvironmentEnabled
+    : row?.data?.gridTestnetDiagnostics?.gridAutoRangeEnvironmentEnabled;
   return {
     enabled: heartbeatFresh && typeof flag === 'boolean' ? flag : null,
     heartbeatFresh,
@@ -121,6 +123,10 @@ function publicHeartbeatRows(logs) {
       executionMode: mode,
       deltaExecutionMode: mode,
       deltaEnvironment: String(row?.data?.deltaEnvironment || '').slice(0, 40) || null,
+      gridAutoRangeEnvironmentEnabled: typeof row?.data?.gridAutoRangeEnvironmentEnabled === 'boolean'
+        ? row.data.gridAutoRangeEnvironmentEnabled
+        : typeof row?.data?.gridTestnetDiagnostics?.gridAutoRangeEnvironmentEnabled === 'boolean'
+          ? row.data.gridTestnetDiagnostics.gridAutoRangeEnvironmentEnabled : null,
       lastTickAt: row?.data?.lastTickAt || null,
       gridEntrySafety: grid && typeof grid === 'object' ? {
         configured: grid.configured === true,

@@ -22,6 +22,7 @@ function sampleState() {
         created_at: '2026-10-14T00:01:00Z',
         data: {
           deltaExecutionMode: 'testnet', deltaEnvironment: 'TESTNET',
+          gridAutoRangeEnvironmentEnabled: true,
           lastTickAt: '2026-10-14T00:01:00Z', privateToken: 'must-not-leak',
           gridEntrySafety: { configured: false, trusted: null, blocked: true, reason: 'GRID_NOT_MIGRATED_TO_DELTA_TESTNET', blockingQty: 2 }
         }
@@ -90,6 +91,7 @@ test('unauthenticated response redacts account ledgers while keeping public mark
   assert.equal(state.logs.length, 1);
   assert.equal(state.logs[0].message, 'Worker heartbeat scan');
   assert.equal(state.logs[0].data.deltaExecutionMode, 'testnet');
+  assert.equal(state.logs[0].data.gridAutoRangeEnvironmentEnabled, true);
   assert.equal('blockingQty' in state.logs[0].data.gridEntrySafety, false);
   assert.equal(state.executionCoverage.gridTestnetDiagnostics.status, 'WAITING_FOR_TESTNET_PRODUCTS');
   assert.equal(state.executionCoverage.gridTestnetDiagnostics.executionLocked, true);
@@ -126,4 +128,12 @@ test('database emergency-stop values normalize to an explicit boolean or unknown
   assert.equal(normalizeEmergencyStopValue('f'), false);
   assert.equal(normalizeEmergencyStopValue(null), null);
   assert.equal(normalizeEmergencyStopValue('unknown'), null);
+});
+
+
+test('authenticated Worker env diagnostics are preserved in heartbeat telemetry', () => {
+  const input = sampleState();
+  input.logs[1].data.gridAutoRangeEnvironmentEnabled = false;
+  const state = protectEngineState(input, true);
+  assert.equal(state.logs[1].data.gridAutoRangeEnvironmentEnabled, false);
 });

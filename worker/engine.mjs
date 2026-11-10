@@ -5402,6 +5402,9 @@ export class DeltaEngine {
       executionMode: CONFIG.deltaExecutionMode,
       deltaExecutionMode: CONFIG.deltaExecutionMode,
       deltaEnvironment: CONFIG.environment,
+      // Report this independently of Grid diagnostics so early-return/locked paths
+      // cannot make the dashboard mistake a missing diagnostic for a disabled env.
+      gridAutoRangeEnvironmentEnabled: CONFIG.gridAutoRangeEnabled === true,
       ...heartbeatMemory,
       candleCacheLimit: this.candleCacheLimit,
       candleCacheSymbols: this.candleCacheSymbols.size,

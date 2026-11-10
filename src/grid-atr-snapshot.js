@@ -23,11 +23,15 @@ function positiveNumber(objects, keys) {
   }
   return null;
 }
-export function resolveGridAtrSnapshot(settings, symbol, draftConfig = {}) {
+export function readGridSymbolConfig(settings, symbol) {
   const saved = asObject(settings?.grid_symbol_configs);
   const normalizedSymbol = String(symbol || '').trim().toUpperCase();
   const savedKey = Object.keys(saved).find(key => key.trim().toUpperCase() === normalizedSymbol);
-  const persisted = asObject(savedKey ? saved[savedKey] : null);
+  return asObject(savedKey ? saved[savedKey] : null);
+}
+
+export function resolveGridAtrSnapshot(settings, symbol, draftConfig = {}) {
+  const persisted = readGridSymbolConfig(settings, symbol);
   const draft = asObject(draftConfig);
   const candidates = [persisted, draft];
   const statusValue = candidates.map(value => value.atr_snapshot_status ?? value.atrSnapshotStatus)
