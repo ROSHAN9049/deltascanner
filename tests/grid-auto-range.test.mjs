@@ -81,3 +81,38 @@ test('Auto-Range defers when any configured symbol has exchange, DB, or local gr
     symbols, gridState: { symbolStates: { PAXGUSD: { positions: [{ symbol: 'PAXGUSD' }] } } }
   }), true);
 });
+
+
+import { calculateDailyAtr, calculateAtrGridRange } from '../shared/grid-auto-range.js';
+
+test('14-day ATR uses completed daily candles and true-range gap components', () => {
+  const now = Date.parse('2026-11-10T12:00:00Z');
+  const start = Date.parse('2026-10-20T00:00:00Z') / 1000;
+  const candles = Array.from({ length: 16 }, (_, i) => ({
+    time: start + i * 86400, high: 110 + i, low: 100 + i, close: 105 + i
+  }));
+  const result = calculateDailyAtr(candles, { timestamp: now });
+  assert.equal(result.ok, true);
+  assert.equal(result.periods, 14);
+  assert.equal(result.candleCount, 16);
+  assert.ok(result.atr > 10);
+});
+
+test('ATR range clamps symmetrically to configured minimum and maximum widths', () => {
+  const now = Date.parse('2026-11-10T12:00:00Z');
+  const start = Date.parse('2026-10-20T00:00:00Z') / 1000;
+  const quiet = Array.from({ length: 16 }, (_, i) => ({ time: start + i*86400, high: 4010, low: 4000, close: 4005 }));
+  const fast = Array.from({ length: 16 }, (_, i) => ({ time: start + i*86400, high: 190, low: 160, close: 175 }));
+  const paxg = calculateAtrGridRange(quiet, { currentPrice: 4100, timestamp: now, minRangePct: 2, maxRangePct: 20 });
+  const nvdax = calculateAtrGridRange(fast, { currentPrice: 175, timestamp: now, minRangePct: 2, maxRangePct: 20 });
+  assert.equal(paxg.widthPct, 2);
+  assert.ok(nvdax.widthPct > paxg.widthPct);
+  assert.ok(Math.abs((paxg.upperPrice - paxg.lowerPrice) / 4100 * 100 - paxg.widthPct) < 1e-8);
+});
+
+test('ATR fallback requires legacy completed candle and marks warning', () => {
+  const result = calculateAtrGridRange([], { currentPrice: 100, fallbackCandle: { low: 98, high: 102 } });
+  assert.equal(result.ok, true);
+  assert.equal(result.fallback, true);
+  assert.match(result.warning, /legacy 3% buffer/);
+});
