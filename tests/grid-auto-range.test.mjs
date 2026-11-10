@@ -4,6 +4,7 @@ import {
   calculateAutoGridRange,
   hasGridAutoRangeExposure,
   isAutoGridRangeRefreshDue,
+  isGridAtrSnapshotRefreshRequired,
   selectLatestCompletedDailyCandle,
   utcDayKey
 } from '../shared/grid-auto-range.js';
@@ -115,4 +116,25 @@ test('ATR fallback requires legacy completed candle and marks warning', () => {
   assert.equal(result.ok, true);
   assert.equal(result.fallback, true);
   assert.match(result.warning, /legacy 3% buffer/);
+});
+
+
+test('ATR snapshot is forced on worker startup and when persisted values are missing', () => {
+  const symbols = ['PAXGUSD', 'NVDAXUSD'];
+  const ready = {
+    PAXGUSD: { atr_14d: 30, atr_pct: 0.7, atr_snapshot_status: 'READY' },
+    NVDAXUSD: { atr: 2.5, atrPct: 1.4, atrSnapshotStatus: 'READY' }
+  };
+  assert.equal(isGridAtrSnapshotRefreshRequired({ initialized: false, symbols, configs: ready }), true);
+  assert.equal(isGridAtrSnapshotRefreshRequired({ initialized: true, symbols, configs: ready }), false);
+  assert.equal(isGridAtrSnapshotRefreshRequired({
+    initialized: true, symbols, configs: { ...ready, NVDAXUSD: { lowerPrice: 170, upperPrice: 180 } }
+  }), true);
+  assert.equal(isGridAtrSnapshotRefreshRequired({
+    initialized: true, symbols,
+    configs: {
+      ...ready,
+      NVDAXUSD: { widthPct: 3.2, atrFallback: true, atr_snapshot_status: 'FALLBACK_3PCT' }
+    }
+  }), false);
 });

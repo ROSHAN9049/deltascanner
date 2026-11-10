@@ -90,6 +90,26 @@ export function isAutoGridRangeRefreshDue({
     lastDay < today;
 }
 
+/** Force a worker snapshot after restart or whenever either symbol lacks a
+ * complete persisted ATR snapshot. A deliberate 3% fallback is a valid snapshot. */
+export function isGridAtrSnapshotRefreshRequired({
+  initialized = false, force = false, symbols = [], configs = {}
+} = {}) {
+  if (force === true || initialized !== true) return true;
+  return (Array.isArray(symbols) ? symbols : []).some(symbol => {
+    const config = configs?.[symbol] && typeof configs[symbol] === 'object' ? configs[symbol] : {};
+    const status = config.atr_snapshot_status ?? config.atrSnapshotStatus;
+    if (status === 'FALLBACK_3PCT') {
+      return !Number.isFinite(Number(config.widthPct)) || Number(config.widthPct) <= 0;
+    }
+    const atr = config.atr_14d ?? config.atr;
+    const atrPct = config.atr_pct ?? config.atrPct;
+    const hasAtr = atr !== null && atr !== undefined && atr !== '' && Number.isFinite(Number(atr));
+    const hasAtrPct = atrPct !== null && atrPct !== undefined && atrPct !== '' && Number.isFinite(Number(atrPct));
+    return status !== 'READY' || !hasAtr || !hasAtrPct;
+  });
+}
+
 /** Fail-closed exposure predicate shared by the worker and unit tests. */
 export function hasGridAutoRangeExposure({
   symbols = [],

@@ -47,9 +47,9 @@ function parseDraft(settings, symbols) {
       lowerPrice: String(config.lowerPrice ?? config.grid_lower_price ?? legacyLower ?? ''),
       upperPrice: String(config.upperPrice ?? config.grid_upper_price ?? legacyUpper ?? ''),
       levelsCount: Number(config.levelsCount ?? config.grid_levels_count ?? (index === 0 ? settings.grid_levels_count : 10) ?? 10),
-      atr: config.atr ?? null, atrPct: config.atrPct ?? null,
+      atr: config.atr_14d ?? config.atr ?? null, atrPct: config.atr_pct ?? config.atrPct ?? null, atrSnapshotStatus: config.atr_snapshot_status ?? config.atrSnapshotStatus ?? null,
       multiplier: config.multiplier ?? 2.5, widthPct: config.widthPct ?? null,
-      atrFallback: config.atrFallback === true
+      atrFallback: config.atr_fallback === true || config.atrFallback === true
     }];
   }));
   return {
@@ -170,8 +170,8 @@ export default function GridStrategy({
         lowerPrice: Number(config.lowerPrice),
         upperPrice: Number(config.upperPrice),
         levelsCount: Number(config.levelsCount),
-        atr: config.atr, atrPct: config.atrPct, multiplier: config.multiplier,
-        widthPct: config.widthPct, atrFallback: config.atrFallback === true
+        atr: config.atr, atrPct: config.atrPct, atr_14d: config.atr, atr_pct: config.atrPct, multiplier: config.multiplier,
+        widthPct: config.widthPct, atrFallback: config.atrFallback === true, atr_snapshot_status: config.atrSnapshotStatus
       }];
     })),
     gridMaxPositions: GRID_BRIDGE_MAX_POSITIONS,
@@ -220,7 +220,7 @@ export default function GridStrategy({
           atrPct: range.atrPct,
           multiplier: range.multiplier,
           widthPct: range.widthPct,
-          atrFallback: range.fallback === true
+          atrFallback: range.fallback === true, atrSnapshotStatus: range.fallback === true ? 'FALLBACK_3PCT' : 'READY'
         };
       }));
       setDraft(current => ({
@@ -231,8 +231,8 @@ export default function GridStrategy({
             ...(current.gridSymbolConfigs?.[row.symbol] || {}),
             lowerPrice: row.lowerPrice,
             upperPrice: row.upperPrice,
-            atr: row.atr, atrPct: row.atrPct, multiplier: row.multiplier,
-            widthPct: row.widthPct, atrFallback: row.atrFallback
+            atr: row.atr, atrPct: row.atrPct, atr_14d: row.atr, atr_pct: row.atrPct, multiplier: row.multiplier,
+            widthPct: row.widthPct, atrFallback: row.atrFallback, atrSnapshotStatus: row.atrSnapshotStatus
           }]))
         }
       }));
@@ -295,7 +295,7 @@ export default function GridStrategy({
             <label>{view.symbol} Grid Levels<select value={view.config.levelsCount} onChange={event => updateSymbol(view.symbol, 'levelsCount', Number(event.target.value))} disabled={lockedConfig}>{[8,9,10,11,12].map(value => <option key={value} value={value}>{value} levels</option>)}</select></label>
           </div>
           <span>{view.valid ? view.levels.length + ' geometric levels · ' + (((Math.pow(n(view.config.upperPrice) / n(view.config.lowerPrice), 1 / Math.max(1, view.levels.length - 1))) - 1) * 100).toFixed(3) + '% per step' : 'Range not configured · upper must exceed lower'}</span>
-          <span>14d ATR: {view.config.atr ? usd(view.config.atr) + ' (' + n(view.config.atrPct).toFixed(2) + '%)' : 'Awaiting worker ATR snapshot'}</span>
+          <span>14d ATR: {view.config.atr ? usd(view.config.atr) + ' (' + n(view.config.atrPct).toFixed(2) + '%)' : view.config.atrFallback || view.config.atrSnapshotStatus === 'FALLBACK_3PCT' ? 'Insufficient daily candles · 3% fallback active' : view.config.atrSnapshotStatus === 'READY' ? 'ATR snapshot ready' : 'Awaiting worker ATR snapshot'}</span>
           <span>Calculated Range: {price(view.config.lowerPrice)} - {price(view.config.upperPrice)} (Width: {view.config.widthPct ? n(view.config.widthPct).toFixed(2) : ((n(view.config.upperPrice)-n(view.config.lowerPrice))/Math.max(1,n(view.currentPrice))*100).toFixed(2)}%)</span>
           <span>Multiplier: {n(view.config.multiplier || 2.5).toFixed(1)}x {view.config.atrFallback ? '· 3% fallback active' : ''}</span>
           <span>{view.symbolPositions.length} open position(s) · {view.symbolPending.length} pending limit entry(ies)</span>
