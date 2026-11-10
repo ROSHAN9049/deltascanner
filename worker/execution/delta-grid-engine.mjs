@@ -1051,8 +1051,7 @@ export async function manageDeltaTestnetGrid({
       await database.log('INFO', '[GRID] P&L verification recovered; resuming Grid cycle', {
         event: 'grid_pnl_verify_recovered',
         symbol,
-        verifiedTradeCount: allTrades.length,
-        closedPositionCount
+        verifiedTradeCount: allTrades.length
       }).catch(() => {});
     } else {
       state.status = 'HALTED';
