@@ -25,12 +25,15 @@ test('Grid Testnet symbols are normalized from the Delta allowlist without remov
   assert.equal(normalizeGridConfig({ ...baseSettings, grid_daily_loss_pct: 2.5 }).dailyLossPct, 2);
 });
 
-test('grid levels include bounds with equal spacing and only lower levels are entry-enabled', () => {
+test('grid levels use true geometric spacing and only lower levels are entry-enabled', () => {
   const levels = buildGridLevels(80, 110, 8);
   assert.equal(levels.length, 8);
   assert.equal(levels[0].price, 80);
   assert.equal(levels[7].price, 110);
-  assert.ok(Math.abs((levels[1].price - levels[0].price) - (levels[2].price - levels[1].price)) < 1e-8);
+  const stepA = levels[1].price / levels[0].price;
+  const stepB = levels[2].price / levels[1].price;
+  assert.ok(Math.abs(stepA - stepB) < 1e-10);
+  assert.ok(Math.abs(levels[7].price - 110) < 1e-8);
   assert.equal(levels[6].targetIndex, 7);
   assert.equal(levels[7].entryEnabled, false);
 });
