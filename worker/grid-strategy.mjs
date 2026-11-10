@@ -8,13 +8,17 @@ export function buildGridLevels(lowerPrice, upperPrice, levelCount) {
   const lower = n(lowerPrice), upper = n(upperPrice), count = Math.round(n(levelCount));
   if (!(lower > 0) || !(upper > lower)) return [];
   if (count < 8 || count > 12) return [];
-  const spacing = (upper - lower) / (count - 1);
-  return Array.from({ length: count }, (_, index) => ({
+  const stepPct = Math.pow(upper / lower, 1 / (count - 1)) - 1;
+  if (!(Number.isFinite(stepPct) && stepPct > 0)) return [];
+  const levels = Array.from({ length: count }, (_, index) => ({
     index,
-    price: Number((lower + spacing * index).toPrecision(12)),
+    price: Number((lower * Math.pow(1 + stepPct, index)).toPrecision(12)),
     entryEnabled: index < count - 1,
     targetIndex: index < count - 1 ? index + 1 : null
   }));
+  // Avoid accumulated floating-point drift at the final boundary.
+  levels[count - 1].price = Number(upper.toPrecision(12));
+  return levels;
 }
 
 export function normalizeGridConfig(settings = {}) {
