@@ -101,6 +101,7 @@ test('Delta option Greeks returned as numeric strings are parsed and pass the SE
     ...baseTicker,
     symbol: 'P-BTC-76000-311226',
     contract_type: 'put_options',
+    iv_rank: 60,
     greeks: { delta: '0.28', gamma: '0.01', theta: '-0.02', vega: '0.12' }
   }, underlying, 'OPTIONS_SELL', {
     ...config,
