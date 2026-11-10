@@ -102,9 +102,11 @@ export function isGridAtrSnapshotRefreshRequired({
     if (status === 'FALLBACK_3PCT') {
       return !Number.isFinite(Number(config.widthPct)) || Number(config.widthPct) <= 0;
     }
-    return status !== 'READY' ||
-      !Number.isFinite(Number(config.atr_14d ?? config.atr)) ||
-      !Number.isFinite(Number(config.atr_pct ?? config.atrPct));
+    const atr = config.atr_14d ?? config.atr;
+    const atrPct = config.atr_pct ?? config.atrPct;
+    const hasAtr = atr !== null && atr !== undefined && atr !== '' && Number.isFinite(Number(atr));
+    const hasAtrPct = atrPct !== null && atrPct !== undefined && atrPct !== '' && Number.isFinite(Number(atrPct));
+    return status !== 'READY' || !hasAtr || !hasAtrPct;
   });
 }
 
