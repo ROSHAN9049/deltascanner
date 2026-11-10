@@ -22,6 +22,8 @@ import {
   OPTIONS_DATABASE_EXECUTION_LOCK_REASON
 } from './options-execution-lock.mjs';
 import { countOptionProductsByUnderlying, replaceOptionCacheSnapshot } from './options-cache-snapshot.mjs';
+import { detectOptionsMarketRegime } from './options-regime-strategy.mjs';
+import { calculateRollingIvRank, extractCurrentImpliedVolatility } from './options-iv-rank.mjs';
 import { selectBestOptionCandidates } from './options-candidate-selection.mjs';
 import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from './signal-failure-diagnostics.mjs';
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
@@ -273,6 +275,7 @@ export class DeltaEngine {
     this.lastSignals = [];
     this.lastOptionSignals = [];
     this.optionTickerMap = new Map();
+    this.optionsRegimeCandleCache = new Map();
     this.optionProductMap = new Map();
     this.lastOptionProductFetch = 0;
     this.lastOptionTickerFetch = 0;
@@ -2447,6 +2450,61 @@ export class DeltaEngine {
           maxContracts: 24,
           maxMoneynessPct: 20
         });
+
+        // Build our own rolling IV Rank from timestamped Delta ticker/Greeks IV
+        // observations. Missing history, an unavailable DB, or <7 days of data
+        // deliberately leaves iv_rank NULL so the candidate is blocked.
+        const ivObservations = joined.map(ticker => ({
+          ticker,
+          iv: extractCurrentImpliedVolatility(ticker)
+        })).filter(item => item.iv !== null);
+        for (const ticker of selected) {
+          ticker.iv_current = extractCurrentImpliedVolatility(ticker);
+          ticker.iv_rank = null;
+        }
+        if (ivObservations.length && typeof db.insertMany === 'function') {
+          try {
+            const observedAt = new Date(now).toISOString();
+            await db.insertMany('dd_iv_history', ivObservations.map(({ ticker, iv }) => ({
+              symbol: ticker.symbol,
+              underlying,
+              iv_current: iv,
+              observed_at: observedAt,
+              source: 'delta_public_option_ticker'
+            })));
+            const symbols = selected.filter(ticker => ticker.iv_current !== null)
+              .map(ticker => ticker.symbol)
+              .filter(symbol => /^[CP]-[A-Z0-9]+-[0-9.]+-\d{6}$/.test(symbol));
+            if (symbols.length) {
+              const cutoff = encodeURIComponent(new Date(now - 30 * 86_400_000).toISOString());
+              const history = await db.select('dd_iv_history',
+                'symbol=in.(' + symbols.join(',') + ')&observed_at=gte.' + cutoff +
+                '&select=symbol,iv_current,observed_at&order=observed_at.asc&limit=10000');
+              if (!Array.isArray(history)) throw new Error('IV history query returned an invalid response');
+              const bySymbol = new Map();
+              for (const row of history) {
+                if (!bySymbol.has(row.symbol)) bySymbol.set(row.symbol, []);
+                bySymbol.get(row.symbol).push(row);
+              }
+              for (const ticker of selected) {
+                const result = calculateRollingIvRank(bySymbol.get(ticker.symbol) || [], ticker.iv_current, now);
+                ticker.iv_rank = result.ivRank;
+                ticker.iv_history_days = result.historyDays;
+                ticker.iv_rank_block_reason = result.reason;
+              }
+            }
+          } catch (error) {
+            for (const ticker of selected) {
+              ticker.iv_rank = null;
+              ticker.iv_rank_block_reason = 'IV_HISTORY_PERSISTENCE_OR_QUERY_FAILED';
+            }
+            await this.log('WARN', 'Rolling Options IV Rank unavailable; all affected entries fail closed', {
+              underlying, observations: ivObservations.length,
+              error: String(error?.message || error).slice(0, 240),
+              orderRoutingAttempted: false
+            }).catch(() => {});
+          }
+        }
         counts[underlying] = selected.length;
         greeksAvailableByUnderlying[underlying] = selected.filter(hasValidOptionDelta).length;
         greeksMissingByUnderlying[underlying] = selected.length - greeksAvailableByUnderlying[underlying];
@@ -3023,6 +3081,46 @@ export class DeltaEngine {
     }
   }
 
+  async getOptionsMarketRegime(asset) {
+    const normalizedAsset = String(asset || '').trim().toUpperCase();
+    if (!['BTC', 'ETH'].includes(normalizedAsset)) {
+      return { regime: 'UNKNOWN', reason: 'UNSUPPORTED_UNDERLYING' };
+    }
+    const symbol = normalizedAsset + 'USD';
+    const now = Date.now();
+    const cached = this.optionsRegimeCandleCache.get(symbol);
+    if (!cached || now - cached.fetchedAt >= 60_000) {
+      const [raw15m, raw1h] = await Promise.all([
+        this.adapter.candles(symbol, '15m', 100),
+        this.adapter.candles(symbol, '1h', 100)
+      ]);
+      const testnetMode = CONFIG.deltaExecutionMode === 'testnet';
+      const fifteen = normalizeCandleBatch(raw15m, '15m', {
+        nowMs: now, minCandles: 40, maxAgeIntervals: candleMaxAgeIntervals('15m', testnetMode)
+      });
+      const hourly = normalizeCandleBatch(raw1h, '1h', {
+        nowMs: now, minCandles: 40, maxAgeIntervals: candleMaxAgeIntervals('1h', testnetMode)
+      });
+      if (!fifteen.ok || !hourly.ok) {
+        this.optionsRegimeCandleCache.delete(symbol);
+        return {
+          regime: 'UNKNOWN',
+          reason: !fifteen.ok ? '15M_' + fifteen.reason : '1H_' + hourly.reason
+        };
+      }
+      this.optionsRegimeCandleCache.set(symbol, {
+        fetchedAt: now,
+        candles15m: fifteen.candles,
+        candles1h: hourly.candles
+      });
+    }
+    const snapshot = this.optionsRegimeCandleCache.get(symbol);
+    return detectOptionsMarketRegime({
+      candles15m: snapshot.candles15m,
+      candles1h: snapshot.candles1h
+    });
+  }
+
   async analyseOptions(futuresItems, account, settings, openPositions) {
     if (settings.options_enabled === false) {
       this.lastOptionSignals = [];
@@ -3066,10 +3164,29 @@ export class DeltaEngine {
       if (!OPTION_UNDERLYINGS.includes(asset)) continue;
       const chain = chains.get(asset) || [];
       if (!underlying || !chain.length) continue;
+      const regimeBased = String(process.env.OPTIONS_REGIME_STRATEGY_ENABLED || '').trim().toLowerCase() === 'true';
+      const regimeSnapshot = regimeBased
+        ? await this.getOptionsMarketRegime(asset).catch(error => ({ regime: 'UNKNOWN', reason: String(error?.message || error) }))
+        : { regime: 'UNKNOWN', reason: 'REGIME_FEATURE_DISABLED' };
+      const marketRegime = regimeSnapshot.regime || 'UNKNOWN';
+      const buyCfg = {
+        ...cfg,
+        minDays: regimeBased ? 3 : cfg.minDays,
+        maxDays: regimeBased ? 10 : cfg.maxDays,
+        regimeBased,
+        marketRegime
+      };
+      const sellCfg = {
+        ...cfg,
+        minDays: regimeBased ? 1 : cfg.minDays,
+        maxDays: regimeBased ? 3 : cfg.maxDays,
+        regimeBased,
+        marketRegime
+      };
 
       if (settings.options_buy_enabled !== false) {
         const candidates = chain
-          .map(ticker => ({ ticker, signal: analyseOption(ticker, underlying, 'OPTIONS_BUY', cfg) }))
+          .map(ticker => ({ ticker, signal: analyseOption(ticker, underlying, 'OPTIONS_BUY', buyCfg) }))
           .filter(x => x.signal.targetType === (underlying.side === 'BUY' ? 'CALL' : 'PUT'))
           .sort((a, b) => n(b.signal.score) - n(a.signal.score));
         const best = candidates[0];
@@ -3119,14 +3236,14 @@ export class DeltaEngine {
 
       if (settings.options_sell_enabled !== false) {
         const candidates = chain
-          .map(ticker => ({ ticker, signal: analyseOption(ticker, underlying, 'OPTIONS_SELL', cfg) }))
+          .map(ticker => ({ ticker, signal: analyseOption(ticker, underlying, 'OPTIONS_SELL', sellCfg) }))
           .filter(x => x.signal.targetType === (underlying.side === 'BUY' ? 'PUT' : 'CALL'))
           .sort((a, b) => n(b.signal.score) - n(a.signal.score));
         const best = candidates[0];
         if (best) {
           const s = best.signal;
           const hedgeCandidates = chain
-            .map(ticker => analyseOption(ticker, underlying, 'OPTIONS_SELL', cfg))
+            .map(ticker => analyseOption(ticker, underlying, 'OPTIONS_SELL', sellCfg))
             .filter(h => String(h.optionType) === String(s.optionType) &&
               n(h.expiryMs) === n(s.expiryMs) &&
               Math.abs(n(h.delta)) >= 0.05 && Math.abs(n(h.delta)) <= 0.15 &&
@@ -3531,6 +3648,9 @@ export class DeltaEngine {
       volume: s.volume,
       oi_value_usd: s.oiValueUsd,
       volume_usd: s.volumeUsd,
+      market_regime: s.marketRegime || 'UNKNOWN',
+      iv_rank: s.ivRank,
+      iv_current: n(s.ticker?.iv_current) || null,
       market_data_source: 'production_public',
       delta: s.delta,
       gamma: s.gamma,
@@ -3561,6 +3681,11 @@ export class DeltaEngine {
         oiValueSymbol: s.ticker?.oi_value_symbol || null,
         turnoverSymbol: s.ticker?.turnover_symbol || null,
         marketDataSource: 'production_public',
+        marketRegime: s.marketRegime || 'UNKNOWN',
+        ivRank: s.ivRank ?? null,
+        ivCurrent: s.ticker?.iv_current ?? null,
+        ivHistoryDays: s.ticker?.iv_history_days ?? 0,
+        ivRankBlockReason: s.ticker?.iv_rank_block_reason ?? null,
         // Keep cached detail fields aligned with the top-level Greek columns so
         // the dashboard and any detail-based consumers read the same values.
         delta: s.delta,

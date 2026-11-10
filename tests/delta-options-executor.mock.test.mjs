@@ -8,7 +8,7 @@ const HEDGE = 'C-BTC-82000-311226';
 
 function harness({
   enabled = true, shortState = 'open', hedgeFilled = true, hedgePartial = false,
-  strategy = 'OPTIONS_SELL', manualOverrideEnabled = false, candidatePatch = {}, settingsPatch = {}
+  strategy = 'OPTIONS_SELL', manualOverrideEnabled = false, candidatePatch = {}, settingsPatch = {}, closedOptionPositions = []
 } = {}) {
   const env = {
     DELTA_EXECUTION_MODE: 'testnet',
@@ -26,6 +26,8 @@ function harness({
   const candidate = {
     symbol: SHORT, strategy, score: 95, stage: 'CONFIRMED',
     cached_at: new Date(NOW).toISOString(),
+    market_regime: strategy === 'OPTIONS_BUY' ? 'TRENDING' : 'SIDEWAYS',
+    iv_rank: strategy === 'OPTIONS_BUY' ? 30 : 60,
     details: {
       analysisReady: true, optionType: 'CALL', strike: 80000,
       delta: strategy === 'OPTIONS_BUY' ? 0.55 : 0.30,
@@ -38,6 +40,8 @@ function harness({
   Object.assign(candidate, candidatePatch);
   candidate.details = { ...baselineDetails, ...patchDetails };
   const storedOrders = [];
+  const canonicalRows = [];
+  let nextCanonicalId = 700;
   const apiCalls = [];
   let hedgeCanceled = false;
   const logs = [];
@@ -61,7 +65,16 @@ function harness({
         last_tick_at: new Date(NOW).toISOString(),
         ...settingsPatch
       }];
-      if (table === 'dd_delta_positions') return [];
+      if (table === 'dd_delta_positions') {
+        if (query.includes('status=eq.OPEN')) return canonicalRows.filter(row => row.status === 'OPEN');
+        const idMatch = query.match(/id=eq.(\d+)/);
+        if (idMatch) return canonicalRows.filter(row => row.id === Number(idMatch[1]));
+        return canonicalRows;
+      }
+      if (table === 'dd_option_positions') {
+        if (query.includes('status=eq.CLOSED')) return closedOptionPositions;
+        return [];
+      }
       if (table === 'dd_orders') {
         const idMatch = query.match(/client_order_id=eq.([^&]+)/);
         if (idMatch) {
@@ -76,6 +89,11 @@ function harness({
       }
       return [];
     },
+    async insert(table, row) {
+      if (table !== 'dd_delta_positions') throw new Error('unexpected insert table ' + table);
+      canonicalRows.push({ id: nextCanonicalId++, ...row });
+      return null;
+    },
     async insertIgnore(table, row) {
       if (table !== 'dd_orders') throw new Error('unexpected table ' + table);
       if (storedOrders.some(item => item.client_order_id === row.client_order_id)) return [];
@@ -88,6 +106,12 @@ function harness({
       return [row];
     },
     async update(table, query, patch) {
+      if (table === 'dd_delta_positions') {
+        const id = Number(query.match(/id=eq.(\d+)/)?.[1]);
+        const row = canonicalRows.find(item => item.id === id && (!query.includes('status=eq.OPEN') || item.status === 'OPEN'));
+        if (row) Object.assign(row, patch);
+        return row ? [row] : [];
+      }
       if (table !== 'dd_orders') throw new Error('unexpected table ' + table);
       const match = query.match(/client_order_id=eq.([^&]+)/);
       const id = match ? decodeURIComponent(match[1]) : '';
@@ -424,5 +448,23 @@ test('Options final entry-safety recheck blocks when auto_trade turns off after 
     }),
     /Auto Trade is off or unknown/
   );
+  assert.equal(apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
+});
+
+
+test('Options daily loss at or beyond 2% of equity blocks new entries', async () => {
+  const { executor, apiCalls } = harness({
+    strategy: 'OPTIONS_BUY',
+    closedOptionPositions: [{
+      status: 'CLOSED',
+      realized_pnl: -200,
+      realized_pnl_verified: true
+    }]
+  });
+  const preview = await executor.previewOptionsOrder({
+    symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1
+  });
+  assert.equal(preview.executionAllowed, false);
+  assert.match(preview.executionLockReason, /daily loss limit reached/i);
   assert.equal(apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
 });

@@ -1298,11 +1298,16 @@ export function createDeltaExecutor({
     return optionsExecution.placeOptionsOrder(input);
   }
 
+  async function monitorOptionsExits() {
+    return optionsExecution.monitorOptionsExits();
+  }
+
   return Object.freeze({
     placeOrder,
     placeBracketOrder,
     previewOptionsOrder,
     placeOptionsOrder,
+    monitorOptionsExits,
     closePosition,
     getOpenPositions,
     getOpenOrders,

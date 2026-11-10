@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { DeltaEngine } from './engine.mjs';
 import { createOptionsAutoTrigger } from './options-auto-trigger.mjs';
+import { createOptionsExitMonitor } from './options-exit-monitor.mjs';
 import { CONFIG } from '../server/config.js';
 import * as db from '../server/db.js';
 import { log } from '../server/db.js';
@@ -27,6 +28,7 @@ if (!CONFIG.supabaseUrl || !CONFIG.supabaseAdminKey) throw new Error('SUPABASE_U
 
 const engine = new DeltaEngine();
 let optionsAutoTriggerWorker = null;
+let optionsExitMonitorWorker = null;
 let btcHourlyWarmupTimer = null;
 let deltaTestnetTracker = null;
 let deltaPositionReconciler = null;
@@ -296,7 +298,10 @@ async function shutdownWorker(signal) {
     deltaPositionReconciler = null;
     const autoTriggerToStop = optionsAutoTriggerWorker;
     optionsAutoTriggerWorker = null;
+    const exitMonitorToStop = optionsExitMonitorWorker;
+    optionsExitMonitorWorker = null;
     const results = await Promise.allSettled([
+      Promise.resolve().then(() => exitMonitorToStop?.stop()),
       Promise.resolve().then(() => autoTriggerToStop?.stop()),
       Promise.resolve().then(() => reconcilerToStop?.stop()),
       Promise.resolve().then(() => deltaTestnetTracker?.stop()),
@@ -390,6 +395,11 @@ process.on('uncaughtException', (error, origin) => {
 
     const autoTriggerToStop = optionsAutoTriggerWorker;
     optionsAutoTriggerWorker = null;
+    const exitMonitorToStop = optionsExitMonitorWorker;
+    optionsExitMonitorWorker = null;
+    try { await exitMonitorToStop?.stop(); } catch (stopError) {
+      console.error('[DeltaScanner] Options exit monitor cleanup after uncaught exception failed:', String(stopError?.message || stopError));
+    }
     try { await autoTriggerToStop?.stop(); } catch (stopError) {
       console.error('[DeltaScanner] Options auto-trigger cleanup after uncaught exception failed:', String(stopError?.message || stopError));
     }
@@ -410,6 +420,15 @@ process.on('uncaughtException', (error, origin) => {
 
 const preflightOk = await startupPreflightWithRetry();
 if (preflightOk && !workerHalted) {
+
+optionsExitMonitorWorker = createOptionsExitMonitor({
+  env: process.env,
+  monitor: () => deltaExecutor.monitorOptionsExits(),
+  logger: log
+});
+void optionsExitMonitorWorker.start().catch(error => {
+  console.error('[DeltaScanner] Options exit monitor startup failed safely:', String(error?.message || error));
+});
 
 optionsAutoTriggerWorker = createOptionsAutoTrigger({
   env: process.env,
