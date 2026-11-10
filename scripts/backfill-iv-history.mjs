@@ -1,6 +1,7 @@
 import { CONFIG } from '../server/config.js';
 import { DeltaAdapter } from '../worker/delta-adapter.mjs';
 import { extractCurrentImpliedVolatility } from '../worker/options-iv-rank.mjs';
+import { buildIvHistoryGroup } from '../worker/options-iv-grouping.mjs';
 import * as db from '../server/db.js';
 
 const UNDERLYINGS = ['BTC', 'ETH'];
@@ -46,9 +47,11 @@ async function main() {
       const iv = extractCurrentImpliedVolatility(ticker);
       if (iv === null) continue;
       withIv += 1;
+      const group = buildIvHistoryGroup(ticker, underlying, now.getTime());
+      if (!group) continue;
       rows.push({
         symbol,
-        underlying,
+        ...group,
         iv_current: iv,
         observed_at: observedAt,
         source: SOURCE
