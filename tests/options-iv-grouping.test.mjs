@@ -35,7 +35,7 @@ test('contracts with different expiry symbols inherit the same history group', (
     delta_bucket: oldExpiry.delta_bucket, dte_bucket: oldExpiry.dte_bucket
   }, {
     underlying: 'BTC', option_type: 'CALL',
-    delta_bucket: '0.10-0.30', dte_bucket: '4-10'
+    delta_bucket: '0.10-0.30', dte_bucket: '0-3'
   });
   assert.equal(ivHistoryGroupKey(oldExpiry), ivHistoryGroupKey(newExpiry));
 });
