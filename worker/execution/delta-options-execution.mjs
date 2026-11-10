@@ -1060,17 +1060,18 @@ export function createDeltaOptionsExecution({
       closed_at: closedAt,
       updated_at: closedAt
     };
-    const updated = await database.update('dd_delta_positions', 'id=eq.' + id + '&status=eq.OPEN', patch);
-    if (Array.isArray(updated) && updated.length === 0) {
-      const rows = await database.select('dd_delta_positions',
-        'id=eq.' + id + '&select=id,status,exit_price,realized_pnl,close_reason&limit=1');
-      const prior = Array.isArray(rows) ? rows[0] : null;
-      if (!prior || prior.status !== 'CLOSED' ||
-          Math.abs(Number(prior.exit_price) - price) > 1e-8 ||
-          Math.abs(Number(prior.realized_pnl) - pnl) > 1e-8 ||
-          prior.close_reason !== patch.close_reason) {
-        throw new Error('Canonical Options P&L mirror was not confirmed; close remains reconciliation-required');
-      }
+    await database.update('dd_delta_positions', 'id=eq.' + id + '&status=eq.OPEN', patch);
+    // PostgREST updates are configured with return=minimal in production, so
+    // verify the canonical row with a read-after-write rather than trusting a
+    // successful HTTP status or a mock's update response.
+    const rows = await database.select('dd_delta_positions',
+      'id=eq.' + id + '&select=id,status,exit_price,realized_pnl,close_reason&limit=1');
+    const confirmed = Array.isArray(rows) ? rows[0] : null;
+    if (!confirmed || confirmed.status !== 'CLOSED' ||
+        Math.abs(Number(confirmed.exit_price) - price) > 1e-8 ||
+        Math.abs(Number(confirmed.realized_pnl) - pnl) > 1e-8 ||
+        confirmed.close_reason !== patch.close_reason) {
+      throw new Error('Canonical Options P&L mirror was not confirmed; close remains reconciliation-required');
     }
     return patch;
   }
