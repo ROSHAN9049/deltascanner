@@ -205,3 +205,19 @@ test('regime-based Options migration adds fail-closed regime and IV Rank cache f
     migrationRunner.indexOf('20261109000100_adaptive_volatility_shadow_and_exit_reason.sql')
   );
 });
+
+
+test('regime Options settings migration adds IV and a hard-capped daily loss control', () => {
+  const path = fileURLToPath(new URL('../db/migrations/20261110000100_regime_options_iv_and_loss_settings.sql', import.meta.url));
+  const migration = readFileSync(path, 'utf8');
+  assert.match(migration, /^BEGIN;/);
+  assert.match(migration, /ADD COLUMN IF NOT EXISTS iv_current NUMERIC NULL/i);
+  assert.match(migration, /options_iv_rank_buy_max NUMERIC NOT NULL DEFAULT 40/i);
+  assert.match(migration, /options_iv_rank_sell_min NUMERIC NOT NULL DEFAULT 50/i);
+  assert.match(migration, /options_daily_loss_limit_pct NUMERIC NOT NULL DEFAULT 2\.0/i);
+  assert.match(migration, /options_daily_loss_limit_pct <= 2\.0/i);
+  assert.match(migration, /NOTIFY pgrst/i);
+  assert.match(migration, /COMMIT;/);
+  assert.ok(deltaMigrationRunner.indexOf('20261110000100_regime_options_iv_and_loss_settings.sql') >
+    deltaMigrationRunner.indexOf('20261109000300_regime_based_options_strategy.sql'));
+});
