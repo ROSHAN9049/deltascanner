@@ -2474,7 +2474,7 @@ export class DeltaEngine {
             })));
             const symbols = selected.filter(ticker => ticker.iv_current !== null)
               .map(ticker => ticker.symbol)
-              .filter(symbol => /^[CP]-[A-Z0-9]+-[0-9.]+-\\d{6}$/.test(symbol));
+              .filter(symbol => /^[CP]-[A-Z0-9]+-[0-9.]+-\d{6}$/.test(symbol));
             if (symbols.length) {
               const cutoff = encodeURIComponent(new Date(now - 30 * 86_400_000).toISOString());
               const history = await db.select('dd_iv_history',
