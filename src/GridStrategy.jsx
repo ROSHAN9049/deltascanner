@@ -56,7 +56,6 @@ function parseDraft(settings, symbols) {
       atrSnapshotStatus: snapshot.status,
       atr_snapshot_status: snapshot.status,
       atrFallback: snapshot.fallback,
-      atrFallbackSnapshot: snapshot.fallback,
       atrSnapshotAt: snapshot.snapshotAt,
       atr_snapshot_at: snapshot.snapshotAt,
       multiplier: config.multiplier ?? 2.5,
