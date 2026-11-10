@@ -232,7 +232,7 @@ export default function GridStrategy({
             lowerPrice: row.lowerPrice,
             upperPrice: row.upperPrice,
             atr: row.atr, atrPct: row.atrPct, atr_14d: row.atr, atr_pct: row.atrPct, multiplier: row.multiplier,
-            widthPct: row.widthPct, atrFallback: row.atrFallback, atrSnapshotStatus: row.atrSnapshotStatus, atrSnapshotStatus: row.atrSnapshotStatus
+            widthPct: row.widthPct, atrFallback: row.atrFallback, atrSnapshotStatus: row.atrSnapshotStatus
           }]))
         }
       }));
