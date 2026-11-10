@@ -1,5 +1,9 @@
 BEGIN;
 
+ALTER TABLE public.dd_option_cache
+  ADD COLUMN IF NOT EXISTS iv_delta_bucket TEXT NULL,
+  ADD COLUMN IF NOT EXISTS iv_dte_bucket TEXT NULL;
+
 ALTER TABLE public.dd_iv_history
   ADD COLUMN IF NOT EXISTS option_type TEXT NULL
     CHECK (option_type IN ('CALL', 'PUT')),
