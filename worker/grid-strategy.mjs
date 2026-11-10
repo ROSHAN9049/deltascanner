@@ -33,13 +33,15 @@ export function normalizeGridConfig(settings = {}) {
   const maxDrawdownPct = clamp(settings.grid_max_drawdown_pct || 5, 0.5, 5);
   const breakoutExitPct = 1.2;
   const momentumPausePct = clamp(settings.grid_momentum_pause_pct || 2.5, 2.5, 3);
+  const atrPrice = Math.max(0, n(settings.grid_atr));
+  const atrBufferPrice = atrPrice * 0.1;
   const reduceAfterLosses = settings.grid_reduce_after_losses !== false;
   const enabled = settings.grid_enabled === true;
   const levels = buildGridLevels(lowerPrice, upperPrice, levelCount);
   return {
     enabled, symbol, lowerPrice, upperPrice, levelCount, maxPositions,
     riskPerTradePct, dailyLossPct, maxDrawdownPct, breakoutExitPct,
-    momentumPausePct, reduceAfterLosses, levels,
+    momentumPausePct, reduceAfterLosses, atrPrice, atrBufferPrice, levels,
     valid: lowerPrice > 0 && upperPrice > lowerPrice && levels.length === levelCount
   };
 }
@@ -343,7 +345,9 @@ export function evaluateGridTick({
       // immediately lower rung. The bottom rung retains the global range-break
       // stop because no lower grid level exists.
       const globalStopPrice = cfg.lowerPrice * (1 - cfg.breakoutExitPct / 100);
-      const stopPrice = level.index > 0 ? levels[level.index - 1].price : globalStopPrice;
+      const stopPrice = level.index > 0
+        ? Math.max(Number.EPSILON, levels[level.index - 1].price - cfg.atrBufferPrice)
+        : globalStopPrice;
       const targetPrice = levels[level.index + 1]?.price;
       const stopDistance = level.price - stopPrice;
       const rewardDistance = n(targetPrice) - level.price;
