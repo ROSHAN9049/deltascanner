@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { parseDeltaOptionSymbol } from './delta-options-policy.mjs';
 import { evaluateIvRank, evaluateOptionsExit } from '../options-regime-strategy.mjs';
+import { executeDefinedRiskSellExit } from '../options-exit-sequence.mjs';
 import {
   assertOptionsExecutionAllowed,
   getOptionsExecutionGate,
@@ -839,13 +840,50 @@ export function createDeltaOptionsExecution({
         entry_order_state: order?.state ?? null, hedge_entry_order_state: hedgeOrder?.state ?? null,
         exit_policy: preview.strategy === 'OPTIONS_BUY' ? 'TP_50_SL_30_BREAKEVEN_AFTER_1R' : 'TP_50_DECAY_SL_2X_DTE_0_5' }
     };
+    const openedAt = new Date(now()).toISOString();
     const updated = await database.update('dd_option_positions',
       'position_key=eq.' + encodeURIComponent(executionKey) + '&status=eq.ENTRY_PENDING', {
-        ...row, status: 'OPEN', updated_at: new Date(now()).toISOString(),
+        ...row, status: 'OPEN', opened_at: openedAt, updated_at: openedAt,
         raw: { ...row.raw, entry_pending: false }
       });
     if (Array.isArray(updated) && updated.length === 0) throw new Error('Entry fill confirmed but the Options position reservation could not be finalized');
-    return row;
+
+    // Materialize an Options lifecycle row in the dashboard's canonical
+    // dd_delta_positions ledger. This creates a stable ID for verified close
+    // P&L/exit-price mirroring; it is not used to authorize order routing.
+    if (typeof database.insert !== 'function') {
+      throw new Error('Canonical Delta position ledger insert is unavailable after Options fill; reconciliation required');
+    }
+    await database.insert('dd_delta_positions', {
+      order_id: order?.id ? String(order.id) : null,
+      client_order_id: order?.client_order_id || null,
+      product_id: product.id,
+      symbol: preview.symbol,
+      side: preview.strategy === 'OPTIONS_BUY' ? 'BUY' : 'SELL',
+      qty: actualQty,
+      entry_price: entryPremium,
+      current_price: entryPremium,
+      unrealized_pnl: 0,
+      realized_pnl: null,
+      status: 'OPEN',
+      strategy: preview.strategy,
+      opened_at: openedAt,
+      updated_at: openedAt
+    });
+    const canonicalRows = await database.select('dd_delta_positions',
+      'symbol=eq.' + encodeURIComponent(preview.symbol) +
+      '&strategy=eq.' + encodeURIComponent(preview.strategy) +
+      '&status=eq.OPEN&opened_at=gte.' + encodeURIComponent(openedAt) +
+      '&select=id&order=opened_at.desc&limit=2');
+    if (!Array.isArray(canonicalRows) || canonicalRows.length !== 1 ||
+        !Number.isSafeInteger(Number(canonicalRows[0].id))) {
+      throw new Error('Canonical Delta Options position could not be uniquely verified after entry; reconciliation required');
+    }
+    const canonicalId = Number(canonicalRows[0].id);
+    await database.update('dd_option_positions',
+      'position_key=eq.' + encodeURIComponent(executionKey) + '&status=eq.OPEN',
+      { delta_position_id: canonicalId, updated_at: new Date(now()).toISOString() });
+    return { ...row, delta_position_id: canonicalId };
   }
 
   async function placeOptionsOrder({ symbol, strategy, qty = 1, quoteToken, manualTestOverride = false } = {}) {
@@ -998,6 +1036,45 @@ export function createDeltaOptionsExecution({
     }
   }
 
+  function normalizeOptionsCloseReason(reason) {
+    const value = clean(reason).toUpperCase();
+    if (value.startsWith('TAKE_PROFIT')) return 'TP';
+    if (value.includes('STOP_LOSS') || value.includes('BREAKEVEN')) return 'SL';
+    return 'TIME_EXIT';
+  }
+
+  async function mirrorCanonicalOptionsClose(position, { exitPrice, realizedPnl, reason } = {}) {
+    const id = Number(position?.delta_position_id);
+    const price = positive(exitPrice);
+    const pnl = number(realizedPnl);
+    if (!Number.isSafeInteger(id) || id <= 0 || !price || pnl === null) {
+      throw new Error('Canonical Options P&L link, verified exit price or realized P&L is unavailable');
+    }
+    const closedAt = new Date(now()).toISOString();
+    const patch = {
+      status: 'CLOSED',
+      current_price: price,
+      exit_price: price,
+      realized_pnl: pnl,
+      close_reason: normalizeOptionsCloseReason(reason),
+      closed_at: closedAt,
+      updated_at: closedAt
+    };
+    const updated = await database.update('dd_delta_positions', 'id=eq.' + id + '&status=eq.OPEN', patch);
+    if (Array.isArray(updated) && updated.length === 0) {
+      const rows = await database.select('dd_delta_positions',
+        'id=eq.' + id + '&select=id,status,exit_price,realized_pnl,close_reason&limit=1');
+      const prior = Array.isArray(rows) ? rows[0] : null;
+      if (!prior || prior.status !== 'CLOSED' ||
+          Math.abs(Number(prior.exit_price) - price) > 1e-8 ||
+          Math.abs(Number(prior.realized_pnl) - pnl) > 1e-8 ||
+          prior.close_reason !== patch.close_reason) {
+        throw new Error('Canonical Options P&L mirror was not confirmed; close remains reconciliation-required');
+      }
+    }
+    return patch;
+  }
+
   async function closeBuyOptionPosition(position, reason) {
     const product = await resolveProduct(position.symbol);
     const executionKey = crypto.createHash('sha256').update(String(position.position_key) + ':BUY_EXIT:' + String(now())).digest('hex').slice(0, 18);
@@ -1009,6 +1086,7 @@ export function createDeltaOptionsExecution({
       const error = new Error('Long Options reduce-only exit is not fully confirmed; reconciliation required'); error.ambiguous = true; throw error;
     }
     const realized = (Number(fill.averageFillPrice) - Number(position.entry_premium)) * Number(position.qty) * Number(position.contract_size);
+    await mirrorCanonicalOptionsClose(position, { exitPrice: fill.averageFillPrice, realizedPnl: realized, reason });
     await database.update('dd_option_positions', 'position_key=eq.' + encodeURIComponent(position.position_key) + '&status=eq.OPEN', {
       status: 'CLOSED', current_premium: fill.averageFillPrice, short_exit_premium: fill.averageFillPrice,
       exit_reason: reason, realized_pnl: realized, realized_pnl_verified: true,
@@ -1032,6 +1110,11 @@ export function createDeltaOptionsExecution({
     const shortPnl = (Number(position.entry_premium) - Number(position.short_exit_premium)) * Number(position.qty) * Number(position.contract_size);
     const hedgePnl = (Number(fill.averageFillPrice) - Number(position.hedge_entry_premium)) * Number(position.qty) * Number(position.hedge_contract_size);
     const realized = shortPnl + hedgePnl;
+    await mirrorCanonicalOptionsClose(position, {
+      exitPrice: position.short_exit_premium,
+      realizedPnl: realized,
+      reason: reason || position.exit_reason
+    });
     await database.update('dd_option_positions', 'position_key=eq.' + encodeURIComponent(position.position_key) + '&status=eq.HEDGE_CLOSE_PENDING', {
       status: 'CLOSED', hedge_exit_premium: fill.averageFillPrice,
       exit_reason: reason || position.exit_reason || 'OPTIONS_SELL_EXIT',
@@ -1043,28 +1126,46 @@ export function createDeltaOptionsExecution({
   }
 
   async function closeSellOptionPosition(position, reason) {
-    const shortProduct = await resolveProduct(position.symbol);
-    const executionKey = crypto.createHash('sha256').update(String(position.position_key) + ':SHORT_EXIT:' + String(now())).digest('hex').slice(0, 18);
-    const order = await submitLeg(shortProduct, 'BUY', Number(position.qty), null, {
-      strategy: 'OPTIONS_SELL', role: 'EXIT', maxLossUsd: 0,
-      hedgeOrderId: position.hedge_entry_order_id || null, reduceOnly: true, executionKey
-    });
-    const fill = await waitForProtectiveFill(order, Number(position.qty));
-    if (fill?.fullyFilled !== true || Number(fill.filledQty) !== Number(position.qty) || !positive(fill.averageFillPrice)) {
-      await database.update('dd_option_positions', 'position_key=eq.' + encodeURIComponent(position.position_key) + '&status=eq.OPEN', {
-        status: 'RECONCILIATION_REQUIRED', exit_reason: reason, updated_at: new Date(now()).toISOString(),
-        raw: { ...(position.raw || {}), close_short_order_id: order.id ?? null, close_state: 'SHORT_EXIT_UNCONFIRMED' }
-      }).catch(() => {});
-      const error = new Error('Short option buyback is not fully confirmed; protective BUY is retained and reconciliation is required');
-      error.ambiguous = true; throw error;
+    let shortOrder = null;
+    try {
+      return await executeDefinedRiskSellExit({
+        quantity: Number(position.qty),
+        closeShort: async () => {
+          const shortProduct = await resolveProduct(position.symbol);
+          const executionKey = crypto.createHash('sha256').update(String(position.position_key) + ':SHORT_EXIT:' + String(now())).digest('hex').slice(0, 18);
+          shortOrder = await submitLeg(shortProduct, 'BUY', Number(position.qty), null, {
+            strategy: 'OPTIONS_SELL', role: 'EXIT', maxLossUsd: 0,
+            hedgeOrderId: position.hedge_entry_order_id || null, reduceOnly: true, executionKey
+          });
+          const fill = await waitForProtectiveFill(shortOrder, Number(position.qty));
+          return { order: shortOrder, fill };
+        },
+        closeHedge: async ({ shortFill }) => {
+          const updated = { ...position, short_exit_premium: shortFill.averageFillPrice,
+            status: 'HEDGE_CLOSE_PENDING', exit_reason: reason };
+          const persisted = await database.update('dd_option_positions',
+            'position_key=eq.' + encodeURIComponent(position.position_key) + '&status=eq.OPEN', {
+              status: 'HEDGE_CLOSE_PENDING', short_exit_premium: shortFill.averageFillPrice,
+              current_premium: shortFill.averageFillPrice, exit_reason: reason,
+              updated_at: new Date(now()).toISOString(),
+              raw: { ...(position.raw || {}), close_short_order_id: shortOrder?.id ?? null,
+                close_short_fill_price: shortFill.averageFillPrice, close_short_fully_filled: true }
+            });
+          if (Array.isArray(persisted) && persisted.length === 0) {
+            throw new Error('Confirmed short buyback could not be persisted before hedge close; hedge remains open');
+          }
+          return closeSellHedge(updated, reason);
+        }
+      });
+    } catch (error) {
+      if (error?.code === 'OPTIONS_SHORT_EXIT_UNCONFIRMED') {
+        await database.update('dd_option_positions', 'position_key=eq.' + encodeURIComponent(position.position_key) + '&status=eq.OPEN', {
+          status: 'RECONCILIATION_REQUIRED', exit_reason: reason, updated_at: new Date(now()).toISOString(),
+          raw: { ...(position.raw || {}), close_short_order_id: shortOrder?.id ?? null, close_state: 'SHORT_EXIT_UNCONFIRMED' }
+        }).catch(() => {});
+      }
+      throw error;
     }
-    const updated = { ...position, short_exit_premium: fill.averageFillPrice, status: 'HEDGE_CLOSE_PENDING', exit_reason: reason };
-    await database.update('dd_option_positions', 'position_key=eq.' + encodeURIComponent(position.position_key) + '&status=eq.OPEN', {
-      status: 'HEDGE_CLOSE_PENDING', short_exit_premium: fill.averageFillPrice,
-      current_premium: fill.averageFillPrice, exit_reason: reason, updated_at: new Date(now()).toISOString(),
-      raw: { ...(position.raw || {}), close_short_order_id: order.id ?? null, close_short_fill_price: fill.averageFillPrice }
-    });
-    return closeSellHedge(updated, reason);
   }
 
   async function monitorOptionsExits() {
