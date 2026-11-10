@@ -588,7 +588,9 @@ function makeGridPnlRecoveryFixture({ exchangePositions = [], dbOpenGridRows = [
     continuous_mode: true,
     max_leverage: 3,
     grid_state: state,
-    gridSymbols: ['PAXGUSD', 'NVDAXUSD']
+    gridSymbols: ['PAXGUSD', 'NVDAXUSD'],
+    // Multi-symbol manager propagates a per-symbol P&L pause through this field.
+    gridGlobalPauseReason: 'GRID_PNL_UNVERIFIED'
   };
   return {
     now, database, executor, state, settings, updates, logs,
