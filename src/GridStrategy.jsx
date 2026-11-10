@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { safeNum } from './formatters.js';
 import { apiUrl } from './api-url.js';
-import { calculateAutoGridRange, selectLatestCompletedDailyCandle } from '../shared/grid-auto-range.js';
+import { calculateAtrGridRange, selectLatestCompletedDailyCandle } from '../shared/grid-auto-range.js';
 import { GRID_BRIDGE_MAX_POSITIONS, GRID_RISK_PER_TRADE_CHOICES, getGridDisplayStatus, normalizeGridRiskPerTradePct } from '../shared/grid-settings.js';
 
 const DEFAULT_GRID_SYMBOLS = Object.freeze(['PAXGUSD', 'NVDAXUSD']);
@@ -18,12 +18,14 @@ const price = value => {
 function levelsFor(lower, upper, count) {
   const lo = n(lower), hi = n(upper), length = Math.round(n(count));
   if (!(lo > 0 && hi > lo) || length < 8 || length > 12) return [];
-  const step = (hi - lo) / (length - 1);
-  return Array.from({ length }, (_, index) => ({
+  const ratio = Math.pow(hi / lo, 1 / (length - 1));
+  const levels = Array.from({ length }, (_, index) => ({
     index,
-    price: lo + step * index,
-    target: index < length - 1 ? lo + step * (index + 1) : 0
+    price: lo * Math.pow(ratio, index),
+    target: index < length - 1 ? lo * Math.pow(ratio, index + 1) : 0
   }));
+  levels[length - 1].price = hi;
+  return levels;
 }
 function resolveSymbols(settings, diagnostics) {
   const fromWorker = Array.isArray(diagnostics?.symbols)
@@ -44,7 +46,10 @@ function parseDraft(settings, symbols) {
     return [symbol, {
       lowerPrice: String(config.lowerPrice ?? config.grid_lower_price ?? legacyLower ?? ''),
       upperPrice: String(config.upperPrice ?? config.grid_upper_price ?? legacyUpper ?? ''),
-      levelsCount: Number(config.levelsCount ?? config.grid_levels_count ?? (index === 0 ? settings.grid_levels_count : 10) ?? 10)
+      levelsCount: Number(config.levelsCount ?? config.grid_levels_count ?? (index === 0 ? settings.grid_levels_count : 10) ?? 10),
+      atr: config.atr ?? null, atrPct: config.atrPct ?? null,
+      multiplier: config.multiplier ?? 2.5, widthPct: config.widthPct ?? null,
+      atrFallback: config.atrFallback === true
     }];
   }));
   return {
@@ -182,7 +187,7 @@ export default function GridStrategy({
     setAutoRangeError('');
     try {
       const end = Math.floor(Date.now() / 1000);
-      const start = end - 4 * 24 * 60 * 60;
+      const start = end - 20 * 24 * 60 * 60;
       const calculated = await Promise.all(gridSymbols.map(async symbol => {
         const query = new URLSearchParams({
           type: 'candles',
@@ -198,11 +203,22 @@ export default function GridStrategy({
         }
         const candle = selectLatestCompletedDailyCandle(data.result, Date.now());
         if (!candle) throw new Error('No completed previous-UTC-day 1D candle is available for ' + symbol);
-        const range = calculateAutoGridRange(candle, { bufferPct: 3, minimumWidthPct: 2 });
+        const ticker = market.find(row => String(row.symbol || '').toUpperCase() === symbol) || {};
+        const currentPrice = n(ticker.mark_price || ticker.price || ticker.close || candle.close);
+        const range = calculateAtrGridRange(data.result, {
+          currentPrice, multiplier: 2.5, minRangePct: 2, maxRangePct: 20,
+          fallbackCandle: candle, timestamp: Date.now()
+        });
+        if (!range.ok) throw new Error('ATR range calculation failed for ' + symbol);
         return {
           symbol,
           lowerPrice: String(range.lowerPrice),
-          upperPrice: String(range.upperPrice)
+          upperPrice: String(range.upperPrice),
+          atr: range.atr,
+          atrPct: range.atrPct,
+          multiplier: range.multiplier,
+          widthPct: range.widthPct,
+          atrFallback: range.fallback === true
         };
       }));
       setDraft(current => ({
@@ -212,7 +228,9 @@ export default function GridStrategy({
           ...Object.fromEntries(calculated.map(row => [row.symbol, {
             ...(current.gridSymbolConfigs?.[row.symbol] || {}),
             lowerPrice: row.lowerPrice,
-            upperPrice: row.upperPrice
+            upperPrice: row.upperPrice,
+            atr: row.atr, atrPct: row.atrPct, multiplier: row.multiplier,
+            widthPct: row.widthPct, atrFallback: row.atrFallback
           }]))
         }
       }));
@@ -259,10 +277,10 @@ export default function GridStrategy({
     <Panel title="Grid Configuration · Two Independent Symbols">
       <div className="gridButtons">
         <button className="action" disabled={busy || autoRangeBusy || lockedConfig} onClick={autoSetRangeFromDailyCandles}>
-          {autoRangeBusy ? 'Fetching Daily High / Low…' : 'Auto-Set Range (1D High/Low)'}
+          {autoRangeBusy ? 'Fetching Daily High / Low…' : 'Auto-Set ATR Range (14d)'}
         </button>
       </div>
-      <div className="lockedText">Uses the previous completed UTC daily candle with a 3% lower/upper buffer and a 2% minimum range. This only fills the draft; click Save Configuration to persist the new ranges.</div>
+      <div className="lockedText">Uses 14 completed daily candles for ATR, a 2.5x multiplier, and a 2%–20% clamped range. Fewer than 14 candles falls back to the legacy 3% buffer. This fills the draft; click Save Configuration to persist.</div>
       {autoRangeMessage ? <div className="statusLine">{autoRangeMessage}</div> : null}
       {autoRangeError ? <div className="errorText">{autoRangeError}</div> : null}
       <div className="grid2">
@@ -274,7 +292,10 @@ export default function GridStrategy({
             <label>{view.symbol} Upper Price<input type="number" inputMode="decimal" min="0" step="any" placeholder="Set upper boundary" value={view.config.upperPrice} onChange={event => updateSymbol(view.symbol, 'upperPrice', event.target.value)} disabled={lockedConfig}/></label>
             <label>{view.symbol} Grid Levels<select value={view.config.levelsCount} onChange={event => updateSymbol(view.symbol, 'levelsCount', Number(event.target.value))} disabled={lockedConfig}>{[8,9,10,11,12].map(value => <option key={value} value={value}>{value} levels</option>)}</select></label>
           </div>
-          <span>{view.valid ? view.levels.length + ' levels · ' + price((n(view.config.upperPrice) - n(view.config.lowerPrice)) / (view.levels.length - 1)) + ' spacing' : 'Range not configured · upper must exceed lower'}</span>
+          <span>{view.valid ? view.levels.length + ' geometric levels · ' + (((Math.pow(n(view.config.upperPrice) / n(view.config.lowerPrice), 1 / Math.max(1, view.levels.length - 1))) - 1) * 100).toFixed(3) + '% per step' : 'Range not configured · upper must exceed lower'}</span>
+          <span>14d ATR: {view.config.atr ? usd(view.config.atr) + ' (' + n(view.config.atrPct).toFixed(2) + '%)' : 'Awaiting worker ATR snapshot'}</span>
+          <span>Calculated Range: {price(view.config.lowerPrice)} - {price(view.config.upperPrice)} (Width: {view.config.widthPct ? n(view.config.widthPct).toFixed(2) : (n(view.config.upperPrice)-n(view.config.lowerPrice))/Math.max(1,n(view.currentPrice))*100 .toFixed?.(2)}%)</span>
+          <span>Multiplier: {n(view.config.multiplier || 2.5).toFixed(1)}x {view.config.atrFallback ? '· 3% fallback active' : ''}</span>
           <span>{view.symbolPositions.length} open position(s) · {view.symbolPending.length} pending limit entry(ies)</span>
           {view.symbolState.pausedReason ? <span className="down">Status: {view.symbolState.pausedReason}</span> : null}
         </div>)}
