@@ -457,3 +457,32 @@ test('Trailing Grid refuses to close exchange exposure without a matching Grid-o
   assert.equal(updates.length, 1);
   assert.equal(logs[0].level, 'CRITICAL');
 });
+
+
+test('Trailing Grid shifts retain the 10% shift but clamp width to configured ATR limits', () => {
+  const narrow = calculateTrailingGridRange({
+    direction: 'UP', lowerPrice: 100, upperPrice: 101,
+    breakoutExitPct: 1.2, shiftPct: 10, minRangePct: 2, maxRangePct: 20
+  });
+  assert.equal(narrow.ok, true);
+  assert.equal(narrow.clamped, true);
+  assert.ok(Math.abs(narrow.widthPct - 2) < 1e-8);
+  const wide = calculateTrailingGridRange({
+    direction: 'UP', lowerPrice: 100, upperPrice: 140,
+    breakoutExitPct: 1.2, shiftPct: 10, minRangePct: 2, maxRangePct: 20
+  });
+  assert.equal(wide.ok, true);
+  assert.equal(wide.clamped, true);
+  assert.ok(Math.abs(wide.widthPct - 20) < 1e-8);
+});
+
+test('global 1.2% Grid range break halts every configured symbol', () => {
+  const states = {
+    PAXGUSD: { status: 'ACTIVE', positions: [{ symbol: 'PAXGUSD', qty: 1 }] },
+    NVDAXUSD: { status: 'ACTIVE', positions: [{ symbol: 'NVDAXUSD', qty: 1 }] }
+  };
+  const halted = applyGlobalGridProtectionHalt(states, ['PAXGUSD', 'NVDAXUSD'], 'GRID_RANGE_BREAK', '2026-11-10T00:00:00.000Z');
+  assert.equal(halted.PAXGUSD.status, 'HALTED');
+  assert.equal(halted.NVDAXUSD.status, 'HALTED');
+  assert.equal(halted.PAXGUSD.pausedReason, 'GRID_RANGE_BREAK');
+});
