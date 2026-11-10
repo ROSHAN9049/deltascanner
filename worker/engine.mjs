@@ -852,7 +852,12 @@ export class DeltaEngine {
           ...previous,
           lowerPrice: row.range.lowerPrice,
           upperPrice: row.range.upperPrice,
-          levelsCount: Number.isInteger(levelsCount) && levelsCount >= 8 && levelsCount <= 12 ? levelsCount : 10
+          levelsCount: Number.isInteger(levelsCount) && levelsCount >= 8 && levelsCount <= 12 ? levelsCount : 10,
+          atr: row.range.atr ?? null,
+          atrPct: row.range.atrPct ?? null,
+          multiplier: row.range.multiplier ?? CONFIG.gridAtrMultiplier,
+          widthPct: row.range.widthPct,
+          atrFallback: row.range.fallback === true
         };
         appliedRanges[row.symbol] = {
           dailyLow: row.range.dailyLow,
