@@ -133,14 +133,17 @@ export function calculateDailyAtr(candles, { periods = 14, timestamp = Date.now(
     return Number.isFinite(high) && Number.isFinite(low) && Number.isFinite(close) &&
       high > 0 && low > 0 && high >= low && close > 0;
   });
-  if (!Number.isInteger(periods) || periods < 1 || valid.length < periods + 1) {
+  if (!Number.isInteger(periods) || periods < 1 || valid.length < periods) {
     return { ok: false, reason: 'INSUFFICIENT_DAILY_CANDLES', periods, available: valid.length };
   }
   const trueRanges = [];
-  for (let i = 1; i < valid.length; i++) {
+  for (let i = 0; i < valid.length; i++) {
     const high = Number(valid[i].high), low = Number(valid[i].low);
-    const previousClose = Number(valid[i - 1].close);
-    trueRanges.push(Math.max(high - low, Math.abs(high - previousClose), Math.abs(low - previousClose)));
+    if (i === 0) trueRanges.push(high - low);
+    else {
+      const previousClose = Number(valid[i - 1].close);
+      trueRanges.push(Math.max(high - low, Math.abs(high - previousClose), Math.abs(low - previousClose)));
+    }
   }
   const selected = trueRanges.slice(-periods);
   if (selected.length !== periods || selected.some(value => !Number.isFinite(value) || value < 0)) {
