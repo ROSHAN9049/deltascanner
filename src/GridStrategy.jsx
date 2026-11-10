@@ -44,15 +44,18 @@ function parseDraft(settings, symbols) {
     const config = saved[symbol] || {};
     const legacyLower = index === 0 ? settings.grid_lower_price : null;
     const legacyUpper = index === 0 ? settings.grid_upper_price : null;
+    const snapshot = resolveGridAtrSnapshot(settings, symbol, config);
     return [symbol, {
       lowerPrice: String(config.lowerPrice ?? config.grid_lower_price ?? legacyLower ?? ''),
       upperPrice: String(config.upperPrice ?? config.grid_upper_price ?? legacyUpper ?? ''),
       levelsCount: Number(config.levelsCount ?? config.grid_levels_count ?? (index === 0 ? settings.grid_levels_count : 10) ?? 10),
-      ...(() => { const snapshot = resolveGridAtrSnapshot(settings, symbol, config); return {
-        atr: snapshot.atr, atrPct: snapshot.atrPct, atrSnapshotStatus: snapshot.status,
-        atrFallback: snapshot.fallback, atrSnapshotAt: snapshot.snapshotAt
-      }; })(),
-      multiplier: config.multiplier ?? 2.5, widthPct: config.widthPct ?? null
+      atr: snapshot.atr,
+      atrPct: snapshot.atrPct,
+      atrSnapshotStatus: snapshot.status,
+      atrFallback: snapshot.fallback,
+      atrSnapshotAt: snapshot.snapshotAt,
+      multiplier: config.multiplier ?? 2.5,
+      widthPct: config.widthPct ?? null
     }];
   }));
   return {
