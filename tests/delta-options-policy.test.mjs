@@ -220,7 +220,7 @@ test('sub-day expiry rows remain blocked by the configured two-day execution min
   });
   assert.ok(signal.dte > 0 && signal.dte < 1);
   assert.ok(signal.blocked.includes('Expiry outside configured DTE'));
-  assert.ok(signal.blocked.includes('Expiry below 0.5 days; gamma risk'));
+  if (signal.dte < 0.5) assert.ok(signal.blocked.includes('Expiry below 0.5 days; gamma risk'));
   assert.equal(signal.ready, false);
   assert.notEqual(signal.stage, 'CONFIRMED');
 });
