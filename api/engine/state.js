@@ -1,6 +1,6 @@
 import { CONFIG } from '../../server/config.js';
 import { count, select } from '../../server/db.js';
-import { findWorkerHeartbeatRow, normalizeWorkerExecutionMode, normalizeEmergencyStopValue, protectEngineState } from '../../server/engine-state-privacy.js';
+import { findWorkerHeartbeatRow, normalizeWorkerExecutionMode, normalizeEmergencyStopValue, resolveWorkerGridAutoRangeStatus, protectEngineState } from '../../server/engine-state-privacy.js';
 import { indiaDateKey } from '../../src/date-utils.js';
 import { summarizeVerifiedDeltaClosedPnl } from '../../server/delta-closed-pnl.js';
 import { createEngineSessionCookie, hasEngineAccess, isEngineSessionValid } from '../../server/engine-session.js';
@@ -41,6 +41,7 @@ export default async function handler(req, res) {
     // The heartbeat's environment mode is shared with the dashboard through
     // Supabase. It no longer depends on any legacy bridge or mirror metadata.
     const heartbeatLog = findWorkerHeartbeatRow(rawLogs);
+    const workerGridAutoRangeStatus = resolveWorkerGridAutoRangeStatus(heartbeatLog);
     const deltaExecutionMode = normalizeWorkerExecutionMode(heartbeatLog);
     const deltaExecutionModeSource = deltaExecutionMode === 'unknown' ? 'unavailable' : 'supabase-worker-heartbeat';
     const privateDataAuthorized = Boolean(CONFIG.engineSecret) && hasEngineAccess(req, CONFIG.engineSecret);
@@ -148,7 +149,11 @@ export default async function handler(req, res) {
         deltaExecutionMode,
         gridExecutionAllowed: CONFIG.gridExecutionAllowed === true,
         gridTrailingEnvironmentEnabled: CONFIG.gridTrailingEnabled === true,
-        gridAutoRangeEnvironmentEnabled: CONFIG.gridAutoRangeEnabled === true,
+        // Use the Worker heartbeat as the source of truth, not the API service env.
+        gridAutoRangeEnvironmentEnabled: workerGridAutoRangeStatus.enabled,
+        workerGridAutoRangeEnvironmentEnabled: workerGridAutoRangeStatus.enabled,
+        workerGridAutoRangeHeartbeatFresh: workerGridAutoRangeStatus.heartbeatFresh,
+        workerGridAutoRangeHeartbeatAt: workerGridAutoRangeStatus.heartbeatAt,
         gridSymbols: CONFIG.gridSymbols || [],
         deltaExecutionModeSource,
         gridEntrySafety: privateDataAuthorized ? heartbeatLog?.data?.gridEntrySafety || null : null,
