@@ -23,6 +23,7 @@ import {
 } from './options-execution-lock.mjs';
 import { countOptionProductsByUnderlying, replaceOptionCacheSnapshot } from './options-cache-snapshot.mjs';
 import { detectOptionsMarketRegime } from './options-regime-strategy.mjs';
+import { calculateRollingIvRank, extractCurrentImpliedVolatility } from './options-iv-rank.mjs';
 import { selectBestOptionCandidates } from './options-candidate-selection.mjs';
 import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from './signal-failure-diagnostics.mjs';
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
@@ -2449,6 +2450,61 @@ export class DeltaEngine {
           maxContracts: 24,
           maxMoneynessPct: 20
         });
+
+        // Build our own rolling IV Rank from timestamped Delta ticker/Greeks IV
+        // observations. Missing history, an unavailable DB, or <7 days of data
+        // deliberately leaves iv_rank NULL so the candidate is blocked.
+        const ivObservations = joined.map(ticker => ({
+          ticker,
+          iv: extractCurrentImpliedVolatility(ticker)
+        })).filter(item => item.iv !== null);
+        for (const ticker of selected) {
+          ticker.iv_current = extractCurrentImpliedVolatility(ticker);
+          ticker.iv_rank = null;
+        }
+        if (ivObservations.length && typeof db.insertMany === 'function') {
+          try {
+            const observedAt = new Date(now).toISOString();
+            await db.insertMany('dd_iv_history', ivObservations.map(({ ticker, iv }) => ({
+              symbol: ticker.symbol,
+              underlying,
+              iv_current: iv,
+              observed_at: observedAt,
+              source: 'delta_public_option_ticker'
+            })));
+            const symbols = selected.filter(ticker => ticker.iv_current !== null)
+              .map(ticker => ticker.symbol)
+              .filter(symbol => /^[CP]-[A-Z0-9]+-[0-9.]+-\\d{6}$/.test(symbol));
+            if (symbols.length) {
+              const cutoff = encodeURIComponent(new Date(now - 30 * 86_400_000).toISOString());
+              const history = await db.select('dd_iv_history',
+                'symbol=in.(' + symbols.join(',') + ')&observed_at=gte.' + cutoff +
+                '&select=symbol,iv_current,observed_at&order=observed_at.asc&limit=10000');
+              if (!Array.isArray(history)) throw new Error('IV history query returned an invalid response');
+              const bySymbol = new Map();
+              for (const row of history) {
+                if (!bySymbol.has(row.symbol)) bySymbol.set(row.symbol, []);
+                bySymbol.get(row.symbol).push(row);
+              }
+              for (const ticker of selected) {
+                const result = calculateRollingIvRank(bySymbol.get(ticker.symbol) || [], ticker.iv_current, now);
+                ticker.iv_rank = result.ivRank;
+                ticker.iv_history_days = result.historyDays;
+                ticker.iv_rank_block_reason = result.reason;
+              }
+            }
+          } catch (error) {
+            for (const ticker of selected) {
+              ticker.iv_rank = null;
+              ticker.iv_rank_block_reason = 'IV_HISTORY_PERSISTENCE_OR_QUERY_FAILED';
+            }
+            await this.log('WARN', 'Rolling Options IV Rank unavailable; all affected entries fail closed', {
+              underlying, observations: ivObservations.length,
+              error: String(error?.message || error).slice(0, 240),
+              orderRoutingAttempted: false
+            }).catch(() => {});
+          }
+        }
         counts[underlying] = selected.length;
         greeksAvailableByUnderlying[underlying] = selected.filter(hasValidOptionDelta).length;
         greeksMissingByUnderlying[underlying] = selected.length - greeksAvailableByUnderlying[underlying];
@@ -3594,6 +3650,7 @@ export class DeltaEngine {
       volume_usd: s.volumeUsd,
       market_regime: s.marketRegime || 'UNKNOWN',
       iv_rank: s.ivRank,
+      iv_current: n(s.ticker?.iv_current) || null,
       market_data_source: 'production_public',
       delta: s.delta,
       gamma: s.gamma,
@@ -3626,6 +3683,9 @@ export class DeltaEngine {
         marketDataSource: 'production_public',
         marketRegime: s.marketRegime || 'UNKNOWN',
         ivRank: s.ivRank ?? null,
+        ivCurrent: s.ticker?.iv_current ?? null,
+        ivHistoryDays: s.ticker?.iv_history_days ?? 0,
+        ivRankBlockReason: s.ticker?.iv_rank_block_reason ?? null,
         // Keep cached detail fields aligned with the top-level Greek columns so
         // the dashboard and any detail-based consumers read the same values.
         delta: s.delta,
