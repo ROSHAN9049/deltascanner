@@ -9,16 +9,23 @@ export function normalizeImpliedVolatility(value) {
 }
 
 export function extractCurrentImpliedVolatility(ticker = {}) {
-  const candidates = [
+  const directCandidates = [
     ticker.mark_iv, ticker.implied_volatility, ticker.impliedVolatility, ticker.iv,
     ticker.greeks?.mark_iv, ticker.greeks?.implied_volatility,
     ticker.greeks?.impliedVolatility, ticker.greeks?.iv
   ];
-  for (const candidate of candidates) {
+  for (const candidate of directCandidates) {
     const value = normalizeImpliedVolatility(candidate);
     if (value !== null) return value;
   }
-  return null;
+
+  // Delta REST option tickers expose bid_iv and ask_iv under quotes. Use the
+  // midpoint when both sides are valid; a one-sided quote is a lower-confidence
+  // current snapshot, but still preferable to treating missing IV as zero.
+  const bidIv = normalizeImpliedVolatility(ticker.quotes?.bid_iv);
+  const askIv = normalizeImpliedVolatility(ticker.quotes?.ask_iv);
+  if (bidIv !== null && askIv !== null) return Number(((bidIv + askIv) / 2).toFixed(6));
+  return bidIv ?? askIv ?? null;
 }
 
 /**
