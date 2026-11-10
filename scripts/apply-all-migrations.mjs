@@ -27,7 +27,8 @@ const MIGRATIONS = [
   'db/migrations/20261109000100_adaptive_volatility_shadow_and_exit_reason.sql',
   'db/migrations/20261109000300_regime_based_options_strategy.sql',
   'db/migrations/20261110000100_regime_options_iv_and_loss_settings.sql',
-  'db/migrations/20261110000200_options_iv_history_and_canonical_pnl.sql'
+  'db/migrations/20261110000200_options_iv_history_and_canonical_pnl.sql',
+  'db/migrations/20261110000300_iv_rank_grouping.sql'
 ];
 
 // These are the four "already exists" SQLSTATEs explicitly approved for skipping.
