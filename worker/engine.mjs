@@ -814,7 +814,7 @@ export class DeltaEngine {
         });
         if (!range.ok) throw new Error('ATR range calculation failed for ' + symbol + ': ' + range.reason);
         if (range.fallback) {
-          await this.log('WARN', '[GRID] Fewer than 14 completed daily candles; using legacy 3% fixed buffer', {
+          void this.log('WARN', '[GRID] Fewer than 14 completed daily candles; using legacy 3% fixed buffer', {
             symbol, availableCandles: range.atr?.available ?? 0,
             requiredCandles: 14, fallbackWidthPct: range.widthPct
           }).catch(() => {});
