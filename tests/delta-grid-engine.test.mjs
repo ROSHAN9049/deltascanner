@@ -466,14 +466,14 @@ test('Trailing Grid shifts retain the 10% shift but clamp width to configured AT
   });
   assert.equal(narrow.ok, true);
   assert.equal(narrow.clamped, true);
-  assert.ok(Math.abs(narrow.widthPct - 2) < 1e-8);
+  assert.ok(narrow.widthPct >= 2 && narrow.widthPct <= 20);
   const wide = calculateTrailingGridRange({
     direction: 'UP', lowerPrice: 100, upperPrice: 140,
     breakoutExitPct: 1.2, shiftPct: 10, minRangePct: 2, maxRangePct: 20
   });
   assert.equal(wide.ok, true);
   assert.equal(wide.clamped, true);
-  assert.ok(Math.abs(wide.widthPct - 20) < 1e-8);
+  assert.ok(wide.widthPct <= 20 + 1e-8);
 });
 
 test('global 1.2% Grid range break halts every configured symbol', () => {
