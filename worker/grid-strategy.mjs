@@ -386,6 +386,7 @@ export function evaluateGridTick({
         entryPrice: level.price,
         targetPrice,
         stopPrice,
+        atrBufferedStop: cfg.atrBufferPrice > 0,
         qty,
         riskUsd: positionRisk,
         openedAt: at
