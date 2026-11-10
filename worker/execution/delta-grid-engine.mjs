@@ -928,7 +928,7 @@ export async function manageDeltaTestnetGrid({
   let pnl;
   let allTrades = [];
   try {
-    const [closedPositions, closedPositionCount, trades, tradeCount] = await Promise.all([
+    const pnlReadResults = await Promise.allSettled([
       retryGridPnlRead({
         request: 'closed_positions',
         read: () => database.select('dd_delta_positions', closedPositionQuery),
@@ -954,6 +954,10 @@ export async function manageDeltaTestnetGrid({
         database
       })
     ]);
+    const failedPnlRead = pnlReadResults.find(result => result.status === 'rejected');
+    if (failedPnlRead) throw failedPnlRead.reason;
+    const [closedPositions, closedPositionCount, trades, tradeCount] =
+      pnlReadResults.map(result => result.value);
     allTrades = Array.isArray(trades) ? trades : [];
     pnl = verifiedPnlSnapshot({
       closedPositions,
