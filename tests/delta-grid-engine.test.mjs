@@ -260,14 +260,14 @@ test('Grid protection failure halts both configured symbols immediately in the s
 
 test('Trailing Grid shifts the breached range outward by the configured 10% bands', () => {
   const up = calculateTrailingGridRange({
-    direction: 'UP', lowerPrice: 90, upperPrice: 100, breakoutExitPct: 1.2
+    direction: 'UP', lowerPrice: 90, upperPrice: 100, breakoutExitPct: 1.2, maxRangePct: 50
   });
   assert.equal(up.ok, true);
   assert.equal(up.lowerPrice, 90);
   assert.ok(up.upperPrice > 111.31 && up.upperPrice < 111.33);
 
   const down = calculateTrailingGridRange({
-    direction: 'DOWN', lowerPrice: 90, upperPrice: 100, breakoutExitPct: 1.2
+    direction: 'DOWN', lowerPrice: 90, upperPrice: 100, breakoutExitPct: 1.2, maxRangePct: 50
   });
   assert.equal(down.ok, true);
   assert.ok(down.lowerPrice > 80.02 && down.lowerPrice < 80.04);
