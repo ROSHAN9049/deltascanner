@@ -5,7 +5,7 @@ import { calculateAtrGridRange, selectLatestCompletedDailyCandle } from '../shar
 import { readGridSymbolConfig, resolveGridAtrSnapshot } from './grid-atr-snapshot.js';
 import { GRID_BRIDGE_MAX_POSITIONS, GRID_RISK_PER_TRADE_CHOICES, getGridDisplayStatus, normalizeGridRiskPerTradePct } from '../shared/grid-settings.js';
 
-const DEFAULT_GRID_SYMBOLS = Object.freeze(['PAXGUSD', 'NVDAXUSD']);
+const DEFAULT_GRID_SYMBOLS = Object.freeze(['PAXGUSD', 'NVDAXUSD', 'SPYXUSD', 'XAUTUSD', 'SLVONUSD', 'ADAUSD']);
 const n = value => safeNum(value) ?? 0;
 const usd = value => {
   const amount = safeNum(value);
@@ -28,14 +28,17 @@ function levelsFor(lower, upper, count) {
   levels[length - 1].price = hi;
   return levels;
 }
-function resolveSymbols(settings, diagnostics) {
-  const fromWorker = Array.isArray(diagnostics?.symbols)
-    ? diagnostics.symbols.map(value => String(value || '').trim().toUpperCase())
+function resolveSymbols(settings, diagnostics, apiSymbols = []) {
+  const fromWorker = Array.isArray(diagnostics?.poolSymbols)
+    ? diagnostics.poolSymbols.map(value => String(value || '').trim().toUpperCase()).filter(Boolean)
     : [];
-  if (fromWorker.length === 2 && fromWorker[0] !== fromWorker[1]) return fromWorker;
+  if (fromWorker.length) return [...new Set(fromWorker)];
+  const fromApi = Array.isArray(apiSymbols)
+    ? apiSymbols.map(value => String(value || '').trim().toUpperCase()).filter(Boolean) : [];
+  if (fromApi.length) return [...new Set(fromApi)];
   const fromSettings = settings.grid_symbol_configs && typeof settings.grid_symbol_configs === 'object'
     ? Object.keys(settings.grid_symbol_configs).map(value => value.toUpperCase()) : [];
-  return fromSettings.length === 2 ? fromSettings : [...DEFAULT_GRID_SYMBOLS];
+  return fromSettings.length ? [...new Set(fromSettings)] : [...DEFAULT_GRID_SYMBOLS];
 }
 function parseDraft(settings, symbols) {
   const saved = settings.grid_symbol_configs && typeof settings.grid_symbol_configs === 'object'
@@ -59,12 +62,13 @@ function parseDraft(settings, symbols) {
       atrSnapshotAt: snapshot.snapshotAt,
       atr_snapshot_at: snapshot.snapshotAt,
       multiplier: config.multiplier ?? 2.5,
-      widthPct: config.widthPct ?? null
+      widthPct: config.widthPct ?? null,
+      paused: config.paused === true
     }];
   }));
   return {
     gridSymbolConfigs,
-    gridMaxPositions: GRID_BRIDGE_MAX_POSITIONS,
+    gridMaxPositions: maxConcurrentSymbols,
     gridRiskPerTradePct: normalizeGridRiskPerTradePct(settings.grid_risk_per_trade_pct ?? 0.3),
     gridDailyLossPct: 2,
     gridMomentumPausePct: Number(settings.grid_momentum_pause_pct || 2.5),
@@ -87,11 +91,14 @@ export default function GridStrategy({
   workerGridAutoRangeHeartbeatFresh = false,
   apiGridSymbols = []
 }) {
-  const gridSymbols = useMemo(() => {
-    const apiSymbols = Array.isArray(apiGridSymbols) ? apiGridSymbols : [];
-    if (apiSymbols.length === 2) return apiSymbols.map(value => String(value).toUpperCase());
-    return resolveSymbols(settings, testnetDiagnostics);
-  }, [apiGridSymbols.join(','), testnetDiagnostics?.symbols?.join(','), settings.grid_symbol_configs]);
+  const gridSymbols = useMemo(() =>
+    resolveSymbols(settings, testnetDiagnostics, apiGridSymbols),
+  [apiGridSymbols.join(','), testnetDiagnostics?.poolSymbols?.join(','), settings.grid_symbol_configs]);
+  const rejectedPoolSymbols = Array.isArray(testnetDiagnostics?.gridRejectedPoolSymbols)
+    ? testnetDiagnostics.gridRejectedPoolSymbols.map(value => String(value).toUpperCase()) : [];
+  const gridExecutableSymbols = gridSymbols.filter(symbol => !rejectedPoolSymbols.includes(symbol));
+  const maxConcurrentSymbols = Math.max(1, Math.min(6,
+    Number(testnetDiagnostics?.maxConcurrentSymbols ?? settings.max_grid_positions ?? GRID_BRIDGE_MAX_POSITIONS) || GRID_BRIDGE_MAX_POSITIONS));
   const [draft, setDraft] = useState(() => parseDraft(settings, gridSymbols));
   const [autoRangeBusy, setAutoRangeBusy] = useState(false);
   const [autoRangeMessage, setAutoRangeMessage] = useState('');
@@ -129,9 +136,18 @@ export default function GridStrategy({
     };
     const symbolPositions = positions.filter(position => String(position.symbol || '').toUpperCase() === symbol);
     const symbolPending = pendingEntries.filter(order => String(order.symbol || '').toUpperCase() === symbol);
-    const symbolState = gridState.symbolStates?.[symbol] || gridState.symbolSummaries?.[symbol] || {};
+    const persistedSymbolState = gridState.symbolStates?.[symbol] || gridState.symbolSummaries?.[symbol] || {};
+    const workerSymbolState = testnetDiagnostics?.symbolStatuses?.[symbol] || {};
+    const symbolState = { ...persistedSymbolState, ...workerSymbolState };
+    const unavailable = rejectedPoolSymbols.includes(symbol);
+    const status = config.paused === true ? 'PAUSED'
+      : String(symbolState.status || (unavailable ? 'PENDING' : 'PENDING')).toUpperCase();
+    const blockingPosition = symbolState.blockingPosition || symbolState.futuresBlocker || null;
     return {
       symbol, config, atrSnapshot, currentPrice, levels, symbolPositions, symbolPending, symbolState,
+      status,
+      unavailable,
+      blockingPosition,
       valid: levels.length >= 8 && n(config.lowerPrice) > 0 && n(config.upperPrice) > n(config.lowerPrice)
     };
   });
@@ -147,7 +163,7 @@ export default function GridStrategy({
   const currentEquity = safeNum(gridState.currentEquity);
   const drawdownPct = safeNum(gridState.drawdownPct);
   const momentum = gridState.momentum || {};
-  const allRangesValid = views.length === 2 && views.every(view => view.valid);
+  const allRangesValid = views.some(view => view.valid && !view.unavailable && view.config.paused !== true);
   const activeSlots = new Set([
     ...positions.map(position => String(position.symbol || '').toUpperCase()),
     ...pendingEntries.map(order => String(order.symbol || '').toUpperCase())
@@ -198,11 +214,12 @@ export default function GridStrategy({
     gridSymbolConfigs: Object.fromEntries(gridSymbols.map(symbol => {
       const config = draft.gridSymbolConfigs?.[symbol] || {};
       return [symbol, {
-        lowerPrice: Number(config.lowerPrice),
-        upperPrice: Number(config.upperPrice),
+        lowerPrice: Number.isFinite(Number(config.lowerPrice)) ? Number(config.lowerPrice) : null,
+        upperPrice: Number.isFinite(Number(config.upperPrice)) ? Number(config.upperPrice) : null,
         levelsCount: Number(config.levelsCount),
         atr: config.atr, atrPct: config.atrPct, atr_14d: config.atr, atr_pct: config.atrPct, multiplier: config.multiplier,
-        widthPct: config.widthPct, atrFallback: config.atrFallback === true, atr_snapshot_status: config.atrSnapshotStatus
+        widthPct: config.widthPct, atrFallback: config.atrFallback === true, atr_snapshot_status: config.atrSnapshotStatus,
+        paused: config.paused === true
       }];
     })),
     gridMaxPositions: GRID_BRIDGE_MAX_POSITIONS,
@@ -221,7 +238,7 @@ export default function GridStrategy({
     try {
       const end = Math.floor(Date.now() / 1000);
       const start = end - 20 * 24 * 60 * 60;
-      const calculated = await Promise.all(gridSymbols.map(async symbol => {
+      const calculated = await Promise.all(gridExecutableSymbols.map(async symbol => {
         const query = new URLSearchParams({
           type: 'candles',
           resolution: '1d',
