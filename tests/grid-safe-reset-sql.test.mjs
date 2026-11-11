@@ -25,6 +25,7 @@ test('NVDAX safe reset refuses Grid positions and pending orders on both symbols
   assert.match(sql, /upper\(symbol\) IN \('PAXGUSD','NVDAXUSD'\)/);
   assert.match(sql, /DDG-%/);
   assert.match(sql, /persisted Grid state contains % position\/reservation entries/);
+  assert.match(sql, /expected open PAXGUSD Futures position is missing or unclassified/);
   assert.match(sql, /PAXGUSD exchange exposure is not positively classified as Futures/);
 });
 
