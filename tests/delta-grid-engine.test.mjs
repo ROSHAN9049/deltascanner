@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sizeDeltaGridEntry, assessDeltaGridEntryFill, hasVerifiedGridBracket, cancelAndVerifyGridOrder, cancelUnverifiedGridEntry, calculateTrailingGridRange, getTrailingGridBreakoutDirection, pruneTrailingGridShiftTimestamps, executeTrailingGridShift, retryGridPnlRead, manageDeltaTestnetGrid } from '../worker/execution/delta-grid-engine.mjs';
-import { applyGlobalGridProtectionHalt } from '../worker/execution/delta-multi-grid-engine.mjs';
+import { applyGlobalGridProtectionHalt, manageDeltaTestnetMultiGrid } from '../worker/execution/delta-multi-grid-engine.mjs';
 
 const candidate = {
   levelIndex: 6,
@@ -745,4 +745,70 @@ test('Grid remains fail-closed when the P&L database request fails persistently'
     row.data?.event === 'grid_pnl_verify_failed' &&
     row.data?.request === 'closed_positions'
   ));
+});
+
+
+test('multi-symbol manager accepts one active symbol after the other is paused in DB config', async () => {
+  const now = Date.parse('2026-11-11T03:00:00.000Z');
+  const updates = [];
+  const database = {
+    async select(table, query) {
+      if (table === 'dd_delta_positions' && query.startsWith('strategy=eq.GRID&status=in.')) return [];
+      if (table === 'dd_delta_positions' && query.startsWith('strategy=eq.GRID&status=eq.OPEN')) return [];
+      if (table === 'dd_delta_positions' && query.startsWith('symbol=eq.NVDAXUSD')) return [];
+      if (table === 'dd_trades' || table === 'dd_orders') return [];
+      return [];
+    },
+    async count() { return 0; },
+    async update(table, query, patch) { updates.push({ table, query, patch }); },
+    async log() {}
+  };
+  const executor = { async getOpenPositions() { return []; } };
+  const nvdaxState = {
+    version: 2, executionMode: 'DELTA_TESTNET', symbol: 'NVDAXUSD',
+    status: 'PAUSED', pausedReason: null, positions: [], pendingEntries: [],
+    trades: [], events: [], realizedPnl: 0, dayPnl: 0,
+    strategyStartEquity: 50000, dayStartEquity: 50000,
+    currentEquity: 50000, highWaterEquity: 50000,
+    tradeDate: '2026-11-11', wasEnabled: true, lastPrice: 0
+  };
+  const result = await manageDeltaTestnetMultiGrid({
+    settings: {
+      grid_enabled: true,
+      auto_trade: false,
+      enabled: true,
+      continuous_mode: true,
+      max_leverage: 3,
+      grid_risk_per_trade_pct: 0.3,
+      grid_state: {
+        version: 3, executionMode: 'DELTA_TESTNET',
+        symbolStates: {
+          PAXGUSD: { status: 'HALTED', pausedReason: 'GRID_TRAILING_SHIFT_UNCONFIRMED', positions: [], pendingEntries: [] },
+          NVDAXUSD: nvdaxState
+        }
+      },
+      grid_symbol_configs: {
+        PAXGUSD: { paused: true, lowerPrice: 4023, upperPrice: 4186, levelsCount: 10 },
+        NVDAXUSD: { paused: false, lowerPrice: 171, upperPrice: 193, levelsCount: 10 }
+      },
+      gridTrailingEnvironmentEnabled: true,
+      grid_trailing_enabled: true
+    },
+    account: { privateApiAvailable: true, equity: 50000, available: 1000 },
+    symbols: ['NVDAXUSD'],
+    tickers: { NVDAXUSD: { mark_price: 180 } },
+    products: { NVDAXUSD: { contract_value: 1, tick_size: 0.01, taker_commission_rate: 0.0005 } },
+    candlesBySymbol: {
+      NVDAXUSD: Array.from({ length: 6 }, () => ({ open: 180, high: 180, low: 180, close: 180 }))
+    },
+    freshnessBySymbol: { NVDAXUSD: true },
+    database,
+    executor,
+    now: () => now
+  });
+  assert.equal(result.safety.reason, 'AUTO_TRADE_DISABLED');
+  assert.equal(result.safety.symbols.length, 1);
+  assert.equal(result.safety.symbols[0].symbol, 'NVDAXUSD');
+  assert.deepEqual(Object.keys(result.state.symbolSummaries), ['NVDAXUSD']);
+  assert.ok(updates.length > 0);
 });
