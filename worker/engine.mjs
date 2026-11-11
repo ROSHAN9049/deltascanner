@@ -33,7 +33,6 @@ import { deltaExecutor } from './execution/delta-executor.mjs';
 import { projectCanonicalDeltaBrackets } from './execution/delta-position-projection.mjs';
 import { manageDeltaTestnetMultiGrid } from './execution/delta-multi-grid-engine.mjs';
 import { calculateAutoGridRange, calculateAtrGridRange, hasGridAutoRangeExposure, isAutoGridRangeRefreshDue, isGridAtrSnapshotRefreshRequired, selectLatestCompletedDailyCandle, utcDayKey } from '../shared/grid-auto-range.js';
-import { resolveActiveGridSymbols } from '../shared/grid-settings.js';
 import { assertDirectDeltaExecutionMode, getExecutionRouteBlockReason, DELTA_TESTNET_FUTURES_ALLOWLIST, isAllowedDeltaTestnetFutureSymbol, isEligibleDeltaTestnetPerpetualProduct, isMarketTickFresh, canStartWorkerInExecutionProfile } from './execution/execution-route-policy.mjs';
 import { canExecuteDeltaTestnetOrders, checkDeltaTestnetPrivateApi, isPrivateApiConnectivityError } from './execution/testnet-private-api-health.mjs';
 import {
@@ -1037,19 +1036,26 @@ export class DeltaEngine {
   }
 
   async runTestnetGridExecution(settings = {}, account = {}) {
-    const configuredSymbols = Array.isArray(CONFIG.gridSymbols) ? CONFIG.gridSymbols : [];
-    const symbols = resolveActiveGridSymbols(configuredSymbols, settings.grid_symbol_configs);
+    const symbols = Array.isArray(CONFIG.gridSymbolPool || CONFIG.gridSymbols)
+      ? [...(CONFIG.gridSymbolPool || CONFIG.gridSymbols)] : [];
+    const maxConcurrentSymbols = Number(CONFIG.gridMaxConcurrentSymbols) || 2;
     const autoRangeResult = await this.refreshAutoGridRanges(settings, symbols, {
       forceSnapshot: !this.gridAtrSnapshotInitialized
     });
     const executionSettings = autoRangeResult.settings || settings;
     if (CONFIG.gridExecutionAllowed !== true || CONFIG.directDeltaExecutionEnabled !== true ||
         CONFIG.deltaExecutionMode !== 'testnet' || CONFIG.environment !== 'TESTNET' ||
-        symbols.length < 1 || symbols.length > 2 || account.privateApiAvailable !== true) {
+        symbols.length < 1 || symbols.length > 6 || account.privateApiAvailable !== true) {
       this.lastGridTestnetDiagnostics = {
         executionMode: 'testnet',
         gridExecutionAllowed: false,
-        symbols,
+        poolSymbols: symbols,
+        symbols: [],
+        activeSymbols: [],
+        skippedSymbols: [],
+        maxConcurrentSymbols,
+        gridSymbolPoolSource: CONFIG.gridSymbolPoolSource || 'GRID_SYMBOLS',
+        gridRejectedPoolSymbols: CONFIG.gridRejectedPoolSymbols || [],
         gridAutoRangeEnvironmentEnabled: CONFIG.gridAutoRangeEnabled === true,
         gridAutoRangeBlocked: autoRangeResult.blocked === true,
         gridAutoRangeApplied: autoRangeResult.applied === true,
@@ -1060,6 +1066,7 @@ export class DeltaEngine {
       };
       return this.lastGridTestnetDiagnostics;
     }
+
     const tickers = {};
     const products = {};
     const candlesBySymbol = {};
@@ -1067,8 +1074,6 @@ export class DeltaEngine {
     const nowMs = Date.now();
     for (const symbol of symbols) {
       tickers[symbol] = this.tickerMap.get(symbol) || {};
-      // Explicit Grid symbols must be admitted to the candle cache even when
-      // they are outside the scanner's top-volume candle warm-up universe.
       this.candleCacheSymbols.add(symbol);
       const lastRefresh = this.gridCandleRefreshBySymbol.get(symbol) || 0;
       if (nowMs - lastRefresh >= 15_000) {
@@ -1076,14 +1081,18 @@ export class DeltaEngine {
           await this.refreshCandle(symbol, '1m');
           this.gridCandleRefreshBySymbol.set(symbol, Date.now());
         } catch (error) {
-          await this.log('WARN', 'Grid candle refresh failed; new entries remain blocked for this symbol', {
+          await this.log('WARN', 'Grid candle refresh failed for pool symbol; only this symbol remains pending', {
             symbol, error: String(error?.message || error).slice(0, 200),
             executionBlocked: true
           }).catch(() => {});
         }
       }
       candlesBySymbol[symbol] = this.getCandles(symbol, '1m');
-      freshnessBySymbol[symbol] = autoRangeResult.blocked !== true &&
+      const config = executionSettings.grid_symbol_configs?.[symbol] || {};
+      const rangeReady = Number(config.lowerPrice ?? config.grid_lower_price) > 0 &&
+        Number(config.upperPrice ?? config.grid_upper_price) > Number(config.lowerPrice ?? config.grid_lower_price) &&
+        ['READY', 'FALLBACK_3PCT'].includes(config.atr_snapshot_status ?? config.atrSnapshotStatus);
+      freshnessBySymbol[symbol] = rangeReady &&
         Date.now() - (this.gridCandleRefreshBySymbol.get(symbol) || 0) < 60_000 &&
         Array.isArray(candlesBySymbol[symbol]) && candlesBySymbol[symbol].length >= 6 &&
         n(tickers[symbol]?.mark_price || tickers[symbol]?.close || tickers[symbol]?.price) > 0;
@@ -1094,7 +1103,7 @@ export class DeltaEngine {
         }
       } catch (error) {
         freshnessBySymbol[symbol] = false;
-        await this.log('WARN', 'Grid symbol failed Testnet product verification; entries remain blocked for this symbol', {
+        await this.log('WARN', 'Grid pool symbol is unavailable on Delta Testnet; only this symbol remains pending', {
           symbol, error: String(error?.message || error).slice(0, 200),
           allowlisted: isAllowedDeltaTestnetFutureSymbol(symbol),
           executionBlocked: true
@@ -1103,9 +1112,15 @@ export class DeltaEngine {
     }
 
     const result = await manageDeltaTestnetMultiGrid({
-      settings: { ...executionSettings, gridTrailingEnvironmentEnabled: CONFIG.gridTrailingEnabled === true, gridAutoRangeEnvironmentEnabled: CONFIG.gridAutoRangeEnabled === true },
+      settings: {
+        ...executionSettings,
+        gridTrailingEnvironmentEnabled: CONFIG.gridTrailingEnabled === true,
+        gridAutoRangeEnvironmentEnabled: CONFIG.gridAutoRangeEnabled === true,
+        gridMaxConcurrentSymbols: maxConcurrentSymbols
+      },
       account,
       symbols,
+      maxConcurrentSymbols,
       tickers,
       products,
       candlesBySymbol,
@@ -1120,21 +1135,31 @@ export class DeltaEngine {
         (Date.now() - Date.parse(String(event.at || '')) >= 0 &&
           Date.now() - Date.parse(String(event.at || '')) < 60_000));
     const orderRoutingAttempted = recentEvents.some(event =>
-      ['ENTRY', 'ENTRY_PENDING', 'HALT'].includes(String(event.type || '').toUpperCase()) &&
+      ['ENTRY', 'ENTRY_PENDING', 'HALT', 'SHIFT'].includes(String(event.type || '').toUpperCase()) &&
       String(event.reason || '').toUpperCase() !== 'EMERGENCY_STOP'
     );
     this.lastGridTestnetDiagnostics = {
       executionMode: 'testnet',
       gridExecutionAllowed: true,
-      symbols,
+      poolSymbols: symbols,
+      symbols: result.activeSymbols || [],
+      activeSymbols: result.activeSymbols || [],
+      skippedSymbols: result.skippedSymbols || [],
+      symbolStatuses: result.symbolStatuses || {},
+      maxConcurrentSymbols,
+      gridSymbolPoolSource: CONFIG.gridSymbolPoolSource || 'GRID_SYMBOLS',
+      gridRejectedPoolSymbols: CONFIG.gridRejectedPoolSymbols || [],
       enabled: executionSettings.grid_enabled === true,
       gridTrailingEnvironmentEnabled: CONFIG.gridTrailingEnabled === true,
       gridAutoRangeEnvironmentEnabled: CONFIG.gridAutoRangeEnabled === true,
       gridAutoRangeBlocked: autoRangeResult.blocked === true,
       gridAutoRangeApplied: autoRangeResult.applied === true,
+      gridAutoRangeWaitingForFlat: autoRangeResult.waitingForFlat || [],
+      gridAutoRangePendingSymbols: autoRangeResult.pendingSymbols || [],
       gridAutoRangeLastAppliedUtcDay: executionSettings.grid_state?.autoRangeLastAppliedUtcDay || null,
       gridTrailingEnabled: CONFIG.gridTrailingEnabled === true && settings.grid_trailing_enabled === true,
       executionLocked: result.safety?.blocked === true,
+      waitingForFutures: result.waitingForFutures === true,
       status: result.state?.status || 'UNKNOWN',
       orderRoutingAttempted,
       safety: result.safety || null,
@@ -1149,7 +1174,7 @@ export class DeltaEngine {
     };
     await this.log(
       result.safety?.blocked ? 'WARN' : 'INFO',
-      'Delta Testnet multi-symbol Grid cycle completed',
+      'Delta Testnet dynamic symbol-pool Grid cycle completed',
       this.lastGridTestnetDiagnostics
     ).catch(() => {});
     return this.lastGridTestnetDiagnostics;
