@@ -257,8 +257,7 @@ test('NVDAX Grid entry remains symbol-scoped when PAXG has a Futures position an
   };
   const runtime = fakeRuntime({ positions: [paxgFutures], markPrice: 180 });
   const executor = createDeltaExecutor({
-    env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database,
-    now: () => 1770000000000
+    env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database
   });
 
   const order = await executor.placeBracketOrder('NVDAXUSD', 'BUY', 1, 180, 176, 188, {
@@ -764,7 +763,7 @@ test('closed REST order acknowledgement immediately polls and persists an OPEN p
     orderState: 'closed',
     orderAverageFillPrice: 60010,
     positionsAfterFill: [{
-      product_id: 27,
+      product_id: 181689,
       product_symbol: 'XAUTUSD',
       size: -1,
       entry_price: '60010',
