@@ -463,9 +463,11 @@ test('Trailing Grid refuses to close exchange exposure without a matching Grid-o
 test('Trailing shift on the active symbol ignores a separately paused PAXGUSD Futures position', async () => {
   const queries = [];
   const updates = [];
+  const positionQueries = [];
   const paxgPosition = {
     symbol: 'PAXGUSD', side: 'SELL', qty: 61, entry_price: 4089.23,
-    client_order_id: 'SCALP-PAXGUSD-OPEN'
+    client_order_id: 'SCALP-PAXGUSD-OPEN',
+    sl_price: 4150.5, tp_price: 3935.8
   };
   const configs = {
     PAXGUSD: {
@@ -479,8 +481,16 @@ test('Trailing shift on the active symbol ignores a separately paused PAXGUSD Fu
   };
   const result = await executeTrailingGridShift({
     executor: {
-      async getOpenPositions() { return [paxgPosition]; },
-      async getOrderById() { throw new Error('No pending Grid order should be read'); }
+      async getOpenPositions({ symbols } = {}) {
+        positionQueries.push(symbols);
+        assert.deepEqual(symbols, ['NVDAXUSD']);
+        // The API product_ids filter keeps PAXG's exchange position and
+        // brackets out of this Grid snapshot altogether.
+        return [];
+      },
+      async getOrderById() { throw new Error('No pending Grid order should be read'); },
+      async cancelOrderById() { throw new Error('No PAXG or NVDAX order should be cancelled'); },
+      async closePosition() { throw new Error('No position should be closed during this flat NVDAX shift'); }
     },
     database: {
       async select(table, query) {
@@ -523,6 +533,10 @@ test('Trailing shift on the active symbol ignores a separately paused PAXGUSD Fu
   assert.equal(paxgPosition.qty, 61);
   assert.equal(paxgPosition.side, 'SELL');
   assert.equal(queries.length, 1);
+  assert.equal(positionQueries.length, 3);
+  assert.deepEqual(positionQueries, [['NVDAXUSD'], ['NVDAXUSD'], ['NVDAXUSD']]);
+  assert.equal(paxgPosition.sl_price, 4150.5);
+  assert.equal(paxgPosition.tp_price, 3935.8);
 });
 
 test('Trailing Grid shifts retain the 10% shift but clamp width to configured ATR limits', () => {
@@ -823,6 +837,7 @@ function makeDynamicGridPoolFixture({
   maxConcurrentSymbols = 2,
   tickerOverrides = {},
   autoTrade = false,
+  pausedSymbols = [],
   logs: initialLogs = []
 } = {}) {
   const now = Date.parse('2026-11-11T03:00:00.000Z');
@@ -833,7 +848,7 @@ function makeDynamicGridPoolFixture({
     lowerPrice: 100, upperPrice: 110, levelsCount: 10,
     atr_14d: 2, atr_pct: 1.9, atr_snapshot_status: 'READY',
     atr: 2, atrPct: 1.9, widthPct: 4,
-    paused: false
+    paused: pausedSymbols.includes(symbol)
   }]));
   const tickers = Object.fromEntries(symbols.map((symbol, index) => [symbol, {
     mark_price: 105,
@@ -853,7 +868,10 @@ function makeDynamicGridPoolFixture({
   ]));
   const database = {
     async select(table, query) {
-      if (table === 'dd_delta_positions' && query.startsWith('symbol=in.(')) return databasePositions;
+      if (table === 'dd_delta_positions' && query.startsWith('symbol=in.(')) {
+        const filter = query.slice('symbol=in.('.length).split(')')[0].split(',');
+        return databasePositions.filter(row => filter.includes(String(row.symbol).toUpperCase()));
+      }
       if (table === 'dd_delta_positions' && query.startsWith('strategy=eq.GRID&status=in.')) return [];
       if (table === 'dd_delta_positions' && query.startsWith('strategy=eq.GRID&status=eq.OPEN')) {
         return databasePositions.filter(row => String(row.strategy).toUpperCase() === 'GRID');
@@ -862,7 +880,10 @@ function makeDynamicGridPoolFixture({
         const symbol = decodeURIComponent(query.slice('symbol=eq.'.length).split('&')[0]);
         return databasePositions.filter(row => row.symbol === symbol);
       }
-      if (table === 'dd_orders' && query.startsWith('symbol=in.(')) return gridOrders;
+      if (table === 'dd_orders' && query.startsWith('symbol=in.(')) {
+        const filter = query.slice('symbol=in.('.length).split(')')[0].split(',');
+        return gridOrders.filter(row => filter.includes(String(row.symbol).toUpperCase()));
+      }
       if (table === 'dd_orders' && query.startsWith('strategy=eq.GRID')) return gridOrders;
       if (table === 'dd_trades') return [];
       if (table === 'dd_engine_logs') return [];
@@ -873,8 +894,14 @@ function makeDynamicGridPoolFixture({
     async log(level, message, data) { logs.push({ level, message, data }); }
   };
   const executor = {
-    async getOpenPositions() { return exchangePositions; },
-    async getOpenOrders() { return []; }
+    async getOpenPositions({ symbols: scopedSymbols } = {}) {
+      return Array.isArray(scopedSymbols)
+        ? exchangePositions.filter(row => scopedSymbols.includes(String(row.symbol).toUpperCase()))
+        : exchangePositions;
+    },
+    async getOpenOrders({ symbols: scopedSymbols } = {}) {
+      return Array.isArray(scopedSymbols) ? [] : [];
+    }
   };
   const input = {
     settings: {
