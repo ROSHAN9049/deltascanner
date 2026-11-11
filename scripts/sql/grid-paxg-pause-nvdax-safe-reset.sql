@@ -50,6 +50,28 @@ BEGIN
       v_nvdax_open_positions;
   END IF;
 
+  -- dd_positions is the legacy/current Futures position ledger. Treat any
+  -- NVDAXUSD positive-quantity row as exposure; Grid-owned rows on either
+  -- symbol also block. PAXGUSD non-Grid strategy rows are never selected.
+  IF EXISTS (
+    SELECT 1
+      FROM public.dd_positions
+     WHERE upper(symbol) = 'NVDAXUSD'
+       AND abs(coalesce(qty, 0)) > 0
+  ) THEN
+    RAISE EXCEPTION 'SAFE GRID RESET REFUSED: dd_positions still has NVDAXUSD exposure';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+      FROM public.dd_positions
+     WHERE upper(symbol) IN ('PAXGUSD', 'NVDAXUSD')
+       AND upper(strategy) = 'GRID'
+       AND abs(coalesce(qty, 0)) > 0
+  ) THEN
+    RAISE EXCEPTION 'SAFE GRID RESET REFUSED: dd_positions contains Grid-owned exposure on PAXGUSD/NVDAXUSD';
+  END IF;
+
   -- No unresolved exchange order/reservation may remain on NVDAXUSD.
   SELECT count(*)
     INTO v_nvdax_unresolved_orders
