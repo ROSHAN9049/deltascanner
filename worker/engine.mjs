@@ -888,7 +888,6 @@ export class DeltaEngine {
       } catch (error) {
         // ATR snapshots remain useful diagnostics, but no ranges are changed
         // unless every ownership/order source is available.
-        await this.persistGridAtrSnapshot?.(nextConfigs, gridState, nowIso).catch(() => {});
         return defer('GRID_AUTO_RANGE_EXPOSURE_CHECK_FAILED', {
           error: String(error?.message || error).slice(0, 220),
           calculationErrors
@@ -1038,6 +1037,8 @@ export class DeltaEngine {
   async runTestnetGridExecution(settings = {}, account = {}) {
     const symbols = Array.isArray(CONFIG.gridSymbolPool || CONFIG.gridSymbols)
       ? [...(CONFIG.gridSymbolPool || CONFIG.gridSymbols)] : [];
+    const requestedPoolSymbols = Array.isArray(CONFIG.gridRequestedSymbolPool)
+      ? [...CONFIG.gridRequestedSymbolPool] : [...symbols, ...(CONFIG.gridRejectedPoolSymbols || [])];
     const maxConcurrentSymbols = Number(CONFIG.gridMaxConcurrentSymbols) || 2;
     const autoRangeResult = await this.refreshAutoGridRanges(settings, symbols, {
       forceSnapshot: !this.gridAtrSnapshotInitialized
@@ -1049,7 +1050,7 @@ export class DeltaEngine {
       this.lastGridTestnetDiagnostics = {
         executionMode: 'testnet',
         gridExecutionAllowed: false,
-        poolSymbols: symbols,
+        poolSymbols: requestedPoolSymbols,
         symbols: [],
         activeSymbols: [],
         skippedSymbols: [],
@@ -1141,7 +1142,7 @@ export class DeltaEngine {
     this.lastGridTestnetDiagnostics = {
       executionMode: 'testnet',
       gridExecutionAllowed: true,
-      poolSymbols: symbols,
+      poolSymbols: requestedPoolSymbols,
       symbols: result.activeSymbols || [],
       activeSymbols: result.activeSymbols || [],
       skippedSymbols: result.skippedSymbols || [],
