@@ -90,7 +90,10 @@ BEGIN
   SELECT count(*) INTO v_grid_db_positions
   FROM public.dd_delta_positions
   WHERE upper(symbol) IN ('PAXGUSD','NVDAXUSD')
-    AND upper(COALESCE(strategy,'')) = 'GRID'
+    AND (
+      upper(COALESCE(strategy,'')) = 'GRID'
+      OR upper(COALESCE(client_order_id,'')) LIKE 'DDG-%'
+    )
     AND status = 'OPEN' AND abs(COALESCE(qty,0)) > 0;
 
   IF v_grid_db_positions <> 0 THEN
@@ -100,7 +103,11 @@ BEGIN
   SELECT count(*) INTO v_grid_db_orders
   FROM public.dd_orders
   WHERE upper(symbol) IN ('PAXGUSD','NVDAXUSD')
-    AND upper(COALESCE(strategy,'')) = 'GRID'
+    AND (
+      upper(COALESCE(strategy,'')) = 'GRID'
+      OR upper(COALESCE(client_order_id,'')) LIKE 'DDG-%'
+      OR upper(COALESCE(raw->>'strategy','')) = 'GRID'
+    )
     AND upper(COALESCE(state,'')) NOT IN
       ('FILLED','CLOSED','CANCELLED','CANCELED','REJECTED','FAILED','EXPIRED','EXITED','COMPLETE','COMPLETED');
 
@@ -113,7 +120,15 @@ BEGIN
     COALESCE(jsonb_array_length(v_settings.grid_state #> '{symbolStates,PAXGUSD,positions}'),0) +
     COALESCE(jsonb_array_length(v_settings.grid_state #> '{symbolStates,NVDAXUSD,positions}'),0) +
     COALESCE(jsonb_array_length(v_settings.grid_state #> '{symbolStates,PAXGUSD,pendingEntries}'),0) +
-    COALESCE(jsonb_array_length(v_settings.grid_state #> '{symbolStates,NVDAXUSD,pendingEntries}'),0)
+    COALESCE(jsonb_array_length(v_settings.grid_state #> '{symbolStates,NVDAXUSD,pendingEntries}'),0) +
+    (SELECT count(*)::integer
+       FROM jsonb_array_elements(COALESCE(v_settings.grid_state->'positions','[]'::jsonb)) AS p
+      WHERE upper(COALESCE(p->>'symbol','')) IN ('PAXGUSD','NVDAXUSD')
+        AND abs(COALESCE(NULLIF(p->>'qty','')::numeric,0)) > 0) +
+    (SELECT count(*)::integer
+       FROM jsonb_array_elements(COALESCE(v_settings.grid_state->'pendingEntries','[]'::jsonb)) AS p
+      WHERE upper(COALESCE(p->>'symbol','')) IN ('PAXGUSD','NVDAXUSD')
+         OR COALESCE(p->>'symbol','') = '')
   INTO v_grid_state_exposure;
 
   IF v_grid_state_exposure <> 0 THEN
