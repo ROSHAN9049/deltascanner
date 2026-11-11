@@ -8,7 +8,10 @@ import {
   parseDeltaTestnetGridSymbols,
   isEligibleDeltaTestnetPerpetualProduct,
   isMarketTickFresh,
-  resolveDirectDeltaExecutionEnabled
+  resolveDirectDeltaExecutionEnabled,
+  DEFAULT_DELTA_TESTNET_GRID_SYMBOL_POOL,
+  resolveDeltaTestnetGridSymbolPool,
+  parseGridMaxConcurrentSymbols
 } from '../worker/execution/execution-route-policy.mjs';
 
 test('direct order routing requires both the explicit TESTNET environment and testnet execution mode', () => {
@@ -82,4 +85,39 @@ test('freshness gate rejects missing, stale, or materially future market ticks',
   assert.equal(isMarketTickFresh('2026-11-02T09:56:59Z', now), false);
   assert.equal(isMarketTickFresh(null, now), false);
   assert.equal(isMarketTickFresh('2026-11-02T10:01:00Z', now), false);
+});
+
+
+test('dynamic Grid pool filters unsupported requested symbols against the Testnet allowlist', () => {
+  const result = resolveDeltaTestnetGridSymbolPool(
+    'PAXGUSD,NVDAXUSD,SPYXUSD,XAUTUSD,SLVONUSD,ADAUSD',
+    'PAXGUSD,NVDAXUSD'
+  );
+  assert.deepEqual(result.symbols, ['PAXGUSD', 'NVDAXUSD', 'SPYXUSD', 'XAUTUSD']);
+  assert.deepEqual(result.rejectedSymbols, ['SLVONUSD', 'ADAUSD']);
+  assert.equal(result.source, 'GRID_SYMBOL_POOL');
+  assert.equal(DEFAULT_DELTA_TESTNET_GRID_SYMBOL_POOL.length, 6);
+});
+
+test('dynamic Grid pool falls back to legacy GRID_SYMBOLS and to filtered defaults', () => {
+  const legacy = resolveDeltaTestnetGridSymbolPool('', 'PAXGUSD,NVDAXUSD');
+  assert.deepEqual(legacy.symbols, ['PAXGUSD', 'NVDAXUSD']);
+  assert.equal(legacy.source, 'GRID_SYMBOLS');
+  const defaults = resolveDeltaTestnetGridSymbolPool('', '');
+  assert.deepEqual(defaults.symbols, ['PAXGUSD', 'NVDAXUSD', 'SPYXUSD', 'XAUTUSD']);
+  assert.equal(defaults.source, 'DEFAULT_GRID_SYMBOL_POOL');
+});
+
+test('dynamic Grid pool rejects duplicate symbols and more than six configured entries', () => {
+  assert.throws(() => resolveDeltaTestnetGridSymbolPool('PAXGUSD,PAXGUSD', ''), /distinct/);
+  assert.throws(() => resolveDeltaTestnetGridSymbolPool('PAXGUSD,NVDAXUSD,SPYXUSD,XAUTUSD,DOGSUSD,USOONUSD,QQQXUSD', ''), /one and six/);
+});
+
+test('Grid concurrent symbol cap defaults to two and is bounded by pool size', () => {
+  assert.equal(parseGridMaxConcurrentSymbols('', 6), 2);
+  assert.equal(parseGridMaxConcurrentSymbols('', 1), 1);
+  assert.equal(parseGridMaxConcurrentSymbols('3', 6), 3);
+  assert.equal(parseGridMaxConcurrentSymbols('6', 4), 4);
+  assert.throws(() => parseGridMaxConcurrentSymbols('0', 6), /integer from 1 to 6/);
+  assert.throws(() => parseGridMaxConcurrentSymbols('2.5', 6), /integer from 1 to 6/);
 });
