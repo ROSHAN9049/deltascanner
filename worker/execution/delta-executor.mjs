@@ -294,8 +294,8 @@ export function createDeltaExecutor({
     if (!requested.length) return [];
     if (requested.length > 10) throw new Error('Delta Testnet scoped reads support at most 10 products');
     for (const symbol of requested) {
-      if (!isAllowedDeltaTestnetFutureSymbol(symbol)) {
-        throw new Error('Delta Testnet scoped read rejected a symbol outside the fixed allowlist: ' + symbol);
+      if (!/^[A-Z0-9]+USD$/.test(symbol)) {
+        throw new Error('Delta Testnet scoped read rejected an invalid perpetual symbol: ' + symbol);
       }
     }
     const catalogue = await getProducts();
