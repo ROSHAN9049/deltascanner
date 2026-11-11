@@ -5505,8 +5505,10 @@ export class DeltaEngine {
       const clientIdUpper = clientOrderId.toUpperCase();
       const strategy = String(ledger?.strategy || position?.strategy ||
         (clientIdUpper.startsWith('DDG-') ? 'GRID' : clientIdUpper ? 'FUTURES' : '')).toUpperCase();
-      const strategyGroup = strategy === 'GRID' && clientIdUpper.startsWith('DDG-')
-        ? 'GRID' : strategy ? 'FUTURES' : 'UNCLASSIFIED';
+      const strategyGroup = strategy === 'GRID'
+        ? (clientIdUpper.startsWith('DDG-') ? 'GRID' : 'UNCLASSIFIED')
+        : ['MOMENTUM', 'SCALPING', 'FUTURES'].includes(strategy) || clientIdUpper
+          ? 'FUTURES' : 'UNCLASSIFIED';
       const finiteOrNull = value => value === null || value === undefined || value === '' ||
         !Number.isFinite(Number(value)) ? null : Number(value);
       return {
