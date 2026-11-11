@@ -302,7 +302,7 @@ export default function GridStrategy({
     mutate({ ...payload, gridEnabled: true });
   };
   const pause = () => {
-    if (window.confirm('Pause new Grid entries on both symbols? Existing positions remain protected by their exchange-side SL/TP.')) {
+    if (window.confirm('Pause new Grid entries across the symbol pool? Existing positions remain protected by their exchange-side SL/TP.')) {
       mutate({ gridEnabled: false });
     }
   };
@@ -315,8 +315,8 @@ export default function GridStrategy({
   return <>
     <section className="cards">
       <div className="card"><small>GRID STRATEGY STATUS</small><strong>{visibleGridStatus}</strong><span>{visibleGridStatusDetail}</span></div>
-      <div className="card"><small>CONFIGURED TESTNET SYMBOLS</small><strong>{gridSymbols.join(' · ')}</strong><span>Each symbol has its own range and Independent exchange-side SL/TP.</span></div>
-      <div className="card"><small>OPEN GRID SYMBOLS</small><strong>{activeSlots} / {GRID_BRIDGE_MAX_POSITIONS}</strong><span>{positions.length} open position(s) · {pendingEntries.length} pending limit entry(ies) · {usd(openRisk === null && positions.length === 0 ? 0 : openRisk)} estimated open risk.</span></div>
+      <div className="card"><small>CONFIGURED TESTNET SYMBOL POOL</small><strong>{gridSymbols.length} symbols · {gridExecutableSymbols.length} allowlisted</strong><span>{gridSymbols.join(' · ')} · Each Grid symbol has independent range and exchange-side SL/TP. Unavailable symbols are visible but never routed.</span></div>
+      <div className="card"><small>OPEN GRID SYMBOLS</small><strong>{activeSlots} / {maxConcurrentSymbols}</strong><span>{positions.length} open position(s) · {pendingEntries.length} pending limit entry(ies) · {usd(openRisk === null && positions.length === 0 ? 0 : openRisk)} estimated open risk.</span></div>
       <div className="card"><small>{deltaTestnetGrid ? 'DELTA TESTNET NET P&L' : 'SIMULATED GRID P&amp;L'}</small><strong className={realizedGridPnl === null ? 'muted' : realizedGridPnl >= 0 ? 'up' : 'down'}>{usd(realizedGridPnl)}</strong><span>{deltaTestnetGrid ? 'Only fully fill-matched trades with verified commissions; otherwise P&L is unverified.' : 'Offline estimate after estimated fees and slippage; not exchange-reported P&amp;L.'}</span></div>
       <div className="card"><small>DAY PNL</small><strong className={totalDayPnl === null ? 'muted' : totalDayPnl >= 0 ? 'up' : 'down'}>{usd(totalDayPnl)}</strong><span>Realized + combined mark-to-market · daily stop fixed at 2.0%.</span></div>
       <div className="card"><small>STRATEGY EQUITY</small><strong>{usd(currentEquity)}</strong><span>Delta Testnet account equity at Grid start · drawdown {drawdownPct === null ? 'NO DATA' : drawdownPct.toFixed(2) + '%'} · hard stop 5%.</span></div>
@@ -324,7 +324,7 @@ export default function GridStrategy({
       <div className="card"><small>TRAILING GRID</small><strong>{trailingActive ? 'GRID TRAILING ACTIVE' : trailingSettingEnabled ? 'ENVIRONMENT GATE OFF' : 'DISABLED'}</strong><span>{trailingActive ? 'Breakouts close all Grid exposure at market, cancel pending Grid entries, shift the breached symbol range by 10%, and resume on the next verified tick.' : 'Requires the dashboard toggle plus GRID_TRAILING_ENABLED=true in both API and Worker runtimes.'}{lastShiftEvent ? ' Last shift: ' + lastShiftEvent.direction + ' · ' + (lastShiftEvent.at ? new Date(lastShiftEvent.at).toLocaleString('en-IN') : 'time unavailable') + '.' : ''}</span></div>
     </section>
 
-    <Panel title="Grid Configuration · Two Independent Symbols">
+    <Panel title={"Grid Configuration · Dynamic Symbol Pool (" + gridSymbols.length + ")"}>
       <div className="gridButtons">
         <button className="action" disabled={busy || autoRangeBusy || lockedConfig} onClick={autoSetRangeFromDailyCandles}>
           {autoRangeBusy ? 'Fetching Daily High / Low…' : 'Auto-Set ATR Range (14d)'}
@@ -351,7 +351,7 @@ export default function GridStrategy({
         </div>)}
       </div>
       <div className="gridConfig">
-        <label>Maximum Open Positions<select value={GRID_BRIDGE_MAX_POSITIONS} disabled><option value={GRID_BRIDGE_MAX_POSITIONS}>2 positions · one per symbol</option></select></label>
+        <label>Maximum Concurrent Grid Symbols<select value={maxConcurrentSymbols} disabled><option value={maxConcurrentSymbols}>{maxConcurrentSymbols} active symbol(s) · env controlled</option></select></label>
         <label>Target Risk / Trade<select value={draft.gridRiskPerTradePct} onChange={event => updateGlobal('gridRiskPerTradePct', Number(event.target.value))}>{GRID_RISK_PER_TRADE_CHOICES.map(value => <option key={value} value={value}>{value.toFixed(2)}%{value === 0.3 ? ' · conservative default' : ' target'}</option>)}</select></label>
         <label>Daily Loss Limit<select value={2} disabled><option value={2}>2.0% · fixed safety limit</option></select></label>
         <label>Momentum Pause<select value={draft.gridMomentumPausePct} onChange={event => updateGlobal('gridMomentumPausePct', Number(event.target.value))}><option value={2.5}>2.5% one-way move</option><option value={2.75}>2.75% one-way move</option><option value={3}>3.0% one-way move</option></select></label>
@@ -359,7 +359,7 @@ export default function GridStrategy({
       <label className="gridCheck"><input type="checkbox" checked={draft.gridReduceAfterLosses} onChange={event => updateGlobal('gridReduceAfterLosses', event.target.checked)}/> Reduce position sizing by 50% after 2 consecutive losses</label>
       <label className="gridCheck"><input type="checkbox" checked={trailingSettingEnabled} disabled={busy || (!trailingCapabilityEnabled && !trailingSettingEnabled)} onChange={event => mutate({ gridTrailingEnabled: event.target.checked })}/> Trailing Grid (Auto-Shift on Breakout)</label>
       {!trailingCapabilityEnabled ? <div className="lockedText">Trailing Grid is unavailable until GRID_TRAILING_ENABLED=true is present in both the API and Worker environments and the worker heartbeat confirms it. The 2% daily-loss and 5% drawdown stops remain absolute.</div> : null}
-      <div className="lockedText">Daily Auto-Range environment: {dailyAutoRangeStatus} · Worker-reported flag: {workerAutoRangeFlag === null ? 'not available' : String(workerAutoRangeFlag)} · Worker auto-refresh: {dailyAutoRangeStatus === 'ENABLED' ? (trailingCapabilityEnabled && trailingSettingEnabled ? 'awaiting next UTC day; refresh waits for both symbols to be flat' : 'startup snapshot refresh is active; daily range rollover still requires Trailing Grid and its Worker gate') : dailyAutoRangeStatus === 'DISABLED' ? 'Worker heartbeat confirms GRID_AUTO_RANGE_ENABLED=false; automatic updates are off' : 'waiting for a fresh Worker heartbeat that includes the GRID_AUTO_RANGE_ENABLED diagnostic'}{gridState.autoRangeLastAppliedUtcDay ? ' · last applied UTC day: ' + gridState.autoRangeLastAppliedUtcDay : ''}</div>
+      <div className="lockedText">Daily Auto-Range environment: {dailyAutoRangeStatus} · Worker-reported flag: {workerAutoRangeFlag === null ? 'not available' : String(workerAutoRangeFlag)} · Worker auto-refresh: {dailyAutoRangeStatus === 'ENABLED' ? (trailingCapabilityEnabled && trailingSettingEnabled ? 'awaiting next UTC day; each symbol range refreshes independently when that symbol is flat' : 'startup snapshot refresh is active; daily range rollover still requires Trailing Grid and its Worker gate') : dailyAutoRangeStatus === 'DISABLED' ? 'Worker heartbeat confirms GRID_AUTO_RANGE_ENABLED=false; automatic updates are off' : 'waiting for a fresh Worker heartbeat that includes the GRID_AUTO_RANGE_ENABLED diagnostic'}{gridState.autoRangeLastAppliedUtcDay ? ' · last applied UTC day: ' + gridState.autoRangeLastAppliedUtcDay : ''}</div>
 
       <div className="gridButtons">
         {gridSafetyBlocked ? <div className="errorText">Grid entries are blocked by worker safety ({gridSafetyReason}). Review the latest heartbeat and exchange position reconciliation before restarting. Existing positions remain protected by exchange-side SL/TP.</div> : null}
@@ -369,14 +369,14 @@ export default function GridStrategy({
         <button className="dangerBtn" title="Resets Grid state. Does NOT trigger global Emergency Stop." disabled={busy || lockedConfig || !gridState.pausedReason || settings.emergency_stop === true || ['DAILY_LOSS_LIMIT','OVERALL_DRAWDOWN_STOP'].includes(gridState.pausedReason)} onClick={reset}>Reset Grid State</button>
       </div>
       {!globalSafetyAllowsStart ? <div className="errorText">Grid cannot start while global E-STOP is active, Auto Trade is off, or the engine is disabled. Existing exchange-side brackets remain in place.</div> : null}
-      {!allRangesValid ? <div className="errorText">Set a valid range and choose 8–12 levels for both symbols before starting. Each upper bound must be greater than its lower bound.</div> : null}
+      {!allRangesValid ? <div className="errorText">Configure at least one allowlisted pool symbol with a valid range and 8–12 levels before starting. Other symbols can remain PENDING until their ATR/range data is ready.</div> : null}
       {lockedConfig ? <div className="lockedText">Symbol ranges are locked while an exchange position or pending entry exists. Let exchange-side SL/TP complete the position or close it before changing ranges.</div> : null}
       {gridState.pausedReason === 'DAILY_LOSS_LIMIT' ? <div className="errorText">The shared 2% daily-loss guard is active. It cannot be reset during the same India trading day.</div> : null}
       {gridState.pausedReason === 'OVERALL_DRAWDOWN_STOP' ? <div className="errorText">The shared 5% overall drawdown stop is terminal for this Grid run. Keep this run halted; do not reset its capital baseline to resume.</div> : null}
-      <div className="lockedText"><b>Risk controls:</b> shared 2% daily-loss cap, 5% strategy drawdown stop, 1.2% full-range break, momentum pause and global two-position cap. Risk is aggregated across both symbols. Actual quantities round down to whole contracts; if minimum size exceeds the risk budget, that entry is skipped.</div>
+      <div className="lockedText"><b>Risk controls:</b> shared 2% daily-loss cap, 5% strategy drawdown stop, global 1.2% full-range break, per-symbol trailing shift and a {maxConcurrentSymbols}-symbol concurrency cap. Risk is aggregated across active Grid symbols. Actual quantities round down to whole contracts; if minimum size exceeds the risk budget, that entry is skipped.</div>
     </Panel>
 
-    <Panel title="Grid Levels and Open Positions · Per Symbol">
+    <Panel title="Grid Levels and Open Positions · Per Pool Symbol">
       {views.map(view => {
         const targetLevelSet = new Set(view.symbolPositions.map(position => Number(position.levelIndex) + 1));
         return <div key={view.symbol} className="gridSymbolPanel">
