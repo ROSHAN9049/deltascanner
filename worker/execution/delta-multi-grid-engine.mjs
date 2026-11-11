@@ -324,7 +324,13 @@ export async function manageDeltaTestnetMultiGrid({
     if (paused) manuallyPaused.add(symbol);
     const ownership = ownerBySymbol.get(symbol);
     const hasGridDb = hasDatabaseGridPosition(symbol);
-    const hasGridExposure = ownership.owner === 'GRID' || hasGridDb;
+    const localState = symbolStates[symbol] || previous;
+    const hasLocalGridPosition = (Array.isArray(localState.positions) && localState.positions.some(row =>
+      text(row?.symbol || symbol).toUpperCase() === symbol && Math.abs(n(row?.qty)) > 0
+    )) || (Array.isArray(previousRoot.positions) && previousRoot.positions.some(row =>
+      text(row?.symbol).toUpperCase() === symbol && Math.abs(n(row?.qty)) > 0
+    ));
+    const hasGridExposure = ownership.owner === 'GRID' || hasGridDb || hasLocalGridPosition;
     const hasPending = hasGridReservation(symbol) || hasLocalPending(symbol);
     gridExposureBySymbol.set(symbol, { hasGridExposure, hasPending, ownership });
 
