@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 const source = await readFile(new URL('../src/GridStrategy.jsx', import.meta.url), 'utf8');
 const sharedStatusSource = await readFile(new URL('../shared/grid-settings.js', import.meta.url), 'utf8');
 
-test('Grid UI exposes two allowlisted Testnet symbols and keeps execution behind the explicit opt-in', () => {
+test('Grid UI exposes the dynamic Testnet pool and keeps execution behind the explicit opt-in', () => {
   assert.match(source, /executionMode\s*===\s*'testnet'/);
   assert.match(sharedStatusSource, /TESTNET GRID · EXECUTION DISABLED/);
   assert.match(sharedStatusSource, /TESTNET GRID · ACTIVE/);
@@ -23,6 +23,12 @@ test('Grid UI exposes two allowlisted Testnet symbols and keeps execution behind
   assert.match(source, /globalSafetyAllowsStart/);
   assert.match(source, /PAXGUSD/);
   assert.match(source, /NVDAXUSD/);
+  assert.match(source, /Pool Handoff Status/);
+  assert.match(source, /Futures blocker/);
+  assert.match(source, /maxConcurrentSymbols/);
+  assert.match(source, /gridExecutableSymbols/);
+  assert.match(source, /PENDING · NOT ALLOWLISTED/);
+  assert.match(source, /Automatic handoff is enabled/);
   assert.match(source, /Start Grid \(Delta Testnet\)/);
   assert.match(source, /Independent exchange-side SL\/TP/);
   assert.doesNotMatch(source, /BTCUSD|ETHUSD/);

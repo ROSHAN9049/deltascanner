@@ -5,6 +5,8 @@ process.env.ENGINE_SECRET = 'settings-test-secret';
 process.env.SUPABASE_URL = 'https://supabase.test';
 process.env.SUPABASE_SERVICE_ROLE_KEY = 'sb_secret_settings-test';
 process.env.GRID_SYMBOLS = 'PAXGUSD,NVDAXUSD';
+process.env.GRID_SYMBOL_POOL = 'PAXGUSD,NVDAXUSD,SPYXUSD,XAUTUSD,SLVONUSD,ADAUSD';
+process.env.GRID_MAX_CONCURRENT_SYMBOLS = '2';
 process.env.GRID_EXECUTION_ALLOWED = 'false';
 process.env.DELTA_ENVIRONMENT = 'SIGNAL_ONLY';
 process.env.DELTA_EXECUTION_MODE = 'testnet';
@@ -146,6 +148,66 @@ test('settings endpoint accepts a valid same-origin HttpOnly engine session cook
     assert.equal(res.statusCode, 200);
     assert.equal(res.payload.success, true);
     assert.equal(res.payload.persisted.risk_pct, 1.2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+
+test('settings endpoint persists four allowlisted dynamic Grid configs and their independent readiness state', async () => {
+  const originalFetch = globalThis.fetch;
+  const initial = [{
+    id: 1,
+    grid_symbol_configs: {
+      PAXGUSD: { lowerPrice: 4000, upperPrice: 4200, levelsCount: 10, atr_snapshot_status: 'READY' }
+    },
+    grid_max_positions: 2,
+    max_grid_positions: 2
+  }];
+  const fake = fakeFetch({
+    initialRows: initial,
+    savedRows: (rows, patch) => [{ ...rows[0], ...patch }]
+  });
+  globalThis.fetch = fake.fetch;
+  try {
+    const res = makeResponse();
+    await handler({
+      method: 'POST',
+      headers: { 'x-engine-secret': 'settings-test-secret' },
+      body: {
+        gridMaxPositions: 2,
+        gridSymbolConfigs: {
+          PAXGUSD: {
+            lowerPrice: 4000, upperPrice: 4200, levelsCount: 10,
+            atr_14d: 20, atr_pct: 0.5, atr_snapshot_status: 'READY',
+            multiplier: 2.5, widthPct: 4, paused: false
+          },
+          NVDAXUSD: {
+            lowerPrice: null, upperPrice: null, levelsCount: 10,
+            atr_14d: null, atr_pct: null, atr_snapshot_status: 'PENDING', paused: false
+          },
+          SPYXUSD: {
+            lowerPrice: 175, upperPrice: 190, levelsCount: 10,
+            atr_14d: 2, atr_pct: 1.1, atr_snapshot_status: 'READY', paused: false
+          },
+          XAUTUSD: {
+            lowerPrice: 3900, upperPrice: 4100, levelsCount: 10,
+            atr_14d: 15, atr_pct: 0.4, atr_snapshot_status: 'READY', paused: true
+          }
+        }
+      }
+    }, res);
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.payload.success, true);
+    assert.equal(res.payload.persisted.grid_max_positions, 2);
+    assert.deepEqual(
+      Object.keys(res.payload.persisted.grid_symbol_configs).sort(),
+      ['NVDAXUSD', 'PAXGUSD', 'SPYXUSD', 'XAUTUSD']
+    );
+    assert.equal(res.payload.persisted.grid_symbol_configs.NVDAXUSD.lowerPrice, null);
+    assert.equal(res.payload.persisted.grid_symbol_configs.NVDAXUSD.atr_snapshot_status, 'PENDING');
+    assert.equal(res.payload.persisted.grid_symbol_configs.PAXGUSD.atr_snapshot_status, 'READY');
+    assert.equal(res.payload.persisted.grid_symbol_configs.XAUTUSD.paused, true);
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -15,6 +15,54 @@ export const DELTA_TESTNET_FUTURES_ALLOWLIST = Object.freeze([
 
 const allowedSymbols = new Set(DELTA_TESTNET_FUTURES_ALLOWLIST);
 
+export const DEFAULT_DELTA_TESTNET_GRID_SYMBOL_POOL = Object.freeze([
+  'PAXGUSD', 'NVDAXUSD', 'SPYXUSD', 'XAUTUSD', 'SLVONUSD', 'ADAUSD'
+]);
+
+export function resolveDeltaTestnetGridSymbolPool(poolValue, legacyValue) {
+  const poolRaw = String(poolValue ?? '').trim();
+  const legacyRaw = String(legacyValue ?? '').trim();
+  let requested;
+  let source;
+  if (poolRaw) {
+    requested = poolRaw.split(',').map(normalizeDeltaSymbol);
+    source = 'GRID_SYMBOL_POOL';
+    if (requested.length > 6 || requested.some(symbol => !symbol)) {
+      throw new Error('GRID_SYMBOL_POOL must contain between one and six comma-separated symbols');
+    }
+  } else if (legacyRaw) {
+    return {
+      symbols: parseDeltaTestnetGridSymbols(legacyRaw),
+      requestedSymbols: parseDeltaTestnetGridSymbols(legacyRaw),
+      source: 'GRID_SYMBOLS',
+      rejectedSymbols: []
+    };
+  } else {
+    requested = [...DEFAULT_DELTA_TESTNET_GRID_SYMBOL_POOL];
+    source = 'DEFAULT_GRID_SYMBOL_POOL';
+  }
+  if (new Set(requested).size !== requested.length) {
+    throw new Error(source + ' must contain distinct symbols');
+  }
+  const symbols = requested.filter(symbol => isAllowedDeltaTestnetFutureSymbol(symbol));
+  return {
+    symbols: Object.freeze(symbols),
+    requestedSymbols: Object.freeze([...requested]),
+    source,
+    rejectedSymbols: requested.filter(symbol => !isAllowedDeltaTestnetFutureSymbol(symbol))
+  };
+}
+
+export function parseGridMaxConcurrentSymbols(value, poolLength = 6) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return Math.max(1, Math.min(2, Number(poolLength) || 2));
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 6) {
+    throw new Error('GRID_MAX_CONCURRENT_SYMBOLS must be an integer from 1 to 6');
+  }
+  return Math.max(1, Math.min(parsed, Number(poolLength) || 1));
+}
+
 export function normalizeDeltaSymbol(symbol) {
   return String(symbol ?? '').trim().toUpperCase();
 }

@@ -3,7 +3,7 @@ import { hasValidEngineSecretHeader, isEngineSessionValid, isSameOriginRequest }
 import { insert, select, updateReturning } from '../../server/db.js';
 import { buildSettingsAuditEntry } from '../../server/settings-audit.js';
 import { createEmergencyStopReleaseChallenge, hashEmergencyStopReleaseToken, matchesEmergencyStopReleaseToken, verifyEmergencyStopReleaseChallenge } from '../../server/estop-release-confirmation.js';
-import { GRID_MAX_POSITION_CHOICES, GRID_RISK_PER_TRADE_CHOICES, GRID_DAILY_LOSS_CHOICES, GRID_MOMENTUM_PAUSE_CHOICES } from '../../shared/grid-settings.js';
+import { GRID_RISK_PER_TRADE_CHOICES, GRID_DAILY_LOSS_CHOICES, GRID_MOMENTUM_PAUSE_CHOICES } from '../../shared/grid-settings.js';
 import { isAllowedDeltaTestnetFutureSymbol } from '../../worker/execution/execution-route-policy.mjs';
 
 export default async function handler(req, res) {
@@ -259,23 +259,57 @@ export default async function handler(req, res) {
         const entries = Object.entries(configs);
         const configuredSymbols = Array.isArray(CONFIG.gridSymbols) ? CONFIG.gridSymbols : [];
         const requestedSymbols = entries.map(([symbol]) => String(symbol).trim().toUpperCase());
-        if (configuredSymbols.length !== 2 || requestedSymbols.length !== 2 ||
+        if (configuredSymbols.length < 1 || configuredSymbols.length > 6 ||
+            requestedSymbols.length !== configuredSymbols.length ||
             requestedSymbols.some(symbol => !isAllowedDeltaTestnetFutureSymbol(symbol)) ||
             [...requestedSymbols].sort().join(',') !== [...configuredSymbols].sort().join(',')) {
-          return res.status(400).json({ success: false, error: 'Grid configurations must match the two GRID_SYMBOLS configured in the Testnet worker.' });
+          return res.status(400).json({
+            success: false,
+            error: 'Grid configurations must match the one-to-six Delta Testnet allowlisted symbols in the worker pool.'
+          });
         }
         const normalized = {};
         for (const [rawSymbol, config] of entries) {
           const symbol = String(rawSymbol).trim().toUpperCase();
-          const lowerPrice = Number(config?.lowerPrice ?? config?.grid_lower_price);
-          const upperPrice = Number(config?.upperPrice ?? config?.grid_upper_price);
+          const lowerRaw = config?.lowerPrice ?? config?.grid_lower_price;
+          const upperRaw = config?.upperPrice ?? config?.grid_upper_price;
+          const lowerPrice = lowerRaw === null || lowerRaw === undefined || lowerRaw === '' ? null : Number(lowerRaw);
+          const upperPrice = upperRaw === null || upperRaw === undefined || upperRaw === '' ? null : Number(upperRaw);
           const levelsCount = Number(config?.levelsCount ?? config?.grid_levels_count ?? 10);
-          if (!Number.isFinite(lowerPrice) || lowerPrice <= 0 ||
-              !Number.isFinite(upperPrice) || upperPrice <= lowerPrice ||
+          const hasRange = lowerPrice !== null || upperPrice !== null;
+          if ((hasRange && !(Number.isFinite(lowerPrice) && lowerPrice > 0 &&
+                Number.isFinite(upperPrice) && upperPrice > lowerPrice)) ||
               !Number.isInteger(levelsCount) || levelsCount < 8 || levelsCount > 12) {
-            return res.status(400).json({ success: false, error: 'Each Grid symbol needs valid lower/upper prices and 8–12 levels.' });
+            return res.status(400).json({
+              success: false,
+              error: 'Each Grid symbol needs either no range yet or valid lower/upper prices and 8–12 levels.'
+            });
           }
-          normalized[symbol] = { lowerPrice, upperPrice, levelsCount };
+          const atrValue = config?.atr_14d ?? config?.atr;
+          const atrPctValue = config?.atr_pct ?? config?.atrPct;
+          const atr = atrValue === null || atrValue === undefined || atrValue === '' ? null : Number(atrValue);
+          const atrPct = atrPctValue === null || atrPctValue === undefined || atrPctValue === '' ? null : Number(atrPctValue);
+          if ((atr !== null && (!Number.isFinite(atr) || atr < 0)) ||
+              (atrPct !== null && (!Number.isFinite(atrPct) || atrPct < 0))) {
+            return res.status(400).json({ success: false, error: 'Grid ATR values must be non-negative finite numbers or null.' });
+          }
+          const snapshotStatus = String(config?.atr_snapshot_status ?? config?.atrSnapshotStatus ?? 'PENDING').toUpperCase();
+          if (!['READY', 'FALLBACK_3PCT', 'PENDING'].includes(snapshotStatus)) {
+            return res.status(400).json({ success: false, error: 'Grid ATR snapshot status is invalid.' });
+          }
+          normalized[symbol] = {
+            ...(current.grid_symbol_configs?.[symbol] && typeof current.grid_symbol_configs[symbol] === 'object'
+              ? current.grid_symbol_configs[symbol] : {}),
+            lowerPrice, upperPrice, levelsCount,
+            atr, atrPct, atr_14d: atr, atr_pct: atrPct,
+            multiplier: Number(config?.multiplier) > 0 ? Number(config.multiplier) : 2.5,
+            widthPct: Number(config?.widthPct) > 0 ? Number(config.widthPct) : null,
+            atrFallback: config?.atrFallback === true || snapshotStatus === 'FALLBACK_3PCT',
+            atr_fallback: config?.atrFallback === true || snapshotStatus === 'FALLBACK_3PCT',
+            atrSnapshotStatus: snapshotStatus,
+            atr_snapshot_status: snapshotStatus,
+            paused: config?.paused === true
+          };
         }
         patch.grid_symbol_configs = normalized;
         patch.grid_symbol = configuredSymbols[0];
@@ -313,11 +347,17 @@ export default async function handler(req, res) {
       }
       if (body.gridMaxPositions !== undefined) {
         const value = Number(body.gridMaxPositions);
-        if (value !== 2 || !GRID_MAX_POSITION_CHOICES.includes(value)) {
-          return res.status(400).json({ success: false, error: 'Two-symbol Grid supports a maximum of exactly two independently protected positions.' });
+        const poolLength = Array.isArray(CONFIG.gridSymbols) ? CONFIG.gridSymbols.length : 0;
+        const environmentLimit = Number(CONFIG.gridMaxConcurrentSymbols) || 2;
+        if (!Number.isSafeInteger(value) || value < 1 || value > 6 ||
+            value > poolLength || value > environmentLimit) {
+          return res.status(400).json({
+            success: false,
+            error: 'Grid max concurrent symbols must be an integer from 1 through the configured pool and GRID_MAX_CONCURRENT_SYMBOLS limit (' + environmentLimit + ').'
+          });
         }
         if (effectiveGridPositionCount > value) {
-          return res.status(409).json({ success: false, error: 'Grid max positions cannot be lower than the active symbol count.' });
+          return res.status(409).json({ success: false, error: 'Grid max concurrent symbols cannot be lower than the active Grid symbol count.' });
         }
         patch.grid_max_positions = value;
         patch.max_grid_positions = value;
@@ -363,23 +403,29 @@ export default async function handler(req, res) {
         }
         const configs = patch.grid_symbol_configs || current.grid_symbol_configs || {};
         const symbols = Array.isArray(CONFIG.gridSymbols) ? CONFIG.gridSymbols : [];
-        if (symbols.length !== 2 || symbols.some(symbol => {
+        const eligibleConfigured = symbols.filter(symbol => {
           const config = configs?.[symbol];
           const lowerPrice = Number(config?.lowerPrice ?? config?.grid_lower_price);
           const upperPrice = Number(config?.upperPrice ?? config?.grid_upper_price);
-          const levelsCount = Number(config?.levelsCount ?? config?.grid_levels_count);
-          return !(Number.isFinite(lowerPrice) && lowerPrice > 0 &&
+          const levelsCount = Number(config?.levelsCount ?? config?.grid_levels_count ?? 10);
+          return config?.paused !== true &&
+            Number.isFinite(lowerPrice) && lowerPrice > 0 &&
             Number.isFinite(upperPrice) && upperPrice > lowerPrice &&
-            Number.isInteger(levelsCount) && levelsCount >= 8 && levelsCount <= 12);
-        })) {
-          return res.status(400).json({ success: false, error: 'Configure a valid range and 8–12 Grid levels for both Testnet symbols before starting.' });
+            Number.isInteger(levelsCount) && levelsCount >= 8 && levelsCount <= 12;
+        });
+        if (symbols.length < 1 || symbols.length > 6 || eligibleConfigured.length < 1) {
+          return res.status(400).json({
+            success: false,
+            error: 'Configure at least one non-paused, allowlisted Testnet pool symbol with a valid range and 8–12 levels. Other symbols may remain pending while ATR data loads.'
+          });
         }
         if (gridState.pausedReason) {
           return res.status(409).json({ success: false, error: 'Reset the Grid hard stop before starting again.' });
         }
         patch.grid_enabled = true;
-        patch.grid_max_positions = 2;
-        patch.max_grid_positions = 2;
+        const concurrency = Number(CONFIG.gridMaxConcurrentSymbols) || 2;
+        patch.grid_max_positions = concurrency;
+        patch.max_grid_positions = concurrency;
       } else if (body.gridEnabled === false) {
         patch.grid_enabled = false;
       }

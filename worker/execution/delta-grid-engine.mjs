@@ -1200,7 +1200,9 @@ export async function manageDeltaTestnetGrid({
   if (canExecuteTrailingShift) {
     const shifted = await executeTrailingGridShift({
       executor, database, state, settings, symbol,
-      configuredSymbols: configuredGridSymbols, currentConfig: config,
+      // A trailing shift may only inspect/cancel/close this symbol. Other pool symbols
+      // retain their independent positions and their own trailing/risk state.
+      configuredSymbols: [symbol], currentConfig: config,
       markPrice: mark, direction: trailingDirection,
       dbOpenGridRows, gridOrders, now
     });

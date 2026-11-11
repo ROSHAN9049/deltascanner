@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { parseDeltaTestnetGridSymbols, resolveDirectDeltaExecutionEnabled } from '../worker/execution/execution-route-policy.mjs';
+import { parseGridMaxConcurrentSymbols, resolveDeltaTestnetGridSymbolPool, resolveDirectDeltaExecutionEnabled } from '../worker/execution/execution-route-policy.mjs';
 
 // Support local .env for non-Railway use without overwriting injected environment values.
 function loadLocalEnvFile() {
@@ -52,7 +52,15 @@ const requested = String(process.env.DELTA_ENVIRONMENT || 'SIGNAL_ONLY').toUpper
 const environment = requested === 'TESTNET' ? 'TESTNET' : 'SIGNAL_ONLY';
 const signalOnly = environment === 'SIGNAL_ONLY';
 
-const gridSymbols = parseDeltaTestnetGridSymbols(process.env.GRID_SYMBOLS);
+const gridPoolResolution = resolveDeltaTestnetGridSymbolPool(
+  process.env.GRID_SYMBOL_POOL,
+  process.env.GRID_SYMBOLS
+);
+const gridSymbols = gridPoolResolution.symbols;
+const gridMaxConcurrentSymbols = parseGridMaxConcurrentSymbols(
+  process.env.GRID_MAX_CONCURRENT_SYMBOLS,
+  gridSymbols.length
+);
 const gridExecutionRequested = String(process.env.GRID_EXECUTION_ALLOWED || '').trim().toLowerCase() === 'true';
 const gridTrailingEnabled = String(process.env.GRID_TRAILING_ENABLED || '').trim().toLowerCase() === 'true';
 const gridAutoRangeEnabled = String(process.env.GRID_AUTO_RANGE_ENABLED || '').trim().toLowerCase() === 'true';
@@ -69,7 +77,7 @@ const gridExecutionAllowed = gridExecutionRequested &&
   directDeltaExecutionEnabled === true &&
   deltaExecutionMode === 'testnet' &&
   environment === 'TESTNET' &&
-  gridSymbols.length === 2;
+  gridSymbols.length >= 1 && gridSymbols.length <= 6;
 
 function parseTradetronBridgeRoutes() {
   const raw = String(process.env.TRADETRON_BRIDGES_JSON || '').trim();
@@ -123,6 +131,11 @@ export const CONFIG = Object.freeze({
   gridMinRangePct,
   gridMaxRangePct,
   gridSymbols,
+  gridSymbolPool: gridSymbols,
+  gridRequestedSymbolPool: gridPoolResolution.requestedSymbols,
+  gridSymbolPoolSource: gridPoolResolution.source,
+  gridRejectedPoolSymbols: gridPoolResolution.rejectedSymbols,
+  gridMaxConcurrentSymbols,
   // Keep private REST operations on the environment-specific API base. Public
   // scanner data has an explicit production feed, independent of execution mode.
   restBase: signalOnly ? 'https://api.india.delta.exchange' : 'https://cdn-ind.testnet.deltaex.org',
