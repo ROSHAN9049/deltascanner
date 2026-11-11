@@ -472,11 +472,11 @@ function App() {
     {tab === 'momentum' && <EngineView engine="MOMENTUM" signals={signals} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols} />}
     {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" strategy="MOMENTUM" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'scalping' && <EngineView engine="SCALPING" signals={signals} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols} />}
-    {tab === 'grid' && <GridStrategy settings={settings} market={market} busy={busy} mutate={mutate} accountDataProtected={accountDataProtected} gridEntrySafety={executionCoverage?.gridEntrySafety || null} executionMode={executionCoverage?.deltaExecutionMode || 'disabled'} testnetDiagnostics={executionCoverage?.gridTestnetDiagnostics || null} apiGridExecutionAllowed={executionCoverage?.gridExecutionAllowed === true} apiGridTrailingEnvironmentEnabled={executionCoverage?.gridTrailingEnvironmentEnabled === true} workerGridAutoRangeEnvironmentEnabled={executionCoverage?.workerGridAutoRangeEnvironmentEnabled ?? null} workerGridAutoRangeHeartbeatFresh={executionCoverage?.workerGridAutoRangeHeartbeatFresh === true} apiGridSymbols={executionCoverage?.gridRequestedSymbolPool || executionCoverage?.gridSymbols || []} apiGridRejectedPoolSymbols={executionCoverage?.gridRejectedPoolSymbols || []} apiGridMaxConcurrentSymbols={executionCoverage?.gridMaxConcurrentSymbols ?? 2} />}
+    {tab === 'grid' && <GridStrategy settings={settings} market={market} busy={busy} mutate={mutate} accountDataProtected={accountDataProtected} gridEntrySafety={executionCoverage?.gridEntrySafety || null} executionMode={executionCoverage?.deltaExecutionMode || 'disabled'} testnetDiagnostics={executionCoverage?.gridTestnetDiagnostics || null} apiGridExecutionAllowed={executionCoverage?.gridExecutionAllowed === true} apiGridTrailingEnvironmentEnabled={executionCoverage?.gridTrailingEnvironmentEnabled === true} workerGridAutoRangeEnvironmentEnabled={executionCoverage?.workerGridAutoRangeEnvironmentEnabled ?? null} workerGridAutoRangeHeartbeatFresh={executionCoverage?.workerGridAutoRangeHeartbeatFresh === true} apiGridSymbols={executionCoverage?.gridRequestedSymbolPool || executionCoverage?.gridSymbols || []} apiGridRejectedPoolSymbols={executionCoverage?.gridRejectedPoolSymbols || []} apiGridMaxConcurrentSymbols={executionCoverage?.gridMaxConcurrentSymbols ?? 2} deltaTestnetPositions={state?.deltaTestnetPositions || []} />}
     {tab === 'options' && <OptionsView settings={settings} optionCache={optionCache} executionCoverage={state?.executionCoverage || null} apiHealth={health} accountDataProtected={accountDataProtected} optionsBusy={optionsBusy} onPreview={requestOptionsPreview} />}
     {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" strategy="SCALPING" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'positions' && <Positions rows={positions} accountDataProtected={accountDataProtected} />}
-    {tab === 'delta-testnet-positions' && <DeltaTestnetPositions rows={state?.deltaTestnetPositions || []} accountDataProtected={accountDataProtected} mode={executionCoverage?.deltaExecutionMode || 'disabled'} />}
+    {tab === 'delta-testnet-positions' && <DeltaTestnetPositions rows={state?.deltaTestnetPositions || []} exchangePositions={state?.deltaExchangePositions || []} exchangeSnapshotAt={state?.deltaExchangePositionsAt || null} accountDataProtected={accountDataProtected} mode={executionCoverage?.deltaExecutionMode || 'disabled'} />}
     {tab === 'trade-history' && <TradeHistory trades={trades} title="Trade History · Delta Testnet Ledger" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'pnl' && <PNL trades={trades} settings={settings} accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} tradeRowCount={state?.deltaTestnetTradeRowCount ?? null} fillSyncState={state?.deltaTestnetFillSyncState || null} fillCount={state?.deltaTestnetFillCount ?? null} walletSyncState={state?.deltaTestnetWalletTransactionSyncState || null} walletTransactionCount={state?.deltaTestnetWalletTransactionCount ?? null} />}
     {tab === 'paper' && <Panel title="Paper Trading"><div className="lockedText">Scanner is signal-only. Paper execution is not enabled. Direct orders are restricted to Delta Exchange Testnet.</div></Panel>}
@@ -531,8 +531,9 @@ function App() {
   </div>;
 }
 
-function DeltaTestnetPositions({ rows = [], accountDataProtected = false, mode = 'disabled' }) {
+function DeltaTestnetPositions({ rows = [], exchangePositions = [], exchangeSnapshotAt = null, accountDataProtected = false, mode = 'disabled' }) {
   const positions = Array.isArray(rows) ? rows : [];
+  const livePositions = Array.isArray(exchangePositions) ? exchangePositions : [];
   const fmtUsd = value => {
     const amount = safeNum(value);
     if (amount === null) return '—';
@@ -546,35 +547,69 @@ function DeltaTestnetPositions({ rows = [], accountDataProtected = false, mode =
   };
   return <Panel title="Delta Testnet Positions">
     <div className="muted" style={{ marginBottom: 10 }}>
-      Private Delta Exchange Testnet position ledger · mode: {String(mode).toUpperCase()}.
+      Private Delta Exchange Testnet account · mode: {String(mode).toUpperCase()}.
     </div>
     {accountDataProtected
-      ? <div className="danger">🔒 Testnet account data is locked. Enter ENGINE_SECRET in Settings to view these positions.</div>
-      : positions.length === 0
-        ? <div className="muted">No Delta Testnet position rows recorded yet.</div>
-        : <div className="tablewrap"><table>
-          <thead><tr>
-            <th>Status</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Mark</th>
-            <th>Unrealized P&amp;L</th><th>Realized P&amp;L</th><th>Stop Loss</th><th>Take Profit</th>
-            <th>Strategy</th><th>Opened (IST)</th><th>Closed (IST)</th><th>Order ID</th>
-          </tr></thead>
-          <tbody>{positions.map((row, index) => <tr key={String(row.id || row.order_id || row.symbol) + ':' + index}>
-            <td><span className={'badge ' + (row.status === 'OPEN' ? 'test' : 'muted')} title={row.status === 'CLOSED_EXTERNALLY' ? 'Position was absent from the authoritative Delta Testnet snapshot. Exit price and realized P&L are not inferred.' : undefined}>{row.status === 'CLOSED_EXTERNALLY' ? 'CLOSED EXTERNALLY' : row.status || 'UNKNOWN'}</span></td>
-            <td className="symbol">{row.symbol || '—'}</td>
-            <td>{row.side || '—'}</td>
-            <td>{safeNum(row.qty) === null ? '—' : safeNum(row.qty)}</td>
-            <td>{price(row.entry_price)}</td>
-            <td>{price(row.current_price)}</td>
-            <td className={num(row.unrealized_pnl) > 0 ? 'up' : num(row.unrealized_pnl) < 0 ? 'down' : ''}>{fmtUsd(row.unrealized_pnl)}</td>
-            <td className={num(row.realized_pnl) > 0 ? 'up' : num(row.realized_pnl) < 0 ? 'down' : ''}>{fmtUsd(row.realized_pnl)}</td>
-            <td>{price(row.sl_price)}</td>
-            <td>{price(row.tp_price)}</td>
-            <td>{row.strategy || '—'}</td>
-            <td>{timestamp(row.opened_at)}</td>
-            <td>{timestamp(row.closed_at)}</td>
-            <td className="mono">{row.order_id || '—'}</td>
-          </tr>)}</tbody>
-        </table></div>}
+      ? <div className="danger">🔒 Testnet account data is locked. Enter ENGINE_SECRET in Settings to view exchange positions and the private ledger.</div>
+      : <>
+        <section className="panel" aria-label="Live exchange position reconciliation">
+          <div className="panelTitle"><h3>Live Exchange Positions · Read Only</h3></div>
+          <div className="pad">
+            <div className="muted">Latest Worker exchange snapshot · {timestamp(exchangeSnapshotAt)} · This panel does not send orders or manage positions.</div>
+            {!exchangeSnapshotAt
+              ? <div className="warn">No authenticated exchange-position snapshot is available yet. Wait for a fresh Worker heartbeat.</div>
+              : livePositions.length === 0
+                ? <div className="muted">Exchange snapshot confirms no open positions.</div>
+                : ['GRID', 'FUTURES', 'UNCLASSIFIED'].map(group => {
+                    const groupRows = livePositions.filter(row => String(row.strategyGroup || 'UNCLASSIFIED').toUpperCase() === group);
+                    if (!groupRows.length) return null;
+                    return <div key={group} style={{ marginTop: 12 }}>
+                      <h4>{group === 'GRID' ? 'Grid-owned positions' : group === 'FUTURES' ? 'Futures strategy positions' : 'Unclassified exchange positions'}</h4>
+                      <div className="tablewrap"><table>
+                        <thead><tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Mark</th><th>Unrealized P&amp;L</th><th>Exchange SL</th><th>Exchange TP</th><th>Order ID</th></tr></thead>
+                        <tbody>{groupRows.map((row, index) => <tr key={String(row.symbol) + ':' + index}>
+                          <td className="symbol">{row.symbol || '—'}</td><td>{row.side || '—'}</td>
+                          <td>{safeNum(row.qty) === null ? '—' : safeNum(row.qty)}</td>
+                          <td>{price(row.entryPrice)}</td><td>{price(row.markPrice)}</td>
+                          <td>{fmtUsd(row.unrealizedPnl)}</td><td>{price(row.stopLoss)}</td><td>{price(row.takeProfit)}</td>
+                          <td className="mono">{row.orderId || '—'}</td>
+                        </tr>)}</tbody>
+                      </table></div>
+                    </div>;
+                  })}
+          </div>
+        </section>
+        <section className="panel" aria-label="Delta Testnet position ledger">
+          <div className="panelTitle"><h3>Position Ledger</h3></div>
+          <div className="pad">
+            {positions.length === 0
+              ? <div className="muted">No Delta Testnet position ledger rows recorded yet.</div>
+              : <div className="tablewrap"><table>
+                <thead><tr>
+                  <th>Status</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Mark</th>
+                  <th>Unrealized P&amp;L</th><th>Realized P&amp;L</th><th>Stop Loss</th><th>Take Profit</th>
+                  <th>Strategy</th><th>Opened (IST)</th><th>Closed (IST)</th><th>Order ID</th>
+                </tr></thead>
+                <tbody>{positions.map((row, index) => <tr key={String(row.id || row.order_id || row.symbol) + ':' + index}>
+                  <td><span className={'badge ' + (row.status === 'OPEN' ? 'test' : 'muted')} title={row.status === 'CLOSED_EXTERNALLY' ? 'Position was absent from the authoritative Delta Testnet snapshot. Exit price and realized P&L are not inferred.' : undefined}>{row.status === 'CLOSED_EXTERNALLY' ? 'CLOSED EXTERNALLY' : row.status || 'UNKNOWN'}</span></td>
+                  <td className="symbol">{row.symbol || '—'}</td>
+                  <td>{row.side || '—'}</td>
+                  <td>{safeNum(row.qty) === null ? '—' : safeNum(row.qty)}</td>
+                  <td>{price(row.entry_price)}</td>
+                  <td>{price(row.current_price)}</td>
+                  <td className={num(row.unrealized_pnl) > 0 ? 'up' : num(row.unrealized_pnl) < 0 ? 'down' : ''}>{fmtUsd(row.unrealized_pnl)}</td>
+                  <td className={num(row.realized_pnl) > 0 ? 'up' : num(row.realized_pnl) < 0 ? 'down' : ''}>{fmtUsd(row.realized_pnl)}</td>
+                  <td>{price(row.sl_price)}</td>
+                  <td>{price(row.tp_price)}</td>
+                  <td>{row.strategy || '—'}</td>
+                  <td>{timestamp(row.opened_at)}</td>
+                  <td>{timestamp(row.closed_at)}</td>
+                  <td className="mono">{row.order_id || '—'}</td>
+                </tr>)}</tbody>
+              </table></div>}
+          </div>
+        </section>
+      </>}
   </Panel>;
 }
 

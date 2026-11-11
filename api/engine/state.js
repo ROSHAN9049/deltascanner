@@ -122,6 +122,10 @@ export default async function handler(req, res) {
       emergency_stop: normalizeEmergencyStopValue(rawSettings.emergency_stop)
     } : null;
     const deltaTestnetPositions = deltaTestnetPositionRows || [];
+    const deltaExchangePositions = privateDataAuthorized && Array.isArray(heartbeatLog?.data?.deltaExchangePositions)
+      ? heartbeatLog.data.deltaExchangePositions : [];
+    const deltaExchangePositionsAt = privateDataAuthorized
+      ? heartbeatLog?.data?.deltaExchangePositionsAt || heartbeatLog?.created_at || null : null;
     const deltaTestnetOrders = deltaTestnetOrderRows || [];
     const deltaTestnetTrades = deltaTestnetTradeRows || [];
     const closedTodayCount = deltaTestnetClosedTodayCount == null ? null : Number(deltaTestnetClosedTodayCount);
@@ -173,6 +177,8 @@ export default async function handler(req, res) {
       ledger: ledger || [],
       ledgerRowCount: ledgerRowCount == null ? null : Number(ledgerRowCount),
       deltaTestnetPositions,
+      deltaExchangePositions,
+      deltaExchangePositionsAt,
       deltaTestnetOpenPositionCount: deltaTestnetOpenPositionCount == null ? null : Number(deltaTestnetOpenPositionCount),
       deltaTestnetOrders,
       deltaTestnetOrderCount: deltaTestnetOrderCount == null ? null : Number(deltaTestnetOrderCount),

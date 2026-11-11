@@ -194,13 +194,40 @@ export async function manageDeltaTestnetMultiGrid({
     };
   }
 
+  const manuallyPaused = new Set(poolSymbols.filter(symbol =>
+    settings.grid_symbol_configs?.[symbol]?.paused === true
+  ));
+  const activePoolSymbols = poolSymbols.filter(symbol => !manuallyPaused.has(symbol));
+  for (const symbol of manuallyPaused) {
+    const previous = symbolStates[symbol] || {};
+    // Preserve manual-review reason, historical events, and cached blocker
+    // identity. This is a pause, not a state reset or ownership reconciliation.
+    symbolStates[symbol] = {
+      ...previous, status: 'PAUSED', skipReason: 'MANUAL_PAUSE', lastTickAt: at
+    };
+    symbolStatuses[symbol] = {
+      status: 'PAUSED', reason: 'MANUAL_PAUSE',
+      blockingPosition: previous.futuresBlocker || null,
+      atrReady: previous.atrReady === true
+    };
+  }
+  if (!activePoolSymbols.length) {
+    const root = await persistRoot();
+    return {
+      state: root, activeSymbols: [], skippedSymbols: [...manuallyPaused],
+      symbolStatuses, waitingForFutures: false,
+      safety: { executionMode: 'testnet', configured: account.privateApiAvailable === true,
+        trusted: account.privateApiAvailable === true, blocked: false, reason: null, symbols: [] }
+    };
+  }
+
   let exchangePositions;
   let databasePositions;
   let databaseOrders;
   try {
-    const filter = poolSymbols.join(',');
+    const filter = activePoolSymbols.join(',');
     [exchangePositions, databasePositions, databaseOrders] = await Promise.all([
-      executor.getOpenPositions(),
+      executor.getOpenPositions({ symbols: activePoolSymbols }),
       database.select('dd_delta_positions',
         'symbol=in.(' + filter + ')&status=eq.OPEN&select=id,symbol,strategy,qty,side,entry_price,entry_order_id,order_id,client_order_id,opened_at&limit=500'),
       database.select('dd_orders',
@@ -210,7 +237,7 @@ export async function manageDeltaTestnetMultiGrid({
       throw new Error('Dynamic Grid ownership snapshot returned malformed data');
     }
   } catch (error) {
-    for (const symbol of poolSymbols) {
+    for (const symbol of activePoolSymbols) {
       const previous = symbolStates[symbol] || {};
       symbolStates[symbol] = {
         ...previous, status: 'PENDING', skipReason: 'OWNERSHIP_RECONCILIATION_UNAVAILABLE',
@@ -221,12 +248,12 @@ export async function manageDeltaTestnetMultiGrid({
     const root = await persistRoot().catch(() => aggregateGridState(symbolStates, poolSymbols, previousRoot));
     await database.log?.('ERROR', '[GRID] Symbol ownership snapshot unavailable; waiting without submitting entries', {
       error: String(error?.message || error).slice(0, 220),
-      poolSymbols, executionBlocked: true
+      activePoolSymbols, manuallyPausedSymbols: [...manuallyPaused], executionBlocked: true
     }).catch(() => {});
     return {
       state: root,
       activeSymbols: [],
-      skippedSymbols: [],
+      skippedSymbols: [...manuallyPaused],
       symbolStatuses,
       waitingForFutures: false,
       safety: { executionMode: 'testnet', configured: account.privateApiAvailable === true,
@@ -243,7 +270,6 @@ export async function manageDeltaTestnetMultiGrid({
   const ownerBySymbol = new Map();
   const gridExposureBySymbol = new Map();
   const metricsBySymbol = new Map();
-  const manuallyPaused = new Set();
   const futuresBlocked = new Set();
   const unknownBlocked = new Set();
   const mustManage = new Set();
@@ -264,37 +290,9 @@ export async function manageDeltaTestnetMultiGrid({
     text(row?.symbol).toUpperCase() === symbol && text(row?.role).toUpperCase() === 'ENTRY'
   );
 
-  const shiftFailureRowsCache = new Map();
-  const findCrossSymbolShiftConflict = async symbol => {
-    if (shiftFailureRowsCache.has(symbol)) return shiftFailureRowsCache.get(symbol);
-    const eventMatch = (symbolStates[symbol]?.events || []).find(event =>
-      event?.reason === 'GRID_TRAILING_SHIFT_UNCONFIRMED' &&
-      /Non-Grid database exposure exists on ([A-Z0-9]+USD)/.test(String(event?.error || ''))
-    );
-    if (eventMatch) {
-      const match = String(eventMatch.error).match(/Non-Grid database exposure exists on ([A-Z0-9]+USD)/);
-      shiftFailureRowsCache.set(symbol, match?.[1] || null);
-      return match?.[1] || null;
-    }
-    try {
-      const failureMessage = encodeURIComponent('Grid trailing shift failed closed; manual review/reset is required');
-      const rows = await database.select('dd_engine_logs',
-        'message=eq.' + failureMessage + '&select=data,created_at&order=created_at.desc&limit=100');
-      if (!Array.isArray(rows)) return null;
-      const row = rows.find(item => text(item?.data?.symbol).toUpperCase() === symbol);
-      const match = String(row?.data?.error || '').match(/Non-Grid database exposure exists on ([A-Z0-9]+USD)/);
-      const blockingSymbol = match?.[1] || null;
-      shiftFailureRowsCache.set(symbol, blockingSymbol);
-      return blockingSymbol;
-    } catch {
-      shiftFailureRowsCache.set(symbol, null);
-      return null;
-    }
-  };
-
   // Resolve every owner before making any handoff decision so logging and
   // recovery are independent of pool order.
-  for (const symbol of poolSymbols) {
+  for (const symbol of activePoolSymbols) {
     const ownership = classifyGridSymbolOwnership({ symbol, exchangePositions, databasePositions });
     const exchangePosition = exchangePositions.find(row =>
       text(row?.symbol || row?.product_symbol).toUpperCase() === symbol &&
@@ -317,11 +315,9 @@ export async function manageDeltaTestnetMultiGrid({
   }
 
   const futuresSkipLogRows = [];
-  for (const symbol of poolSymbols) {
+  for (const symbol of activePoolSymbols) {
     const config = settings.grid_symbol_configs?.[symbol] || {};
     const previous = symbolStates[symbol] || {};
-    const paused = config.paused === true;
-    if (paused) manuallyPaused.add(symbol);
     const ownership = ownerBySymbol.get(symbol);
     const hasGridDb = hasDatabaseGridPosition(symbol);
     const localState = symbolStates[symbol] || previous;
@@ -388,21 +384,6 @@ export async function manageDeltaTestnetMultiGrid({
       };
     }
 
-    if (paused) {
-      const needsManagement = hasGridExposure || hasPending;
-      symbolStates[symbol] = {
-        ...(symbolStates[symbol] || currentState),
-        status: 'PAUSED', pausedReason: null, skipReason: 'MANUAL_PAUSE',
-        futuresBlocker: null, lastTickAt: at
-      };
-      symbolStatuses[symbol] = {
-        status: 'PAUSED', reason: 'MANUAL_PAUSE', atrReady: metrics.atrReady,
-        turnover24hUsd: metrics.turnover24hUsd, spreadPct: metrics.spreadPct
-      };
-      if (needsManagement) mustManage.add(symbol);
-      continue;
-    }
-
     if (hasGridExposure || hasPending) {
       mustManage.add(symbol);
       symbolStates[symbol] = {
@@ -448,32 +429,7 @@ export async function manageDeltaTestnetMultiGrid({
     };
   }
 
-  // Known historical incident recovery is evidence-based: the old helper
-  // failed in its read-only ownership preflight before cancelling or closing
-  // anything. Reset only that symbol when its own exposure/order state is flat
-  // and the exact cross-symbol blocker still has a live Futures owner.
-  for (const symbol of poolSymbols) {
-    const previous = symbolStates[symbol] || {};
-    const exposure = gridExposureBySymbol.get(symbol) || {};
-    if (previous.pausedReason !== 'GRID_TRAILING_SHIFT_UNCONFIRMED' ||
-        exposure.hasGridExposure || exposure.hasPending) continue;
-    const conflictSymbol = await findCrossSymbolShiftConflict(symbol);
-    const conflictOwner = conflictSymbol ? ownerBySymbol.get(conflictSymbol) : null;
-    if (conflictSymbol && conflictOwner?.owner === 'FUTURES' && conflictOwner.blocked) {
-      symbolStates[symbol] = {
-        ...previous, status: 'PENDING', pausedReason: null,
-        skipReason: null, futuresBlocker: null,
-        positions: [], pendingEntries: [], openRiskUsd: 0, unrealizedPnl: 0,
-        lastTickAt: at
-      };
-      await database.log('INFO',
-        '[GRID] Recovered prior trailing-shift preflight conflict; unrelated Futures symbol is now isolated from this Grid symbol',
-        { symbol, excludedFuturesSymbol: conflictSymbol, reason: 'NON_GRID_POSITION_ON_OTHER_POOL_SYMBOL' }
-      ).catch(() => {});
-    }
-  }
-
-  const candidates = poolSymbols.filter(symbol => {
+  const candidates = activePoolSymbols.filter(symbol => {
     if (futuresBlocked.has(symbol) || unknownBlocked.has(symbol) ||
         manuallyPaused.has(symbol) || mustManage.has(symbol)) return false;
     return metricsBySymbol.get(symbol)?.ready === true &&
@@ -482,7 +438,7 @@ export async function manageDeltaTestnetMultiGrid({
   const remainingSlots = Math.max(0, limit - mustManage.size);
   const selected = selectGridSymbolsByPriority(candidates, remainingSlots);
   const activeSymbols = [...new Set([...mustManage, ...selected])];
-  const skippedSymbols = [...futuresBlocked, ...unknownBlocked];
+  const skippedSymbols = [...manuallyPaused, ...futuresBlocked, ...unknownBlocked];
   for (const { symbol, blocker } of futuresSkipLogRows) {
     const continuingWith = activeSymbols.find(candidate => candidate !== symbol) || null;
     const nextLabel = continuingWith || 'remaining eligible pool symbols';
@@ -513,7 +469,7 @@ export async function manageDeltaTestnetMultiGrid({
     };
   }
 
-  const allFuturesBlocked = futuresBlocked.size === poolSymbols.length;
+  const allFuturesBlocked = activePoolSymbols.length > 0 && futuresBlocked.size === activePoolSymbols.length;
   if (!activeSymbols.length) {
     for (const symbol of poolSymbols) {
       if (!symbolStatuses[symbol]) {
@@ -632,7 +588,7 @@ export async function manageDeltaTestnetMultiGrid({
       };
       if (result.safety?.reason === 'SAME_SYMBOL_POSITION_NOT_OWNED_BY_GRID') {
         const currentOwner = classifyGridSymbolOwnership({
-          symbol, exchangePositions: await executor.getOpenPositions(),
+          symbol, exchangePositions: await executor.getOpenPositions({ symbols: [symbol] }),
           databasePositions: await database.select('dd_delta_positions',
             'symbol=eq.' + encodeURIComponent(symbol) + '&status=eq.OPEN&select=id,symbol,strategy,qty,side,entry_price,entry_order_id,order_id,client_order_id&limit=20')
         });

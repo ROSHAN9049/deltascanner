@@ -312,7 +312,7 @@ async function saveState(database, state, timestamp) {
 }
 
 async function findOpenPosition(executor, symbol) {
-  const rows = await executor.getOpenPositions();
+  const rows = await executor.getOpenPositions({ symbols: [symbol] });
   if (!Array.isArray(rows)) throw new Error('Delta Testnet positions snapshot is not an array');
   return rows.find(row => text(row?.symbol).toUpperCase() === symbol && n(row?.qty) > 0) || null;
 }
@@ -423,8 +423,11 @@ export async function executeTrailingGridShift({
   const timestamp = now();
   const at = new Date(timestamp).toISOString();
   const normalizedSymbol = text(symbol).toUpperCase();
-  const symbols = [...new Set((Array.isArray(configuredSymbols) ? configuredSymbols : [])
+  const requestedSymbols = [...new Set((Array.isArray(configuredSymbols) ? configuredSymbols : [])
     .map(value => text(value).toUpperCase()).filter(Boolean))];
+  // A trailing shift is always symbol-local, even if a caller accidentally
+  // supplies the full pool. It must never inspect or manage another symbol.
+  const symbols = requestedSymbols.includes(normalizedSymbol) ? [normalizedSymbol] : [];
   const mark = numberOrNull(markPrice);
   const shift = calculateTrailingGridRange({
     direction, lowerPrice: currentConfig.lowerPrice, upperPrice: currentConfig.upperPrice,
@@ -440,6 +443,13 @@ export async function executeTrailingGridShift({
       type: 'HALT', reason, symbol: normalizedSymbol, price: mark,
       ...(error ? { error: String(error?.message || error).slice(0, 220) } : {})
     }, at);
+    if (reason === 'GRID_TRAILING_SHIFT_UNCONFIRMED') {
+      state.trailingShiftFailureTimestamps = pruneTrailingGridShiftTimestamps([
+        ...(Array.isArray(state.trailingShiftFailureTimestamps) ? state.trailingShiftFailureTimestamps : []),
+        at
+      ], timestamp);
+      state.trailingShiftManualResetRequired = true;
+    }
     await database.update('dd_settings', 'id=eq.1', {
       grid_state: state, updated_at: at
     }).catch(() => {});
@@ -450,6 +460,17 @@ export async function executeTrailingGridShift({
     }).catch(() => {});
     return { ok: false, halted: true, reason, state };
   };
+  const recentFailures = pruneTrailingGridShiftTimestamps(
+    Array.isArray(state.trailingShiftFailureTimestamps) ? state.trailingShiftFailureTimestamps : [],
+    timestamp
+  );
+  if (state.trailingShiftManualResetRequired === true || recentFailures.length >= 1) {
+    state.status = 'HALTED';
+    state.pausedReason = 'GRID_TRAILING_SHIFT_UNCONFIRMED';
+    state.trailingShiftFailureTimestamps = recentFailures;
+    state.lastTickAt = at;
+    return { ok: false, halted: true, reason: 'GRID_TRAILING_SHIFT_UNCONFIRMED', state };
+  }
   const globalTimestamps = Array.isArray(settings.gridGlobalTrailingShiftTimestamps)
     ? settings.gridGlobalTrailingShiftTimestamps : [];
   const recentShifts = pruneTrailingGridShiftTimestamps([
@@ -485,12 +506,13 @@ export async function executeTrailingGridShift({
   try {
     const configured = new Set(symbols);
     const gridOrderClientIds = new Set((Array.isArray(gridOrders) ? gridOrders : [])
-      .filter(row => text(row?.strategy).toUpperCase() === 'GRID')
+      .filter(row => text(row?.symbol).toUpperCase() === normalizedSymbol &&
+        text(row?.strategy).toUpperCase() === 'GRID')
       .map(row => text(row?.client_order_id)).filter(Boolean));
 
-    // Preflight every configured symbol against both exchange and database state.
+    // Preflight only the breached symbol against exchange and database state.
     // A stale Grid row alone is never sufficient to claim another strategy's position.
-    const beforePositions = await executor.getOpenPositions();
+    const beforePositions = await executor.getOpenPositions({ symbols });
     if (!Array.isArray(beforePositions)) throw new Error('Exchange position snapshot is malformed before trailing shift');
     const configuredExposure = beforePositions.filter(position =>
       configured.has(text(position?.symbol).toUpperCase()) && n(position?.qty) > 0
@@ -602,7 +624,7 @@ export async function executeTrailingGridShift({
 
     // Close each Grid-owned position with a reduce-only market exit and verify
     // each symbol flat from a fresh exchange position snapshot.
-    const afterCancels = await executor.getOpenPositions();
+    const afterCancels = await executor.getOpenPositions({ symbols });
     if (!Array.isArray(afterCancels)) throw new Error('Exchange position snapshot is malformed after Grid order cancellation');
     const remainingConfiguredExposure = afterCancels.filter(position =>
       configured.has(text(position?.symbol).toUpperCase()) && n(position?.qty) > 0
@@ -628,7 +650,7 @@ export async function executeTrailingGridShift({
       const close = await closeAndVerify(executor, closeSymbol, n(position?.qty));
       if (!close.closed) throw new Error('Market close could not be verified flat for ' + closeSymbol);
     }
-    const finalPositions = await executor.getOpenPositions();
+    const finalPositions = await executor.getOpenPositions({ symbols });
     if (!Array.isArray(finalPositions)) throw new Error('Final exchange position snapshot is malformed after trailing shift');
     const residualExposure = finalPositions.filter(position =>
       configured.has(text(position?.symbol).toUpperCase()) && n(position?.qty) > 0
@@ -1004,10 +1026,12 @@ export async function manageDeltaTestnetGrid({
   let gridOrders;
   try {
     [exchangePositions, dbOpenGridRows, dbOpenSameSymbolRows, gridOrders] = await Promise.all([
-      executor.getOpenPositions(),
-      database.select('dd_delta_positions', 'strategy=eq.GRID&status=eq.OPEN&select=id,symbol,qty,side,entry_price,current_price,unrealized_pnl,sl_price,tp_price,order_id,entry_order_id,client_order_id,opened_at&limit=100'),
+      executor.getOpenPositions({ symbols: [symbol] }),
+      database.select('dd_delta_positions', 'symbol=eq.' + encodeURIComponent(symbol) +
+        '&strategy=eq.GRID&status=eq.OPEN&select=id,symbol,qty,side,entry_price,current_price,unrealized_pnl,sl_price,tp_price,order_id,entry_order_id,client_order_id,opened_at&limit=100'),
       database.select('dd_delta_positions', 'symbol=eq.' + encodeURIComponent(symbol) + '&status=eq.OPEN&select=id,symbol,strategy,qty,side,entry_price,sl_price,tp_price,order_id,entry_order_id,client_order_id&limit=10'),
-      database.select('dd_orders', 'strategy=eq.GRID&order=created_at.desc&limit=50')
+      database.select('dd_orders', 'symbol=eq.' + encodeURIComponent(symbol) +
+        '&strategy=eq.GRID&order=created_at.desc&limit=50')
     ]);
     if (!Array.isArray(exchangePositions) || !Array.isArray(dbOpenGridRows) ||
         !Array.isArray(dbOpenSameSymbolRows) || !Array.isArray(gridOrders)) {
