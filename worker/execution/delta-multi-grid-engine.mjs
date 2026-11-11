@@ -571,11 +571,6 @@ export async function manageDeltaTestnetMultiGrid({
     'EMERGENCY_STOP', 'DAILY_LOSS_LIMIT', 'OVERALL_DRAWDOWN_STOP', 'GRID_RANGE_BREAK',
     'GRID_TRAILING_SHIFT_LIMIT'
   ]);
-  const persistRoot = async () => {
-    const root = aggregateGridState(symbolStates, poolSymbols, previousRoot);
-    await database.update('dd_settings', 'id=eq.1', { grid_state: root, updated_at: at });
-    return root;
-  };
   const rootBeforeCycles = aggregateGridState(symbolStates, poolSymbols, previousRoot);
   const results = [];
   for (const symbol of activeSymbols) {
