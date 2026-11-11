@@ -91,6 +91,7 @@ export default function GridStrategy({
   workerGridAutoRangeHeartbeatFresh = false,
   apiGridSymbols = [],
   apiGridRejectedPoolSymbols = [],
+  deltaTestnetPositions = [],
   apiGridMaxConcurrentSymbols = GRID_BRIDGE_MAX_POSITIONS
 }) {
   const gridSymbols = useMemo(() =>
@@ -110,6 +111,11 @@ export default function GridStrategy({
   const gridState = settings.grid_state && typeof settings.grid_state === 'object' ? settings.grid_state : {};
   const positions = Array.isArray(gridState.positions) ? gridState.positions : [];
   const pendingEntries = Array.isArray(gridState.pendingEntries) ? gridState.pendingEntries : [];
+  const strategyPositionLedger = (Array.isArray(deltaTestnetPositions) ? deltaTestnetPositions : [])
+    .filter(row => String(row?.status || '').toUpperCase() === 'OPEN' && n(row?.qty) > 0)
+    .map(row => ({ ...row, strategy: String(row?.strategy || 'UNKNOWN').toUpperCase() }));
+  const gridOwnedLedgerPositions = strategyPositionLedger.filter(row => row.strategy === 'GRID');
+  const futuresOwnedLedgerPositions = strategyPositionLedger.filter(row => row.strategy !== 'GRID');
   const trades = Array.isArray(gridState.trades) ? [...gridState.trades].reverse() : [];
   const events = Array.isArray(gridState.events) ? [...gridState.events].reverse().slice(0, 12) : [];
 
@@ -327,6 +333,32 @@ export default function GridStrategy({
       <div className="card"><small>EXECUTION GATE</small><strong>{deltaTestnetGrid ? (gridExecutionAllowed ? 'TESTNET LIMIT ORDERS ENABLED' : 'TESTNET ORDERS LOCKED') : 'SIMULATOR'}</strong><span>{deltaTestnetGrid ? (gridExecutionAllowed ? 'Runtime opt-in verified. Entries still require fresh market data, an available Testnet product, global safety checks and a free symbol slot.' : 'Set GRID_EXECUTION_ALLOWED=true in the Delta TESTNET worker and API environments. The default is false.') : 'Offline simulator; no exchange orders are sent.'}</span></div>
       <div className="card"><small>TRAILING GRID</small><strong>{trailingActive ? 'GRID TRAILING ACTIVE' : trailingSettingEnabled ? 'ENVIRONMENT GATE OFF' : 'DISABLED'}</strong><span>{trailingActive ? 'Breakouts close all Grid exposure at market, cancel pending Grid entries, shift the breached symbol range by 10%, and resume on the next verified tick.' : 'Requires the dashboard toggle plus GRID_TRAILING_ENABLED=true in both API and Worker runtimes.'}{lastShiftEvent ? ' Last shift: ' + lastShiftEvent.direction + ' · ' + (lastShiftEvent.at ? new Date(lastShiftEvent.at).toLocaleString('en-IN') : 'time unavailable') + '.' : ''}</span></div>
     </section>
+
+    <Panel title="Exchange Position Reconciliation · Read Only">
+      <div className="lockedText">
+        This is the REST-synced open-position ledger, grouped by strategy for visibility only.
+        Grid management uses its separate symbol-scoped snapshot and never manages Futures-owned positions.
+        Confirm live quantity and exchange-side brackets in Delta before operational decisions.
+      </div>
+      <div className="grid2">
+        <div className="card">
+          <strong>GRID-owned positions ({gridOwnedLedgerPositions.length})</strong>
+          {gridOwnedLedgerPositions.length ? gridOwnedLedgerPositions.map(row => <div className="gridPositionRow" key={"grid-" + row.id}>
+            <b>{row.symbol}</b><span>{row.side} · {row.qty} qty</span>
+            <span>Entry {price(row.entry_price)} · SL {price(row.sl_price)} · TP {price(row.tp_price)}</span>
+            <span>Position #{row.id ?? '—'} · Order #{row.order_id || row.entry_order_id || '—'}</span>
+          </div>) : <span className="muted">No open Grid-owned position in the synced ledger.</span>}
+        </div>
+        <div className="card">
+          <strong>FUTURES strategy positions ({futuresOwnedLedgerPositions.length})</strong>
+          {futuresOwnedLedgerPositions.length ? futuresOwnedLedgerPositions.map(row => <div className="gridPositionRow" key={"futures-" + row.id}>
+            <b>{row.symbol} · {row.strategy}</b><span>{row.side} · {row.qty} qty</span>
+            <span>Entry {price(row.entry_price)} · SL {price(row.sl_price)} · TP {price(row.tp_price)}</span>
+            <span>Position #{row.id ?? '—'} · Order #{row.order_id || row.entry_order_id || '—'}</span>
+          </div>) : <span className="muted">No open non-Grid position in the synced ledger.</span>}
+        </div>
+      </div>
+    </Panel>
 
     <Panel title={"Grid Configuration · Dynamic Symbol Pool (" + gridSymbols.length + ")"}>
       <div className="gridButtons">
