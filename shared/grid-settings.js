@@ -105,7 +105,7 @@ export function getGridDisplayStatus({
 
     return {
       label: 'TESTNET GRID · ACTIVE',
-      detail: 'Dynamic Testnet Grid is running with up to six allowlisted pool symbols, per-symbol exchange-side SL/TP, automatic Futures handoff, and shared daily-loss and 5% drawdown controls.'
+      detail: 'Dynamic Testnet Grid is running with up to six allowlisted pool symbols and independent exchange-side SL/TP per active symbol, automatic Futures handoff, and shared daily-loss and 5% drawdown controls.'
     };
   }
 
