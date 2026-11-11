@@ -248,6 +248,44 @@ test('Grid bracket entry uses a GTC non-reduce-only limit order with exchange-si
   assert.equal(post.body.bracket_stop_trigger_method, 'mark_price');
 });
 
+test('NVDAX Grid entry remains symbol-scoped when PAXG has a Futures position and exchange SL/TP', async () => {
+  const paxgFutures = {
+    product_id: 182001, product_symbol: 'PAXGUSD', size: -61,
+    entry_price: '4089.23', mark_price: '4095.00', unrealized_pnl: '-2.00',
+    bracket_stop_loss_price: '4150.50', bracket_take_profit_price: '3935.80',
+    order_id: 2177855282, client_order_id: 'SCALP-PAXGUSD-OPEN'
+  };
+  const runtime = fakeRuntime({ positions: [paxgFutures], markPrice: 180 });
+  const executor = createDeltaExecutor({
+    env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database,
+    now: () => 1770000000000
+  });
+
+  const order = await executor.placeBracketOrder('NVDAXUSD', 'BUY', 1, 180, 176, 188, {
+    strategy: 'GRID', clientOrderId: 'DDG-NVDAXUSD-G01-ISOLATION', orderType: 'limit_order'
+  });
+
+  assert.equal(order.id, 123);
+  const positionRead = runtime.httpCalls.find(call =>
+    new URL(call.url).pathname === '/v2/positions/margined'
+  );
+  assert.ok(positionRead);
+  assert.equal(new URL(positionRead.url).searchParams.get('product_ids'), '182002');
+  assert.equal(new URL(positionRead.url).searchParams.get('product_ids').includes('182001'), false);
+  const orderPost = runtime.httpCalls.find(call =>
+    new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST'
+  );
+  assert.ok(orderPost);
+  assert.equal(orderPost.body.product_id, 182002);
+  assert.equal(orderPost.body.client_order_id, 'DDG-NVDAXUSD-G01-ISOLATION');
+  assert.equal(runtime.httpCalls.some(call =>
+    new URL(call.url).pathname === '/v2/orders' && call.init.method === 'DELETE'
+  ), false);
+  assert.equal(paxgFutures.size, -61);
+  assert.equal(paxgFutures.bracket_stop_loss_price, '4150.50');
+  assert.equal(paxgFutures.bracket_take_profit_price, '3935.80');
+});
+
 test('pending Testnet Grid order cancellation is confirmed by a follow-up order lookup', async () => {
   const runtime = fakeRuntime({ orderState: 'open' });
   const executor = createDeltaExecutor({
