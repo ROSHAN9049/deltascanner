@@ -61,6 +61,6 @@ test('worker keeps the Options execution lock and enforces one Grid position per
   assert.match(gridSource,/GRID_MULTI_SYMBOL_RECONCILIATION_FAILED/);
   assert.match(gridSource,/assessStrategyPositionCap/);
   assert.match(gridSource,/grid_max_positions:\s*1/);
-  assert.match(multiGridSource,/configuredSymbols\.length !== 2/);
+  assert.match(multiGridSource,/configuredSymbols\.length < 1 \|\| configuredSymbols\.length > 2/);
   assert.match(multiGridSource,/grid_max_positions:\s*1/);
 });
