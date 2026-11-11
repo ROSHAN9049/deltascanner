@@ -90,7 +90,9 @@ export function rankGridSymbolCandidates(candidates = []) {
       symbol: text(candidate?.symbol).toUpperCase(),
       atrReady: candidate?.atrReady === true,
       turnover24hUsd: n(candidate?.turnover24hUsd),
-      spreadPct: Number.isFinite(Number(candidate?.spreadPct)) ? Number(candidate.spreadPct) : Number.POSITIVE_INFINITY
+      spreadPct: candidate?.spreadPct === null || candidate?.spreadPct === undefined || candidate?.spreadPct === ''
+        ? Number.POSITIVE_INFINITY
+        : Number.isFinite(Number(candidate.spreadPct)) ? Number(candidate.spreadPct) : Number.POSITIVE_INFINITY
     }))
     .sort((a, b) =>
       Number(b.atrReady) - Number(a.atrReady) ||
