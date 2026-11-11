@@ -52,7 +52,7 @@ test('worker risk gate checks Options_BUY and Options_SELL against the same Opti
   assert.deepEqual(calls,['OPTIONS_BUY','OPTIONS_SELL']);
 });
 
-test('worker keeps the Options execution lock and enforces one Grid position per symbol with a two-symbol cap', async () => {
+test('worker keeps the Options execution lock and enforces one Grid position per symbol with a bounded dynamic-pool cap', async () => {
   const { isOptionsExecutionAllowed } = await import('../worker/options-execution-lock.mjs');
   const { readFile } = await import('node:fs/promises');
   const gridSource = await readFile(new URL('../worker/execution/delta-grid-engine.mjs', import.meta.url),'utf8');
@@ -61,6 +61,6 @@ test('worker keeps the Options execution lock and enforces one Grid position per
   assert.match(gridSource,/GRID_MULTI_SYMBOL_RECONCILIATION_FAILED/);
   assert.match(gridSource,/assessStrategyPositionCap/);
   assert.match(gridSource,/grid_max_positions:\s*1/);
-  assert.match(multiGridSource,/configuredSymbols\.length < 1 \|\| configuredSymbols\.length > 2/);
+  assert.match(multiGridSource,/poolSymbols\.length < 1 \|\| poolSymbols\.length > 6/);
   assert.match(multiGridSource,/grid_max_positions:\s*1/);
 });
