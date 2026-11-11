@@ -775,67 +775,71 @@ export class DeltaEngine {
       lastAppliedUtcDay: gridState.autoRangeLastAppliedUtcDay || null,
       timestamp
     });
-    // A new worker process always refreshes the ATR snapshot once. Missing or
-    // legacy camelCase-only snapshots also force a write even within the same UTC day.
     const shouldRefresh = due || snapshotMissing;
     if (!shouldRefresh) return { settings, blocked: false, applied: false };
 
     const defer = async (reason, detail = {}, nextSettings = settings) => {
-      await this.log('WARN', 'Grid daily Auto-Range deferred; new entries remain blocked until a safe refresh completes', {
+      await this.log('WARN', 'Grid Auto-Range reconciliation unavailable; symbol ranges remain unchanged', {
         reason, utcDay: dayKey, symbols: normalizedSymbols, trailingRefreshEnabled, ...detail
       }).catch(() => {});
       return { settings: nextSettings, blocked: true, applied: false, reason };
     };
-    if (normalizedSymbols.length < 1 || normalizedSymbols.length > 2) {
+    if (!normalizedSymbols.length || normalizedSymbols.length > 6) {
       return defer('GRID_AUTO_RANGE_SYMBOL_CONFIGURATION_INVALID');
     }
 
     try {
-      // Fetch and calculate first so the worker can persist a diagnostic ATR
-      // snapshot even when the position/order safety check prevents range moves.
-      const [dailyCandlesBySymbol, marketTickers] = await Promise.all([
-        Promise.all(normalizedSymbols.map(async symbol => ({
-          symbol, candles: await this.adapter.candles(symbol, '1d', 20)
-        }))),
-        this.adapter.tickers()
-      ]);
-      const tickerRows = Array.isArray(marketTickers) ? marketTickers : [];
-      const dailyRanges = dailyCandlesBySymbol.map(({ symbol, candles }) => {
-        const candle = selectLatestCompletedDailyCandle(candles, timestamp);
-        if (!candle) throw new Error('No completed previous-UTC-day 1D candle is available for ' + symbol);
-        const ticker = tickerRows.find(row => String(row?.symbol || '').toUpperCase() === symbol) || {};
-        const currentPrice = Number(ticker.mark_price ?? ticker.close ?? ticker.last_price ?? candle.close);
-        const range = calculateAtrGridRange(candles, {
-          currentPrice,
-          multiplier: CONFIG.gridAtrMultiplier,
-          minRangePct: CONFIG.gridMinRangePct,
-          maxRangePct: CONFIG.gridMaxRangePct,
-          fallbackCandle: candle,
-          timestamp
-        });
-        if (!range.ok) throw new Error('ATR range calculation failed for ' + symbol + ': ' + range.reason);
-        if (range.fallback) {
-          void this.log('WARN', '[GRID] Fewer than 14 completed daily candles; using legacy 3% fixed buffer', {
-            symbol, availableCandles: range.atr?.available ?? 0,
-            requiredCandles: 14, fallbackWidthPct: range.widthPct
-          }).catch(() => {});
+      // A weak candle/ATR snapshot for one pool symbol must not suppress a
+      // different symbol. Each result is retained independently.
+      const calculated = await Promise.all(normalizedSymbols.map(async symbol => {
+        try {
+          const candles = await this.adapter.candles(symbol, '1d', 20);
+          const candle = selectLatestCompletedDailyCandle(candles, timestamp);
+          if (!candle) throw new Error('No completed previous-UTC-day 1D candle is available');
+          const ticker = this.tickerMap.get(symbol) || {};
+          const currentPrice = Number(ticker.mark_price ?? ticker.close ?? ticker.last_price ?? candle.close);
+          const range = calculateAtrGridRange(candles, {
+            currentPrice,
+            multiplier: CONFIG.gridAtrMultiplier,
+            minRangePct: CONFIG.gridMinRangePct,
+            maxRangePct: CONFIG.gridMaxRangePct,
+            fallbackCandle: candle,
+            timestamp
+          });
+          if (!range.ok) throw new Error('ATR range calculation failed: ' + range.reason);
+          return { symbol, candle, range, error: null };
+        } catch (error) {
+          return { symbol, candle: null, range: null, error };
         }
-        return { symbol, candle, range };
-      });
+      }));
 
       const nextConfigs = { ...existingConfigs };
-      for (const row of dailyRanges) {
+      const calculationErrors = [];
+      for (const row of calculated) {
         const previous = existingConfigs[row.symbol] && typeof existingConfigs[row.symbol] === 'object'
           ? existingConfigs[row.symbol] : {};
+        if (row.error) {
+          calculationErrors.push({
+            symbol: row.symbol,
+            error: String(row.error?.message || row.error).slice(0, 200)
+          });
+          nextConfigs[row.symbol] = {
+            ...previous,
+            atrSnapshotStatus: 'PENDING',
+            atr_snapshot_status: 'PENDING',
+            atrSnapshotError: String(row.error?.message || row.error).slice(0, 200),
+            atrSnapshotAt: nowIso,
+            atr_snapshot_at: nowIso
+          };
+          continue;
+        }
         nextConfigs[row.symbol] = {
           ...previous,
-          // Keep the existing range untouched until the flat/exposure guard passes.
           lowerPrice: previous.lowerPrice ?? previous.grid_lower_price ?? null,
           upperPrice: previous.upperPrice ?? previous.grid_upper_price ?? null,
           levelsCount: Number(previous.levelsCount ?? previous.grid_levels_count ?? 10),
           atr_14d: row.range.atr ?? null,
           atr_pct: row.range.atrPct ?? null,
-          // Backward-compatible aliases used by existing dashboard and worker code.
           atr: row.range.atr ?? null,
           atrPct: row.range.atrPct ?? null,
           multiplier: row.range.multiplier ?? CONFIG.gridAtrMultiplier,
@@ -844,101 +848,83 @@ export class DeltaEngine {
           atr_fallback: row.range.fallback === true,
           atrSnapshotStatus: row.range.fallback === true ? 'FALLBACK_3PCT' : 'READY',
           atr_snapshot_status: row.range.fallback === true ? 'FALLBACK_3PCT' : 'READY',
+          atrSnapshotError: null,
           atrSnapshotAt: nowIso,
           atr_snapshot_at: nowIso
         };
+        if (row.range.fallback) {
+          void this.log('WARN', '[GRID] Fewer than 14 completed daily candles; using legacy 3% fixed buffer', {
+            symbol: row.symbol, availableCandles: row.range.atr?.available ?? 0,
+            requiredCandles: 14, fallbackWidthPct: row.range.widthPct
+          }).catch(() => {});
+        }
       }
 
-      const persistSnapshot = async (configs, nextState = gridState) => {
-        const firstConfig = configs[normalizedSymbols[0]];
-        await db.update('dd_settings', 'id=eq.1', {
-          grid_symbol_configs: configs,
-          ...(firstConfig?.lowerPrice != null ? {
-            grid_symbol: normalizedSymbols[0],
-            grid_lower_price: firstConfig.lowerPrice,
-            grid_upper_price: firstConfig.upperPrice,
-            grid_levels_count: firstConfig.levelsCount
-          } : {}),
-          grid_state: nextState,
-          updated_at: nowIso
-        });
-        const verifiedRows = await db.select('dd_settings', 'id=eq.1&select=grid_symbol_configs,grid_state');
-        const persisted = Array.isArray(verifiedRows) ? verifiedRows[0] : null;
-        const verifiedConfigs = persisted?.grid_symbol_configs;
-        const verified = !!persisted && normalizedSymbols.every(symbol =>
-          verifiedConfigs?.[symbol]?.atr_snapshot_status === configs[symbol].atr_snapshot_status &&
-          verifiedConfigs?.[symbol]?.atr_snapshot_at === nowIso &&
-          (configs[symbol].atr_14d == null
-            ? verifiedConfigs?.[symbol]?.atr_14d == null
-            : Number(verifiedConfigs?.[symbol]?.atr_14d) === Number(configs[symbol].atr_14d)) &&
-          (configs[symbol].atr_pct == null
-            ? verifiedConfigs?.[symbol]?.atr_pct == null
-            : Number(verifiedConfigs?.[symbol]?.atr_pct) === Number(configs[symbol].atr_pct)) &&
-          (configs[symbol].lowerPrice == null ||
-            Number(verifiedConfigs?.[symbol]?.lowerPrice) === Number(configs[symbol].lowerPrice)) &&
-          (configs[symbol].upperPrice == null ||
-            Number(verifiedConfigs?.[symbol]?.upperPrice) === Number(configs[symbol].upperPrice))
-        );
-        if (!verified) throw new Error('ATR snapshot persistence verification failed');
-        this.gridAtrSnapshotInitialized = true;
-        return persisted;
-      };
-
-      let exposureState;
+      let exposureSnapshot;
       try {
         const symbolFilter = normalizedSymbols.join(',');
         const [exchangePositions, exchangeOrders, databasePositions, deltaDatabasePositions, databaseOrders] = await Promise.all([
           deltaExecutor.getOpenPositions(),
           deltaExecutor.getOpenOrders(),
           db.select('dd_positions', 'symbol=in.(' + symbolFilter + ')&select=symbol,qty&order=updated_at.desc&limit=500'),
-          db.select('dd_delta_positions', 'symbol=in.(' + symbolFilter + ')&status=eq.OPEN&select=symbol,qty&limit=500'),
-          db.select('dd_orders', 'symbol=in.(' + symbolFilter + ')&select=symbol,state&order=updated_at.desc&limit=500')
+          db.select('dd_delta_positions', 'symbol=in.(' + symbolFilter + ')&status=eq.OPEN&select=id,symbol,strategy,qty,side,entry_price,entry_order_id,client_order_id&limit=500'),
+          db.select('dd_orders', 'symbol=in.(' + symbolFilter + ')&select=symbol,state,strategy&order=updated_at.desc&limit=500')
         ]);
+        if (!Array.isArray(exchangePositions) || !Array.isArray(exchangeOrders) ||
+            !Array.isArray(databasePositions) || !Array.isArray(deltaDatabasePositions) ||
+            !Array.isArray(databaseOrders)) {
+          throw new Error('Grid Auto-Range exposure response was malformed');
+        }
         const terminalOrderStates = new Set([
           'closed', 'cancelled', 'canceled', 'filled', 'rejected', 'expired', 'failed', 'complete', 'completed'
         ]);
         const positiveDatabasePositions = [
-          ...(Array.isArray(databasePositions) ? databasePositions : []),
-          ...(Array.isArray(deltaDatabasePositions) ? deltaDatabasePositions : [])
-        ].filter(row => Number(row?.qty) > 0);
-        const activeDatabaseOrders = (Array.isArray(databaseOrders) ? databaseOrders : [])
-          .filter(row => !terminalOrderStates.has(String(row?.state || '').trim().toLowerCase()));
-        const hasExposure = hasGridAutoRangeExposure({
-          symbols: normalizedSymbols, exchangePositions, exchangeOrders,
-          databasePositions: positiveDatabasePositions, databaseOrders: activeDatabaseOrders, gridState
-        });
-        exposureState = {
-          hasExposure,
-          exchangePositionCount: Array.isArray(exchangePositions) ? exchangePositions.length : null,
-          exchangeOpenOrderCount: Array.isArray(exchangeOrders) ? exchangeOrders.length : null,
-          databasePositionCount: positiveDatabasePositions.length,
-          databaseActiveOrderCount: activeDatabaseOrders.length
-        };
+          ...databasePositions,
+          ...deltaDatabasePositions
+        ].filter(row => Math.abs(Number(row?.qty)) > 0);
+        const activeDatabaseOrders = databaseOrders.filter(row =>
+          !terminalOrderStates.has(String(row?.state || '').trim().toLowerCase())
+        );
+        exposureSnapshot = { exchangePositions, exchangeOrders, positiveDatabasePositions, activeDatabaseOrders };
       } catch (error) {
-        // Persist the ATR calculation for visibility, but fail closed on range
-        // changes whenever the exchange/database exposure check cannot complete.
-        await persistSnapshot(nextConfigs);
+        // ATR snapshots remain useful diagnostics, but no ranges are changed
+        // unless every ownership/order source is available.
+        await this.persistGridAtrSnapshot?.(nextConfigs, gridState, nowIso).catch(() => {});
         return defer('GRID_AUTO_RANGE_EXPOSURE_CHECK_FAILED', {
-          error: String(error?.message || error).slice(0, 220)
+          error: String(error?.message || error).slice(0, 220),
+          calculationErrors
         }, { ...settings, grid_symbol_configs: nextConfigs });
       }
 
-      if (exposureState.hasExposure) {
-        await persistSnapshot(nextConfigs);
-        return defer('GRID_AUTO_RANGE_WAITING_FOR_FLAT', exposureState, {
-          ...settings, grid_symbol_configs: nextConfigs
-        });
-      }
-
       const appliedRanges = {};
-      for (const row of dailyRanges) {
+      const waitingForFlat = [];
+      const pendingSymbols = [];
+      for (const row of calculated) {
         const previous = nextConfigs[row.symbol];
+        if (row.error || !row.range) {
+          pendingSymbols.push(row.symbol);
+          continue;
+        }
+        const hasExposure = hasGridAutoRangeExposure({
+          symbols: [row.symbol],
+          exchangePositions: exposureSnapshot.exchangePositions,
+          exchangeOrders: exposureSnapshot.exchangeOrders,
+          databasePositions: exposureSnapshot.positiveDatabasePositions,
+          databaseOrders: exposureSnapshot.activeDatabaseOrders,
+          gridState
+        });
+        if (hasExposure) {
+          waitingForFlat.push(row.symbol);
+          continue;
+        }
         const levelsCount = Number(previous.levelsCount);
         nextConfigs[row.symbol] = {
           ...previous,
           lowerPrice: row.range.lowerPrice,
           upperPrice: row.range.upperPrice,
-          levelsCount: Number.isInteger(levelsCount) && levelsCount >= 8 && levelsCount <= 12 ? levelsCount : 10
+          levelsCount: Number.isInteger(levelsCount) && levelsCount >= 8 && levelsCount <= 12 ? levelsCount : 10,
+          rangeStatus: 'READY',
+          range_status: 'READY'
         };
         appliedRanges[row.symbol] = {
           dailyLow: row.range.dailyLow, dailyHigh: row.range.dailyHigh,
@@ -950,26 +936,98 @@ export class DeltaEngine {
           fallback: row.range.fallback === true
         };
       }
+
       const nextGridState = {
         ...gridState,
         autoRangeLastAppliedUtcDay: dayKey,
         autoRangeLastAppliedAt: nowIso,
-        autoRangeLastCandleBySymbol: Object.fromEntries(
-          dailyRanges.map(row => [row.symbol, row.candle.time ?? row.candle.timestamp ?? null])
-        )
+        autoRangeLastCandleBySymbol: {
+          ...(gridState.autoRangeLastCandleBySymbol || {}),
+          ...Object.fromEntries(calculated.filter(row => row.candle).map(row =>
+            [row.symbol, row.candle.time ?? row.candle.timestamp ?? null]
+          ))
+        }
       };
-      const persisted = await persistSnapshot(nextConfigs, nextGridState);
-      const firstConfig = persisted.grid_symbol_configs[normalizedSymbols[0]];
-      await this.log('INFO', 'Grid daily Auto-Range applied from completed UTC 1D candles', {
-        utcDay: dayKey, symbols: normalizedSymbols, ranges: appliedRanges, trailingRefreshEnabled
+      const persistSnapshot = async () => {
+        const firstConfigured = normalizedSymbols.map(symbol => nextConfigs[symbol])
+          .find(config => config?.lowerPrice != null && config?.upperPrice != null);
+        await db.update('dd_settings', 'id=eq.1', {
+          grid_symbol_configs: nextConfigs,
+          ...(firstConfigured ? {
+            grid_symbol: normalizedSymbols.find(symbol => nextConfigs[symbol] === firstConfigured),
+            grid_lower_price: firstConfigured.lowerPrice,
+            grid_upper_price: firstConfigured.upperPrice,
+            grid_levels_count: firstConfigured.levelsCount
+          } : {}),
+          grid_state: nextGridState,
+          updated_at: nowIso
+        });
+        const verifiedRows = await db.select('dd_settings', 'id=eq.1&select=grid_symbol_configs,grid_state');
+        const persisted = Array.isArray(verifiedRows) ? verifiedRows[0] : null;
+        if (!persisted) throw new Error('Grid ATR snapshot persistence could not be read back');
+        for (const symbol of normalizedSymbols) {
+          const expected = nextConfigs[symbol];
+          const actual = persisted.grid_symbol_configs?.[symbol];
+          if (!actual || actual.atr_snapshot_status !== expected.atr_snapshot_status ||
+              actual.atr_snapshot_at !== expected.atr_snapshot_at) {
+            throw new Error('Grid ATR snapshot persistence verification failed for ' + symbol);
+          }
+          if (expected.atr_14d != null && Number(actual.atr_14d) !== Number(expected.atr_14d)) {
+            throw new Error('Grid ATR numeric persistence verification failed for ' + symbol);
+          }
+          if (expected.lowerPrice != null && Number(actual.lowerPrice) !== Number(expected.lowerPrice)) {
+            throw new Error('Grid range persistence verification failed for ' + symbol);
+          }
+          if (expected.upperPrice != null && Number(actual.upperPrice) !== Number(expected.upperPrice)) {
+            throw new Error('Grid range persistence verification failed for ' + symbol);
+          }
+        }
+        this.gridAtrSnapshotInitialized = normalizedSymbols.every(symbol =>
+          ['READY', 'FALLBACK_3PCT'].includes(nextConfigs[symbol]?.atr_snapshot_status)
+        );
+        return persisted;
+      };
+      const persisted = await persistSnapshot();
+      const firstSymbol = normalizedSymbols.find(symbol =>
+        nextConfigs[symbol]?.lowerPrice != null && nextConfigs[symbol]?.upperPrice != null
+      );
+      if (waitingForFlat.length) {
+        await this.log('INFO', '[GRID] Auto-Range deferred only for symbols with position/order exposure', {
+          symbols: waitingForFlat
+        }).catch(() => {});
+      }
+      if (calculationErrors.length) {
+        await this.log('WARN', '[GRID] ATR snapshot pending for symbols with incomplete daily data', {
+          symbols: calculationErrors
+        }).catch(() => {});
+      }
+      await this.log('INFO', 'Grid daily Auto-Range snapshots refreshed independently', {
+        utcDay: dayKey,
+        poolSymbols: normalizedSymbols,
+        appliedSymbols: Object.keys(appliedRanges),
+        waitingForFlat,
+        pendingSymbols,
+        trailingRefreshEnabled,
+        ranges: appliedRanges
       }).catch(() => {});
       return {
         settings: {
-          ...settings, grid_symbol_configs: persisted.grid_symbol_configs,
-          grid_state: nextGridState, grid_lower_price: firstConfig.lowerPrice,
-          grid_upper_price: firstConfig.upperPrice, grid_levels_count: firstConfig.levelsCount
+          ...settings,
+          grid_symbol_configs: persisted.grid_symbol_configs,
+          grid_state: nextGridState,
+          ...(firstSymbol ? {
+            grid_symbol: firstSymbol,
+            grid_lower_price: nextConfigs[firstSymbol].lowerPrice,
+            grid_upper_price: nextConfigs[firstSymbol].upperPrice,
+            grid_levels_count: nextConfigs[firstSymbol].levelsCount
+          } : {})
         },
-        blocked: false, applied: true, appliedRanges, utcDay: dayKey
+        blocked: false,
+        applied: Object.keys(appliedRanges).length > 0,
+        appliedRanges,
+        waitingForFlat,
+        pendingSymbols,
+        utcDay: dayKey
       };
     } catch (error) {
       return defer('GRID_AUTO_RANGE_REFRESH_FAILED', {
