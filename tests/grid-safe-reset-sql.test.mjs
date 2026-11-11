@@ -17,6 +17,7 @@ test('NVDAX safe reset requires fresh exchange-flat and database-flat preconditi
   assert.match(sql, /INTERVAL '2 minutes'/);
   assert.match(sql, /exchange snapshot shows an open NVDAXUSD position/);
   assert.match(sql, /NVDAXUSD has % open dd_delta_positions rows/);
+  assert.match(sql, /NVDAXUSD has % open legacy dd_positions rows/);
   assert.match(sql, /NVDAXUSD has % unresolved dd_orders rows/);
 });
 
