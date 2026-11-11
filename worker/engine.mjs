@@ -751,16 +751,21 @@ export class DeltaEngine {
     const timestamp = Date.now();
     const nowIso = new Date(timestamp).toISOString();
     const dayKey = utcDayKey(timestamp);
-    const normalizedSymbols = [...new Set((Array.isArray(symbols) ? symbols : [])
+    const requestedSymbols = [...new Set((Array.isArray(symbols) ? symbols : [])
       .map(value => String(value || '').trim().toUpperCase()).filter(Boolean))];
+    const existingConfigs = settings.grid_symbol_configs && typeof settings.grid_symbol_configs === 'object'
+      ? settings.grid_symbol_configs : {};
+    const manuallyPausedSymbols = requestedSymbols.filter(symbol => existingConfigs[symbol]?.paused === true);
+    const normalizedSymbols = requestedSymbols.filter(symbol => existingConfigs[symbol]?.paused !== true);
+    if (!normalizedSymbols.length) {
+      return { settings, blocked: false, applied: false, skippedPausedSymbols: manuallyPausedSymbols };
+    }
     let gridState = settings.grid_state;
     if (typeof gridState === 'string') {
       try { gridState = JSON.parse(gridState); } catch { gridState = null; }
     }
     if (!gridState || typeof gridState !== 'object' || Array.isArray(gridState)) gridState = {};
     const trailingRefreshEnabled = CONFIG.gridTrailingEnabled === true && settings.grid_trailing_enabled === true;
-    const existingConfigs = settings.grid_symbol_configs && typeof settings.grid_symbol_configs === 'object'
-      ? settings.grid_symbol_configs : {};
     const snapshotMissing = isGridAtrSnapshotRefreshRequired({
       initialized: this.gridAtrSnapshotInitialized === true,
       force: forceSnapshot === true,
@@ -863,8 +868,8 @@ export class DeltaEngine {
       try {
         const symbolFilter = normalizedSymbols.join(',');
         const [exchangePositions, exchangeOrders, databasePositions, deltaDatabasePositions, databaseOrders] = await Promise.all([
-          deltaExecutor.getOpenPositions(),
-          deltaExecutor.getOpenOrders(),
+          deltaExecutor.getOpenPositions({ symbols: normalizedSymbols }),
+          deltaExecutor.getOpenOrders({ symbols: normalizedSymbols }),
           db.select('dd_positions', 'symbol=in.(' + symbolFilter + ')&select=symbol,qty&order=updated_at.desc&limit=500'),
           db.select('dd_delta_positions', 'symbol=in.(' + symbolFilter + ')&status=eq.OPEN&select=id,symbol,strategy,qty,side,entry_price,entry_order_id,client_order_id&limit=500'),
           db.select('dd_orders', 'symbol=in.(' + symbolFilter + ')&select=symbol,state,strategy&order=updated_at.desc&limit=500')
@@ -1039,8 +1044,9 @@ export class DeltaEngine {
       ? [...(CONFIG.gridSymbolPool || CONFIG.gridSymbols)] : [];
     const requestedPoolSymbols = Array.isArray(CONFIG.gridRequestedSymbolPool)
       ? [...CONFIG.gridRequestedSymbolPool] : [...symbols, ...(CONFIG.gridRejectedPoolSymbols || [])];
+    const activeSymbols = symbols.filter(symbol => settings.grid_symbol_configs?.[symbol]?.paused !== true);
     const maxConcurrentSymbols = Number(CONFIG.gridMaxConcurrentSymbols) || 2;
-    const autoRangeResult = await this.refreshAutoGridRanges(settings, symbols, {
+    const autoRangeResult = await this.refreshAutoGridRanges(settings, activeSymbols, {
       forceSnapshot: !this.gridAtrSnapshotInitialized
     });
     const executionSettings = autoRangeResult.settings || settings;
@@ -1073,7 +1079,7 @@ export class DeltaEngine {
     const candlesBySymbol = {};
     const freshnessBySymbol = {};
     const nowMs = Date.now();
-    for (const symbol of symbols) {
+    for (const symbol of activeSymbols) {
       tickers[symbol] = this.tickerMap.get(symbol) || {};
       this.candleCacheSymbols.add(symbol);
       const lastRefresh = this.gridCandleRefreshBySymbol.get(symbol) || 0;
