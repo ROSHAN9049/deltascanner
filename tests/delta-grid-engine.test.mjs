@@ -460,6 +460,71 @@ test('Trailing Grid refuses to close exchange exposure without a matching Grid-o
 });
 
 
+test('Trailing shift on the active symbol ignores a separately paused PAXGUSD Futures position', async () => {
+  const queries = [];
+  const updates = [];
+  const paxgPosition = {
+    symbol: 'PAXGUSD', side: 'SELL', qty: 61, entry_price: 4089.23,
+    client_order_id: 'SCALP-PAXGUSD-OPEN'
+  };
+  const configs = {
+    PAXGUSD: {
+      lowerPrice: 4023.41985362, upperPrice: 4186.4787822,
+      levelsCount: 10, paused: true
+    },
+    NVDAXUSD: {
+      lowerPrice: 171.845378743, upperPrice: 193.109664457,
+      levelsCount: 10, paused: false
+    }
+  };
+  const result = await executeTrailingGridShift({
+    executor: {
+      async getOpenPositions() { return [paxgPosition]; },
+      async getOrderById() { throw new Error('No pending Grid order should be read'); }
+    },
+    database: {
+      async select(table, query) {
+        queries.push({ table, query });
+        assert.match(query, /NVDAXUSD/);
+        assert.doesNotMatch(query, /PAXGUSD/);
+        return [];
+      },
+      async update(table, query, patch) { updates.push({ table, query, patch }); },
+      async log() {}
+    },
+    state: { status: 'ACTIVE', pausedReason: null, positions: [], pendingEntries: [], events: [] },
+    settings: {
+      grid_symbol_configs: configs,
+      gridGlobalTrailingShiftTimestamps: [],
+      grid_min_range_pct: 2,
+      grid_max_range_pct: 20
+    },
+    symbol: 'NVDAXUSD',
+    configuredSymbols: ['NVDAXUSD'],
+    currentConfig: {
+      lowerPrice: configs.NVDAXUSD.lowerPrice,
+      upperPrice: configs.NVDAXUSD.upperPrice,
+      levelsCount: 10,
+      breakoutExitPct: 1.2
+    },
+    markPrice: 169.43844471,
+    direction: 'DOWN',
+    dbOpenGridRows: [],
+    gridOrders: [],
+    now: () => Date.parse('2026-11-11T03:00:00.000Z')
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.shifted, true);
+  assert.equal(updates.length, 1);
+  const savedConfigs = updates[0].patch.grid_symbol_configs;
+  assert.equal(savedConfigs.PAXGUSD.paused, true);
+  assert.equal(savedConfigs.PAXGUSD.lowerPrice, configs.PAXGUSD.lowerPrice);
+  assert.ok(savedConfigs.NVDAXUSD.lowerPrice < configs.NVDAXUSD.lowerPrice);
+  assert.equal(paxgPosition.qty, 61);
+  assert.equal(paxgPosition.side, 'SELL');
+  assert.equal(queries.length, 1);
+});
+
 test('Trailing Grid shifts retain the 10% shift but clamp width to configured ATR limits', () => {
   const narrow = calculateTrailingGridRange({
     direction: 'UP', lowerPrice: 100, upperPrice: 101,
