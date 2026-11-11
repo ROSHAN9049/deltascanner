@@ -18,6 +18,7 @@ DECLARE
   v_grid_db_positions integer := 0;
   v_grid_db_orders integer := 0;
   v_nvdax_db_positions integer := 0;
+  v_nvdax_legacy_positions integer := 0;
   v_nvdax_db_orders integer := 0;
   v_grid_state_exposure integer := 0;
 BEGIN
@@ -74,6 +75,14 @@ BEGIN
 
   IF v_nvdax_db_positions <> 0 THEN
     RAISE EXCEPTION 'SAFE RESET REFUSED: NVDAXUSD has % open dd_delta_positions rows', v_nvdax_db_positions;
+  END IF;
+
+  SELECT count(*) INTO v_nvdax_legacy_positions
+  FROM public.dd_positions
+  WHERE upper(symbol) = 'NVDAXUSD' AND abs(COALESCE(qty,0)) > 0;
+
+  IF v_nvdax_legacy_positions <> 0 THEN
+    RAISE EXCEPTION 'SAFE RESET REFUSED: NVDAXUSD has % open legacy dd_positions rows', v_nvdax_legacy_positions;
   END IF;
 
   SELECT count(*) INTO v_nvdax_db_orders
