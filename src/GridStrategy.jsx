@@ -89,16 +89,20 @@ export default function GridStrategy({
   apiGridTrailingEnvironmentEnabled = false,
   workerGridAutoRangeEnvironmentEnabled = null,
   workerGridAutoRangeHeartbeatFresh = false,
-  apiGridSymbols = []
+  apiGridSymbols = [],
+  apiGridRejectedPoolSymbols = [],
+  apiGridMaxConcurrentSymbols = GRID_BRIDGE_MAX_POSITIONS
 }) {
   const gridSymbols = useMemo(() =>
     resolveSymbols(settings, testnetDiagnostics, apiGridSymbols),
   [apiGridSymbols.join(','), testnetDiagnostics?.poolSymbols?.join(','), settings.grid_symbol_configs]);
-  const rejectedPoolSymbols = Array.isArray(testnetDiagnostics?.gridRejectedPoolSymbols)
-    ? testnetDiagnostics.gridRejectedPoolSymbols.map(value => String(value).toUpperCase()) : [];
+  const rejectedPoolSymbols = (Array.isArray(testnetDiagnostics?.gridRejectedPoolSymbols)
+    ? testnetDiagnostics.gridRejectedPoolSymbols
+    : Array.isArray(apiGridRejectedPoolSymbols) ? apiGridRejectedPoolSymbols : [])
+    .map(value => String(value).toUpperCase());
   const gridExecutableSymbols = gridSymbols.filter(symbol => !rejectedPoolSymbols.includes(symbol));
   const maxConcurrentSymbols = Math.max(1, Math.min(6,
-    Number(testnetDiagnostics?.maxConcurrentSymbols ?? settings.max_grid_positions ?? GRID_BRIDGE_MAX_POSITIONS) || GRID_BRIDGE_MAX_POSITIONS));
+    Number(testnetDiagnostics?.maxConcurrentSymbols ?? apiGridMaxConcurrentSymbols ?? settings.max_grid_positions ?? GRID_BRIDGE_MAX_POSITIONS) || GRID_BRIDGE_MAX_POSITIONS));
   const [draft, setDraft] = useState(() => parseDraft(settings, gridSymbols, maxConcurrentSymbols));
   const [autoRangeBusy, setAutoRangeBusy] = useState(false);
   const [autoRangeMessage, setAutoRangeMessage] = useState('');
@@ -211,7 +215,7 @@ export default function GridStrategy({
     }
   }));
   const payload = {
-    gridSymbolConfigs: Object.fromEntries(gridSymbols.map(symbol => {
+    gridSymbolConfigs: Object.fromEntries(gridExecutableSymbols.map(symbol => {
       const config = draft.gridSymbolConfigs?.[symbol] || {};
       return [symbol, {
         lowerPrice: Number.isFinite(Number(config.lowerPrice)) ? Number(config.lowerPrice) : null,
