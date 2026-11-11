@@ -343,7 +343,7 @@ export function createDeltaExecutor({
         const response = await request('GET', '/v2/orders', {
           contract_types: 'perpetual_futures',
           ...(productIds ? { product_ids: productIds.join(',') } : {}),
-          state,
+          states: state,
           page_size: 100,
           after
         });
