@@ -45,7 +45,7 @@ footer{color:#526177;text-align:center;font-size:9px;padding-top:12px}
 .gridButtons button{min-height:35px}
 .gridButtons .gridStart{border-color:#17664d;background:#09251d;color:#2de3a0}
 .errorText{padding:10px 12px;margin:8px 0;color:#ff9ca9;border:1px solid #703043;border-radius:6px;background:#250e15;font-size:10px}
-.gridMeta{display:flex;gap:18px;flex-wrap:wrap;padding:3px 0 11px;color:#8090a6;font-size:10px}
+.gridPositionRow{display:grid;grid-template-columns:1fr 1fr;gap:5px 12px;padding:9px 0;border-bottom:1px solid #202d40;font-size:11px}.gridPositionRow:last-child{border-bottom:0}.gridPositionRow b{color:#dce7f4}.gridPositionRow span{color:#9aa9bd}.gridMeta{display:flex;gap:18px;flex-wrap:wrap;padding:3px 0 11px;color:#8090a6;font-size:10px}
 .gridMeta b{color:#dce7f4}
 .gridLevelsTable{min-width:720px}
 .gridLockRow{display:flex;justify-content:space-between;gap:12px;padding:9px 1px;border-bottom:1px solid #1b2635;font-size:10px}
