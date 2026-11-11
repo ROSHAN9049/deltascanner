@@ -57,6 +57,17 @@ BEGIN
     RAISE EXCEPTION 'SAFE RESET REFUSED: exchange snapshot shows an open NVDAXUSD position';
   END IF;
 
+  -- The operator-confirmed PAXG Futures position must still be visible in this fresh snapshot.
+  IF NOT EXISTS (
+    SELECT 1
+    FROM jsonb_array_elements(v_exchange_positions) AS p
+    WHERE upper(COALESCE(p->>'symbol','')) = 'PAXGUSD'
+      AND abs(COALESCE(NULLIF(p->>'qty','')::numeric, 0)) > 0
+      AND upper(COALESCE(p->>'strategyGroup','UNCLASSIFIED')) = 'FUTURES'
+  ) THEN
+    RAISE EXCEPTION 'SAFE RESET REFUSED: expected open PAXGUSD Futures position is missing or unclassified in the fresh exchange snapshot';
+  END IF;
+
   -- If PAXGUSD is open, it must be classified as Futures, never Grid/unknown.
   IF EXISTS (
     SELECT 1
