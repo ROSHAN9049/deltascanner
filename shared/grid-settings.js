@@ -92,7 +92,7 @@ export function getGridDisplayStatus({
     if (!gridEnabled || stateStatus === 'OFF') {
       return {
         label: 'TESTNET GRID · GRID OFF',
-        detail: 'Testnet execution is permitted by configuration, but the Grid strategy is off. Starting still requires at least one active symbol, a valid range for each active symbol, and all worker safety checks.'
+        detail: 'Testnet execution is permitted by configuration, but the Grid strategy is off. Starting still requires at least one non-paused allowlisted pool symbol with a valid range and all worker safety checks; other pool symbols may remain pending.'
       };
     }
 
@@ -105,7 +105,7 @@ export function getGridDisplayStatus({
 
     return {
       label: 'TESTNET GRID · ACTIVE',
-      detail: 'One- or two-symbol Testnet Grid is running with independent exchange-side SL/TP per active instrument and shared daily-loss and 5% drawdown controls.'
+      detail: 'Dynamic Testnet Grid is running with up to six allowlisted pool symbols, per-symbol exchange-side SL/TP, automatic Futures handoff, and shared daily-loss and 5% drawdown controls.'
     };
   }
 
