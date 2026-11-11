@@ -319,7 +319,7 @@ export default function GridStrategy({
   return <>
     <section className="cards">
       <div className="card"><small>GRID STRATEGY STATUS</small><strong>{visibleGridStatus}</strong><span>{visibleGridStatusDetail}</span></div>
-      <div className="card"><small>CONFIGURED TESTNET SYMBOL POOL</small><strong>{gridSymbols.length} symbols · {gridExecutableSymbols.length} allowlisted</strong><span>{gridSymbols.join(' · ')} · Each Grid symbol has independent range and exchange-side SL/TP. Unavailable symbols are visible but never routed.</span></div>
+      <div className="card"><small>CONFIGURED TESTNET SYMBOL POOL</small><strong>{gridSymbols.length} symbols · {gridExecutableSymbols.length} allowlisted</strong><span>{gridSymbols.join(' · ')} · Each Grid symbol has an independent range and Independent exchange-side SL/TP protection. Unavailable symbols are visible but never routed.</span></div>
       <div className="card"><small>OPEN GRID SYMBOLS</small><strong>{activeSlots} / {maxConcurrentSymbols}</strong><span>{positions.length} open position(s) · {pendingEntries.length} pending limit entry(ies) · {usd(openRisk === null && positions.length === 0 ? 0 : openRisk)} estimated open risk.</span></div>
       <div className="card"><small>{deltaTestnetGrid ? 'DELTA TESTNET NET P&L' : 'SIMULATED GRID P&amp;L'}</small><strong className={realizedGridPnl === null ? 'muted' : realizedGridPnl >= 0 ? 'up' : 'down'}>{usd(realizedGridPnl)}</strong><span>{deltaTestnetGrid ? 'Only fully fill-matched trades with verified commissions; otherwise P&L is unverified.' : 'Offline estimate after estimated fees and slippage; not exchange-reported P&amp;L.'}</span></div>
       <div className="card"><small>DAY PNL</small><strong className={totalDayPnl === null ? 'muted' : totalDayPnl >= 0 ? 'up' : 'down'}>{usd(totalDayPnl)}</strong><span>Realized + combined mark-to-market · daily stop fixed at 2.0%.</span></div>
@@ -446,7 +446,7 @@ export default function GridStrategy({
       </Panel>
     </div>
     <div className="gridTestNotice">{deltaTestnetGrid
-      ? 'DELTA TESTNET GRID: ' + (gridExecutionAllowed ? 'Bracket-protected GTC limit entries are enabled only for the two configured allowlisted symbols. Each symbol has its own exchange-side SL/TP; the 2% daily loss and 5% drawdown guards are shared across both.' : 'Read-only until GRID_EXECUTION_ALLOWED=true in the explicit Testnet profile. No orders are submitted while the opt-in is false.')
+      ? 'DELTA TESTNET GRID: ' + (gridExecutionAllowed ? 'Bracket-protected GTC limit entries are enabled only for the two configured allowlisted symbols. Independent exchange-side SL/TP applies to each active symbol; the 2% daily loss and 5% drawdown guards are shared across both.' : 'Read-only until GRID_EXECUTION_ALLOWED=true in the explicit Testnet profile. No orders are submitted while the opt-in is false.')
       : 'GRID SAFETY: This is an offline simulator, not a direct Delta Testnet order engine. Do not treat simulated P&L as exchange P&L.'}</div>
   </>;
 }
