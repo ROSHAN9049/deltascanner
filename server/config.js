@@ -132,6 +132,7 @@ export const CONFIG = Object.freeze({
   gridMaxRangePct,
   gridSymbols,
   gridSymbolPool: gridSymbols,
+  gridRequestedSymbolPool: gridPoolResolution.requestedSymbols,
   gridSymbolPoolSource: gridPoolResolution.source,
   gridRejectedPoolSymbols: gridPoolResolution.rejectedSymbols,
   gridMaxConcurrentSymbols,
