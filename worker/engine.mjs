@@ -5478,6 +5478,45 @@ export class DeltaEngine {
     const heartbeatMessage = 'Worker heartbeat scan ' + formatMemoryLog(heartbeatMemory);
     console.log(heartbeatMessage);
     const unrealized = account.positions.reduce((s, p) => s + n(p.unrealized_pnl), 0);
+    // Publish a read-only exchange snapshot for the authenticated dashboard.
+    // Strategy classification is joined from the ledger; exchange positions
+    // themselves are never changed by this reporting path.
+    const exchangePositionRows = (Array.isArray(account.positions) ? account.positions : [])
+      .filter(position => Math.abs(n(position?.qty ?? position?.size)) > 0);
+    const exchangePositionSymbols = [...new Set(exchangePositionRows.map(position =>
+      String(position?.product_symbol || position?.symbol || '').toUpperCase()
+    ).filter(Boolean))];
+    const exchangeLedgerRows = exchangePositionSymbols.length
+      ? await db.select('dd_delta_positions',
+          'symbol=in.(' + exchangePositionSymbols.join(',') + ')&status=eq.OPEN&select=symbol,strategy,qty,side,entry_price,order_id,entry_order_id,client_order_id&limit=100')
+          .catch(() => [])
+      : [];
+    const deltaExchangePositions = exchangePositionRows.map(position => {
+      const symbol = String(position?.product_symbol || position?.symbol || '').toUpperCase();
+      const qty = Math.abs(n(position?.qty ?? position?.size));
+      const clientOrderId = String(position?.client_order_id || '');
+      const ledger = (Array.isArray(exchangeLedgerRows) ? exchangeLedgerRows : []).find(row =>
+        String(row?.symbol || '').toUpperCase() === symbol &&
+        (!clientOrderId || [row?.client_order_id, row?.entry_order_id].some(value =>
+          String(value || '') === clientOrderId
+        )) &&
+        Math.abs(n(row?.qty)) === qty
+      ) || null;
+      const strategy = String(ledger?.strategy || position?.strategy || '').toUpperCase();
+      const strategyGroup = strategy === 'GRID' && clientOrderId.toUpperCase().startsWith('DDG-')
+        ? 'GRID' : strategy ? 'FUTURES' : 'UNCLASSIFIED';
+      return {
+        symbol, side: String(position?.side || (n(position?.size) < 0 ? 'SELL' : 'BUY')).toUpperCase(),
+        qty, entryPrice: numberOrNull(position?.entry_price ?? ledger?.entry_price),
+        markPrice: numberOrNull(position?.mark_price ?? position?.current_price),
+        unrealizedPnl: numberOrNull(position?.unrealized_pnl),
+        stopLoss: numberOrNull(position?.bracket_stop_loss_price ?? position?.sl_price),
+        takeProfit: numberOrNull(position?.bracket_take_profit_price ?? position?.tp_price),
+        orderId: position?.order_id ?? null, clientOrderId: clientOrderId || null,
+        strategy: strategy || null, strategyGroup
+      };
+    });
+    const deltaExchangePositionsAt = new Date().toISOString();
     const closed = trades || [];
     const realized = closed.reduce((s, t) => s + n(t.net_pnl), 0);
     const feesToday = closed.filter(t => indiaDateKey(t.closed_at) === today()).reduce((s, t) => s + n(t.fees), 0);
@@ -5510,6 +5549,7 @@ export class DeltaEngine {
         Math.abs(n(position?.qty ?? position?.size)) > 0
       ).length,
       gridEntrySafety: this.lastGridEntrySafety || null,
+      deltaExchangePositions, deltaExchangePositionsAt,
       gridTestnetDiagnostics: this.lastGridTestnetDiagnostics || null,
       optionsTestnetDiagnostics: this.lastOptionsTestnetDiagnostics || null
     });
