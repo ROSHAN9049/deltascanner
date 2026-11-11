@@ -812,3 +812,182 @@ test('multi-symbol manager accepts one active symbol after the other is paused i
   assert.deepEqual(Object.keys(result.state.symbolSummaries), ['NVDAXUSD']);
   assert.ok(updates.length > 0);
 });
+
+
+function makeDynamicGridPoolFixture({
+  symbols = ['PAXGUSD', 'NVDAXUSD', 'XAUTUSD'],
+  exchangePositions = [],
+  databasePositions = [],
+  previousGridState = {},
+  maxConcurrentSymbols = 2,
+  tickerOverrides = {},
+  autoTrade = false,
+  logs: initialLogs = []
+} = {}) {
+  const now = Date.parse('2026-11-11T03:00:00.000Z');
+  const updates = [];
+  const logs = [...initialLogs];
+  const gridOrders = [];
+  const configs = Object.fromEntries(symbols.map(symbol => [symbol, {
+    lowerPrice: 100, upperPrice: 110, levelsCount: 10,
+    atr_14d: 2, atr_pct: 1.9, atr_snapshot_status: 'READY',
+    atr: 2, atrPct: 1.9, widthPct: 4,
+    paused: false
+  }]));
+  const tickers = Object.fromEntries(symbols.map((symbol, index) => [symbol, {
+    mark_price: 105,
+    turnover_usd: 1000 - index * 100,
+    quotes: { best_bid: 104.99, best_ask: 105.01 },
+    ...(tickerOverrides[symbol] || {})
+  }]));
+  const products = Object.fromEntries(symbols.map(symbol => [symbol, {
+    id: 100 + symbols.indexOf(symbol),
+    symbol,
+    contract_value: 1,
+    tick_size: 0.01,
+    taker_commission_rate: 0.0005
+  }]));
+  const candlesBySymbol = Object.fromEntries(symbols.map(symbol => [symbol,
+    Array.from({ length: 6 }, () => ({ open: 105, high: 105, low: 105, close: 105 }))
+  ]));
+  const database = {
+    async select(table, query) {
+      if (table === 'dd_delta_positions' && query.startsWith('symbol=in.(')) return databasePositions;
+      if (table === 'dd_delta_positions' && query.startsWith('strategy=eq.GRID&status=in.')) return [];
+      if (table === 'dd_delta_positions' && query.startsWith('strategy=eq.GRID&status=eq.OPEN')) {
+        return databasePositions.filter(row => String(row.strategy).toUpperCase() === 'GRID');
+      }
+      if (table === 'dd_delta_positions' && query.startsWith('symbol=eq.')) {
+        const symbol = decodeURIComponent(query.slice('symbol=eq.'.length).split('&')[0]);
+        return databasePositions.filter(row => row.symbol === symbol);
+      }
+      if (table === 'dd_orders' && query.startsWith('symbol=in.(')) return gridOrders;
+      if (table === 'dd_orders' && query.startsWith('strategy=eq.GRID')) return gridOrders;
+      if (table === 'dd_trades') return [];
+      if (table === 'dd_engine_logs') return [];
+      return [];
+    },
+    async count() { return 0; },
+    async update(table, query, patch) { updates.push({ table, query, patch }); },
+    async log(level, message, data) { logs.push({ level, message, data }); }
+  };
+  const executor = {
+    async getOpenPositions() { return exchangePositions; },
+    async getOpenOrders() { return []; }
+  };
+  const input = {
+    settings: {
+      grid_enabled: true,
+      auto_trade: autoTrade,
+      enabled: true,
+      continuous_mode: true,
+      emergency_stop: false,
+      max_leverage: 3,
+      grid_risk_per_trade_pct: 0.3,
+      grid_daily_loss_pct: 2,
+      grid_max_drawdown_pct: 5,
+      grid_state: previousGridState,
+      grid_symbol_configs: configs,
+      grid_trailing_enabled: false,
+      max_grid_positions: maxConcurrentSymbols,
+      gridMaxConcurrentSymbols: maxConcurrentSymbols
+    },
+    account: { privateApiAvailable: true, equity: 50000, available: 10000 },
+    symbols,
+    maxConcurrentSymbols,
+    tickers,
+    products,
+    candlesBySymbol,
+    freshnessBySymbol: Object.fromEntries(symbols.map(symbol => [symbol, true])),
+    database,
+    executor,
+    now: () => now
+  };
+  return { input, database, executor, updates, logs, configs, tickers, products };
+}
+
+test('Dynamic Grid skips Futures-owned PAXG and continues with the best two eligible symbols', async () => {
+  const fixture = makeDynamicGridPoolFixture({
+    exchangePositions: [{
+      id: 119, symbol: 'PAXGUSD', side: 'SELL', qty: 61, entry_price: 4089.23,
+      client_order_id: 'SCALP-PAXGUSD-OPEN', order_id: '2177855282'
+    }],
+    databasePositions: [{
+      id: 119, symbol: 'PAXGUSD', strategy: 'SCALPING', side: 'SELL',
+      qty: 61, entry_price: 4089.23, entry_order_id: '2177855282',
+      client_order_id: 'SCALP-PAXGUSD-OPEN'
+    }],
+    tickerOverrides: {
+      NVDAXUSD: { turnover_usd: 1000, quotes: { best_bid: 104.99, best_ask: 105.02 } },
+      XAUTUSD: { turnover_usd: 2000, quotes: { best_bid: 104.99, best_ask: 105.005 } }
+    }
+  });
+  const result = await manageDeltaTestnetMultiGrid(fixture.input);
+  assert.deepEqual(result.activeSymbols, ['XAUTUSD', 'NVDAXUSD']);
+  assert.ok(result.skippedSymbols.includes('PAXGUSD'));
+  assert.equal(result.symbolStatuses.PAXGUSD.status, 'SKIPPED');
+  assert.equal(result.symbolStatuses.PAXGUSD.blockingPosition.id, 119);
+  assert.equal(result.symbolStatuses.PAXGUSD.blockingPosition.orderId, '2177855282');
+  assert.ok(fixture.logs.some(row =>
+    row.message === '[GRID] Symbol PAXGUSD skipped: Futures position detected (id=119). Continuing with XAUTUSD.'
+  ));
+  assert.equal(result.safety.reason, 'AUTO_TRADE_DISABLED');
+  assert.equal(result.safety.symbols.some(row => row.symbol === 'PAXGUSD'), false);
+});
+
+test('Dynamic Grid automatically re-admits PAXG after the Futures position closes', async () => {
+  const first = makeDynamicGridPoolFixture({
+    symbols: ['PAXGUSD', 'NVDAXUSD'],
+    exchangePositions: [{
+      id: 119, symbol: 'PAXGUSD', side: 'SELL', qty: 61, entry_price: 4089.23,
+      client_order_id: 'SCALP-PAXGUSD-OPEN'
+    }],
+    databasePositions: [{
+      id: 119, symbol: 'PAXGUSD', strategy: 'SCALPING', side: 'SELL',
+      qty: 61, entry_price: 4089.23, entry_order_id: '2177855282',
+      client_order_id: 'SCALP-PAXGUSD-OPEN'
+    }],
+    maxConcurrentSymbols: 1
+  });
+  const skipped = await manageDeltaTestnetMultiGrid(first.input);
+  assert.equal(skipped.symbolStatuses.PAXGUSD.status, 'SKIPPED');
+  const second = makeDynamicGridPoolFixture({
+    symbols: ['PAXGUSD', 'NVDAXUSD'],
+    previousGridState: skipped.state,
+    maxConcurrentSymbols: 1,
+    tickerOverrides: {
+      PAXGUSD: { turnover_usd: 2000 },
+      NVDAXUSD: { turnover_usd: 1000 }
+    }
+  });
+  const resumed = await manageDeltaTestnetMultiGrid(second.input);
+  assert.deepEqual(resumed.activeSymbols, ['PAXGUSD']);
+  assert.equal(resumed.symbolStatuses.PAXGUSD.status, 'ACTIVE');
+  assert.ok(second.logs.some(row =>
+    row.message === '[GRID] Symbol PAXGUSD re-eligible: Futures position closed. Resuming Grid on this symbol.'
+  ));
+});
+
+test('Dynamic Grid waits without halting when every pool symbol is owned by Futures', async () => {
+  const symbols = ['PAXGUSD', 'NVDAXUSD'];
+  const exchangePositions = symbols.map((symbol, index) => ({
+    id: 119 + index, symbol, side: 'SELL', qty: 1, entry_price: 100,
+    client_order_id: 'SCALP-' + symbol,
+    order_id: String(2000 + index)
+  }));
+  const databasePositions = symbols.map((symbol, index) => ({
+    id: 119 + index, symbol, strategy: 'SCALPING', side: 'SELL', qty: 1,
+    entry_price: 100, entry_order_id: String(2000 + index),
+    client_order_id: 'SCALP-' + symbol
+  }));
+  const fixture = makeDynamicGridPoolFixture({ symbols, exchangePositions, databasePositions });
+  const result = await manageDeltaTestnetMultiGrid(fixture.input);
+  assert.deepEqual(result.activeSymbols, []);
+  assert.deepEqual(result.skippedSymbols.sort(), [...symbols].sort());
+  assert.equal(result.waitingForFutures, true);
+  assert.equal(result.state.status, 'WAITING');
+  assert.equal(result.safety.blocked, false);
+  assert.ok(fixture.logs.some(row =>
+    row.message === '[GRID] All pool symbols blocked by Futures; waiting'
+  ));
+});
