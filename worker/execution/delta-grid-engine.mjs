@@ -510,7 +510,7 @@ export async function executeTrailingGridShift({
         text(row?.strategy).toUpperCase() === 'GRID')
       .map(row => text(row?.client_order_id)).filter(Boolean));
 
-    // Preflight every configured symbol against both exchange and database state.
+    // Preflight only the breached symbol against exchange and database state.
     // A stale Grid row alone is never sufficient to claim another strategy's position.
     const beforePositions = await executor.getOpenPositions({ symbols });
     if (!Array.isArray(beforePositions)) throw new Error('Exchange position snapshot is malformed before trailing shift');
