@@ -33,6 +33,7 @@ export function resolveDeltaTestnetGridSymbolPool(poolValue, legacyValue) {
   } else if (legacyRaw) {
     return {
       symbols: parseDeltaTestnetGridSymbols(legacyRaw),
+      requestedSymbols: parseDeltaTestnetGridSymbols(legacyRaw),
       source: 'GRID_SYMBOLS',
       rejectedSymbols: []
     };
@@ -46,6 +47,7 @@ export function resolveDeltaTestnetGridSymbolPool(poolValue, legacyValue) {
   const symbols = requested.filter(symbol => isAllowedDeltaTestnetFutureSymbol(symbol));
   return {
     symbols: Object.freeze(symbols),
+    requestedSymbols: Object.freeze([...requested]),
     source,
     rejectedSymbols: requested.filter(symbol => !isAllowedDeltaTestnetFutureSymbol(symbol))
   };
