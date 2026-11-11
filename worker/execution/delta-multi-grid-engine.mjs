@@ -140,7 +140,7 @@ export async function manageDeltaTestnetMultiGrid({
 } = {}) {
   const configuredSymbols = [...new Set((Array.isArray(symbols) ? symbols : [])
     .map(value => text(value).toUpperCase()))];
-  if (configuredSymbols.length !== 2 || configuredSymbols.some(symbol => !/^[A-Z0-9]+USD$/.test(symbol) || !isAllowedDeltaTestnetFutureSymbol(symbol))) {
+  if (configuredSymbols.length < 1 || configuredSymbols.length > 2 || configuredSymbols.some(symbol => !/^[A-Z0-9]+USD$/.test(symbol) || !isAllowedDeltaTestnetFutureSymbol(symbol))) {
     return {
       state: parseState(settings.grid_state),
       safety: { executionMode: 'testnet', configured: false, trusted: false, blocked: true, reason: 'GRID_SYMBOL_CONFIGURATION_INVALID' }
