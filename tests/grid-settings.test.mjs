@@ -8,7 +8,8 @@ import {
   GRID_MOMENTUM_PAUSE_CHOICES,
   getGridDisplayStatus,
   isAllowedGridRiskPerTradePct,
-  normalizeGridRiskPerTradePct
+  normalizeGridRiskPerTradePct,
+  resolveActiveGridSymbols
 } from '../shared/grid-settings.js';
 
 test('two-symbol Testnet Grid permits at most one position per symbol and two total', () => {
@@ -22,6 +23,28 @@ test('all visible Grid risk choices are accepted by shared validation', () => {
   assert.deepEqual(GRID_DAILY_LOSS_CHOICES, [2]);
   assert.equal(GRID_DAILY_LOSS_CHOICES[0], 2);
   assert.deepEqual(GRID_MOMENTUM_PAUSE_CHOICES, [2.5, 2.75, 3]);
+});
+
+test('DB pause flags exclude only the paused Grid symbol and preserve the configured allowlist', () => {
+  const configs = {
+    PAXGUSD: { lowerPrice: 4023, upperPrice: 4186, paused: true },
+    NVDAXUSD: { lowerPrice: 171, upperPrice: 193, paused: false }
+  };
+  assert.deepEqual(resolveActiveGridSymbols(['PAXGUSD', 'NVDAXUSD'], configs), ['NVDAXUSD']);
+  assert.deepEqual(resolveActiveGridSymbols(['PAXGUSD', 'NVDAXUSD'], {
+    PAXGUSD: { paused: false }, NVDAXUSD: {}
+  }), ['PAXGUSD', 'NVDAXUSD']);
+  assert.deepEqual(resolveActiveGridSymbols(['PAXGUSD', 'NVDAXUSD'], {
+    PAXGUSD: { paused: true }, NVDAXUSD: { paused: true }
+  }), []);
+});
+
+test('DB pause flags accept JSON strings and fail closed on malformed JSON', () => {
+  assert.deepEqual(resolveActiveGridSymbols(
+    ['PAXGUSD', 'NVDAXUSD'],
+    '{"PAXGUSD":{"paused":true},"NVDAXUSD":{"paused":false}}'
+  ), ['NVDAXUSD']);
+  assert.deepEqual(resolveActiveGridSymbols(['PAXGUSD', 'NVDAXUSD'], '{broken'), []);
 });
 
 test('legacy Grid risk values normalize to a supported option', () => {
