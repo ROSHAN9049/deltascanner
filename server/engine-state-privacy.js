@@ -197,6 +197,8 @@ export function protectEngineState(payload, authorized) {
       optionsTestnetDiagnostics: publicOptionsTestnetDiagnostics(payload?.executionCoverage?.optionsTestnetDiagnostics)
     },
     deltaTestnetPositions: [],
+    deltaExchangePositions: [],
+    deltaExchangePositionsAt: null,
     deltaTestnetOpenPositionCount: null,
     deltaTestnetOrders: [],
     deltaTestnetOrderCount: null,
