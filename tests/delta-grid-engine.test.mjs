@@ -1094,20 +1094,25 @@ test('PAXG Futures position with exchange SL/TP does not block a symbol-scoped N
   };
   const positionReads = [];
   const orderMutationCalls = [];
+  let nvdaxStillOpen = true;
   const config = { lowerPrice: 171.845378743, upperPrice: 193.109664457, levelsCount: 10, breakoutExitPct: 1.2 };
   const result = await executeTrailingGridShift({
     executor: {
       async getOpenPositions({ symbols } = {}) {
         positionReads.push(symbols);
         assert.deepEqual(symbols, ['NVDAXUSD']);
-        return [{
+        return nvdaxStillOpen ? [{
           symbol: 'NVDAXUSD', side: 'BUY', qty: 1, entry_price: 180,
           client_order_id: 'DDG-NVDAXUSD-G1-TEST'
-        }];
+        }] : [];
       },
       async getOrderById() { throw new Error('No pending Grid order should exist'); },
       async cancelOrderById(id) { orderMutationCalls.push(['cancel', id]); return { id, state: 'CANCELLED' }; },
-      async closePosition(symbol, qty) { orderMutationCalls.push(['close', symbol, qty]); return { id: 1 }; }
+      async closePosition(symbol, qty) {
+        orderMutationCalls.push(['close', symbol, qty]);
+        if (symbol === 'NVDAXUSD') nvdaxStillOpen = false;
+        return { id: 1 };
+      }
     },
     database: {
       async select(table, query) {
