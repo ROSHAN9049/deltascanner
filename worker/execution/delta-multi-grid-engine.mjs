@@ -250,14 +250,6 @@ export async function manageDeltaTestnetMultiGrid({
   const unknownBlocked = new Set();
   const mustManage = new Set();
 
-  const hasGridPositionState = symbol => {
-    const state = symbolStates[symbol] || {};
-    return (Array.isArray(state.positions) && state.positions.some(row =>
-      text(row?.symbol || symbol).toUpperCase() === symbol && Math.abs(n(row?.qty)) > 0
-    )) || (Array.isArray(previousRoot.positions) && previousRoot.positions.some(row =>
-      text(row?.symbol).toUpperCase() === symbol && Math.abs(n(row?.qty)) > 0
-    ));
-  };
   const hasLocalPending = symbol => {
     const state = symbolStates[symbol] || {};
     return (Array.isArray(state.pendingEntries) && state.pendingEntries.some(row =>
@@ -272,9 +264,6 @@ export async function manageDeltaTestnetMultiGrid({
   );
   const hasGridReservation = symbol => activeGridOrders.some(row =>
     text(row?.symbol).toUpperCase() === symbol && text(row?.role).toUpperCase() === 'ENTRY'
-  );
-  const gridOpenPositionRows = databasePositions.filter(row =>
-    text(row?.strategy).toUpperCase() === 'GRID' && Math.abs(n(row?.qty)) > 0
   );
 
   const shiftFailureRowsCache = new Map();
