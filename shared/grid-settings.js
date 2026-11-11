@@ -4,6 +4,23 @@ export const GRID_RISK_PER_TRADE_CHOICES = Object.freeze([0.3, 0.5, 0.75, 1]);
 export const GRID_DAILY_LOSS_CHOICES = Object.freeze([2]);
 export const GRID_MOMENTUM_PAUSE_CHOICES = Object.freeze([2.5, 2.75, 3]);
 
+/**
+ * Resolve active Grid symbols from the fixed Testnet allowlist and persisted
+ * per-symbol settings. A paused symbol remains in grid_symbol_configs; it is
+ * merely omitted from the worker's active execution set.
+ */
+export function resolveActiveGridSymbols(configuredSymbols = [], gridSymbolConfigs = {}) {
+  let configs = gridSymbolConfigs;
+  if (typeof configs === 'string') {
+    try { configs = JSON.parse(configs); } catch { return []; }
+  }
+  if (!configs || typeof configs !== 'object' || Array.isArray(configs)) configs = {};
+  return [...new Set((Array.isArray(configuredSymbols) ? configuredSymbols : [])
+    .map(symbol => String(symbol || '').trim().toUpperCase())
+    .filter(Boolean))]
+    .filter(symbol => configs[symbol]?.paused !== true);
+}
+
 export function isAllowedGridRiskPerTradePct(value) {
   const number = Number(value);
   return Number.isFinite(number) && GRID_RISK_PER_TRADE_CHOICES.includes(number);
@@ -75,7 +92,7 @@ export function getGridDisplayStatus({
     if (!gridEnabled || stateStatus === 'OFF') {
       return {
         label: 'TESTNET GRID · GRID OFF',
-        detail: 'Testnet execution is permitted by configuration, but the Grid strategy is off. Starting still requires valid ranges for both configured symbols and all worker safety checks.'
+        detail: 'Testnet execution is permitted by configuration, but the Grid strategy is off. Starting still requires at least one active symbol, a valid range for each active symbol, and all worker safety checks.'
       };
     }
 
@@ -88,7 +105,7 @@ export function getGridDisplayStatus({
 
     return {
       label: 'TESTNET GRID · ACTIVE',
-      detail: 'Two-symbol Testnet Grid is running with independent exchange-side SL/TP per instrument and shared daily-loss and 5% drawdown controls.'
+      detail: 'One- or two-symbol Testnet Grid is running with independent exchange-side SL/TP per active instrument and shared daily-loss and 5% drawdown controls.'
     };
   }
 
