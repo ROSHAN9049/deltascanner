@@ -751,16 +751,21 @@ export class DeltaEngine {
     const timestamp = Date.now();
     const nowIso = new Date(timestamp).toISOString();
     const dayKey = utcDayKey(timestamp);
-    const normalizedSymbols = [...new Set((Array.isArray(symbols) ? symbols : [])
+    const requestedSymbols = [...new Set((Array.isArray(symbols) ? symbols : [])
       .map(value => String(value || '').trim().toUpperCase()).filter(Boolean))];
+    const existingConfigs = settings.grid_symbol_configs && typeof settings.grid_symbol_configs === 'object'
+      ? settings.grid_symbol_configs : {};
+    const manuallyPausedSymbols = requestedSymbols.filter(symbol => existingConfigs[symbol]?.paused === true);
+    const normalizedSymbols = requestedSymbols.filter(symbol => existingConfigs[symbol]?.paused !== true);
+    if (!normalizedSymbols.length) {
+      return { settings, blocked: false, applied: false, skippedPausedSymbols: manuallyPausedSymbols };
+    }
     let gridState = settings.grid_state;
     if (typeof gridState === 'string') {
       try { gridState = JSON.parse(gridState); } catch { gridState = null; }
     }
     if (!gridState || typeof gridState !== 'object' || Array.isArray(gridState)) gridState = {};
     const trailingRefreshEnabled = CONFIG.gridTrailingEnabled === true && settings.grid_trailing_enabled === true;
-    const existingConfigs = settings.grid_symbol_configs && typeof settings.grid_symbol_configs === 'object'
-      ? settings.grid_symbol_configs : {};
     const snapshotMissing = isGridAtrSnapshotRefreshRequired({
       initialized: this.gridAtrSnapshotInitialized === true,
       force: forceSnapshot === true,
@@ -863,8 +868,8 @@ export class DeltaEngine {
       try {
         const symbolFilter = normalizedSymbols.join(',');
         const [exchangePositions, exchangeOrders, databasePositions, deltaDatabasePositions, databaseOrders] = await Promise.all([
-          deltaExecutor.getOpenPositions(),
-          deltaExecutor.getOpenOrders(),
+          deltaExecutor.getOpenPositions({ symbols: normalizedSymbols }),
+          deltaExecutor.getOpenOrders({ symbols: normalizedSymbols }),
           db.select('dd_positions', 'symbol=in.(' + symbolFilter + ')&select=symbol,qty&order=updated_at.desc&limit=500'),
           db.select('dd_delta_positions', 'symbol=in.(' + symbolFilter + ')&status=eq.OPEN&select=id,symbol,strategy,qty,side,entry_price,entry_order_id,client_order_id&limit=500'),
           db.select('dd_orders', 'symbol=in.(' + symbolFilter + ')&select=symbol,state,strategy&order=updated_at.desc&limit=500')
@@ -1039,8 +1044,9 @@ export class DeltaEngine {
       ? [...(CONFIG.gridSymbolPool || CONFIG.gridSymbols)] : [];
     const requestedPoolSymbols = Array.isArray(CONFIG.gridRequestedSymbolPool)
       ? [...CONFIG.gridRequestedSymbolPool] : [...symbols, ...(CONFIG.gridRejectedPoolSymbols || [])];
+    const activeSymbols = symbols.filter(symbol => settings.grid_symbol_configs?.[symbol]?.paused !== true);
     const maxConcurrentSymbols = Number(CONFIG.gridMaxConcurrentSymbols) || 2;
-    const autoRangeResult = await this.refreshAutoGridRanges(settings, symbols, {
+    const autoRangeResult = await this.refreshAutoGridRanges(settings, activeSymbols, {
       forceSnapshot: !this.gridAtrSnapshotInitialized
     });
     const executionSettings = autoRangeResult.settings || settings;
@@ -1073,7 +1079,7 @@ export class DeltaEngine {
     const candlesBySymbol = {};
     const freshnessBySymbol = {};
     const nowMs = Date.now();
-    for (const symbol of symbols) {
+    for (const symbol of activeSymbols) {
       tickers[symbol] = this.tickerMap.get(symbol) || {};
       this.candleCacheSymbols.add(symbol);
       const lastRefresh = this.gridCandleRefreshBySymbol.get(symbol) || 0;
@@ -5472,6 +5478,51 @@ export class DeltaEngine {
     const heartbeatMessage = 'Worker heartbeat scan ' + formatMemoryLog(heartbeatMemory);
     console.log(heartbeatMessage);
     const unrealized = account.positions.reduce((s, p) => s + n(p.unrealized_pnl), 0);
+    // Publish a read-only exchange snapshot for the authenticated dashboard.
+    // Strategy classification is joined from the ledger; exchange positions
+    // themselves are never changed by this reporting path.
+    const exchangePositionRows = (Array.isArray(account.positions) ? account.positions : [])
+      .filter(position => Math.abs(n(position?.qty ?? position?.size)) > 0);
+    const exchangePositionSymbols = [...new Set(exchangePositionRows.map(position =>
+      String(position?.product_symbol || position?.symbol || '').toUpperCase()
+    ).filter(Boolean))];
+    const exchangeLedgerRows = exchangePositionSymbols.length
+      ? await db.select('dd_delta_positions',
+          'symbol=in.(' + exchangePositionSymbols.join(',') + ')&status=eq.OPEN&select=symbol,strategy,qty,side,entry_price,order_id,entry_order_id,client_order_id&limit=100')
+          .catch(() => [])
+      : [];
+    const deltaExchangePositions = exchangePositionRows.map(position => {
+      const symbol = String(position?.product_symbol || position?.symbol || '').toUpperCase();
+      const qty = Math.abs(n(position?.qty ?? position?.size));
+      const clientOrderId = String(position?.client_order_id || '');
+      const ledger = (Array.isArray(exchangeLedgerRows) ? exchangeLedgerRows : []).find(row =>
+        String(row?.symbol || '').toUpperCase() === symbol &&
+        (!clientOrderId || [row?.client_order_id, row?.entry_order_id].some(value =>
+          String(value || '') === clientOrderId
+        )) &&
+        Math.abs(n(row?.qty)) === qty
+      ) || null;
+      const clientIdUpper = clientOrderId.toUpperCase();
+      const strategy = String(ledger?.strategy || position?.strategy ||
+        (clientIdUpper.startsWith('DDG-') ? 'GRID' : clientIdUpper ? 'FUTURES' : '')).toUpperCase();
+      const strategyGroup = strategy === 'GRID'
+        ? (clientIdUpper.startsWith('DDG-') ? 'GRID' : 'UNCLASSIFIED')
+        : ['MOMENTUM', 'SCALPING', 'FUTURES'].includes(strategy) || clientIdUpper
+          ? 'FUTURES' : 'UNCLASSIFIED';
+      const finiteOrNull = value => value === null || value === undefined || value === '' ||
+        !Number.isFinite(Number(value)) ? null : Number(value);
+      return {
+        symbol, side: String(position?.side || (n(position?.size) < 0 ? 'SELL' : 'BUY')).toUpperCase(),
+        qty, entryPrice: finiteOrNull(position?.entry_price ?? ledger?.entry_price),
+        markPrice: finiteOrNull(position?.mark_price ?? position?.current_price),
+        unrealizedPnl: finiteOrNull(position?.unrealized_pnl),
+        stopLoss: finiteOrNull(position?.bracket_stop_loss_price ?? position?.sl_price),
+        takeProfit: finiteOrNull(position?.bracket_take_profit_price ?? position?.tp_price),
+        orderId: position?.order_id ?? null, clientOrderId: clientOrderId || null,
+        strategy: strategy || null, strategyGroup
+      };
+    });
+    const deltaExchangePositionsAt = new Date().toISOString();
     const closed = trades || [];
     const realized = closed.reduce((s, t) => s + n(t.net_pnl), 0);
     const feesToday = closed.filter(t => indiaDateKey(t.closed_at) === today()).reduce((s, t) => s + n(t.fees), 0);
@@ -5504,6 +5555,7 @@ export class DeltaEngine {
         Math.abs(n(position?.qty ?? position?.size)) > 0
       ).length,
       gridEntrySafety: this.lastGridEntrySafety || null,
+      deltaExchangePositions, deltaExchangePositionsAt,
       gridTestnetDiagnostics: this.lastGridTestnetDiagnostics || null,
       optionsTestnetDiagnostics: this.lastOptionsTestnetDiagnostics || null
     });
