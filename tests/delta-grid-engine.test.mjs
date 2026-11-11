@@ -789,7 +789,7 @@ test('multi-symbol manager accepts one active symbol after the other is paused i
       },
       grid_symbol_configs: {
         PAXGUSD: { paused: true, lowerPrice: 4023, upperPrice: 4186, levelsCount: 10 },
-        NVDAXUSD: { paused: false, lowerPrice: 171, upperPrice: 193, levelsCount: 10 }
+        NVDAXUSD: { paused: false, lowerPrice: 171, upperPrice: 193, levelsCount: 10, atr_14d: 2, atr_pct: 1.1, atr_snapshot_status: 'READY' }
       },
       gridTrailingEnvironmentEnabled: true,
       grid_trailing_enabled: true
