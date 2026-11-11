@@ -5502,16 +5502,20 @@ export class DeltaEngine {
         )) &&
         Math.abs(n(row?.qty)) === qty
       ) || null;
-      const strategy = String(ledger?.strategy || position?.strategy || '').toUpperCase();
-      const strategyGroup = strategy === 'GRID' && clientOrderId.toUpperCase().startsWith('DDG-')
+      const clientIdUpper = clientOrderId.toUpperCase();
+      const strategy = String(ledger?.strategy || position?.strategy ||
+        (clientIdUpper.startsWith('DDG-') ? 'GRID' : clientIdUpper ? 'FUTURES' : '')).toUpperCase();
+      const strategyGroup = strategy === 'GRID' && clientIdUpper.startsWith('DDG-')
         ? 'GRID' : strategy ? 'FUTURES' : 'UNCLASSIFIED';
+      const finiteOrNull = value => value === null || value === undefined || value === '' ||
+        !Number.isFinite(Number(value)) ? null : Number(value);
       return {
         symbol, side: String(position?.side || (n(position?.size) < 0 ? 'SELL' : 'BUY')).toUpperCase(),
-        qty, entryPrice: numberOrNull(position?.entry_price ?? ledger?.entry_price),
-        markPrice: numberOrNull(position?.mark_price ?? position?.current_price),
-        unrealizedPnl: numberOrNull(position?.unrealized_pnl),
-        stopLoss: numberOrNull(position?.bracket_stop_loss_price ?? position?.sl_price),
-        takeProfit: numberOrNull(position?.bracket_take_profit_price ?? position?.tp_price),
+        qty, entryPrice: finiteOrNull(position?.entry_price ?? ledger?.entry_price),
+        markPrice: finiteOrNull(position?.mark_price ?? position?.current_price),
+        unrealizedPnl: finiteOrNull(position?.unrealized_pnl),
+        stopLoss: finiteOrNull(position?.bracket_stop_loss_price ?? position?.sl_price),
+        takeProfit: finiteOrNull(position?.bracket_take_profit_price ?? position?.tp_price),
         orderId: position?.order_id ?? null, clientOrderId: clientOrderId || null,
         strategy: strategy || null, strategyGroup
       };
