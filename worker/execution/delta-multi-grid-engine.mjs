@@ -166,7 +166,6 @@ export async function manageDeltaTestnetMultiGrid({
   const at = new Date(timestamp).toISOString();
   const limit = Math.max(1, Math.min(poolSymbols.length || 1,
     Number.isInteger(Number(maxConcurrentSymbols)) ? Number(maxConcurrentSymbols) : 2));
-  const results = [];
   const symbolStatuses = {};
   const persistRoot = async () => {
     const root = aggregateGridState(symbolStates, poolSymbols, previousRoot);
@@ -278,7 +277,6 @@ export async function manageDeltaTestnetMultiGrid({
     text(row?.strategy).toUpperCase() === 'GRID' && Math.abs(n(row?.qty)) > 0
   );
 
-  const recoverableShiftConflicts = new Map();
   const shiftFailureRowsCache = new Map();
   const findCrossSymbolShiftConflict = async symbol => {
     if (shiftFailureRowsCache.has(symbol)) return shiftFailureRowsCache.get(symbol);
@@ -307,14 +305,10 @@ export async function manageDeltaTestnetMultiGrid({
     }
   };
 
+  // Resolve every owner before making any handoff decision so logging and
+  // recovery are independent of pool order.
   for (const symbol of poolSymbols) {
-    const config = settings.grid_symbol_configs?.[symbol] || {};
-    const previous = symbolStates[symbol] || {};
-    const paused = config.paused === true;
-    if (paused) manuallyPaused.add(symbol);
-    const ownership = classifyGridSymbolOwnership({
-      symbol, exchangePositions, databasePositions
-    });
+    const ownership = classifyGridSymbolOwnership({ symbol, exchangePositions, databasePositions });
     const exchangePosition = exchangePositions.find(row =>
       text(row?.symbol || row?.product_symbol).toUpperCase() === symbol &&
       Math.abs(n(row?.qty ?? row?.size)) > 0
@@ -324,17 +318,24 @@ export async function manageDeltaTestnetMultiGrid({
       const matchingGridOrder = clientId && clientId.toUpperCase().startsWith('DDG-')
         ? gridOrders.find(row => text(row?.client_order_id) === clientId) : null;
       if (matchingGridOrder && !databasePositions.some(row =>
-        text(row?.symbol).toUpperCase() === symbol && text(row?.strategy).toUpperCase() !== 'GRID' &&
-        Math.abs(n(row?.qty)) > 0
+        text(row?.symbol).toUpperCase() === symbol &&
+        text(row?.strategy).toUpperCase() !== 'GRID' && Math.abs(n(row?.qty)) > 0
       )) {
-        // A DDG client identity plus its persisted Grid order is sufficient to
-        // keep managing this already-open Grid symbol while still checking the DB row.
         ownership.owner = 'GRID';
         ownership.blocked = false;
         ownership.position = ownership.position || {};
       }
     }
     ownerBySymbol.set(symbol, ownership);
+  }
+
+  const futuresSkipLogRows = [];
+  for (const symbol of poolSymbols) {
+    const config = settings.grid_symbol_configs?.[symbol] || {};
+    const previous = symbolStates[symbol] || {};
+    const paused = config.paused === true;
+    if (paused) manuallyPaused.add(symbol);
+    const ownership = ownerBySymbol.get(symbol);
     const hasGridDb = hasDatabaseGridPosition(symbol);
     const hasGridExposure = ownership.owner === 'GRID' || hasGridDb;
     const hasPending = hasGridReservation(symbol) || hasLocalPending(symbol);
@@ -352,28 +353,6 @@ export async function manageDeltaTestnetMultiGrid({
     const dataReady = freshnessBySymbol[symbol] === true && productReady && rangeReady;
     const ready = dataReady && ['READY', 'FALLBACK_3PCT'].includes(String(atrStatus || ''));
     metricsBySymbol.set(symbol, { ...metrics, rangeReady, dataReady, ready, atrStatus });
-
-    // Recover only the known preflight bug where a trailing shift refused to
-    // touch a different strategy's symbol before any cancellation/close action.
-    if (previous.pausedReason === 'GRID_TRAILING_SHIFT_UNCONFIRMED' &&
-        !hasGridDb && !hasGridReservation(symbol) && !hasLocalPending(symbol)) {
-      const conflictSymbol = await findCrossSymbolShiftConflict(symbol);
-      const conflictOwner = conflictSymbol ? ownerBySymbol.get(conflictSymbol) : null;
-      if (conflictSymbol && conflictOwner?.owner === 'FUTURES' && conflictOwner.blocked) {
-        symbolStates[symbol] = {
-          ...previous, status: 'PENDING', pausedReason: null,
-          skipReason: null, futuresBlocker: null,
-          positions: [], pendingEntries: [], openRiskUsd: 0, unrealizedPnl: 0,
-          lastTickAt: at
-        };
-        await database.log('INFO',
-          '[GRID] Recovered prior trailing-shift preflight conflict; unrelated Futures symbol is now isolated from this Grid symbol',
-          { symbol, excludedFuturesSymbol: conflictSymbol, reason: 'NON_GRID_POSITION_ON_OTHER_POOL_SYMBOL' }
-        ).catch(() => {});
-      } else {
-        symbolStates[symbol] = { ...previous };
-      }
-    }
 
     const currentState = symbolStates[symbol] || previous;
     if (ownership.blocked) {
@@ -400,21 +379,7 @@ export async function manageDeltaTestnetMultiGrid({
         spreadPct: metrics.spreadPct
       };
       if (!wasSkippedForSameFutures && ownership.owner === 'FUTURES') {
-        const nextCandidate = poolSymbols.find(candidate =>
-          candidate !== symbol && !futuresBlocked.has(candidate) &&
-          ownerBySymbol.get(candidate)?.blocked !== true
-        );
-        const nextLabel = nextCandidate || 'other eligible pool symbols';
-        await database.log('INFO',
-          '[GRID] Symbol ' + symbol + ' skipped: Futures position detected (id=' +
-            (blocker.id ?? 'unknown') + '). Continuing with ' + nextLabel + '.',
-          {
-            symbol, blockingPositionId: blocker.id ?? null,
-            blockingOrderId: blocker.orderId ?? null,
-            blockingStrategy: blocker.strategy || 'FUTURES',
-            poolSymbols, continuingWith: nextCandidate || null
-          }
-        ).catch(() => {});
+        futuresSkipLogRows.push({ symbol, blocker });
       }
       continue;
     }
@@ -490,6 +455,31 @@ export async function manageDeltaTestnetMultiGrid({
     };
   }
 
+  // Known historical incident recovery is evidence-based: the old helper
+  // failed in its read-only ownership preflight before cancelling or closing
+  // anything. Reset only that symbol when its own exposure/order state is flat
+  // and the exact cross-symbol blocker still has a live Futures owner.
+  for (const symbol of poolSymbols) {
+    const previous = symbolStates[symbol] || {};
+    const exposure = gridExposureBySymbol.get(symbol) || {};
+    if (previous.pausedReason !== 'GRID_TRAILING_SHIFT_UNCONFIRMED' ||
+        exposure.hasGridExposure || exposure.hasPending) continue;
+    const conflictSymbol = await findCrossSymbolShiftConflict(symbol);
+    const conflictOwner = conflictSymbol ? ownerBySymbol.get(conflictSymbol) : null;
+    if (conflictSymbol && conflictOwner?.owner === 'FUTURES' && conflictOwner.blocked) {
+      symbolStates[symbol] = {
+        ...previous, status: 'PENDING', pausedReason: null,
+        skipReason: null, futuresBlocker: null,
+        positions: [], pendingEntries: [], openRiskUsd: 0, unrealizedPnl: 0,
+        lastTickAt: at
+      };
+      await database.log('INFO',
+        '[GRID] Recovered prior trailing-shift preflight conflict; unrelated Futures symbol is now isolated from this Grid symbol',
+        { symbol, excludedFuturesSymbol: conflictSymbol, reason: 'NON_GRID_POSITION_ON_OTHER_POOL_SYMBOL' }
+      ).catch(() => {});
+    }
+  }
+
   const candidates = poolSymbols.filter(symbol => {
     if (futuresBlocked.has(symbol) || unknownBlocked.has(symbol) ||
         manuallyPaused.has(symbol) || mustManage.has(symbol)) return false;
@@ -500,6 +490,20 @@ export async function manageDeltaTestnetMultiGrid({
   const selected = selectGridSymbolsByPriority(candidates, remainingSlots);
   const activeSymbols = [...new Set([...mustManage, ...selected])];
   const skippedSymbols = [...futuresBlocked, ...unknownBlocked];
+  for (const { symbol, blocker } of futuresSkipLogRows) {
+    const continuingWith = activeSymbols.find(candidate => candidate !== symbol) || null;
+    const nextLabel = continuingWith || 'remaining eligible pool symbols';
+    await database.log('INFO',
+      '[GRID] Symbol ' + symbol + ' skipped: Futures position detected (id=' +
+        (blocker.id ?? 'unknown') + '). Continuing with ' + nextLabel + '.',
+      {
+        symbol, blockingPositionId: blocker.id ?? null,
+        blockingOrderId: blocker.orderId ?? null,
+        blockingStrategy: blocker.strategy || 'FUTURES',
+        poolSymbols, continuingWith
+      }
+    ).catch(() => {});
+  }
   for (const symbol of selected) {
     const current = symbolStates[symbol] || {};
     symbolStates[symbol] = {
