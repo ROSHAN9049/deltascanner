@@ -33,6 +33,7 @@ import { deltaExecutor } from './execution/delta-executor.mjs';
 import { projectCanonicalDeltaBrackets } from './execution/delta-position-projection.mjs';
 import { manageDeltaTestnetMultiGrid } from './execution/delta-multi-grid-engine.mjs';
 import { calculateAutoGridRange, calculateAtrGridRange, hasGridAutoRangeExposure, isAutoGridRangeRefreshDue, isGridAtrSnapshotRefreshRequired, selectLatestCompletedDailyCandle, utcDayKey } from '../shared/grid-auto-range.js';
+import { resolveActiveGridSymbols } from '../shared/grid-settings.js';
 import { assertDirectDeltaExecutionMode, getExecutionRouteBlockReason, DELTA_TESTNET_FUTURES_ALLOWLIST, isAllowedDeltaTestnetFutureSymbol, isEligibleDeltaTestnetPerpetualProduct, isMarketTickFresh, canStartWorkerInExecutionProfile } from './execution/execution-route-policy.mjs';
 import { canExecuteDeltaTestnetOrders, checkDeltaTestnetPrivateApi, isPrivateApiConnectivityError } from './execution/testnet-private-api-health.mjs';
 import {
@@ -785,7 +786,7 @@ export class DeltaEngine {
       }).catch(() => {});
       return { settings: nextSettings, blocked: true, applied: false, reason };
     };
-    if (normalizedSymbols.length !== 2) {
+    if (normalizedSymbols.length < 1 || normalizedSymbols.length > 2) {
       return defer('GRID_AUTO_RANGE_SYMBOL_CONFIGURATION_INVALID');
     }
 
@@ -978,14 +979,15 @@ export class DeltaEngine {
   }
 
   async runTestnetGridExecution(settings = {}, account = {}) {
-    const symbols = Array.isArray(CONFIG.gridSymbols) ? CONFIG.gridSymbols : [];
+    const configuredSymbols = Array.isArray(CONFIG.gridSymbols) ? CONFIG.gridSymbols : [];
+    const symbols = resolveActiveGridSymbols(configuredSymbols, settings.grid_symbol_configs);
     const autoRangeResult = await this.refreshAutoGridRanges(settings, symbols, {
       forceSnapshot: !this.gridAtrSnapshotInitialized
     });
     const executionSettings = autoRangeResult.settings || settings;
     if (CONFIG.gridExecutionAllowed !== true || CONFIG.directDeltaExecutionEnabled !== true ||
         CONFIG.deltaExecutionMode !== 'testnet' || CONFIG.environment !== 'TESTNET' ||
-        symbols.length !== 2 || account.privateApiAvailable !== true) {
+        symbols.length < 1 || symbols.length > 2 || account.privateApiAvailable !== true) {
       this.lastGridTestnetDiagnostics = {
         executionMode: 'testnet',
         gridExecutionAllowed: false,
