@@ -26,8 +26,6 @@ const GLOBAL_GRID_PROTECTION_HALT_REASONS = new Set([
   'GRID_RANGE_BREAK',
   'GRID_BRACKET_UNVERIFIED_CANCELLED',
   'GRID_BRACKET_CANCEL_UNCONFIRMED',
-  'GRID_TRAILING_SHIFT_LIMIT',
-  'GRID_TRAILING_SHIFT_UNCONFIRMED'
 ]);
 
 export function applyGlobalGridProtectionHalt(symbolStates, symbols, reason, at) {
@@ -53,7 +51,7 @@ export function applyGlobalGridProtectionHalt(symbolStates, symbols, reason, at)
 
 const GLOBAL_ROOT_HALT_REASONS = new Set([
   'EMERGENCY_STOP', 'DAILY_LOSS_LIMIT', 'OVERALL_DRAWDOWN_STOP',
-  'GRID_RANGE_BREAK', 'GRID_TRAILING_SHIFT_LIMIT'
+  'GRID_RANGE_BREAK'
 ]);
 
 function aggregateGridState(symbolStates, symbols, previous = {}) {
@@ -554,11 +552,9 @@ export async function manageDeltaTestnetMultiGrid({
     'GRID_COMBINED_UNREALIZED_PNL_UNAVAILABLE',
     'GRID_MULTI_SYMBOL_RECONCILIATION_FAILED',
     'GRID_FILLED_ORDER_WITHOUT_POSITION', 'GRID_SYMBOL_CYCLE_ERROR',
-    'GRID_TRAILING_SHIFT_LIMIT'
   ]);
   const globalHardStopReasons = new Set([
     'EMERGENCY_STOP', 'DAILY_LOSS_LIMIT', 'OVERALL_DRAWDOWN_STOP', 'GRID_RANGE_BREAK',
-    'GRID_TRAILING_SHIFT_LIMIT'
   ]);
   const rootBeforeCycles = aggregateGridState(symbolStates, poolSymbols, previousRoot);
   const results = [];
@@ -594,7 +590,7 @@ export async function manageDeltaTestnetMultiGrid({
       gridGlobalOpenRiskUsd,
       gridGlobalPauseReason: priorGlobalPause,
       gridGlobalHardStopReason,
-      gridGlobalTrailingShiftTimestamps: root.trailingShiftTimestamps || []
+      gridGlobalTrailingShiftTimestamps: symbolState?.trailingShiftTimestamps || []
     };
 
     const scopedDatabase = Object.create(database);
