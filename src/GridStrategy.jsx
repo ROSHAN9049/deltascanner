@@ -218,8 +218,8 @@ export default function GridStrategy({
     gridSymbolConfigs: Object.fromEntries(gridExecutableSymbols.map(symbol => {
       const config = draft.gridSymbolConfigs?.[symbol] || {};
       return [symbol, {
-        lowerPrice: Number.isFinite(Number(config.lowerPrice)) ? Number(config.lowerPrice) : null,
-        upperPrice: Number.isFinite(Number(config.upperPrice)) ? Number(config.upperPrice) : null,
+        lowerPrice: String(config.lowerPrice ?? '').trim() === '' ? null : Number(config.lowerPrice),
+        upperPrice: String(config.upperPrice ?? '').trim() === '' ? null : Number(config.upperPrice),
         levelsCount: Number(config.levelsCount),
         atr: config.atr, atrPct: config.atrPct, atr_14d: config.atr, atr_pct: config.atrPct, multiplier: config.multiplier,
         widthPct: config.widthPct, atrFallback: config.atrFallback === true, atr_snapshot_status: config.atrSnapshotStatus,
