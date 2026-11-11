@@ -51,7 +51,8 @@ function fakeRuntime({
     async select(table, query) {
       if (table === 'dd_settings') return [{
         id: 1, enabled: true, emergency_stop: emergencyStop, auto_trade: true,
-        max_open_positions: 20, last_tick_at: new Date(timestamp).toISOString()
+        max_open_positions: 20, last_tick_at: new Date(timestamp).toISOString(),
+        unrealized_pnl: positions.reduce((sum, row) => sum + (Number(row.unrealized_pnl) || 0), 0)
       }];
       if (table === 'dd_delta_positions') {
         const symbolMatch = query.match(/symbol=eq\.([^&]+)/);
@@ -67,8 +68,20 @@ function fakeRuntime({
           ];
         }
       }
-      if (table === 'dd_orders') return orders;
+      if (table === 'dd_orders') {
+        const symbolMatch = query.match(/symbol=eq\.([^&]+)/);
+        if (symbolMatch) {
+          const symbol = decodeURIComponent(symbolMatch[1]);
+          return orders.filter(row => String(row.symbol || '').toUpperCase() === symbol);
+        }
+        return orders;
+      }
       return [];
+    },
+    async count(table, query) {
+      if (table === 'dd_delta_positions') return positions.length + persistedPositions.filter(row => row.status === 'OPEN').length;
+      if (table === 'dd_orders') return orders.filter(row => ['OPEN','PENDING','PARTIALLY_FILLED'].includes(String(row.state || '').toUpperCase())).length;
+      return 0;
     },
     async log(level, message, data = {}) { logs.push({ level, message, data }); },
     async update(table, query, patch) {
@@ -105,7 +118,9 @@ function fakeRuntime({
     }
     if (parsed.pathname === '/v2/positions/margined') {
       const rows = hasPostedOrder && positionsAfterFill !== null ? positionsAfterFill : positions;
-      return response({ success: true, result: rows });
+      const ids = String(parsed.searchParams.get('product_ids') || '').split(',').filter(Boolean);
+      const filtered = ids.length ? rows.filter(row => ids.includes(String(row.product_id))) : rows;
+      return response({ success: true, result: filtered });
     }
     if (parsed.pathname === '/v2/fills') return response({ success: true, result: fills, meta: {} });
     if (parsed.pathname.startsWith('/v2/orders/client_order_id/')) {
@@ -114,7 +129,11 @@ function fakeRuntime({
         : response({ success: false, error: { code: 'order_not_found' } }, 404);
     }
     if (parsed.pathname === '/v2/orders/history') return response({ success: true, result: orderHistory, meta: {} });
-    if (parsed.pathname === '/v2/orders' && init.method === 'GET') return response({ success: true, result: [] });
+    if (parsed.pathname === '/v2/orders' && init.method === 'GET') {
+      const ids = String(parsed.searchParams.get('product_ids') || '').split(',').filter(Boolean);
+      const filtered = ids.length ? orders.filter(row => ids.includes(String(row.product_id))) : orders;
+      return response({ success: true, result: filtered });
+    }
     if (/^\/v2\/orders\/\d+$/.test(parsed.pathname) && init.method === 'GET') {
       return latestOrder ? response({ success: true, result: latestOrder }) : response({ success: false }, 404);
     }
@@ -227,6 +246,44 @@ test('Grid bracket entry uses a GTC non-reduce-only limit order with exchange-si
   assert.equal(post.body.bracket_stop_loss_price, '2462.5');
   assert.equal(post.body.bracket_take_profit_price, '2575');
   assert.equal(post.body.bracket_stop_trigger_method, 'mark_price');
+});
+
+test('NVDAX Grid entry remains symbol-scoped when PAXG has a Futures position and exchange SL/TP', async () => {
+  const paxgFutures = {
+    product_id: 182001, product_symbol: 'PAXGUSD', size: -61,
+    entry_price: '4089.23', mark_price: '4095.00', unrealized_pnl: '-2.00',
+    bracket_stop_loss_price: '4150.50', bracket_take_profit_price: '3935.80',
+    order_id: 2177855282, client_order_id: 'SCALP-PAXGUSD-OPEN'
+  };
+  const runtime = fakeRuntime({ positions: [paxgFutures], markPrice: 180 });
+  const executor = createDeltaExecutor({
+    env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database,
+    now: () => 1770000000000
+  });
+
+  const order = await executor.placeBracketOrder('NVDAXUSD', 'BUY', 1, 180, 176, 188, {
+    strategy: 'GRID', clientOrderId: 'DDG-NVDAXUSD-G01-ISOLATION', orderType: 'limit_order'
+  });
+
+  assert.equal(order.id, 123);
+  const positionRead = runtime.httpCalls.find(call =>
+    new URL(call.url).pathname === '/v2/positions/margined'
+  );
+  assert.ok(positionRead);
+  assert.equal(new URL(positionRead.url).searchParams.get('product_ids'), '182002');
+  assert.equal(new URL(positionRead.url).searchParams.get('product_ids').includes('182001'), false);
+  const orderPost = runtime.httpCalls.find(call =>
+    new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST'
+  );
+  assert.ok(orderPost);
+  assert.equal(orderPost.body.product_id, 182002);
+  assert.equal(orderPost.body.client_order_id, 'DDG-NVDAXUSD-G01-ISOLATION');
+  assert.equal(runtime.httpCalls.some(call =>
+    new URL(call.url).pathname === '/v2/orders' && call.init.method === 'DELETE'
+  ), false);
+  assert.equal(paxgFutures.size, -61);
+  assert.equal(paxgFutures.bracket_stop_loss_price, '4150.50');
+  assert.equal(paxgFutures.bracket_take_profit_price, '3935.80');
 });
 
 test('pending Testnet Grid order cancellation is confirmed by a follow-up order lookup', async () => {
@@ -1650,3 +1707,33 @@ test('withholds all-in net when fill settlement currency and wallet attribution 
   assert.equal(materialized.find(row => row.table === 'dd_rotation_ledger'), undefined);
 });
 
+
+
+test('Grid symbol-scoped exchange snapshots request only the active product and never fetch a paused Futures symbol', async () => {
+  const runtime = fakeRuntime({
+    positions: [
+      { product_id: 182001, product_symbol: 'PAXGUSD', size: -61, entry_price: '4089.23',
+        bracket_stop_loss_price: '4150.50', bracket_take_profit_price: '3935.80' },
+      { product_id: 182002, product_symbol: 'NVDAXUSD', size: 0, entry_price: '173.00' }
+    ],
+    orders: [
+      { id: 991, product_id: 182001, product_symbol: 'PAXGUSD', state: 'open' },
+      { id: 992, product_id: 182002, product_symbol: 'NVDAXUSD', state: 'open' }
+    ]
+  });
+  const executor = createDeltaExecutor({ env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database });
+  const positions = await executor.getOpenPositions({ symbols: ['NVDAXUSD'] });
+  const orders = await executor.getOpenOrders({ symbols: ['NVDAXUSD'] });
+
+  assert.deepEqual(positions, []);
+  assert.deepEqual(orders.map(row => row.id), [992]);
+  const scopedCalls = runtime.httpCalls.filter(call =>
+    ['/v2/positions/margined', '/v2/orders'].includes(new URL(call.url).pathname) &&
+    call.init.method !== 'POST' && call.init.method !== 'DELETE'
+  );
+  assert.ok(scopedCalls.length >= 3);
+  for (const call of scopedCalls) {
+    assert.equal(new URL(call.url).searchParams.get('product_ids'), '182002');
+  }
+  assert.equal(scopedCalls.some(call => new URL(call.url).searchParams.get('product_ids')?.includes('182001')), false);
+});
