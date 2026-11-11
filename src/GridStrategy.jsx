@@ -40,7 +40,7 @@ function resolveSymbols(settings, diagnostics, apiSymbols = []) {
     ? Object.keys(settings.grid_symbol_configs).map(value => value.toUpperCase()) : [];
   return fromSettings.length ? [...new Set(fromSettings)] : [...DEFAULT_GRID_SYMBOLS];
 }
-function parseDraft(settings, symbols) {
+function parseDraft(settings, symbols, maxConcurrentSymbols = GRID_BRIDGE_MAX_POSITIONS) {
   const saved = settings.grid_symbol_configs && typeof settings.grid_symbol_configs === 'object'
     ? settings.grid_symbol_configs : {};
   const gridSymbolConfigs = Object.fromEntries(symbols.map((symbol, index) => {
@@ -99,7 +99,7 @@ export default function GridStrategy({
   const gridExecutableSymbols = gridSymbols.filter(symbol => !rejectedPoolSymbols.includes(symbol));
   const maxConcurrentSymbols = Math.max(1, Math.min(6,
     Number(testnetDiagnostics?.maxConcurrentSymbols ?? settings.max_grid_positions ?? GRID_BRIDGE_MAX_POSITIONS) || GRID_BRIDGE_MAX_POSITIONS));
-  const [draft, setDraft] = useState(() => parseDraft(settings, gridSymbols));
+  const [draft, setDraft] = useState(() => parseDraft(settings, gridSymbols, maxConcurrentSymbols));
   const [autoRangeBusy, setAutoRangeBusy] = useState(false);
   const [autoRangeMessage, setAutoRangeMessage] = useState('');
   const [autoRangeError, setAutoRangeError] = useState('');
@@ -110,12 +110,12 @@ export default function GridStrategy({
   const events = Array.isArray(gridState.events) ? [...gridState.events].reverse().slice(0, 12) : [];
 
   useEffect(() => {
-    setDraft(parseDraft(settings, gridSymbols));
+    setDraft(parseDraft(settings, gridSymbols, maxConcurrentSymbols));
   }, [
     settings.grid_symbol_configs, settings.grid_lower_price, settings.grid_upper_price,
     settings.grid_levels_count, settings.grid_max_positions, settings.grid_risk_per_trade_pct,
     settings.grid_daily_loss_pct, settings.grid_momentum_pause_pct, settings.grid_reduce_after_losses,
-    gridSymbols.join(',')
+    gridSymbols.join(','), maxConcurrentSymbols
   ]);
 
   const views = gridSymbols.map(symbol => {
@@ -222,7 +222,7 @@ export default function GridStrategy({
         paused: config.paused === true
       }];
     })),
-    gridMaxPositions: GRID_BRIDGE_MAX_POSITIONS,
+    gridMaxPositions: maxConcurrentSymbols,
     gridRiskPerTradePct: draft.gridRiskPerTradePct,
     gridDailyLossPct: 2,
     gridMomentumPausePct: draft.gridMomentumPausePct,
@@ -335,7 +335,12 @@ export default function GridStrategy({
       {autoRangeError ? <div className="errorText">{autoRangeError}</div> : null}
       <div className="grid2">
         {views.map(view => <div className="card" key={view.symbol}>
-          <strong>{view.symbol}</strong>
+          <div className="gridMeta">
+            <strong>{view.symbol}</strong>
+            <span className={view.status === 'ACTIVE' ? 'up' : view.status === 'SKIPPED' ? 'warn' : 'muted'}>{view.unavailable ? 'PENDING · NOT ALLOWLISTED' : view.config.paused ? 'PAUSED' : view.status}</span>
+          </div>
+          {view.blockingPosition ? <span className="warn">Futures blocker: {view.blockingPosition.strategy || 'FUTURES'} · position #{view.blockingPosition.id ?? '—'} · order #{view.blockingPosition.orderId ?? '—'}</span> : null}
+          {view.unavailable ? <span className="lockedText">Not present in the current Delta Testnet execution allowlist. It remains visible in the requested pool but cannot receive Grid orders.</span> : null}
           <span>Current public mark: {view.currentPrice > 0 ? price(view.currentPrice) : 'Waiting for market price'}</span>
           <div className="gridConfig">
             <label>{view.symbol} Lower Price<input type="number" inputMode="decimal" min="0" step="any" placeholder="Set lower boundary" value={view.config.lowerPrice} onChange={event => updateSymbol(view.symbol, 'lowerPrice', event.target.value)} disabled={lockedConfig}/></label>
@@ -376,6 +381,24 @@ export default function GridStrategy({
       <div className="lockedText"><b>Risk controls:</b> shared 2% daily-loss cap, 5% strategy drawdown stop, global 1.2% full-range break, per-symbol trailing shift and a {maxConcurrentSymbols}-symbol concurrency cap. Risk is aggregated across active Grid symbols. Actual quantities round down to whole contracts; if minimum size exceeds the risk budget, that entry is skipped.</div>
     </Panel>
 
+    <Panel title="Pool Handoff Status">
+      <div className="tablewrap">
+        <table className="gridLevelsTable">
+          <thead><tr><th>SYMBOL</th><th>STATUS</th><th>ATR</th><th>24H TURNOVER</th><th>SPREAD</th><th>FUTURES BLOCKER</th></tr></thead>
+          <tbody>
+            {views.map(view => <tr key={view.symbol}>
+              <td>{view.symbol}</td>
+              <td className={view.status === 'ACTIVE' ? 'up' : view.status === 'SKIPPED' ? 'warn' : 'muted'}>{view.unavailable ? 'PENDING' : view.config.paused ? 'PAUSED' : view.status}</td>
+              <td>{view.atrSnapshot.status === 'READY' ? 'READY' : view.atrSnapshot.status || 'PENDING'}</td>
+              <td>{view.symbolState.turnover24hUsd ? usd(view.symbolState.turnover24hUsd) : '—'}</td>
+              <td>{Number.isFinite(Number(view.symbolState.spreadPct)) ? Number(view.symbolState.spreadPct).toFixed(3) + '%' : '—'}</td>
+              <td>{view.blockingPosition ? (view.blockingPosition.strategy || 'FUTURES') + ' · pos ' + (view.blockingPosition.id ?? '—') + ' · order ' + (view.blockingPosition.orderId ?? '—') : '—'}</td>
+            </tr>)}
+          </tbody>
+        </table>
+      </div>
+      <div className="lockedText">Selection order: ATR READY first, then highest 24-hour turnover, then tightest spread. Futures-owned symbols are skipped and re-evaluated on every Grid cycle.</div>
+    </Panel>
     <Panel title="Grid Levels and Open Positions · Per Pool Symbol">
       {views.map(view => {
         const targetLevelSet = new Set(view.symbolPositions.map(position => Number(position.levelIndex) + 1));
@@ -398,6 +421,9 @@ export default function GridStrategy({
             {view.symbolPositions.map(position => <tr key={position.id}><td>G{Number(position.levelIndex)+1}</td><td>{price(position.entryPrice)}</td><td>{price(position.stopPrice)}</td><td>{price(position.targetPrice)}</td><td>{safeNum(position.qty) === null ? '—' : safeNum(position.qty)}</td><td>{usd(position.riskUsd)}</td></tr>)}
           </tbody></table></div> : <div className="lockedText">No open {view.symbol} Grid position.</div>}
           {view.symbolPending.length ? <div className="statusLine">{view.symbolPending.length} pending bracket-protected limit entry(ies); duplicate submissions are blocked while the exchange order is unresolved.</div> : null}
+          {!view.unavailable ? <label className="gridCheck"><input type="checkbox" checked={view.config.paused === true} onChange={event => updateSymbol(view.symbol, 'paused', event.target.checked)} disabled={lockedConfig}/> Manual pause {view.symbol}; Futures auto-skip still operates independently</label> : null}
+          {view.status === 'SKIPPED' && view.blockingPosition ? <span className="warn">Automatic handoff is enabled: this symbol is re-checked every cycle and re-enters the candidate pool after the Futures position closes.</span> : null}
+          {view.status === 'PENDING' ? <span className="muted">Waiting for verified ATR, range, Testnet product, or fresh market data.</span> : null}
         </div>;
       })}
     </Panel>
