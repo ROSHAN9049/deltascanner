@@ -4539,6 +4539,19 @@ export class DeltaEngine {
   }
 
   async managePositionRow(row, exchangePosition, setting, openOrders = []) {
+    const qty = Math.abs(n(exchangePosition?.size));
+    if (qty <= 0) return;
+
+    // Run timeout/exit retries before bracket reconciliation. A persisted
+    // timeout must not be stranded by a temporary bracket metadata failure.
+    const exitCycle = await runAutomaticPositionExitCycle({
+      position: row,
+      nowMs: Date.now(),
+      maxHoldMinutes: n(setting.max_hold_minutes || 240),
+      onExit: reason => this.closePosition(row.symbol, row.product_id, qty, row.side, reason, row)
+    });
+    if (exitCycle.attempted && !exitCycle.result?.skipped) return;
+
     let canonicalRows;
     try {
       canonicalRows = await db.select(
@@ -4619,14 +4632,6 @@ export class DeltaEngine {
         stop = rounded;
       }
     }
-    // A persisted TIMEOUT marker is retried on every reconciliation cycle,
-    // including after a previous exchange timeout or rejected close request.
-    await runAutomaticPositionExitCycle({
-      position: row,
-      nowMs: Date.now(),
-      maxHoldMinutes: n(setting.max_hold_minutes || 240),
-      onExit: reason => this.closePosition(row.symbol, row.product_id, qty, row.side, reason, row)
-    });
     await db.update('dd_positions', 'execution_id=eq.' + encodeURIComponent(row.execution_id), {
       qty, current_price: mark, stop_price: stop, updated_at: iso()
     });
