@@ -30,7 +30,7 @@ import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from '
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
 import { buildApiDerivedTrackingPlan, strategyForDerivedTrade } from './tradetron-derived-trades.mjs';
 import { deltaExecutor } from './execution/delta-executor.mjs';
-import { closeTrackedPosition, runAutomaticPositionExitCycle } from './execution/exit-lifecycle.mjs';
+import { closeTrackedPosition, parseEnrolledPositionIds, runAutomaticPositionExitCycle } from './execution/exit-lifecycle.mjs';
 import { projectCanonicalDeltaBrackets } from './execution/delta-position-projection.mjs';
 import { manageDeltaTestnetMultiGrid } from './execution/delta-multi-grid-engine.mjs';
 import { calculateAutoGridRange, calculateAtrGridRange, hasGridAutoRangeExposure, isAutoGridRangeRefreshDue, isGridAtrSnapshotRefreshRequired, selectLatestCompletedDailyCandle, utcDayKey } from '../shared/grid-auto-range.js';
@@ -52,8 +52,6 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const n = v => Number.isFinite(+v) ? +v : 0;
 const iso = () => new Date().toISOString();
 const today = () => indiaDateKey(new Date());
-// Process-start time is the conservative deployment boundary for legacy exit enrollment.
-const EXIT_LIFECYCLE_DEPLOYMENT_STARTED_AT_MS = Date.now();
 const sideExit = side => side === 'BUY' ? 'sell' : 'buy';
 const clientId = (prefix, symbol) => (prefix + '-' + symbol.slice(0, 12) + '-' + Date.now().toString(36)).slice(0, 32);
 const roundDown = (v, step) => {
@@ -4327,6 +4325,14 @@ export class DeltaEngine {
     }
 
     try {
+      const settingsRows = await db.select('dd_settings', 'id=eq.1&select=exit_lifecycle_deploy_boundary_utc');
+      const boundaryValue = Array.isArray(settingsRows) ? settingsRows[0]?.exit_lifecycle_deploy_boundary_utc : null;
+      const deploymentBoundaryMs = boundaryValue ? Date.parse(boundaryValue) : null;
+      if (deploymentBoundaryMs === null || !Number.isFinite(deploymentBoundaryMs)) {
+        await this.log('WARN', '[ExitLifecycle] Stable DB deployment boundary missing; only explicitly enrolled historical positions may auto-exit', {
+          symbol, reason: requestedReason, executionBlockedForNewPositions: true
+        });
+      }
       return await closeTrackedPosition({
         database: db,
         executor: deltaExecutor,
@@ -4336,8 +4342,8 @@ export class DeltaEngine {
         qty: Math.max(1, Math.floor(qty)),
         side,
         reason: requestedReason,
-        deploymentStartedAtMs: EXIT_LIFECYCLE_DEPLOYMENT_STARTED_AT_MS,
-        autoCloseLegacy: envBoolean('AUTO_CLOSE_LEGACY', false),
+        deploymentBoundaryMs,
+        enrolledPositionIds: parseEnrolledPositionIds(process.env.EXIT_LIFECYCLE_ENROLLED_POSITION_IDS),
         now: () => Date.now(),
         log: (level, message, details) => this.log(level, message, details)
       });
