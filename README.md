@@ -111,3 +111,12 @@ Apply `db/migrations/20261013090000_tradetron_developer_notifications_history.sq
 - Notification descriptions are shown as an audit timeline only. They are never promoted into `dd_positions` or `dd_trades`, and the worker does not infer fills from a status change, run counter, aggregate P&L, or a missing position row. Actual per-trade entry/exit prices, fees, partial fills and realized P&L still require a verified trade-detail endpoint or an authenticated event feed.
 - Tradetron support told this account that outbound webhooks are not available, although the public Integrations page appears to advertise outbound webhooks. This implementation therefore uses documented read-only API polling as the available fallback and does not assume outbound callbacks are configured. If the notifications endpoint returns a different response schema, the panel reports an error for investigation instead of creating synthetic history.
 - Keep the deployment in `Live · Offline`, the scanner in `SIGNAL_ONLY`, and direct Delta production execution disabled. Notification/P&L polling is read-only and does not send orders or change the Tradetron execution mode.
+
+
+## Automatic Engine Futures exit enrollment
+
+The Engine Futures timeout/SL/TP exit supervisor is restricted to canonical Momentum/Scalping positions. Historical positions are eligible only when their canonical `dd_delta_positions.id` is listed in the private worker environment variable `EXIT_LIFECYCLE_ENROLLED_POSITION_IDS` (comma-separated IDs; empty/unset enrolls no historical positions). For the initial SPYXUSD recovery, set `EXIT_LIFECYCLE_ENROLLED_POSITION_IDS=118`; PAXGUSD position #119 is deliberately excluded.
+
+New positions opened at or after `dd_settings.exit_lifecycle_deploy_boundary_utc` are automatically enrolled. Apply `db/migrations/20261112120000_exit_lifecycle_enrollment_boundary.sql` once before deploying the worker. The migration initializes the UTC boundary once and uses `COALESCE` so subsequent migration/restart activity cannot move it. If the setting is missing or invalid, automatic enrollment of new positions fails closed; explicitly listed historical IDs remain eligible.
+
+Never add position IDs to this variable without reviewing the corresponding canonical position. The setting does not enable live execution: the Delta executor remains hard-locked to India Testnet.

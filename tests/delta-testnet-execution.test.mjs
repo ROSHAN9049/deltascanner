@@ -1555,7 +1555,13 @@ test('E-STOP blocks entries but permits closePosition to submit a reduce-only ex
     now: () => 1770000000000
   });
 
-  const order = await executor.closePosition('BTCUSD', 1);
+  const order = await executor.closePosition('BTCUSD', 1, {
+    positionId: 'known-engine-position',
+    closeReason: 'TIMEOUT',
+    expectedSide: 'BUY',
+    expectedProductId: 27,
+    strategy: 'MOMENTUM'
+  });
   assert.equal(order.id, 123);
   const post = runtime.httpCalls.find(call =>
     new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST'
