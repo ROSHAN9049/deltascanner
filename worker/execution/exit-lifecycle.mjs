@@ -1,5 +1,3 @@
-import crypto from 'node:crypto';
-
 const stringOrEmpty = value => String(value ?? '').trim();
 
 function timestampMs(value) {
