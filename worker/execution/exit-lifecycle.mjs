@@ -164,16 +164,35 @@ export async function closeTrackedPosition({
       expectedProductId: Number.isFinite(requestedProductId) ? requestedProductId : null,
       strategy: stringOrEmpty(position.strategy).toUpperCase()
     });
+    const orderState = stringOrEmpty(order?.state).toUpperCase();
+    const confirmedFilledAndFlat = ['FILLED', 'CLOSED'].includes(orderState) &&
+      Number(order?.unfilled_size) === 0 && order?.exchange_position_flat === true;
+    if (confirmedFilledAndFlat) {
+      await database.update(
+        'dd_delta_positions',
+        'id=eq.' + encodeURIComponent(String(canonical.id)),
+        {
+          status: 'CLOSED',
+          close_order_id: order.id ?? null,
+          exit_order_id: order.id ?? null,
+          exit_price: order.average_fill_price ?? order.average_price ?? null,
+          closed_at: updatedAt,
+          updated_at: updatedAt
+        }
+      );
+    }
     await log('INFO', '[ExitLifecycle] Reduce-only Testnet close submitted or already in flight', {
       symbol: normalizedSymbol,
       positionId: String(canonical.id),
       closeReason,
       clientOrderId: order?.client_order_id ?? null,
       orderId: order?.id ?? null,
+      exchangePositionFlat: order?.exchange_position_flat === true,
+      positionClosed: confirmedFilledAndFlat,
       reduceOnly: true,
       environment: 'testnet'
     });
-    return { skipped: false, positionId: String(canonical.id), order };
+    return { skipped: false, positionId: String(canonical.id), order, positionClosed: confirmedFilledAndFlat };
   } catch (error) {
     await log('ERROR', '[ExitLifecycle] Automatic close failed; position remains OPEN and will be reconciled', {
       symbol: normalizedSymbol,
