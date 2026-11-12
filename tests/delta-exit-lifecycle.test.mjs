@@ -8,7 +8,8 @@ import {
   closeTrackedPosition,
   isExitLifecycleEnrolled,
   resolveAutomaticPositionExitReason,
-  runAutomaticPositionExitCycle
+  runAutomaticPositionExitCycle,
+  parseEnrolledPositionIds
 } from '../worker/execution/exit-lifecycle.mjs';
 
 const TESTNET_ENV = {
@@ -27,7 +28,7 @@ function jsonResponse(status, body) {
   };
 }
 
-function createExchangeHarness({ rejectClose = false } = {}) {
+function createExchangeHarness({ rejectClose = false, filledClose = false } = {}) {
   const posts = [];
   const ordersByClientId = new Map();
   let isFlat = false;
@@ -87,8 +88,8 @@ function createExchangeHarness({ rejectClose = false } = {}) {
         order_type: body.order_type,
         reduce_only: body.reduce_only,
         client_order_id: body.client_order_id,
-        state: 'OPEN',
-        unfilled_size: body.size
+        state: filledClose ? 'FILLED' : 'OPEN',
+        unfilled_size: filledClose ? 0 : body.size
       };
       ordersByClientId.set(body.client_order_id, order);
       return jsonResponse(200, { success: true, result: order });
@@ -262,8 +263,8 @@ test('exchange rejection leaves canonical position OPEN and emits an error alert
     qty: 2,
     side: 'BUY',
     reason: 'TIMEOUT',
-    deploymentStartedAtMs: Date.parse('2026-11-12T03:00:00.000Z'),
-    autoCloseLegacy: true,
+    deploymentBoundaryMs: Date.parse('2026-11-12T03:00:00.000Z'),
+    enrolledPositionIds: new Set(['118']),
     now: () => Date.parse('2026-11-12T03:45:00.000Z'),
     log: state.log
   }));
@@ -275,67 +276,48 @@ test('exchange rejection leaves canonical position OPEN and emits an error alert
   assert.equal(harness.posts.length, 1);
 });
 
-test('AUTO_CLOSE_LEGACY gates old positions but future-enrolled positions are managed', () => {
-  const deploymentStartedAtMs = Date.parse('2026-11-12T03:00:00.000Z');
-  assert.equal(isExitLifecycleEnrolled({
-    opened_at: '2026-11-06T00:00:00.000Z'
-  }, { deploymentStartedAtMs, autoCloseLegacy: false }), false);
-  assert.equal(isExitLifecycleEnrolled({
-    opened_at: '2026-11-12T03:01:00.000Z'
-  }, { deploymentStartedAtMs, autoCloseLegacy: false }), true);
-  assert.equal(isExitLifecycleEnrolled({
-    opened_at: '2026-11-06T00:00:00.000Z'
-  }, { deploymentStartedAtMs, autoCloseLegacy: true }), true);
+test('historical enrollment is position-scoped and empty list is fail-safe', () => {
+  const deploymentBoundaryMs = Date.parse('2026-11-12T03:00:00.000Z');
+  const enrolled = parseEnrolledPositionIds('118, 120');
+  assert.equal(isExitLifecycleEnrolled({ id: 118, opened_at: '2026-11-06T00:00:00.000Z' }, { deploymentBoundaryMs, enrolledPositionIds: enrolled }), true);
+  assert.equal(isExitLifecycleEnrolled({ id: 119, opened_at: '2026-11-06T00:00:00.000Z' }, { deploymentBoundaryMs, enrolledPositionIds: enrolled }), false);
+  assert.equal(isExitLifecycleEnrolled({ id: 118, opened_at: '2026-11-06T00:00:00.000Z' }, { deploymentBoundaryMs, enrolledPositionIds: new Set() }), false);
+  assert.equal(isExitLifecycleEnrolled({ id: 121, opened_at: '2026-11-12T03:01:00.000Z' }, { deploymentBoundaryMs, enrolledPositionIds: new Set() }), true);
+  assert.equal(isExitLifecycleEnrolled({ id: 122, opened_at: '2026-11-06T00:00:00.000Z' }, { deploymentBoundaryMs: null, enrolledPositionIds: new Set() }), false);
 });
 
-test('SPYXUSD #118 and PAXGUSD #119 are enrolled and closed independently', async () => {
+test('SPYXUSD #118 is explicitly enrolled while PAXGUSD #119 stays untouched', async () => {
   const state = makeCanonicalDb();
   const calls = [];
-  const executor = {
-    async closePosition(symbol, qty, options) {
-      calls.push({ symbol, qty, options });
-      return { id: 700 + options.positionId, client_order_id: 'stable-' + options.positionId };
-    }
-  };
-  const deploymentStartedAtMs = Date.parse('2026-11-12T03:00:00.000Z');
+  const executor = { async closePosition(symbol, qty, options) {
+    calls.push({ symbol, qty, options });
+    return { id: 700 + Number(options.positionId), client_order_id: 'stable-' + options.positionId };
+  }};
   const common = {
-    database: state.database,
-    executor,
-    deploymentStartedAtMs,
-    autoCloseLegacy: true,
-    now: () => Date.parse('2026-11-12T03:45:00.000Z'),
-    log: state.log
+    database: state.database, executor,
+    deploymentBoundaryMs: Date.parse('2026-11-12T03:00:00.000Z'),
+    enrolledPositionIds: parseEnrolledPositionIds('118'),
+    now: () => Date.parse('2026-11-12T03:45:00.000Z'), log: state.log
   };
-
   const spyx = {
     origin: 'ENGINE', strategy: 'SCALPING', symbol: 'SPYXUSD',
     execution_id: 'spx-entry-118', client_order_id: 'spx-entry-118',
     entry_order_id: 'spx-entry-118', opened_at: '2026-11-06T00:00:00.000Z'
   };
-  await closeTrackedPosition({
-    ...common, position: spyx, symbol: 'SPYXUSD', productId: 123,
-    qty: 2, side: 'BUY', reason: 'TIMEOUT'
-  });
+  await closeTrackedPosition({ ...common, position: spyx, symbol: 'SPYXUSD', productId: 123, qty: 2, side: 'BUY', reason: 'TIMEOUT' });
   assert.equal(state.rows.find(row => row.id === 118).requested_exit_reason, 'TIMEOUT');
-  assert.equal(state.rows.find(row => row.id === 119).requested_exit_reason, undefined);
-  assert.deepEqual(calls.map(call => call.symbol), ['SPYXUSD']);
-
   const paxg = {
     origin: 'ENGINE', strategy: 'SCALPING', symbol: 'PAXGUSD',
     execution_id: 'paxg-entry-119', client_order_id: 'paxg-entry-119',
     entry_order_id: 'paxg-entry-119', opened_at: '2026-11-06T00:00:00.000Z'
   };
-  await closeTrackedPosition({
-    ...common, position: paxg, symbol: 'PAXGUSD', productId: 456,
-    qty: 1, side: 'SELL', reason: 'TIMEOUT'
-  });
-  assert.equal(state.rows.find(row => row.id === 119).requested_exit_reason, 'TIMEOUT');
-  assert.deepEqual(calls.map(call => call.symbol), ['SPYXUSD', 'PAXGUSD']);
+  const skipped = await closeTrackedPosition({ ...common, position: paxg, symbol: 'PAXGUSD', productId: 456, qty: 1, side: 'SELL', reason: 'TIMEOUT' });
+  assert.deepEqual(skipped, { skipped: true, reason: 'LEGACY_POSITION_NOT_ENROLLED' });
+  assert.equal(state.rows.find(row => row.id === 119).requested_exit_reason, undefined);
+  assert.deepEqual(calls.map(call => call.symbol), ['SPYXUSD']);
   assert.equal(calls[0].options.positionId, '118');
-  assert.equal(calls[1].options.positionId, '119');
 });
-
-test('legacy position remains untouched when AUTO_CLOSE_LEGACY is false', async () => {
+test('historical position not in explicit list remains OPEN', async () => {
   const state = makeCanonicalDb();
   let invoked = false;
   const result = await closeTrackedPosition({
@@ -347,11 +329,26 @@ test('legacy position remains untouched when AUTO_CLOSE_LEGACY is false', async 
       entry_order_id: 'spx-entry-118', opened_at: '2026-11-06T00:00:00.000Z'
     },
     symbol: 'SPYXUSD', productId: 123, qty: 2, side: 'BUY', reason: 'TIMEOUT',
-    deploymentStartedAtMs: Date.parse('2026-11-12T03:00:00.000Z'),
-    autoCloseLegacy: false,
-    log: state.log
+    deploymentBoundaryMs: Date.parse('2026-11-12T03:00:00.000Z'),
+    enrolledPositionIds: new Set(), log: state.log
   });
   assert.deepEqual(result, { skipped: true, reason: 'LEGACY_POSITION_NOT_ENROLLED' });
   assert.equal(invoked, false);
   assert.equal(state.rows.find(row => row.id === 118).requested_exit_reason, undefined);
+});
+
+test('filled close order is reused on later timeout retry without duplicate POST', async () => {
+  const harness = createExchangeHarness({ filledClose: true });
+  const options = {
+    positionId: '118', closeReason: 'TIMEOUT',
+    expectedSide: 'BUY', expectedProductId: 123, strategy: 'SCALPING'
+  };
+  const first = await harness.executor.closePosition('SPYXUSD', 2, options);
+  assert.equal(first.state, 'FILLED');
+  assert.equal(first.unfilled_size, 0);
+  const laterRetry = await harness.executor.closePosition('SPYXUSD', 2, options);
+  assert.equal(laterRetry.id, first.id);
+  assert.equal(laterRetry.client_order_id, first.client_order_id);
+  assert.equal(harness.posts.length, 1);
+  assert.ok(harness.logs.some(row => row.message.includes('no duplicate POST sent')));
 });
