@@ -38,7 +38,7 @@ export function buildCloseClientOrderId(positionId, closeReason) {
     throw new Error('Stable position id and close reason are required for an idempotent exit');
   }
   const digest = crypto.createHash('sha256')
-    .update(stablePositionId + '\\u0000' + stableReason, 'utf8')
+    .update(JSON.stringify([stablePositionId, stableReason]), 'utf8')
     .digest('hex')
     .slice(0, 24)
     .toUpperCase();
