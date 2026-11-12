@@ -4326,7 +4326,6 @@ export class DeltaEngine {
 
     try {
       const settingsRows = await db.select('dd_settings', 'id=eq.1&select=exit_lifecycle_deploy_boundary_utc');
-      const boundaryValue = Array.isArray(settingsRows) ? settingsRows[0]?.exit_lifecycle_deploy_boundary_utc : null;
       const deploymentBoundaryMs = resolveExitLifecycleBoundary(settingsRows);
       if (deploymentBoundaryMs === null || !Number.isFinite(deploymentBoundaryMs)) {
         await this.log('WARN', '[ExitLifecycle] Stable DB deployment boundary missing; only explicitly enrolled historical positions may auto-exit', {
