@@ -30,6 +30,7 @@ import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from '
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
 import { buildApiDerivedTrackingPlan, strategyForDerivedTrade } from './tradetron-derived-trades.mjs';
 import { deltaExecutor } from './execution/delta-executor.mjs';
+import { closeTrackedPosition, runAutomaticPositionExitCycle } from './execution/exit-lifecycle.mjs';
 import { projectCanonicalDeltaBrackets } from './execution/delta-position-projection.mjs';
 import { manageDeltaTestnetMultiGrid } from './execution/delta-multi-grid-engine.mjs';
 import { calculateAutoGridRange, calculateAtrGridRange, hasGridAutoRangeExposure, isAutoGridRangeRefreshDue, isGridAtrSnapshotRefreshRequired, selectLatestCompletedDailyCandle, utcDayKey } from '../shared/grid-auto-range.js';
@@ -51,6 +52,8 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const n = v => Number.isFinite(+v) ? +v : 0;
 const iso = () => new Date().toISOString();
 const today = () => indiaDateKey(new Date());
+// Process-start time is the conservative deployment boundary for legacy exit enrollment.
+const EXIT_LIFECYCLE_DEPLOYMENT_STARTED_AT_MS = Date.now();
 const sideExit = side => side === 'BUY' ? 'sell' : 'buy';
 const clientId = (prefix, symbol) => (prefix + '-' + symbol.slice(0, 12) + '-' + Date.now().toString(36)).slice(0, 32);
 const roundDown = (v, step) => {
@@ -4279,25 +4282,70 @@ export class DeltaEngine {
     });
   }
 
-  async closePosition(symbol, productId, qty, side, reason) {
+  async closePosition(symbol, productId, qty, side, reason, position = null) {
     const requestedReason = String(reason || '').trim().toUpperCase();
-    if (requestedReason) {
-      await db.update('dd_delta_positions',
-        'symbol=eq.' + encodeURIComponent(symbol) + '&status=eq.OPEN',
-        { requested_exit_reason: requestedReason, updated_at: iso() });
+    const rows = position ? [position] : await db.select(
+      'dd_positions',
+      'symbol=eq.' + encodeURIComponent(symbol) + '&qty=gt.0&limit=20'
+    );
+    const trackedPosition = (Array.isArray(rows) ? rows : []).find(row =>
+      String(row?.symbol || '').toUpperCase() === String(symbol || '').toUpperCase() &&
+      Number(row?.qty) > 0
+    );
+    if (!trackedPosition) {
+      await this.log('ERROR', 'Automatic close blocked because the Engine-owned position row is unavailable', {
+        symbol, reason: requestedReason || reason, executionBlocked: true
+      });
+      return false;
     }
-    const rows = await db.select('dd_positions', 'symbol=eq.' + encodeURIComponent(symbol) + '&qty=gt.0&limit=1');
-    if (rows && rows[0]) await db.update('dd_positions', 'execution_id=eq.' + encodeURIComponent(rows[0].execution_id), { requested_exit_reason: requestedReason || reason, updated_at: iso() });
-    const cid = clientId('CLS', symbol);
-    if (await this.findExistingClient(cid)) return;
-    await this.adapter.placeOrder({
-      product_id: productId,
-      size: Math.max(1, Math.floor(qty)),
-      side: sideExit(side),
-      order_type: 'market_order',
-      reduce_only: true,
-      client_order_id: cid
-    });
+
+    // Options use a separate lifecycle and will be moved to their dedicated
+    // Options exit supervisor in Milestone 4. Do not route an option contract
+    // through the perpetual-futures close executor.
+    if (String(trackedPosition.strategy || '').toUpperCase() === 'OPTIONS_BUY') {
+      if (requestedReason) {
+        await db.update('dd_delta_positions',
+          'symbol=eq.' + encodeURIComponent(symbol) + '&status=eq.OPEN',
+          { requested_exit_reason: requestedReason, updated_at: iso() });
+      }
+      if (trackedPosition.execution_id) {
+        await db.update('dd_positions',
+          'execution_id=eq.' + encodeURIComponent(trackedPosition.execution_id),
+          { requested_exit_reason: requestedReason || reason, updated_at: iso() });
+      }
+      const cid = clientId('CLS', symbol);
+      if (await this.findExistingClient(cid)) return true;
+      await this.adapter.placeOrder({
+        product_id: productId,
+        size: Math.max(1, Math.floor(qty)),
+        side: sideExit(side),
+        order_type: 'market_order',
+        reduce_only: true,
+        client_order_id: cid
+      });
+      return true;
+    }
+
+    try {
+      return await closeTrackedPosition({
+        database: db,
+        executor: deltaExecutor,
+        position: trackedPosition,
+        symbol,
+        productId,
+        qty: Math.max(1, Math.floor(qty)),
+        side,
+        reason: requestedReason,
+        deploymentStartedAtMs: EXIT_LIFECYCLE_DEPLOYMENT_STARTED_AT_MS,
+        autoCloseLegacy: envBoolean('AUTO_CLOSE_LEGACY', false),
+        now: () => Date.now(),
+        log: (level, message, details) => this.log(level, message, details)
+      });
+    } catch (error) {
+      // closeTrackedPosition writes a durable marker before the exchange call
+      // and logs the failure. Leave the row OPEN; reconciliation retries it.
+      return { accepted: false, error: String(error?.message || error) };
+    }
   }
 
   async ensurePositionProtection(row, exchangePosition, openOrders = []) {
@@ -4571,9 +4619,14 @@ export class DeltaEngine {
         stop = rounded;
       }
     }
-    if (Date.now() - new Date(row.opened_at).getTime() > n(setting.max_hold_minutes || 240) * 60000) {
-      await this.closePosition(row.symbol, row.product_id, qty, row.side, 'TIMEOUT');
-    }
+    // A persisted TIMEOUT marker is retried on every reconciliation cycle,
+    // including after a previous exchange timeout or rejected close request.
+    await runAutomaticPositionExitCycle({
+      position: row,
+      nowMs: Date.now(),
+      maxHoldMinutes: n(setting.max_hold_minutes || 240),
+      onExit: reason => this.closePosition(row.symbol, row.product_id, qty, row.side, reason, row)
+    });
     await db.update('dd_positions', 'execution_id=eq.' + encodeURIComponent(row.execution_id), {
       qty, current_price: mark, stop_price: stop, updated_at: iso()
     });
