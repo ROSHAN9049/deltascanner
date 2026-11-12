@@ -36,7 +36,7 @@ function createExchangeHarness({ rejectClose = false } = {}) {
     const method = String(init.method || 'GET').toUpperCase();
     const path = parsed.pathname;
 
-    if (method === 'GET' && path === '/v2/orders/client_order_id/' + decodeURIComponent(path.split('/').pop())) {
+    if (method === 'GET' && path.startsWith('/v2/orders/client_order_id/')) {
       const clientId = decodeURIComponent(path.split('/').pop());
       const found = ordersByClientId.get(clientId);
       return found
