@@ -4589,7 +4589,6 @@ export class DeltaEngine {
       });
     }
     const mark = n(exchangePosition.mark_price || this.tickerMap.get(row.symbol)?.mark_price || row.current_price);
-    const qty = Math.abs(n(exchangePosition.size));
     const originalRisk = Math.abs(n(row.entry_price) - n(row.stop_price));
     const fee = n(this.productMap.get(row.symbol)?.taker_commission_rate);
     if (qty <= 0) return;
