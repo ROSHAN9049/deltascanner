@@ -21,7 +21,7 @@ export function resolveExitLifecycleBoundary(settingsRows) {
 }
 
 export function parseEnrolledPositionIds(value = '') {
-  return new Set(String(value ?? '').split(',').map(item => item.trim()).filter(item => /^\\d+$/.test(item)));
+  return new Set(String(value ?? '').split(',').map(item => item.trim()).filter(item => /^\d+$/.test(item)));
 }
 
 export function isExitLifecycleEnrolled(
