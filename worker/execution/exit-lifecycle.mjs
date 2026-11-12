@@ -13,6 +13,13 @@ function timestampMs(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+export function resolveExitLifecycleBoundary(settingsRows) {
+  if (!Array.isArray(settingsRows)) return null;
+  const value = settingsRows[0]?.exit_lifecycle_deploy_boundary_utc;
+  const parsed = timestampMs(value);
+  return parsed === null ? null : parsed;
+}
+
 export function parseEnrolledPositionIds(value = '') {
   return new Set(String(value ?? '').split(',').map(item => item.trim()).filter(item => /^\\d+$/.test(item)));
 }
