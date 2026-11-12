@@ -1308,12 +1308,17 @@ export function createDeltaExecutor({
           });
           throw new Error('Existing idempotent close order is terminal (' + existingState + '); position remains OPEN');
         }
+        let exchangePositionFlat = false;
+        if (['FILLED', 'CLOSED'].includes(existingState) && numberOrNull(existingOrder?.unfilled_size) === 0) {
+          const latest = await getOpenPositions();
+          exchangePositionFlat = !latest.some(row => row.symbol === normalizedSymbol && row.qty > 0);
+        }
         await logExecutor('INFO', '[Executor] Reusing existing idempotent close order; no duplicate POST sent', {
           environment: 'testnet', symbol: normalizedSymbol, positionId,
           closeReason, clientOrderId, orderId: existingOrder.id ?? null,
-          state: existingState || 'UNKNOWN'
+          state: existingState || 'UNKNOWN', exchangePositionFlat
         });
-        return existingOrder;
+        return { ...existingOrder, exchange_position_flat: exchangePositionFlat };
       }
 
       // The exchange lookup was a definite 404. A durable reservation means a
@@ -1405,6 +1410,7 @@ export function createDeltaExecutor({
           if (confirmedFlat) break;
           if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
         }
+        order.exchange_position_flat = confirmedFlat;
         if (confirmedFlat) {
           const openOrders = await getOpenOrders();
           const protections = openOrders.filter(row =>
