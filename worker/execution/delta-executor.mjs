@@ -1312,6 +1312,20 @@ export function createDeltaExecutor({
         if (['FILLED', 'CLOSED'].includes(existingState) && numberOrNull(existingOrder?.unfilled_size) === 0) {
           const latest = await getOpenPositions();
           exchangePositionFlat = !latest.some(row => row.symbol === normalizedSymbol && row.qty > 0);
+          if (exchangePositionFlat) {
+            const openOrders = await getOpenOrders();
+            const protections = openOrders.filter(row =>
+              (stringOrEmpty(row?.product_symbol || row?.symbol).toUpperCase() === normalizedSymbol) &&
+              (row?.reduce_only === true || Boolean(row?.stop_order_type) || row?.bracket_order === true)
+            );
+            for (const protection of protections) {
+              const protectionId = numberOrNull(protection?.id);
+              if (protectionId !== null) await cancelOrderById(protectionId);
+              else await logExecutor('ERROR', '[Executor] Flat position has a protective order without an exchange id', {
+                environment: 'testnet', symbol: normalizedSymbol, positionId, closeReason, clientOrderId
+              });
+            }
+          }
         }
         await logExecutor('INFO', '[Executor] Reusing existing idempotent close order; no duplicate POST sent', {
           environment: 'testnet', symbol: normalizedSymbol, positionId,
