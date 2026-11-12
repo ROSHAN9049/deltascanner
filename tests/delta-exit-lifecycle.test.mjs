@@ -93,6 +93,7 @@ function createExchangeHarness({ rejectClose = false, filledClose = false } = {}
         unfilled_size: filledClose ? 0 : body.size
       };
       ordersByClientId.set(body.client_order_id, order);
+      if (filledClose) isFlat = true;
       return jsonResponse(200, { success: true, result: order });
     }
 
@@ -366,4 +367,27 @@ test('position opened before DB boundary requires explicit canonical ID enrollme
   const boundary = resolveExitLifecycleBoundary([{ exit_lifecycle_deploy_boundary_utc: '2026-11-12T06:11:00.000Z' }]);
   assert.equal(isExitLifecycleEnrolled({ id: 118, opened_at: '2026-11-12T06:10:59.000Z' }, { deploymentBoundaryMs: boundary, enrolledPositionIds: new Set() }), false);
   assert.equal(isExitLifecycleEnrolled({ id: 118, opened_at: '2026-11-12T06:10:59.000Z' }, { deploymentBoundaryMs: boundary, enrolledPositionIds: new Set(['118']) }), true);
+});
+
+test('filled close with exchange-flat confirmation marks canonical position CLOSED with original order reference', async () => {
+  const state = makeCanonicalDb();
+  const order = { id: 501, state: 'FILLED', unfilled_size: 0, client_order_id: buildCloseClientOrderId('118', 'TIMEOUT'), exchange_position_flat: true, average_fill_price: '101.25' };
+  const result = await closeTrackedPosition({
+    database: state.database,
+    executor: { closePosition: async () => order },
+    position: {
+      origin: 'ENGINE', strategy: 'SCALPING', symbol: 'SPYXUSD',
+      execution_id: 'spx-entry-118', client_order_id: 'spx-entry-118',
+      entry_order_id: 'spx-entry-118', opened_at: '2026-11-06T00:00:00.000Z'
+    },
+    symbol: 'SPYXUSD', productId: 123, qty: 2, side: 'BUY', reason: 'TIMEOUT',
+    deploymentBoundaryMs: Date.parse('2026-11-12T03:00:00.000Z'),
+    enrolledPositionIds: new Set(['118']), log: state.log
+  });
+  const closed = state.rows.find(row => row.id === 118);
+  assert.equal(result.positionClosed, true);
+  assert.equal(closed.status, 'CLOSED');
+  assert.equal(closed.close_order_id, 501);
+  assert.equal(closed.exit_order_id, 501);
+  assert.equal(closed.exit_price, '101.25');
 });
