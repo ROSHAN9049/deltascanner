@@ -31,6 +31,21 @@ export function deltaHmacSha256(secret, message) {
   return crypto.createHmac('sha256', secret).update(message, 'utf8').digest('hex');
 }
 
+export function buildCloseClientOrderId(positionId, closeReason) {
+  const stablePositionId = stringOrEmpty(positionId);
+  const stableReason = stringOrEmpty(closeReason).toUpperCase();
+  if (!stablePositionId || !stableReason) {
+    throw new Error('Stable position id and close reason are required for an idempotent exit');
+  }
+  const digest = crypto.createHash('sha256')
+    .update(stablePositionId + '\\u0000' + stableReason, 'utf8')
+    .digest('hex')
+    .slice(0, 24)
+    .toUpperCase();
+  // Delta client_order_id is limited to 32 characters.
+  return 'DDX-C-' + digest;
+}
+
 export function assertDeltaTestnetConfiguration(env = process.env) {
   const mode = stringOrEmpty(env.DELTA_EXECUTION_MODE || 'disabled').toLowerCase();
   if (mode !== 'testnet') {
@@ -1245,37 +1260,168 @@ export function createDeltaExecutor({
     });
   }
 
-  async function closePosition(symbol, qty) {
+  async function closePosition(symbol, qty, options = {}) {
     return withSymbolLock(symbol, async () => {
       const normalizedSymbol = stringOrEmpty(symbol).toUpperCase();
       const quantity = numberOrNull(qty);
-      if (!Number.isSafeInteger(quantity) || quantity <= 0) throw new Error('qty must be a positive whole number of contracts');
+      const positionId = stringOrEmpty(options?.positionId);
+      const closeReason = stringOrEmpty(options?.closeReason).toUpperCase();
+      const expectedSide = stringOrEmpty(options?.expectedSide).toUpperCase();
+      const expectedProductId = numberOrNull(options?.expectedProductId);
+      const strategy = strategyValue(options?.strategy);
+      if (!Number.isSafeInteger(quantity) || quantity <= 0) {
+        throw new Error('qty must be a positive whole number of contracts');
+      }
+      if (!positionId || !['TIMEOUT', 'STOP_LOSS', 'TAKE_PROFIT'].includes(closeReason)) {
+        throw new Error('Automatic close requires a stable position id and supported close reason');
+      }
+      if (!['BUY', 'SELL'].includes(expectedSide)) {
+        throw new Error('Automatic close requires the canonical position side');
+      }
+
+      // EXIT is exposure-reducing and remains available during E-STOP, but
+      // assertSafety still hard-locks this route to the Delta India Testnet host.
       await assertSafety(normalizedSymbol, 'EXIT');
+      const clientOrderId = buildCloseClientOrderId(positionId, closeReason);
+
+      // First resolve any earlier submission by its stable exchange identity.
+      // Never POST a second close when the first request may have been accepted.
+      let existingOrder = null;
+      try {
+        existingOrder = await getOrderByClientOrderId(clientOrderId);
+      } catch (error) {
+        if (Number(error?.status) !== 404) {
+          await logExecutor('ERROR', '[Executor] Close-order idempotency lookup failed; duplicate submission blocked', {
+            environment: 'testnet', symbol: normalizedSymbol, positionId,
+            closeReason, clientOrderId, error: String(error?.message || error).slice(0, 220)
+          });
+          throw error;
+        }
+      }
+      if (existingOrder) {
+        const existingState = stringOrEmpty(existingOrder.state).toUpperCase();
+        if (['REJECTED', 'FAILED', 'CANCELLED', 'CANCELED', 'EXPIRED'].includes(existingState)) {
+          await logExecutor('ERROR', '[Executor] Prior close order is terminal without a confirmed flat position', {
+            environment: 'testnet', symbol: normalizedSymbol, positionId,
+            closeReason, clientOrderId, state: existingState,
+            positionStatus: 'OPEN', duplicateSubmissionBlocked: true
+          });
+          throw new Error('Existing idempotent close order is terminal (' + existingState + '); position remains OPEN');
+        }
+        await logExecutor('INFO', '[Executor] Reusing existing idempotent close order; no duplicate POST sent', {
+          environment: 'testnet', symbol: normalizedSymbol, positionId,
+          closeReason, clientOrderId, orderId: existingOrder.id ?? null,
+          state: existingState || 'UNKNOWN'
+        });
+        return existingOrder;
+      }
+
+      // The exchange lookup was a definite 404. A durable reservation means a
+      // previous worker may have timed out before learning the exchange result;
+      // do not blindly submit again if that state cannot be reconciled.
+      const priorReservations = await database.select(
+        'dd_orders',
+        'client_order_id=eq.' + encodeURIComponent(clientOrderId) +
+          '&select=client_order_id,state,raw&limit=1'
+      );
+      if (!Array.isArray(priorReservations)) {
+        throw new Error('Close-order reservation lookup is incomplete; duplicate submission blocked');
+      }
+      if (priorReservations.length) {
+        const reservation = priorReservations[0];
+        const state = stringOrEmpty(reservation?.state).toUpperCase() || 'UNKNOWN';
+        await logExecutor('ERROR', '[Executor] Existing close reservation has no exchange acknowledgement; duplicate POST blocked', {
+          environment: 'testnet', symbol: normalizedSymbol, positionId,
+          closeReason, clientOrderId, reservationState: state,
+          positionStatus: 'OPEN'
+        });
+        throw new Error('Existing close reservation is ' + state + ' but exchange lookup returned 404; refusing duplicate close');
+      }
+
       const positions = await getOpenPositions();
       const position = positions.find(row => row.symbol === normalizedSymbol);
-      if (!position) throw new Error('No open Delta Testnet position exists for ' + normalizedSymbol);
+      if (!position) {
+        await logExecutor('INFO', '[Executor] Position is already flat; no close order required', {
+          environment: 'testnet', symbol: normalizedSymbol, positionId,
+          closeReason, clientOrderId
+        });
+        return { state: 'ALREADY_FLAT', client_order_id: clientOrderId };
+      }
+      if (position.side !== expectedSide) {
+        throw new Error('Exchange/local position side mismatch; reduce-only close blocked');
+      }
+      if (expectedProductId !== null && position.product_id !== expectedProductId) {
+        throw new Error('Exchange/local product ID mismatch; reduce-only close blocked');
+      }
       if (quantity > position.qty) throw new Error('Close quantity exceeds the open position quantity');
       if (quantity !== position.qty) {
-        throw new Error('Partial close is disabled in this phase to avoid cancelling protection for a remaining position');
+        throw new Error('Partial close is disabled in this phase; full position quantity is required');
       }
+
       const product = await resolveProduct(normalizedSymbol, { entryOnly: false });
-      const orders = await getOpenOrders();
-      const matchingOrders = orders.filter(row =>
-        stringOrEmpty(row?.product_symbol || row?.symbol).toUpperCase() === normalizedSymbol
-      );
-      for (const order of matchingOrders) {
-        const id = numberOrNull(order?.id);
-        if (id === null) throw new Error('Cannot safely cancel an open order without its exchange order id');
-        await request('DELETE', '/v2/orders', {}, { id });
+      if (position.product_id !== null && position.product_id !== product.id) {
+        throw new Error('Exchange position product does not match the live Delta Testnet product');
       }
-      return submitOrder(product, {
+
+      // Do not remove SL/TP protection before the market close is accepted.
+      // If Delta rejects the close, the position and its existing protection stay intact.
+      const order = await submitOrder(product, {
         product_id: product.id,
         size: quantity,
         side: position.side === 'BUY' ? 'sell' : 'buy',
         order_type: 'market_order',
         reduce_only: true,
-        client_order_id: buildClientOrderId(null, 'DDX-X', normalizedSymbol)
-      }, { strategy: 'MOMENTUM', role: 'EXIT', reserve: false });
+        client_order_id: clientOrderId
+      }, { strategy, role: 'EXIT', reserve: true });
+
+      const acceptedState = stringOrEmpty(order?.state).toUpperCase();
+      if (['REJECTED', 'FAILED', 'CANCELLED', 'CANCELED', 'EXPIRED'].includes(acceptedState)) {
+        await logExecutor('ERROR', '[Executor] Delta acknowledged a terminally rejected close; position remains OPEN', {
+          environment: 'testnet', symbol: normalizedSymbol, positionId,
+          closeReason, clientOrderId, orderId: order?.id ?? null,
+          state: acceptedState, positionStatus: 'OPEN'
+        });
+        throw new Error('Delta Testnet close order was not accepted (' + acceptedState + ')');
+      }
+
+      // Cancel protective reduce-only orders only after REST confirms the
+      // position is flat. If the snapshot is delayed or the close is partial,
+      // leave protection untouched for the next reconciliation cycle.
+      if (['FILLED', 'CLOSED'].includes(acceptedState) && numberOrNull(order?.unfilled_size) === 0) {
+        let confirmedFlat = false;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const latest = await getOpenPositions();
+          confirmedFlat = !latest.some(row => row.symbol === normalizedSymbol && row.qty > 0);
+          if (confirmedFlat) break;
+          if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+        }
+        if (confirmedFlat) {
+          const openOrders = await getOpenOrders();
+          const protections = openOrders.filter(row =>
+            (numberOrNull(row?.product_id) === product.id ||
+              stringOrEmpty(row?.product_symbol || row?.symbol).toUpperCase() === normalizedSymbol) &&
+            (row?.reduce_only === true || Boolean(row?.stop_order_type) || row?.bracket_order === true)
+          );
+          for (const protection of protections) {
+            const orderId = numberOrNull(protection?.id);
+            if (orderId === null) {
+              await logExecutor('ERROR', '[Executor] Flat position has a protective order without an exchange id', {
+                environment: 'testnet', symbol: normalizedSymbol, positionId,
+                closeReason, clientOrderId
+              });
+              continue;
+            }
+            await cancelOrderById(orderId);
+          }
+        } else {
+          await logExecutor('WARN', '[Executor] Close order is filled but position snapshot is not yet flat; protection retained', {
+            environment: 'testnet', symbol: normalizedSymbol, positionId,
+            closeReason, clientOrderId, orderId: order?.id ?? null
+          });
+        }
+      }
+
+      return order;
     });
   }
 
