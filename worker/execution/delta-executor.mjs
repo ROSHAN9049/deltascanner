@@ -1330,12 +1330,22 @@ export function createDeltaExecutor({
       if (priorReservations.length) {
         const reservation = priorReservations[0];
         const state = stringOrEmpty(reservation?.state).toUpperCase() || 'UNKNOWN';
-        await logExecutor('ERROR', '[Executor] Existing close reservation has no exchange acknowledgement; duplicate POST blocked', {
+        const outcome = stringOrEmpty(reservation?.raw?.outcome).toLowerCase();
+        // A definite 4xx rejection means Delta did not accept an order. It is
+        // safe to retry with the same deterministic client ID; ambiguous
+        // PENDING/UNKNOWN outcomes remain blocked to prevent duplicate exposure.
+        if (!(state === 'FAILED' && outcome === 'rejected')) {
+          await logExecutor('ERROR', '[Executor] Existing close reservation has no exchange acknowledgement; duplicate POST blocked', {
+            environment: 'testnet', symbol: normalizedSymbol, positionId,
+            closeReason, clientOrderId, reservationState: state,
+            positionStatus: 'OPEN'
+          });
+          throw new Error('Existing close reservation is ' + state + ' but exchange lookup returned 404; refusing duplicate close');
+        }
+        await logExecutor('WARN', '[Executor] Retrying a definitively rejected close with the same stable client_order_id', {
           environment: 'testnet', symbol: normalizedSymbol, positionId,
-          closeReason, clientOrderId, reservationState: state,
-          positionStatus: 'OPEN'
+          closeReason, clientOrderId, reservationState: state
         });
-        throw new Error('Existing close reservation is ' + state + ' but exchange lookup returned 404; refusing duplicate close');
       }
 
       const positions = await getOpenPositions();
