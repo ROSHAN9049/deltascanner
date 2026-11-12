@@ -9,7 +9,8 @@ import {
   isExitLifecycleEnrolled,
   resolveAutomaticPositionExitReason,
   runAutomaticPositionExitCycle,
-  parseEnrolledPositionIds
+  parseEnrolledPositionIds,
+  resolveExitLifecycleBoundary
 } from '../worker/execution/exit-lifecycle.mjs';
 
 const TESTNET_ENV = {
@@ -351,4 +352,18 @@ test('filled close order is reused on later timeout retry without duplicate POST
   assert.equal(laterRetry.client_order_id, first.client_order_id);
   assert.equal(harness.posts.length, 1);
   assert.ok(harness.logs.some(row => row.message.includes('no duplicate POST sent')));
+});
+
+test('worker restart reads the same persisted deployment enrollment boundary', () => {
+  const settingsRow = [{ exit_lifecycle_deploy_boundary_utc: '2026-11-12T06:11:00.000Z' }];
+  const firstWorkerBoundary = resolveExitLifecycleBoundary(settingsRow);
+  const restartedWorkerBoundary = resolveExitLifecycleBoundary(settingsRow);
+  assert.equal(firstWorkerBoundary, Date.parse('2026-11-12T06:11:00.000Z'));
+  assert.equal(restartedWorkerBoundary, firstWorkerBoundary);
+});
+
+test('position opened before DB boundary requires explicit canonical ID enrollment', () => {
+  const boundary = resolveExitLifecycleBoundary([{ exit_lifecycle_deploy_boundary_utc: '2026-11-12T06:11:00.000Z' }]);
+  assert.equal(isExitLifecycleEnrolled({ id: 118, opened_at: '2026-11-12T06:10:59.000Z' }, { deploymentBoundaryMs: boundary, enrolledPositionIds: new Set() }), false);
+  assert.equal(isExitLifecycleEnrolled({ id: 118, opened_at: '2026-11-12T06:10:59.000Z' }, { deploymentBoundaryMs: boundary, enrolledPositionIds: new Set(['118']) }), true);
 });
