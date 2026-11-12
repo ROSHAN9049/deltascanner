@@ -13,13 +13,21 @@ function timestampMs(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+export function parseEnrolledPositionIds(value = '') {
+  return new Set(String(value ?? '').split(',').map(item => item.trim()).filter(item => /^\\d+$/.test(item)));
+}
+
 export function isExitLifecycleEnrolled(
   position,
-  { deploymentStartedAtMs = Date.now(), autoCloseLegacy = false } = {}
+  { deploymentBoundaryMs = null, enrolledPositionIds = new Set() } = {}
 ) {
   const openedAt = timestampMs(position?.opened_at ?? position?.created_at);
-  const isLegacyOrUnknown = openedAt === null || openedAt < deploymentStartedAtMs;
-  return !isLegacyOrUnknown || autoCloseLegacy === true;
+  const canonicalId = String(position?.id ?? position?.delta_position_id ?? position?.canonical_position_id ?? '').trim();
+  if (openedAt === null) return enrolledPositionIds.has(canonicalId);
+  if (deploymentBoundaryMs === null || !Number.isFinite(Number(deploymentBoundaryMs))) {
+    return enrolledPositionIds.has(canonicalId);
+  }
+  return openedAt >= Number(deploymentBoundaryMs) || enrolledPositionIds.has(canonicalId);
 }
 
 export function resolveAutomaticPositionExitReason(
@@ -57,8 +65,8 @@ export async function closeTrackedPosition({
   qty,
   side,
   reason,
-  deploymentStartedAtMs = Date.now(),
-  autoCloseLegacy = false,
+  deploymentBoundaryMs = null,
+  enrolledPositionIds = new Set(),
   now = () => Date.now(),
   log = async () => {}
 } = {}) {
@@ -86,16 +94,6 @@ export async function closeTrackedPosition({
   if (position?.origin !== 'ENGINE' || !['MOMENTUM', 'SCALPING'].includes(stringOrEmpty(position?.strategy).toUpperCase())) {
     throw new Error('Automatic Futures exit is restricted to enrolled Engine Momentum/Scalping positions');
   }
-  if (!isExitLifecycleEnrolled(position, { deploymentStartedAtMs, autoCloseLegacy })) {
-    await log('WARN', '[ExitLifecycle] Legacy position is not enrolled; automatic close remains disabled', {
-      symbol: normalizedSymbol,
-      executionId: executionId || null,
-      openedAt: position?.opened_at ?? null,
-      autoCloseLegacy: false,
-      executionBlocked: true
-    });
-    return { skipped: true, reason: 'LEGACY_POSITION_NOT_ENROLLED' };
-  }
   if (!positionAliases.size) throw new Error('Position has no stable execution identity; automatic close blocked');
 
   const rows = await database.select(
@@ -115,6 +113,15 @@ export async function closeTrackedPosition({
   }
 
   const canonical = matches[0];
+  const enrollmentPosition = { ...position, id: canonical.id };
+  if (!isExitLifecycleEnrolled(enrollmentPosition, { deploymentBoundaryMs, enrolledPositionIds })) {
+    await log('WARN', '[ExitLifecycle] Historical position is not explicitly enrolled; automatic close remains disabled', {
+      symbol: normalizedSymbol, positionId: String(canonical.id),
+      openedAt: position?.opened_at ?? position?.created_at ?? null,
+      executionBlocked: true
+    });
+    return { skipped: true, reason: 'LEGACY_POSITION_NOT_ENROLLED' };
+  }
   const canonicalSide = stringOrEmpty(canonical.side).toUpperCase();
   const requestedSide = stringOrEmpty(side).toUpperCase();
   if (canonicalSide && requestedSide && canonicalSide !== requestedSide) {
