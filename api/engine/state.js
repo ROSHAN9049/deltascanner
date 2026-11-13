@@ -146,6 +146,9 @@ export default async function handler(req, res) {
       environment: CONFIG.environment,
       executionCoverage: {
         directDeltaExecutionEnabled: false,
+        // Expose only the API service's explicit Delta Testnet route profile; this is status, not an execution override.
+        optionsRouteConfigured: CONFIG.environment === 'TESTNET' &&
+          CONFIG.deltaExecutionMode === 'testnet' && CONFIG.directDeltaExecutionEnabled === true,
         deltaExecutionMode,
         gridExecutionAllowed: CONFIG.gridExecutionAllowed === true,
         gridTrailingEnvironmentEnabled: CONFIG.gridTrailingEnabled === true,
