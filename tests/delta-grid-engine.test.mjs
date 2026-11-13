@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sizeDeltaGridEntry, assessDeltaGridEntryFill, hasVerifiedGridBracket, cancelAndVerifyGridOrder, cancelUnverifiedGridEntry, calculateTrailingGridRange, getTrailingGridBreakoutDirection, pruneTrailingGridShiftTimestamps, executeTrailingGridShift, retryGridPnlRead, manageDeltaTestnetGrid } from '../worker/execution/delta-grid-engine.mjs';
 import { applyGlobalGridProtectionHalt, manageDeltaTestnetMultiGrid } from '../worker/execution/delta-multi-grid-engine.mjs';
+import { buildGridLevels } from '../worker/grid-strategy.mjs';
 
 const candidate = {
   levelIndex: 6,
@@ -42,6 +43,63 @@ test('Testnet Grid normalizes a prior-rung stop to the 1.50% floor so symmetric 
   assert.equal(result.ok, true);
   assert.equal(result.stopPrice, 98.5);
   assert.ok(result.rewardRiskRatio >= 1);
+});
+
+test('Testnet Grid chooses the nearest multi-rung TP that clears 1:1 after the hard stop floor and costs for PAXG and NVDAX', () => {
+  const fixtures = [
+    {
+      symbol: 'PAXGUSD', lower: 3813.50072376, upper: 4007.34000948,
+      atr: 77.53571428571425, levelIndex: 4, expectedTargetIndex: 8
+    },
+    {
+      symbol: 'NVDAXUSD', lower: 150.007940647, upper: 178.281154933,
+      atr: 11.309285714285718, levelIndex: 4, expectedTargetIndex: 6
+    },
+    {
+      symbol: 'NVDAXUSD', lower: 150.007940647, upper: 178.281154933,
+      atr: 11.309285714285718, levelIndex: 5, expectedTargetIndex: 7
+    }
+  ];
+  const liveProduct = { contract_value: 0.01, tick_size: 0.01, taker_commission_rate: 0.0005 };
+
+  for (const fixture of fixtures) {
+    const levels = buildGridLevels(fixture.lower, fixture.upper, 10);
+    const entryPrice = levels[fixture.levelIndex].price;
+    const stopPrice = fixture.levelIndex > 0
+      ? levels[fixture.levelIndex - 1].price - fixture.atr * 0.1
+      : fixture.lower * 0.988;
+    const targetCandidates = levels.slice(fixture.levelIndex + 1).map(level => level.price);
+    const provisionalTarget = targetCandidates.find(target => target - entryPrice >= entryPrice - stopPrice);
+    const result = sizeDeltaGridEntry({
+      candidate: {
+        levelIndex: fixture.levelIndex,
+        entryPrice,
+        stopPrice,
+        targetPrice: provisionalTarget,
+        targetCandidates,
+        atrBufferedStop: true,
+        qty: 1000
+      },
+      settings: { grid_risk_per_trade_pct: 0.3, grid_daily_loss_pct: 2, grid_max_positions: 1, max_leverage: 3 },
+      account: { equity: 10000, available: 10000 },
+      product: liveProduct,
+      riskEquity: 10000,
+      remainingDailyRisk: 200
+    });
+
+    assert.equal(result.ok, true, fixture.symbol + ' entry sizing');
+    assert.equal(result.targetPrice, levels[fixture.expectedTargetIndex]);
+    assert.ok(result.stopDistancePct >= 1.5);
+    assert.ok(result.rewardRiskRatio >= 1);
+    assert.ok(result.rewardPerContract >= result.riskPerContract);
+
+    const earlierTargets = targetCandidates.filter(target => target < result.targetPrice);
+    const costs = entryPrice * liveProduct.contract_value * 2 * (liveProduct.taker_commission_rate + 0.0002);
+    for (const earlierTarget of earlierTargets) {
+      const earlierReward = (earlierTarget - entryPrice) * liveProduct.contract_value - costs;
+      assert.ok(earlierReward < result.riskPerContract, fixture.symbol + ' selected a farther target only when needed');
+    }
+  }
 });
 
 test('Testnet Grid caps each entry at 25% of available margin', () => {
