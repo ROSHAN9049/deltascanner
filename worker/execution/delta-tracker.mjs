@@ -272,7 +272,7 @@ export class DeltaTestnetTracker {
 
     if (typeof this.database.log !== 'function') return;
     await this.database.log(
-      'INFO',
+      orderNotFound ? 'INFO' : 'DEBUG',
       orderNotFound
         ? '[Tracker] Historical entry order not found; fill identity remains UNRESOLVED'
         : '[Tracker] Historical entry fill identity remains UNRESOLVED; client-order lookup skipped after 3 days',
