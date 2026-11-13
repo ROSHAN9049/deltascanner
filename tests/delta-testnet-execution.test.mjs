@@ -454,7 +454,7 @@ test('close-fill lookup resolves a missing entry order ID through the Delta clie
 });
 
 
-test('historical close-fill backfill skips client-order lookup after three days and records unresolved identity at INFO', async () => {
+test('historical close-fill backfill skips client-order lookup after three days and records unresolved identity at DEBUG', async () => {
   const clockMs = Date.parse('2026-11-06T00:00:00.000Z');
   const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
   const openedAt = new Date(clockMs - threeDaysMs - 1000).toISOString();
@@ -487,7 +487,7 @@ test('historical close-fill backfill skips client-order lookup after three days 
     row.data?.fillResolution === 'UNRESOLVED'
   );
   assert.equal(unresolvedLogs.length, 1, 'repeated reconciliation must not repeat the same INFO record');
-  assert.equal(unresolvedLogs[0].level, 'INFO');
+  assert.equal(unresolvedLogs[0].level, 'DEBUG');
   assert.equal(unresolvedLogs[0].data.clientOrderLookupSkipped, true);
   assert.ok(!runtime.logs.some(row =>
     row.level === 'WARN' && /Entry fill identity was not found|Entry order lookup by client ID failed/.test(row.message)
@@ -1192,7 +1192,7 @@ test('tracker backfill skips entry client-order lookup after three days and logs
     row.data?.fillResolution === 'UNRESOLVED'
   );
   assert.equal(unresolved.length, 1);
-  assert.equal(unresolved[0].level, 'INFO');
+  assert.equal(unresolved[0].level, 'DEBUG');
   assert.equal(unresolved[0].data.clientOrderLookupSkipped, true);
   assert.equal(logs.some(row => row.level === 'WARN'), false);
 });
