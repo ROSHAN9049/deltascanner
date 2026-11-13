@@ -176,6 +176,7 @@ export function createDeltaExecutor({
 
     if (level === 'ERROR') console.error(line);
     else if (level === 'WARN') console.warn(line);
+    else if (level === 'DEBUG') console.debug(line);
     else console.info(line);
 
     try {
@@ -213,7 +214,7 @@ export function createDeltaExecutor({
 
     const lookupAgeMs = openedMs === null ? null : Math.max(0, now() - openedMs);
     await logExecutor(
-      'INFO',
+      orderNotFound ? 'INFO' : 'DEBUG',
       orderNotFound
         ? '[Executor] Historical entry order not found; fill identity remains UNRESOLVED'
         : '[Executor] Historical entry fill identity remains UNRESOLVED; client-order lookup skipped after 3 days',
