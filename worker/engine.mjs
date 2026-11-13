@@ -2512,6 +2512,11 @@ export class DeltaEngine {
     // must first match a LIVE product from the Testnet catalogue so a public
     // production product_id can never leak into a future Testnet order.
     const testnetMode = CONFIG.deltaExecutionMode === 'testnet';
+    const allowTestnetShortIvHistory = testnetMode &&
+      String(process.env.OPTIONS_TESTNET_SHORT_IV_HISTORY_ENABLED || '').trim().toLowerCase() === 'true';
+    const ivHistoryPolicy = allowTestnetShortIvHistory
+      ? { testnetExecution: true, minimumHistoryDays: 1 }
+      : { testnetExecution: testnetMode, minimumHistoryDays: 7 };
     const underlyings = [...OPTION_UNDERLYINGS];
     const now = Date.now();
     let productCatalogueError = null;
@@ -2627,9 +2632,10 @@ export class DeltaEngine {
           maxMoneynessPct: 20
         });
 
-        // Build our own rolling IV Rank from timestamped Delta ticker/Greeks IV
-        // observations. Missing history, an unavailable DB, or <7 days of data
-        // deliberately leaves iv_rank NULL so the candidate is blocked.
+        // Build IV Rank only from persisted timestamped observations. Production
+        // always requires seven days. A one-day provisional window is available
+        // solely behind an explicit Testnet-only environment flag; it is labelled
+        // separately in the candidate details and never changes production rules.
         const ivObservations = joined.map(ticker => {
           const iv = extractCurrentImpliedVolatility(ticker);
           const group = buildIvHistoryGroup(ticker, underlying, now);
@@ -2638,6 +2644,8 @@ export class DeltaEngine {
         for (const ticker of selected) {
           ticker.iv_current = extractCurrentImpliedVolatility(ticker);
           ticker.iv_rank = null;
+          ticker.iv_rank_method = null;
+          ticker.iv_min_history_days = ivHistoryPolicy.minimumHistoryDays;
           const group = buildIvHistoryGroup(ticker, underlying, now);
           ticker.iv_delta_bucket = group?.delta_bucket ?? null;
           ticker.iv_dte_bucket = group?.dte_bucket ?? null;
@@ -2677,9 +2685,16 @@ export class DeltaEngine {
                 ticker.iv_rank_block_reason = 'IV_GROUP_UNAVAILABLE';
                 continue;
               }
-              const result = calculateRollingIvRank(byGroup.get(key) || [], ticker.iv_current, now);
+              const result = calculateRollingIvRank(
+                byGroup.get(key) || [],
+                ticker.iv_current,
+                now,
+                ivHistoryPolicy
+              );
               ticker.iv_rank = result.ivRank;
               ticker.iv_history_days = result.historyDays;
+              ticker.iv_rank_method = result.method;
+              ticker.iv_min_history_days = result.minimumHistoryDays;
               ticker.iv_rank_block_reason = result.reason;
               ticker.iv_delta_bucket = group.delta_bucket;
               ticker.iv_dte_bucket = group.dte_bucket;
