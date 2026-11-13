@@ -88,7 +88,11 @@ test('Testnet Grid chooses the nearest multi-rung TP that clears 1:1 after the h
     });
 
     assert.equal(result.ok, true, fixture.symbol + ' entry sizing');
-    assert.equal(result.targetPrice, levels[fixture.expectedTargetIndex].price);
+    const expectedTarget = Number((
+      Math.ceil((levels[fixture.expectedTargetIndex].price / liveProduct.tick_size) - 1e-10) *
+      liveProduct.tick_size
+    ).toPrecision(15));
+    assert.equal(result.targetPrice, expectedTarget);
     assert.ok(result.stopDistancePct >= 1.5);
     assert.ok(result.rewardRiskRatio >= 1);
     assert.ok(result.rewardPerContract >= result.riskPerContract);
