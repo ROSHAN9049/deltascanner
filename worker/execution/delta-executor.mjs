@@ -23,7 +23,7 @@ function isExplicitOrderNotFound(error) {
   const code = stringOrEmpty(error?.code).toLowerCase();
   const message = stringOrEmpty(error?.message);
   return (status === 400 || status === 404) &&
-    (code === 'order_not_found' || /\\border_not_found\\b/i.test(message));
+    (code === 'order_not_found' || /\border_not_found\b/i.test(message));
 }
 const encodeQuery = params => {
   const pairs = [];
@@ -1324,7 +1324,7 @@ export function createDeltaExecutor({
             : '[Executor] Delta client-order lookup returned order_not_found; no matching open order exists, retry is eligible',
           {
             environment: 'testnet', symbol: normalizedSymbol, positionId,
-            closeReason, clientOrderId, httpStatus: numberOrNull(arguments[0]?.status) ?? null,
+            closeReason, clientOrderId,
             openOrderMatch: Boolean(existingOrder)
           }
         );
