@@ -10,7 +10,9 @@ export const DELTA_TESTNET_FUTURES_ALLOWLIST = Object.freeze([
   'XAUTUSD',
   'PAXGUSD',
   'NVDAXUSD',
-  '1000SHIBUSD'
+  '1000SHIBUSD',
+  // Candidate symbols still require live, operational Testnet product metadata.
+  'BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD', 'ADAUSD'
 ]);
 
 const allowedSymbols = new Set(DELTA_TESTNET_FUTURES_ALLOWLIST);

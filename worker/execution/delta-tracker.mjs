@@ -843,8 +843,9 @@ export class DeltaTestnetTracker {
         const qty = numberOrNull(position?.qty);
         let realizedPnl = numberOrNull(position?.realized_pnl);
         let realizedPnlVerified = position?.realized_pnl_verified === true && realizedPnl !== null;
-        let exitReason = deltaCloseFields({}, {
+        let exitReason = deltaCloseFields({
           exit_reason: position?.exit_reason,
+          close_reason: position?.close_reason,
           requested_exit_reason: position?.requested_exit_reason,
           close_order_id: position?.close_order_id
         }).exit_reason;
@@ -1002,9 +1003,11 @@ export class DeltaTestnetTracker {
         const nextPosition = rawClose?.meta_data?.new_position ?? rawClose?.metadata?.new_position ?? {};
         const fillRealizedPnl = numberOrNull(nextPosition.realized_pnl ?? rawClose.realized_pnl);
         if (fillRealizedPnl !== null && !realizedPnlVerified && typeof this.database.update === 'function') {
-          const fillReason = deltaCloseFields({}, {
+          const fillReason = deltaCloseFields({
+            close_reason: position?.close_reason,
+            requested_exit_reason: position?.requested_exit_reason
+          }, {
             ...rawClose,
-            requested_exit_reason: position?.requested_exit_reason,
             close_order_id: flatCloseFill?.order_id ?? null
           }).exit_reason;
           const patch = {
@@ -1014,7 +1017,10 @@ export class DeltaTestnetTracker {
             updated_at: nowIso()
           };
           if (flatCloseFill?.order_id != null) patch.close_order_id = String(flatCloseFill.order_id);
-          if (fillReason !== 'UNKNOWN') patch.exit_reason = fillReason;
+          if (fillReason !== 'UNKNOWN') {
+            patch.exit_reason = fillReason;
+            patch.close_reason = fillReason;
+          }
           await this.database.update('dd_delta_positions', 'id=eq.' + encodeURIComponent(String(position.id)), patch);
           Object.assign(position, patch);
           realizedPnl = fillRealizedPnl;
@@ -1027,13 +1033,20 @@ export class DeltaTestnetTracker {
           try {
             const details = await this.executor.getRecentCloseDetails(symbol, position.opened_at, position);
             if (details?.close_fill_history_complete === true) {
-              const close = deltaCloseFields({}, details);
+              const close = deltaCloseFields({
+                exit_reason: position?.exit_reason,
+                close_reason: position?.close_reason,
+                requested_exit_reason: position?.requested_exit_reason
+              }, details);
               const patch = { updated_at: nowIso() };
               if (close.exit_price !== null) patch.exit_price = close.exit_price;
               if (close.fees !== null) patch.fees = close.fees;
               if (close.fee_currency) patch.fee_currency = close.fee_currency;
               if (close.close_order_id) patch.close_order_id = close.close_order_id;
-              if (close.exit_reason !== 'UNKNOWN') patch.exit_reason = close.exit_reason;
+              if (close.exit_reason !== 'UNKNOWN') {
+                patch.exit_reason = close.exit_reason;
+                patch.close_reason = close.exit_reason;
+              }
               if (close.realized_pnl !== null) {
                 patch.realized_pnl = close.realized_pnl;
                 patch.realized_pnl_verified = true;
@@ -1480,6 +1493,8 @@ async syncBracketMetadataOnce(key) {
         ...rawRow,
         action: envelope?.action ?? rawRow?.action,
         reason: envelope?.reason ?? rawRow?.reason,
+        exit_reason: rawRow?.exit_reason ?? active.exit_reason,
+        close_reason: rawRow?.close_reason ?? active.close_reason,
         requested_exit_reason: active.requested_exit_reason
       }, details);
       const botManagedExit = ['BOT', 'SL', 'TP', 'TIMEOUT'].includes(close.exit_reason);
@@ -1494,6 +1509,7 @@ async syncBracketMetadataOnce(key) {
         updated_at: closedAt,
         unrealized_pnl: 0,
         ...close,
+        ...(close.exit_reason !== 'UNKNOWN' ? { close_reason: close.exit_reason } : {}),
         close_source: closeSource,
         realized_pnl_verified: realizedPnlVerified
       });

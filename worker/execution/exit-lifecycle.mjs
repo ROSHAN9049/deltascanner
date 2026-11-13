@@ -142,6 +142,9 @@ export async function closeTrackedPosition({
     throw new Error('Local/canonical product ID mismatch; automatic close blocked');
   }
 
+  const persistedExitReason = closeReason === 'STOP_LOSS' ? 'SL'
+    : closeReason === 'TAKE_PROFIT' ? 'TP'
+      : closeReason;
   const updatedAt = new Date(now()).toISOString();
   await database.update(
     'dd_delta_positions',
@@ -176,6 +179,8 @@ export async function closeTrackedPosition({
           close_order_id: order.id ?? null,
           exit_order_id: order.id ?? null,
           exit_price: order.average_fill_price ?? order.average_price ?? null,
+          exit_reason: persistedExitReason,
+          close_reason: persistedExitReason,
           closed_at: updatedAt,
           updated_at: updatedAt
         }

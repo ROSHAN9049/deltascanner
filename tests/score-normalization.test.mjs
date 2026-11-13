@@ -71,6 +71,23 @@ test('missing target, no universe, non-directional signals, and incomplete featu
   ]), null);
 });
 
+test('raw scores of 90 or higher cannot be normalized below the 80 hard gate', () => {
+  const universe = [
+    { ...row('HIGHRAWUSD', 1, 'BEAR', 0, 20), score: 90 },
+    { ...row('STRONG01USD', 95, 'BULL', 5, 0.1), score: 90 },
+    { ...row('STRONG02USD', 90, 'BULL', 4.5, 0.2), score: 90 },
+    { ...row('STRONG03USD', 85, 'BULL', 4, 0.3), score: 90 }
+  ];
+  const normalized = calculateNormalizedScore('HIGHRAWUSD', universe);
+  assert.ok(normalized >= 80, 'raw score 90 must remain at least 80 after normalization');
+  assert.ok(normalized <= 100);
+});
+
+test('raw score survives a missing feature universe and a single-row scan', () => {
+  assert.equal(calculateNormalizedScore('XAUTUSD', [{ symbol: 'XAUTUSD', side: 'BUY', score: 100 }]), 100);
+  assert.equal(calculateNormalizedScore('SLVONUSD', [{ symbol: 'SLVONUSD', score: 90 }]), 90);
+});
+
 test('uniform universe scores approximately 50 and sigmoid output remains bounded', () => {
   const universe = Array.from({ length: 6 }, (_, index) =>
     row('UNIFORM' + index + 'USD', 50, 'BULL', 1.25, 1.0)
