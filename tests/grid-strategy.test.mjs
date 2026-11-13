@@ -319,7 +319,7 @@ test('PAXG and NVDAX downward crossings select a higher rung when ATR stops exce
 
     assert.equal(result.entered.length, 1, fixture.symbol + ' G' + (fixture.levelIndex + 1));
     assert.equal(result.entered[0].levelIndex, fixture.levelIndex);
-    assert.equal(result.entered[0].targetPrice, levels[fixture.expectedTargetIndex]);
+    assert.equal(result.entered[0].targetPrice, levels[fixture.expectedTargetIndex].price);
     assert.deepEqual(result.entered[0].targetCandidates, levels.slice(fixture.levelIndex + 1).map(level => level.price));
     assert.ok(result.entered[0].targetPrice > levels[fixture.levelIndex + 1].price);
     assert.ok(result.entered[0].targetPrice - result.entered[0].entryPrice >=
