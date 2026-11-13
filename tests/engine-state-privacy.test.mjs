@@ -29,7 +29,7 @@ function sampleState() {
       }
     ],
     executionCoverage: {
-      directDeltaExecutionEnabled: false, deltaExecutionMode: 'testnet',
+      directDeltaExecutionEnabled: false, optionsRouteConfigured: true, deltaExecutionMode: 'testnet',
       deltaExecutionModeSource: 'supabase-worker-heartbeat',
       gridEntrySafety: { configured: false, trusted: null, blocked: true, reason: 'GRID_NOT_MIGRATED_TO_DELTA_TESTNET' },
       gridTestnetDiagnostics: {
@@ -93,6 +93,7 @@ test('unauthenticated response redacts account ledgers while keeping public mark
   assert.equal(state.logs[0].data.deltaExecutionMode, 'testnet');
   assert.equal(state.logs[0].data.gridAutoRangeEnvironmentEnabled, true);
   assert.equal('blockingQty' in state.logs[0].data.gridEntrySafety, false);
+  assert.equal(state.executionCoverage.optionsRouteConfigured, true);
   assert.equal(state.executionCoverage.gridTestnetDiagnostics.status, 'WAITING_FOR_TESTNET_PRODUCTS');
   assert.equal(state.executionCoverage.gridTestnetDiagnostics.executionLocked, true);
   assert.equal(state.executionCoverage.gridTestnetDiagnostics.orderRoutingAttempted, false);
@@ -111,6 +112,7 @@ test('authenticated response preserves Delta Testnet ledgers and settings', () =
   const state = protectEngineState(input, true);
   assert.equal(state.accountDataProtected, false);
   assert.deepEqual(state.settings, input.settings);
+  assert.equal(state.executionCoverage.optionsRouteConfigured, true);
   assert.deepEqual(state.deltaTestnetPositions, input.deltaTestnetPositions);
   assert.deepEqual(state.deltaTestnetOrders, input.deltaTestnetOrders);
   assert.deepEqual(state.deltaTestnetTrades, input.deltaTestnetTrades);
