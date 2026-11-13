@@ -97,7 +97,11 @@ test('Testnet Grid chooses the nearest multi-rung TP that clears 1:1 after the h
     assert.ok(result.rewardRiskRatio >= 1);
     assert.ok(result.rewardPerContract >= result.riskPerContract);
 
-    const earlierTargets = targetCandidates.filter(target => target < result.targetPrice);
+    const earlierTargets = targetCandidates
+      .map(target => Number((
+        Math.ceil((target / liveProduct.tick_size) - 1e-10) * liveProduct.tick_size
+      ).toPrecision(15)))
+      .filter(target => target < result.targetPrice);
     const costs = entryPrice * liveProduct.contract_value * 2 * (liveProduct.taker_commission_rate + 0.0002);
     for (const earlierTarget of earlierTargets) {
       const earlierReward = (earlierTarget - entryPrice) * liveProduct.contract_value - costs;
