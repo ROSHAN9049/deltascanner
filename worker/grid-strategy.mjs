@@ -348,14 +348,24 @@ export function evaluateGridTick({
       const stopPrice = level.index > 0
         ? Math.max(Number.EPSILON, levels[level.index - 1].price - cfg.atrBufferPrice)
         : globalStopPrice;
-      const targetPrice = levels[level.index + 1]?.price;
+      const targetCandidates = levels
+        .slice(level.index + 1)
+        .map(targetLevel => targetLevel.price)
+        .filter(targetPrice => Number.isFinite(targetPrice) && targetPrice > level.price);
       const stopDistance = level.price - stopPrice;
+      // Keep the normal next-rung target when it clears the stop distance.
+      // Otherwise select the nearest higher rung that restores at least 1:1
+      // gross reward/risk. The live executor rechecks this after its hard SL
+      // floor, tick rounding, fees, and slippage before submitting any order.
+      const targetPrice = targetCandidates.find(candidateTarget =>
+        candidateTarget - level.price + 1e-8 >= stopDistance
+      );
       const rewardDistance = n(targetPrice) - level.price;
-      if (!(stopDistance > 0 && rewardDistance > 0)) continue;
-      // Reject the bottom rung when the global stop creates a worse gross
-      // reward/risk ratio than the next-grid-level target.
-      if (rewardDistance < stopDistance) {
-        pushEvent(state, { type: 'BLOCK', reason: 'GRID_RISK_REWARD_BELOW_MINIMUM', levelIndex: level.index, price: level.price }, at);
+      if (!(stopDistance > 0 && targetPrice > level.price && rewardDistance + 1e-8 >= stopDistance)) {
+        pushEvent(state, {
+          type: 'BLOCK', reason: 'GRID_RISK_REWARD_BELOW_MINIMUM',
+          levelIndex: level.index, price: level.price
+        }, at);
         continue;
       }
       const riskPerContract = Math.max(0, stopDistance * cv) +
@@ -385,6 +395,7 @@ export function evaluateGridTick({
         levelIndex: level.index,
         entryPrice: level.price,
         targetPrice,
+        targetCandidates,
         stopPrice,
         atrBufferedStop: cfg.atrBufferPrice > 0,
         qty,
@@ -394,8 +405,12 @@ export function evaluateGridTick({
       state.positions.push(position);
       occupied.add(level.index);
       entered.push(position);
-      pushEvent(state, { type: 'ENTRY', symbol: cfg.symbol, levelIndex: level.index, price: level.price,
-        targetPrice: position.targetPrice, qty, riskUsd: positionRisk, orderPreference: 'LIMIT' }, at);
+      pushEvent(state, {
+        type: 'ENTRY', symbol: cfg.symbol, levelIndex: level.index, price: level.price,
+        targetPrice: position.targetPrice,
+        targetLevelIndex: levels.findIndex(targetLevel => targetLevel.price === position.targetPrice),
+        qty, riskUsd: positionRisk, orderPreference: 'LIMIT'
+      }, at);
     }
   }
 
