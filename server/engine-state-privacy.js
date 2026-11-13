@@ -186,6 +186,7 @@ export function protectEngineState(payload, authorized) {
     logs: publicHeartbeatRows(payload?.logs),
     executionCoverage: {
       directDeltaExecutionEnabled: false,
+      optionsRouteConfigured: payload?.executionCoverage?.optionsRouteConfigured === true,
       deltaExecutionMode: payload?.executionCoverage?.deltaExecutionMode || 'unknown',
       deltaExecutionModeSource: payload?.executionCoverage?.deltaExecutionModeSource || 'unavailable',
       gridEntrySafety: null,
