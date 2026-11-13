@@ -29,7 +29,7 @@ function jsonResponse(status, body) {
   };
 }
 
-function createExchangeHarness({ rejectClose = false, filledClose = false } = {}) {
+function createExchangeHarness({ rejectClose = false, filledClose = false, lookupStatus = 404, lookupCode = 'not_found' } = {}) {
   const posts = [];
   const ordersByClientId = new Map();
   let isFlat = false;
@@ -43,7 +43,7 @@ function createExchangeHarness({ rejectClose = false, filledClose = false } = {}
       const found = ordersByClientId.get(clientId);
       return found
         ? jsonResponse(200, { success: true, result: found })
-        : jsonResponse(404, { success: false, error: { code: 'not_found' } });
+        : jsonResponse(lookupStatus, { success: false, error: { code: lookupCode } });
     }
 
     if (method === 'GET' && path === '/v2/positions/margined') {
@@ -206,6 +206,44 @@ test('Delta Testnet executor submits a real reduce-only market close for TIMEOUT
   assert.equal(harness.posts[0].client_order_id, buildCloseClientOrderId('118', 'TIMEOUT'));
   assert.equal(order.id, 501);
   assert.equal(harness.reservations.get(order.client_order_id).role, 'EXIT');
+});
+
+test('HTTP 400 order_not_found permits retrying a stale PENDING close reservation', async () => {
+  const harness = createExchangeHarness({ lookupStatus: 400, lookupCode: 'order_not_found' });
+  const clientOrderId = buildCloseClientOrderId('118', 'TIMEOUT');
+  harness.reservations.set(clientOrderId, {
+    client_order_id: clientOrderId,
+    state: 'PENDING',
+    raw: { reservation: true, outcome: 'unknown' }
+  });
+
+  const order = await harness.executor.closePosition('SPYXUSD', 2, {
+    positionId: '118',
+    closeReason: 'TIMEOUT',
+    expectedSide: 'BUY',
+    expectedProductId: 123,
+    strategy: 'SCALPING'
+  });
+
+  assert.equal(harness.posts.length, 1);
+  assert.equal(harness.posts[0].client_order_id, clientOrderId);
+  assert.equal(order.client_order_id, clientOrderId);
+  assert.equal(harness.reservations.get(clientOrderId).state, 'OPEN');
+  assert.ok(harness.logs.some(row =>
+    row.message.includes('explicit exchange order_not_found')
+  ));
+});
+
+test('a different HTTP 400 lookup error still blocks close submission', async () => {
+  const harness = createExchangeHarness({ lookupStatus: 400, lookupCode: 'invalid_request' });
+  await assert.rejects(harness.executor.closePosition('SPYXUSD', 2, {
+    positionId: '118',
+    closeReason: 'TIMEOUT',
+    expectedSide: 'BUY',
+    expectedProductId: 123,
+    strategy: 'SCALPING'
+  }), /invalid_request/);
+  assert.equal(harness.posts.length, 0);
 });
 
 test('repeated timeout close reuses the same exchange order and never duplicates POST', async () => {
