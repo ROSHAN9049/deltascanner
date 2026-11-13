@@ -22,8 +22,11 @@ function isExplicitOrderNotFound(error) {
   const status = numberOrNull(error?.status ?? error?.statusCode);
   const code = stringOrEmpty(error?.code).toLowerCase();
   const message = stringOrEmpty(error?.message);
+  const missingOrderCode = code === 'order_not_found' ||
+    (status === 404 && code === 'not_found');
+  const missingOrderMessage = /\border_not_found\b/i.test(message);
   return (status === 400 || status === 404) &&
-    (code === 'order_not_found' || /\border_not_found\b/i.test(message));
+    (missingOrderCode || missingOrderMessage);
 }
 const encodeQuery = params => {
   const pairs = [];
