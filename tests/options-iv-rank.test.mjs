@@ -39,6 +39,29 @@ test('rolling IV Rank fails closed with less than seven days of history', () => 
   assert.equal(result.reason, 'LESS_THAN_7_DAYS_IV_HISTORY');
 });
 
+test('one-day provisional IV Rank is allowed only when Testnet mode is explicitly supplied', () => {
+  const history = [
+    { iv_current: 20, observed_at: new Date(NOW - 36 * 60 * 60 * 1000).toISOString() },
+    { iv_current: 40, observed_at: new Date(NOW - 12 * 60 * 60 * 1000).toISOString() }
+  ];
+
+  const production = calculateRollingIvRank(history, 30, NOW, {
+    minimumHistoryDays: 1
+  });
+  assert.equal(production.ivRank, null);
+  assert.equal(production.reason, 'LESS_THAN_7_DAYS_IV_HISTORY');
+  assert.equal(production.minimumHistoryDays, 7);
+
+  const testnet = calculateRollingIvRank(history, 30, NOW, {
+    testnetExecution: true,
+    minimumHistoryDays: 1
+  });
+  assert.equal(testnet.ivRank, 50);
+  assert.equal(testnet.method, 'TESTNET_SHORT_WINDOW_1D');
+  assert.equal(testnet.minimumHistoryDays, 1);
+  assert.ok(testnet.historyDays >= 1);
+});
+
 test('rolling IV Rank fails closed when the 30-day range is flat', () => {
   const history = [
     { iv_current: 25, observed_at: new Date(NOW - 8 * DAY).toISOString() }

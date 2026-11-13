@@ -33,7 +33,23 @@ export function extractCurrentImpliedVolatility(ticker = {}) {
  * The current observation may be supplied separately when it has just been
  * persisted, making the calculation deterministic for the current scan.
  */
-export function calculateRollingIvRank(history, currentIv, now = Date.now()) {
+export function calculateRollingIvRank(
+  history,
+  currentIv,
+  now = Date.now(),
+  { testnetExecution = false, minimumHistoryDays = 7 } = {}
+) {
+  // Production always keeps the full seven-day requirement. The shortened
+  // window is available only when the caller explicitly confirms Testnet mode.
+  const requestedMinimumDays = Number(minimumHistoryDays);
+  const requiredHistoryDays = testnetExecution &&
+    Number.isFinite(requestedMinimumDays) &&
+    requestedMinimumDays >= 1 && requestedMinimumDays < 7
+    ? requestedMinimumDays
+    : 7;
+  const rankMethod = requiredHistoryDays < 7
+    ? 'TESTNET_SHORT_WINDOW_' + String(requiredHistoryDays).replace('.', '_') + 'D'
+    : 'ROLLING_30D_MIN_7D';
   const current = normalizeImpliedVolatility(currentIv);
   if (current === null || !Array.isArray(history)) {
     return { ivRank: null, ivCurrent: current, historyDays: 0, reason: 'IV_HISTORY_UNAVAILABLE' };
@@ -49,15 +65,37 @@ export function calculateRollingIvRank(history, currentIv, now = Date.now()) {
   }
   const oldest = Math.min(...samples.map(row => row.at));
   const historyDays = Math.max(0, (now - oldest) / DAY_MS);
-  if (historyDays < 7) {
-    return { ivRank: null, ivCurrent: current, historyDays, reason: 'LESS_THAN_7_DAYS_IV_HISTORY' };
+  if (historyDays < requiredHistoryDays) {
+    return {
+      ivRank: null,
+      ivCurrent: current,
+      historyDays,
+      minimumHistoryDays: requiredHistoryDays,
+      method: rankMethod,
+      reason: requiredHistoryDays === 7
+        ? 'LESS_THAN_7_DAYS_IV_HISTORY'
+        : 'LESS_THAN_TESTNET_SHORT_IV_HISTORY'
+    };
   }
   const values = samples.map(row => row.iv);
   const low = Math.min(...values);
   const high = Math.max(...values);
   if (!(high > low)) {
-    return { ivRank: null, ivCurrent: current, historyDays, reason: 'IV_RANGE_NOT_ESTABLISHED' };
+    return {
+      ivRank: null, ivCurrent: current, historyDays,
+      minimumHistoryDays: requiredHistoryDays, method: rankMethod,
+      reason: 'IV_RANGE_NOT_ESTABLISHED'
+    };
   }
   const ivRank = Math.max(0, Math.min(100, ((current - low) / (high - low)) * 100));
-  return { ivRank: Number(ivRank.toFixed(4)), ivCurrent: current, ivLow: low, ivHigh: high, historyDays, reason: null };
+  return {
+    ivRank: Number(ivRank.toFixed(4)),
+    ivCurrent: current,
+    ivLow: low,
+    ivHigh: high,
+    historyDays,
+    minimumHistoryDays: requiredHistoryDays,
+    method: rankMethod,
+    reason: null
+  };
 }
