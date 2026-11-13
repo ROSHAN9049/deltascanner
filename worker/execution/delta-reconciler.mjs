@@ -199,7 +199,7 @@ export function createDeltaPositionReconciler({
 
       const openRows = await database.select(
         'dd_delta_positions',
-        'status=eq.OPEN&select=id,symbol,qty,side,opened_at,realized_pnl,entry_order_id,client_order_id&limit=1000'
+        'status=eq.OPEN&select=id,symbol,qty,side,opened_at,realized_pnl,entry_order_id,client_order_id,requested_exit_reason,exit_reason,close_reason&limit=1000'
       );
       if (!Array.isArray(openRows)) {
         throw new Error('Could not read dd_delta_positions OPEN rows; DB state left unchanged');
@@ -231,10 +231,11 @@ export function createDeltaPositionReconciler({
               });
             }
           }
-          const close = deltaCloseFields({}, {
-            ...(details && typeof details === 'object' ? details : {}),
+          const close = deltaCloseFields({
+            exit_reason: row.exit_reason,
+            close_reason: row.close_reason,
             requested_exit_reason: row.requested_exit_reason
-          });
+          }, details && typeof details === 'object' ? details : {});
           // A REST absence check may not find a close fill. Do not erase an
           // exchange-reported realized P&L already captured from a position event.
           const existingRealizedPnl = numberOrNull(row.realized_pnl);
@@ -251,6 +252,7 @@ export function createDeltaPositionReconciler({
             updated_at: timestamp,
             unrealized_pnl: 0,
             close_source: 'rest_reconcile',
+            ...(close.exit_reason !== 'UNKNOWN' ? { close_reason: close.exit_reason } : {}),
             realized_pnl_verified: closeDetailsVerified ||
               (row.realized_pnl_verified === true && existingRealizedPnl !== null),
             ...close

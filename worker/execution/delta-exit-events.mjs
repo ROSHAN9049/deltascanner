@@ -11,10 +11,12 @@ export function normalizeDeltaExitReason(event = {}) {
     : event.metadata && typeof event.metadata === 'object' ? event.metadata : {};
   const tokens = [
     event.exit_reason, event.exitReason,
+    event.close_reason, event.closeReason,
     event.reason, event.event_reason,
     event.fill_type, event.fillType, metadata.fill_type,
     event.order_type, event.orderType, metadata.order_type,
-    event.stop_order_type, event.stopOrderType, metadata.stop_order_type
+    event.stop_order_type, event.stopOrderType, metadata.stop_order_type,
+    metadata.close_reason
   ].map(stringValue).filter(Boolean).map(value =>
     value.toLowerCase().replace(/[\s-]+/g, '_')
   );
@@ -40,6 +42,9 @@ export function normalizeDeltaExitReason(event = {}) {
 
   const clientOrderId = stringValue(event.client_order_id ?? event.clientOrderId);
   if (/^DDX-X(?:-|$)/i.test(clientOrderId)) return 'BOT';
+  // Engine-created protective children have stable, typed client IDs.
+  if (/^OSL(?:BE)?-/i.test(clientOrderId)) return 'SL';
+  if (/^OTP(?:1)?-/i.test(clientOrderId)) return 'TP';
 
   if (clientOrderId) {
     if (/^DD[MSG]-/i.test(clientOrderId) || /^DDX(?:-|$)/i.test(clientOrderId)) {
@@ -84,6 +89,8 @@ export function deltaCloseFields(event = {}, details = null) {
       detail.closeOrderHistoryFound ?? event?.close_order_history_found ?? source.close_order_history_found,
     requested_exit_reason: detail.requested_exit_reason ??
       event?.requested_exit_reason ?? source.requested_exit_reason,
+    close_reason: detail.close_reason ?? detail.closeReason ??
+      event?.close_reason ?? event?.closeReason ?? source.close_reason ?? source.closeReason,
     stop_order_type: detail.stop_order_type ?? detail.stopOrderType ??
       event?.stop_order_type ?? source.stop_order_type ?? source.meta_data?.stop_order_type ?? source.metadata?.stop_order_type,
     fill_type: detail.fill_type ?? detail.fillType ??

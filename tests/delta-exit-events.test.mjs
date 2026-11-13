@@ -11,6 +11,13 @@ test('exit reason mapping uses documented fill/order evidence', () => {
     [{ fill_type: 'adl' }, 'ADL'],
     [{ fill_type: 'settlement' }, 'SETTLEMENT'],
     [{ client_order_id: 'DDX-X-BTCUSD-close' }, 'BOT'],
+    [{ client_order_id: 'OSL-BTCUSD-protection' }, 'SL'],
+    [{ client_order_id: 'OSLBE-BTCUSD-protection' }, 'SL'],
+    [{ client_order_id: 'OTP-BTCUSD-protection' }, 'TP'],
+    [{ client_order_id: 'OTP1-BTCUSD-protection' }, 'TP'],
+    [{ close_reason: 'stop_loss_order' }, 'SL'],
+    [{ close_reason: 'take_profit_order' }, 'TP'],
+    [{ meta_data: { close_reason: 'liquidation' } }, 'LIQUIDATION'],
     [{ client_order_id: 'manual-close-9001' }, 'MANUAL'],
     [{ close_order_history_found: true }, 'MANUAL'],
     [{}, 'UNKNOWN']

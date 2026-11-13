@@ -428,4 +428,6 @@ test('filled close with exchange-flat confirmation marks canonical position CLOS
   assert.equal(closed.close_order_id, 501);
   assert.equal(closed.exit_order_id, 501);
   assert.equal(closed.exit_price, '101.25');
+  assert.equal(closed.exit_reason, 'TIMEOUT');
+  assert.equal(closed.close_reason, 'TIMEOUT');
 });

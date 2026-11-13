@@ -44,22 +44,23 @@ test('worker startup permits scan-only or explicit Testnet profiles and rejects 
   }), false);
 });
 
-test('the Testnet futures allowlist contains only the nine explicitly approved symbols', () => {
+test('the Testnet futures allowlist admits major candidates but still requires live exchange metadata', () => {
   assert.deepEqual(DELTA_TESTNET_FUTURES_ALLOWLIST, [
     'DOGSUSD', 'USOONUSD', 'SNDKBUSD', 'SPYXUSD', 'QQQXUSD',
-    'XAUTUSD', 'PAXGUSD', 'NVDAXUSD', '1000SHIBUSD'
+    'XAUTUSD', 'PAXGUSD', 'NVDAXUSD', '1000SHIBUSD',
+    'BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD', 'ADAUSD'
   ]);
+  for (const symbol of ['BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD', 'ADAUSD']) {
+    assert.equal(isAllowedDeltaTestnetFutureSymbol(symbol), true);
+  }
   assert.equal(isAllowedDeltaTestnetFutureSymbol('XAUTUSD'), true);
-  assert.equal(isAllowedDeltaTestnetFutureSymbol('BTCUSD'), false);
-  assert.equal(isAllowedDeltaTestnetFutureSymbol('ETHUSD'), false);
-  assert.equal(isAllowedDeltaTestnetFutureSymbol('SOLUSD'), false);
 });
 
 test('Grid symbol parser accepts exactly two distinct allowlisted Testnet symbols and fails closed otherwise', () => {
   assert.deepEqual(parseDeltaTestnetGridSymbols('PAXGUSD,NVDAXUSD'), ['PAXGUSD', 'NVDAXUSD']);
   assert.deepEqual(parseDeltaTestnetGridSymbols(' NVDAXUSD, PAXGUSD '), ['NVDAXUSD', 'PAXGUSD']);
   assert.deepEqual(parseDeltaTestnetGridSymbols(''), []);
-  assert.throws(() => parseDeltaTestnetGridSymbols('BTCUSD,NVDAXUSD'), /outside the Delta Testnet allowlist/);
+  assert.throws(() => parseDeltaTestnetGridSymbols('SLVONUSD,NVDAXUSD'), /outside the Delta Testnet allowlist/);
   assert.throws(() => parseDeltaTestnetGridSymbols('PAXGUSD,PAXGUSD'), /distinct symbols/);
   assert.throws(() => parseDeltaTestnetGridSymbols('PAXGUSD'), /exactly two/);
 });
@@ -71,7 +72,9 @@ test('Testnet route requires exact allowlisted, live operational and non-reduce-
     only_reduce_only_orders_allowed: false
   };
   assert.equal(isEligibleDeltaTestnetPerpetualProduct(valid), true);
-  assert.equal(isEligibleDeltaTestnetPerpetualProduct({ ...valid, symbol: 'BTCUSD' }), false);
+  assert.equal(isEligibleDeltaTestnetPerpetualProduct({ ...valid, symbol: 'BTCUSD' }), true);
+  assert.equal(isEligibleDeltaTestnetPerpetualProduct({ ...valid, symbol: 'ETHUSD', state: 'prelaunch' }), false);
+  assert.equal(isEligibleDeltaTestnetPerpetualProduct({ ...valid, symbol: 'SOLUSD', trading_status: 'suspended' }), false);
   assert.equal(isEligibleDeltaTestnetPerpetualProduct({ ...valid, id: null }), false);
   assert.equal(isEligibleDeltaTestnetPerpetualProduct({ ...valid, trading_status: 'suspended' }), false);
   assert.equal(isEligibleDeltaTestnetPerpetualProduct({ ...valid, only_reduce_only_orders_allowed: true }), false);
@@ -93,8 +96,8 @@ test('dynamic Grid pool filters unsupported requested symbols against the Testne
     'PAXGUSD,NVDAXUSD,SPYXUSD,XAUTUSD,SLVONUSD,ADAUSD',
     'PAXGUSD,NVDAXUSD'
   );
-  assert.deepEqual(result.symbols, ['PAXGUSD', 'NVDAXUSD', 'SPYXUSD', 'XAUTUSD']);
-  assert.deepEqual(result.rejectedSymbols, ['SLVONUSD', 'ADAUSD']);
+  assert.deepEqual(result.symbols, ['PAXGUSD', 'NVDAXUSD', 'SPYXUSD', 'XAUTUSD', 'ADAUSD']);
+  assert.deepEqual(result.rejectedSymbols, ['SLVONUSD']);
   assert.equal(result.source, 'GRID_SYMBOL_POOL');
   assert.equal(DEFAULT_DELTA_TESTNET_GRID_SYMBOL_POOL.length, 6);
 });
@@ -104,7 +107,7 @@ test('dynamic Grid pool falls back to legacy GRID_SYMBOLS and to filtered defaul
   assert.deepEqual(legacy.symbols, ['PAXGUSD', 'NVDAXUSD']);
   assert.equal(legacy.source, 'GRID_SYMBOLS');
   const defaults = resolveDeltaTestnetGridSymbolPool('', '');
-  assert.deepEqual(defaults.symbols, ['PAXGUSD', 'NVDAXUSD', 'SPYXUSD', 'XAUTUSD']);
+  assert.deepEqual(defaults.symbols, ['PAXGUSD', 'NVDAXUSD', 'SPYXUSD', 'XAUTUSD', 'ADAUSD']);
   assert.equal(defaults.source, 'DEFAULT_GRID_SYMBOL_POOL');
 });
 
