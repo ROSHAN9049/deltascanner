@@ -197,12 +197,11 @@ export function sizeDeltaGridEntry({
 
   const floorPct = resolveMinimumStopDistancePct(minStopDistancePct);
   const floorStop = entry * (1 - floorPct / 100);
-  // Grid targets the next rung. Normalize the protective stop to the shared 1.50% floor
-  // so symmetric rung spacing does not become negative net R:R after fees and slippage.
+  // Preserve the more protective of the native ATR/range stop and Delta's
+  // hard minimum stop distance. The TP is selected independently below.
   const atrBufferedStop = candidate.atrBufferedStop === true ? Math.min(nativeStop, floorStop) : floorStop;
   const stop = roundStopLossAwayFromEntry(atrBufferedStop, tick, 'BUY');
-  const target = roundPriceUp(nativeTarget, tick);
-  if (!(stop > 0 && stop < entry && target > entry)) {
+  if (!(stop > 0 && stop < entry)) {
     return { ok: false, reason: 'GRID_TICK_ROUNDED_BRACKET_INVALID' };
   }
   const stopDistancePct = (entry - stop) / entry * 100;
@@ -217,8 +216,34 @@ export function sizeDeltaGridEntry({
   const slipRate = Math.max(0, Math.min(0.0025, n(slippagePct) / 100));
   const roundTripCostsPerContract = entry * cv * 2 * (feeRate + slipRate);
   const riskPerContract = ((entry - stop) * cv) + roundTripCostsPerContract;
-  const rewardPerContract = ((target - entry) * cv) - roundTripCostsPerContract;
-  if (!(riskPerContract > 0 && rewardPerContract >= riskPerContract)) {
+  if (!(riskPerContract > 0)) {
+    return { ok: false, reason: 'GRID_REWARD_RISK_BELOW_MINIMUM' };
+  }
+
+  // Try targets in ascending rung order and take the nearest one that clears
+  // 1:1 AFTER the hard stop floor, tick rounding, fees, and slippage. The
+  // initial strategy evaluator supplies all higher rungs so this can expand
+  // from the adjacent rung without weakening any risk or account limits.
+  const targetCandidates = [
+    ...(Array.isArray(candidate.targetCandidates) ? candidate.targetCandidates : []),
+    nativeTarget
+  ]
+    .map(numberOrNull)
+    .filter(value => value !== null && value > entry)
+    .sort((a, b) => a - b);
+  let target = null;
+  let rewardPerContract = null;
+  for (const targetCandidate of [...new Set(targetCandidates)]) {
+    const roundedTarget = roundPriceUp(targetCandidate, tick);
+    if (!(roundedTarget > entry)) continue;
+    const reward = ((roundedTarget - entry) * cv) - roundTripCostsPerContract;
+    if (reward + 1e-8 >= riskPerContract) {
+      target = roundedTarget;
+      rewardPerContract = reward;
+      break;
+    }
+  }
+  if (!(target > entry && rewardPerContract !== null && rewardPerContract + 1e-8 >= riskPerContract)) {
     return { ok: false, reason: 'GRID_REWARD_RISK_BELOW_MINIMUM' };
   }
 
