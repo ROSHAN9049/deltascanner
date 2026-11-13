@@ -17,6 +17,17 @@ const numberOrNull = value => {
   return Number.isFinite(number) ? number : null;
 };
 const stringOrEmpty = value => String(value ?? '').trim();
+
+function isExplicitOrderNotFound(error) {
+  const status = numberOrNull(error?.status ?? error?.statusCode);
+  const code = stringOrEmpty(error?.code).toLowerCase();
+  const message = stringOrEmpty(error?.message);
+  const missingOrderCode = code === 'order_not_found' ||
+    (status === 404 && code === 'not_found');
+  const missingOrderMessage = /\border_not_found\b/i.test(message);
+  return (status === 400 || status === 404) &&
+    (missingOrderCode || missingOrderMessage);
+}
 const encodeQuery = params => {
   const pairs = [];
   for (const key of Object.keys(params || {}).sort()) {
@@ -1287,16 +1298,39 @@ export function createDeltaExecutor({
       // First resolve any earlier submission by its stable exchange identity.
       // Never POST a second close when the first request may have been accepted.
       let existingOrder = null;
+      let exchangeConfirmedOrderNotFound = false;
       try {
         existingOrder = await getOrderByClientOrderId(clientOrderId);
       } catch (error) {
-        if (Number(error?.status) !== 404) {
+        if (!isExplicitOrderNotFound(error)) {
           await logExecutor('ERROR', '[Executor] Close-order idempotency lookup failed; duplicate submission blocked', {
             environment: 'testnet', symbol: normalizedSymbol, positionId,
             closeReason, clientOrderId, error: String(error?.message || error).slice(0, 220)
           });
           throw error;
         }
+        exchangeConfirmedOrderNotFound = true;
+      }
+
+      // Delta India Testnet has returned HTTP 400 as well as 404 for a genuine
+      // order_not_found response. Before retrying, inspect the authenticated
+      // open-order snapshot so a still-live order is always reused.
+      if (!existingOrder && exchangeConfirmedOrderNotFound) {
+        const openOrders = await getOpenOrders();
+        existingOrder = openOrders.find(row =>
+          stringOrEmpty(row?.client_order_id) === clientOrderId
+        ) || null;
+        await logExecutor(
+          existingOrder ? 'INFO' : 'WARN',
+          existingOrder
+            ? '[Executor] Close order recovered from open-orders snapshot after client-ID lookup miss'
+            : '[Executor] Delta client-order lookup returned order_not_found; no matching open order exists, retry is eligible',
+          {
+            environment: 'testnet', symbol: normalizedSymbol, positionId,
+            closeReason, clientOrderId,
+            openOrderMatch: Boolean(existingOrder)
+          }
+        );
       }
       if (existingOrder) {
         const existingState = stringOrEmpty(existingOrder.state).toUpperCase();
@@ -1335,9 +1369,11 @@ export function createDeltaExecutor({
         return { ...existingOrder, exchange_position_flat: exchangePositionFlat };
       }
 
-      // The exchange lookup was a definite 404. A durable reservation means a
-      // previous worker may have timed out before learning the exchange result;
-      // do not blindly submit again if that state cannot be reconciled.
+      // A durable PENDING/UNKNOWN reservation normally blocks a duplicate close.
+      // Exception: Delta explicitly returned order_not_found (HTTP 400/404) and
+      // the authenticated open-orders snapshot also had no matching client ID.
+      // In that case retry with the same deterministic ID; all ambiguous lookup
+      // errors and incomplete snapshots still fail closed.
       const priorReservations = await database.select(
         'dd_orders',
         'client_order_id=eq.' + encodeURIComponent(clientOrderId) +
@@ -1353,17 +1389,18 @@ export function createDeltaExecutor({
         // A definite 4xx rejection means Delta did not accept an order. It is
         // safe to retry with the same deterministic client ID; ambiguous
         // PENDING/UNKNOWN outcomes remain blocked to prevent duplicate exposure.
-        if (!(state === 'FAILED' && outcome === 'rejected')) {
+        if (!exchangeConfirmedOrderNotFound && !(state === 'FAILED' && outcome === 'rejected')) {
           await logExecutor('ERROR', '[Executor] Existing close reservation has no exchange acknowledgement; duplicate POST blocked', {
             environment: 'testnet', symbol: normalizedSymbol, positionId,
             closeReason, clientOrderId, reservationState: state,
             positionStatus: 'OPEN'
           });
-          throw new Error('Existing close reservation is ' + state + ' but exchange lookup returned 404; refusing duplicate close');
+          throw new Error('Existing close reservation is ' + state + ' but exchange lookup was not a confirmed order_not_found; refusing duplicate close');
         }
-        await logExecutor('WARN', '[Executor] Retrying a definitively rejected close with the same stable client_order_id', {
+        await logExecutor('WARN', '[Executor] Retrying close with the same stable client_order_id after explicit exchange order_not_found', {
           environment: 'testnet', symbol: normalizedSymbol, positionId,
-          closeReason, clientOrderId, reservationState: state
+          closeReason, clientOrderId, reservationState: state,
+          exchangeConfirmedOrderNotFound
         });
       }
 
