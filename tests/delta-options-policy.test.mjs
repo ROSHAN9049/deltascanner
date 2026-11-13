@@ -185,6 +185,9 @@ test('sub-day expiry contracts can be retained for cache diagnostics without cha
 
 
 test('sub-day expiry rows remain blocked by the configured two-day execution minimum', () => {
+  const realNow = Date.now;
+  Date.now = () => Date.UTC(2026, 10, 13, 6, 0, 0);
+  try {
   const expiryDate = new Date(Date.now() + 8 * 60 * 60 * 1000);
   const dd = String(expiryDate.getUTCDate()).padStart(2, '0');
   const mm = String(expiryDate.getUTCMonth() + 1).padStart(2, '0');
@@ -223,4 +226,7 @@ test('sub-day expiry rows remain blocked by the configured two-day execution min
   if (signal.dte < 0.5) assert.ok(signal.blocked.includes('Expiry below 0.5 days; gamma risk'));
   assert.equal(signal.ready, false);
   assert.notEqual(signal.stage, 'CONFIRMED');
+  } finally {
+    Date.now = realNow;
+  }
 });
