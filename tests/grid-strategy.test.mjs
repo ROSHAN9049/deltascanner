@@ -250,7 +250,7 @@ test('Grid stop closes at observed mark and blocks same-tick re-entry on the nex
   assert.equal(stopped.entered.length, 0);
 });
 
-test('bottom Grid rung remains blocked when its range-break stop produces poor reward/risk', () => {
+test('bottom Grid rung selects a farther target when the adjacent target cannot cover its range-break stop', () => {
   const settings = {
     ...baseSettings,
     grid_lower_price: 2500,
@@ -268,10 +268,64 @@ test('bottom Grid rung remains blocked when its range-break stop produces poor r
     available: 51.5, contractValue: 0.01,
     timestamp: Date.parse('2026-10-09T05:00:15Z')
   });
-  assert.equal(result.entered.length, 0);
-  assert.ok(result.state.events.some(event => event.reason === 'GRID_RISK_REWARD_BELOW_MINIMUM'));
+  assert.equal(result.entered.length, 1);
+  assert.ok(result.entered[0].targetPrice > result.config.levels[1].price);
+  assert.ok(result.entered[0].targetPrice - result.entered[0].entryPrice >=
+    result.entered[0].entryPrice - result.entered[0].stopPrice - 1e-8);
 });
 
+
+test('PAXG and NVDAX downward crossings select a higher rung when ATR stops exceed the adjacent reward', () => {
+  const fixtures = [
+    {
+      symbol: 'PAXGUSD', lower: 3813.50072376, upper: 4007.34000948,
+      atr: 77.53571428571425, levelIndex: 4, expectedTargetIndex: 6
+    },
+    {
+      symbol: 'NVDAXUSD', lower: 150.007940647, upper: 178.281154933,
+      atr: 11.309285714285718, levelIndex: 4, expectedTargetIndex: 6
+    },
+    {
+      symbol: 'NVDAXUSD', lower: 150.007940647, upper: 178.281154933,
+      atr: 11.309285714285718, levelIndex: 5, expectedTargetIndex: 7
+    }
+  ];
+
+  for (const fixture of fixtures) {
+    const levels = buildGridLevels(fixture.lower, fixture.upper, 10);
+    const trigger = levels[fixture.levelIndex].price;
+    const prior = {
+      ...createGridState(),
+      wasEnabled: true,
+      lastPrice: trigger + 0.02
+    };
+    const result = evaluateGridTick({
+      settings: {
+        ...baseSettings,
+        grid_symbol: fixture.symbol,
+        grid_lower_price: fixture.lower,
+        grid_upper_price: fixture.upper,
+        grid_levels_count: 10,
+        grid_max_positions: 1,
+        grid_atr: fixture.atr
+      },
+      state: prior,
+      price: trigger - 0.02,
+      equity: 10000,
+      available: 10000,
+      contractValue: 0.01,
+      timestamp: Date.parse('2026-11-13T05:00:15Z')
+    });
+
+    assert.equal(result.entered.length, 1, fixture.symbol + ' G' + (fixture.levelIndex + 1));
+    assert.equal(result.entered[0].levelIndex, fixture.levelIndex);
+    assert.equal(result.entered[0].targetPrice, levels[fixture.expectedTargetIndex].price);
+    assert.deepEqual(result.entered[0].targetCandidates, levels.slice(fixture.levelIndex + 1).map(level => level.price));
+    assert.ok(result.entered[0].targetPrice > levels[fixture.levelIndex + 1].price);
+    assert.ok(result.entered[0].targetPrice - result.entered[0].entryPrice >=
+      result.entered[0].entryPrice - result.entered[0].stopPrice - 1e-8);
+  }
+});
 
 test('Grid default risk matches the futures scanner base risk and never clamps below 0.30%', () => {
   const config = normalizeGridConfig({ grid_lower_price: 2500, grid_upper_price: 2610, grid_levels_count: 10 });
