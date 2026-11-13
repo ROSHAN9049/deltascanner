@@ -65,7 +65,7 @@ export function calculateRollingIvRank(
   }
   const oldest = Math.min(...samples.map(row => row.at));
   const historyDays = Math.max(0, (now - oldest) / DAY_MS);
-  if (historyDays < 7) {
+  if (historyDays < requiredHistoryDays) {
     return {
       ivRank: null,
       ivCurrent: current,
