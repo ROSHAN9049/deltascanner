@@ -14,6 +14,7 @@ const ACTIVE_ORDER_STATES = 'PENDING,UNKNOWN,NEW,OPEN,PARTIALLY_FILLED';
 const clean = value => String(value ?? '').trim();
 const upper = value => clean(value).toUpperCase();
 const finite = value => {
+  if (value === null || value === undefined || value === '') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 };
