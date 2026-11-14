@@ -66,7 +66,7 @@ export function createOptionsAutoTrigger({
   }
 
   const enabled = isEnabled(env.AUTO_EXECUTE_OPTIONS);
-  const fullAutoExecute = isEnabled(env.FULL_AUTO_EXECUTE);
+  const fullAutoExecuteConfigured = isEnabled(env.FULL_AUTO_EXECUTE);
   let timer = null;
   let started = false;
   let inFlight = null;
@@ -74,8 +74,8 @@ export function createOptionsAutoTrigger({
   async function writeHeartbeat(status, extra = {}) {
     await logger('INFO', '[AUTO-TRIGGER] Worker heartbeat', {
       enabled,
-      mode: fullAutoExecute ? 'AUTO_EXECUTE' : 'PREVIEW_ONLY',
-      fullAutoExecute,
+      mode: fullAutoExecuteConfigured ? 'AUTO_EXECUTE' : 'PREVIEW_ONLY',
+      fullAutoExecute: fullAutoExecuteConfigured,
       status,
       candidateReady: false,
       lastScanAt: new Date(now()).toISOString(),
@@ -100,7 +100,7 @@ export function createOptionsAutoTrigger({
           });
           return { status: 'BLOCKED_NOT_TESTNET', previewRequested: false };
         }
-        if (fullAutoExecute) {
+        if (fullAutoExecuteConfigured) {
           const executionGate = getOptionsExecutionGate(env);
           if (!executionGate.allowed) {
             await writeHeartbeat('BLOCKED_OPTIONS_ENV_EXECUTION_DISABLED', {

@@ -44,7 +44,7 @@ test('strategy preserves distinct Testnet execution and public market-data produ
   assert.equal(signal.marketDataProductId, 50122, 'history/cache writes use the public market-data product ID');
 });
 
-test('refreshProducts reports USOONUSD as a market-universe mismatch and retains the other thirteen routes', async () => {
+test('refreshProducts reports USOONUSD as a market-universe mismatch and retains the other eight allowlisted routes', async () => {
   const engine = new DeltaEngine();
   const marketSymbols = DELTA_TESTNET_FUTURES_ALLOWLIST
     .filter(symbol => symbol !== 'USOONUSD')
@@ -65,14 +65,14 @@ test('refreshProducts reports USOONUSD as a market-universe mismatch and retains
   engine.log = async (level, message, data) => logs.push({ level, message, data });
   await engine.refreshProducts({ executionMode: 'testnet' });
 
-  assert.equal(engine.testnetExecutionCatalogReady, false, 'the full fourteen-symbol intersection remains incomplete');
+  assert.equal(engine.testnetExecutionCatalogReady, false, 'the full nine-symbol intersection remains incomplete');
   const refreshLog = logs.find(row => row.message === 'Delta product universe refreshed');
   assert.ok(refreshLog);
   assert.deepEqual(refreshLog.data.testnetAllowlistMissingFromTestnetCatalog, []);
   assert.deepEqual(refreshLog.data.testnetAllowlistMissingFromMarketDataUniverse, ['USOONUSD']);
   assert.deepEqual(refreshLog.data.testnetAllowlistMissing, ['USOONUSD']);
   assert.equal(refreshLog.data.testnetAllowlistPartialReady, true);
-  assert.equal(refreshLog.data.testnetAllowlistAvailableCount, 13);
+  assert.equal(refreshLog.data.testnetAllowlistAvailableCount, 8);
 
   for (const symbol of DELTA_TESTNET_FUTURES_ALLOWLIST.filter(value => value !== 'USOONUSD')) {
     assert.equal(engine.productMap.get(symbol)?.executionProductAvailable, true, symbol + ' must retain its verified Testnet route');
