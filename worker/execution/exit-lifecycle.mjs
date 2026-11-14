@@ -177,7 +177,6 @@ export async function closeTrackedPosition({
         {
           status: 'CLOSED',
           close_order_id: order.id ?? null,
-          exit_order_id: order.id ?? null,
           exit_price: order.average_fill_price ?? order.average_price ?? null,
           exit_reason: persistedExitReason,
           close_reason: persistedExitReason,
