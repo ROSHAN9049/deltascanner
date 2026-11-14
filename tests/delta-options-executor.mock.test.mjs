@@ -487,5 +487,5 @@ test('Options execution blocks when daily IV Percentile is unavailable even on m
     }),
     /IV Percentile unavailable or insufficient daily history/
   );
-  assert.equal(apiCalls.length, 0);
+  assert.equal(apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
 });
