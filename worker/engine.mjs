@@ -23,6 +23,7 @@ import {
 } from './options-execution-lock.mjs';
 import { countOptionProductsByUnderlying, replaceOptionCacheSnapshot } from './options-cache-snapshot.mjs';
 import { detectOptionsMarketRegime } from './options-regime-strategy.mjs';
+import { selectOptionsUnderlyingSignal } from './options-underlying-confirmation.mjs';
 import { calculateRollingIvRank, extractCurrentImpliedVolatility } from './options-iv-rank.mjs';
 import { buildIvHistoryGroup, groupIvHistoryByBucket, ivHistoryGroupKey } from './options-iv-grouping.mjs';
 import { selectBestOptionCandidates } from './options-candidate-selection.mjs';
@@ -3365,7 +3366,9 @@ export class DeltaEngine {
       CONFIG.deltaExecutionMode === 'testnet' &&
       CONFIG.directDeltaExecutionEnabled === true;
     for (const item of futuresItems || []) {
-      const underlying = [item.mom, item.scalp].filter(Boolean).sort((a, b) => n(b.score) - n(a.score))[0];
+      const underlying = item.optionsUnderlying || selectOptionsUnderlyingSignal(
+        [item.mom, item.scalp], { scoreMin: cfg.scoreMin }
+      );
       const asset = String(item.ticker?.symbol || '').toUpperCase().replace(/USD$/, '');
       if (!OPTION_UNDERLYINGS.includes(asset)) continue;
       const chain = chains.get(asset) || [];
@@ -3711,6 +3714,15 @@ export class DeltaEngine {
         }
       }
 
+      // Snapshot the Options underlying while it still represents only the
+      // fresh market-analysis result. Futures risk/route/capital checks below
+      // may mutate the same signals to SKIPPED_*; Options must not inherit
+      // those Futures execution outcomes.
+      const optionsUnderlying = selectOptionsUnderlyingSignal(
+        [mom, scalp],
+        { scoreMin: Math.max(80, n(settings.score_min || 80)) }
+      );
+
       for (const s of [mom, scalp]) {
         const sizingCandidate = String(s?.stage || '').toUpperCase() === 'CONFIRMED' && s?.ready === true;
         const size = sizingCandidate ? this.positionSizing(s, account, settings) : null;
@@ -3786,7 +3798,7 @@ export class DeltaEngine {
           details: cacheRow.details
         });
       }
-      out.push({ ticker, product: p, mom, scalp });
+      out.push({ ticker, product: p, mom, scalp, optionsUnderlying });
     }
 
     if (adaptiveShadowEnabled) {
