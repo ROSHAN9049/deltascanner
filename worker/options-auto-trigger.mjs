@@ -14,6 +14,7 @@ const ACTIVE_ORDER_STATES = 'PENDING,UNKNOWN,NEW,OPEN,PARTIALLY_FILLED';
 const clean = value => String(value ?? '').trim();
 const upper = value => clean(value).toUpperCase();
 const finite = value => {
+  if (value === null || value === undefined || value === '') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 };
@@ -206,14 +207,17 @@ export function createOptionsAutoTrigger({
           const details = parseDetails(row?.details);
           const marketRegime = upper(row?.market_regime || details.marketRegime);
           const ivRank = finite(row?.iv_rank ?? details.ivRank);
+          const ivPercentile = finite(row?.iv_percentile ?? details.ivPercentile);
           const regimeRouteOk = strategy === 'OPTIONS_BUY'
             ? marketRegime === 'TRENDING'
             : marketRegime === 'SIDEWAYS';
           const ivRankOk = ivRank !== null && ivRank >= 0 && ivRank <= 100 &&
             (strategy === 'OPTIONS_BUY' ? ivRank < 40 : ivRank > 50);
+          const ivPercentileOk = ivPercentile !== null && ivPercentile >= 0 && ivPercentile <= 100 &&
+            (strategy === 'OPTIONS_BUY' ? ivPercentile < 20 : ivPercentile > 80);
           return symbol &&
             OPTION_STRATEGIES.has(strategy) &&
-            regimeRouteOk && ivRankOk &&
+            regimeRouteOk && ivRankOk && ivPercentileOk &&
             upper(row?.stage) === 'CONFIRMED' &&
             finite(row?.score) >= 80 &&
             details.analysisReady === true &&

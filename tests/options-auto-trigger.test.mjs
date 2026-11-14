@@ -14,8 +14,9 @@ const CANDIDATE = {
   stage: 'CONFIRMED',
   market_regime: 'TRENDING',
   iv_rank: 30,
+  iv_percentile: 10,
   cached_at: new Date(NOW).toISOString(),
-  details: { analysisReady: true, marketRegime: 'TRENDING', ivRank: 30 }
+  details: { analysisReady: true, marketRegime: 'TRENDING', ivRank: 30, ivPercentile: 10, ivPercentileDays: 20 }
 };
 
 function harness({
@@ -268,5 +269,41 @@ test('FULL_AUTO_EXECUTE cannot submit when OPTIONS_EXECUTION_ALLOWED is false or
     assert.equal(calls.some(call => call.kind === 'fetch'), false);
     const heartbeat = logs.find(args => args[1] === '[AUTO-TRIGGER] Worker heartbeat');
     assert.equal(heartbeat?.[2]?.status, 'BLOCKED_OPTIONS_ENV_EXECUTION_DISABLED');
+  }
+});
+
+test('auto-trigger requires the strategy-specific daily IV Percentile threshold', async () => {
+  const blockedBuyRows = [
+    { ...CANDIDATE, iv_percentile: null, details: { ...CANDIDATE.details, ivPercentile: null } },
+    { ...CANDIDATE, iv_percentile: 20, details: { ...CANDIDATE.details, ivPercentile: 20 } }
+  ];
+  for (const row of blockedBuyRows) {
+    const { worker, calls } = harness({ cacheRows: [row] });
+    const result = await worker.runOnce();
+    assert.equal(result.status, 'READY');
+    assert.equal(calls.some(call => call.kind === 'fetch'), false);
+  }
+
+  const sellBase = {
+    ...CANDIDATE,
+    strategy: 'OPTIONS_SELL',
+    market_regime: 'SIDEWAYS',
+    iv_rank: 60,
+    iv_percentile: 90,
+    details: { ...CANDIDATE.details, marketRegime: 'SIDEWAYS', ivRank: 60, ivPercentile: 90 }
+  };
+  const sellPass = harness({ cacheRows: [sellBase] });
+  assert.equal((await sellPass.worker.runOnce()).status, 'CANDIDATE_READY');
+
+  for (const percentile of [null, 80]) {
+    const row = {
+      ...sellBase,
+      iv_percentile: percentile,
+      details: { ...sellBase.details, ivPercentile: percentile }
+    };
+    const { worker, calls } = harness({ cacheRows: [row] });
+    const result = await worker.runOnce();
+    assert.equal(result.status, 'READY');
+    assert.equal(calls.some(call => call.kind === 'fetch'), false);
   }
 });

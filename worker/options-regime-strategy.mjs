@@ -174,6 +174,21 @@ export function normalizeIvRank(ticker) {
   return null;
 }
 
+export function normalizeIvPercentile(ticker) {
+  const candidates = [
+    ticker?.iv_percentile,
+    ticker?.ivPercentile,
+    ticker?.details?.ivPercentile,
+    ticker?.greeks?.iv_percentile,
+    ticker?.greeks?.ivPercentile
+  ];
+  for (const candidate of candidates) {
+    const percentile = finite(candidate);
+    if (percentile !== null && percentile >= 0 && percentile <= 100) return percentile;
+  }
+  return null;
+}
+
 export function evaluateIvRank(strategy, ivRank) {
   const rank = finite(ivRank);
   const normalized = String(strategy || '').trim().toUpperCase();
@@ -190,6 +205,39 @@ export function evaluateIvRank(strategy, ivRank) {
     return { allowed: false, reason: 'Unsupported Options strategy', ivRank: rank };
   }
   return { allowed: true, reason: null, ivRank: rank };
+}
+
+export function evaluateIvMetrics(strategy, ivRank, ivPercentile) {
+  const rankDecision = evaluateIvRank(strategy, ivRank);
+  const percentile = finite(ivPercentile);
+  if (!rankDecision.allowed) {
+    return { ...rankDecision, ivPercentile: percentile !== null ? percentile : null };
+  }
+  if (percentile === null || percentile < 0 || percentile > 100) {
+    return {
+      allowed: false,
+      reason: 'IV Percentile unavailable or insufficient daily history; entry blocked',
+      ivRank: rankDecision.ivRank,
+      ivPercentile: null
+    };
+  }
+  const normalized = String(strategy || '').trim().toUpperCase();
+  if (normalized === 'OPTIONS_BUY' && percentile >= 20) {
+    return {
+      allowed: false, reason: 'BUY requires IV Percentile < 20',
+      ivRank: rankDecision.ivRank, ivPercentile: percentile
+    };
+  }
+  if (normalized === 'OPTIONS_SELL' && percentile <= 80) {
+    return {
+      allowed: false, reason: 'SELL requires IV Percentile > 80',
+      ivRank: rankDecision.ivRank, ivPercentile: percentile
+    };
+  }
+  return {
+    allowed: true, reason: null,
+    ivRank: rankDecision.ivRank, ivPercentile: percentile
+  };
 }
 
 export function evaluateOptionsExit({

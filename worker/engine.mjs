@@ -24,8 +24,8 @@ import {
 import { countOptionProductsByUnderlying, replaceOptionCacheSnapshot } from './options-cache-snapshot.mjs';
 import { detectOptionsMarketRegime } from './options-regime-strategy.mjs';
 import { selectOptionsUnderlyingSignal } from './options-underlying-confirmation.mjs';
-import { calculateRollingIvRank, extractCurrentImpliedVolatility } from './options-iv-rank.mjs';
-import { buildIvHistoryGroup, groupIvHistoryByBucket, ivHistoryGroupKey } from './options-iv-grouping.mjs';
+import { calculateIvMetricsFromSummary, extractCurrentImpliedVolatility } from './options-iv-rank.mjs';
+import { buildIvHistoryGroup, ivHistoryGroupKey } from './options-iv-grouping.mjs';
 import { selectBestOptionCandidates } from './options-candidate-selection.mjs';
 import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from './signal-failure-diagnostics.mjs';
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
@@ -2645,14 +2645,19 @@ export class DeltaEngine {
         for (const ticker of selected) {
           ticker.iv_current = extractCurrentImpliedVolatility(ticker);
           ticker.iv_rank = null;
+          ticker.iv_percentile = null;
           ticker.iv_rank_method = null;
           ticker.iv_min_history_days = ivHistoryPolicy.minimumHistoryDays;
+          ticker.iv_percentile_days = 0;
           const group = buildIvHistoryGroup(ticker, underlying, now);
           ticker.iv_delta_bucket = group?.delta_bucket ?? null;
           ticker.iv_dte_bucket = group?.dte_bucket ?? null;
           ticker.iv_rank_block_reason = ticker.iv_current === null
             ? 'IV_CURRENT_UNAVAILABLE'
             : group ? 'IV_GROUP_HISTORY_NOT_READY' : 'IV_GROUP_UNAVAILABLE';
+          ticker.iv_percentile_block_reason = ticker.iv_current === null
+            ? 'IV_CURRENT_UNAVAILABLE'
+            : group ? 'IV_DAILY_HISTORY_NOT_READY' : 'IV_GROUP_UNAVAILABLE';
         }
         if (ivObservations.length && typeof db.insertMany === 'function') {
           try {
@@ -2665,47 +2670,78 @@ export class DeltaEngine {
               source: 'delta_public_option_ticker'
             })));
 
-            // Fetch the rolling history for this underlying once, then reuse it
-            // across contracts sharing the same normalized market-risk bucket.
-            // This deliberately bridges contract-symbol changes at expiry.
-            const cutoff = encodeURIComponent(new Date(now - 30 * 86_400_000).toISOString());
-            const history = await db.select('dd_iv_history',
-              'underlying=eq.' + encodeURIComponent(underlying) +
-              '&observed_at=gte.' + cutoff +
-              '&select=underlying,option_type,delta_bucket,dte_bucket,iv_current,observed_at' +
-              '&order=observed_at.asc&limit=10000');
-            if (!Array.isArray(history)) throw new Error('IV grouped history query returned an invalid response');
-            const byGroup = groupIvHistoryByBucket(history);
+            // Aggregate each selected underlying/type/delta/DTE group in Postgres.
+            // This covers every observation in the rolling 30-day window without
+            // PostgREST's 10k row cap, oversized downloads, or broad-query timeouts.
+            // Queries run in small batches to keep database concurrency bounded.
+            const cutoff = new Date(now - 30 * 86_400_000).toISOString();
+            const groups = new Map();
             for (const ticker of selected) {
               if (ticker.iv_current === null) continue;
               const group = buildIvHistoryGroup(ticker, underlying, now);
               const key = group ? ivHistoryGroupKey(group) : null;
+              if (key && !groups.has(key)) groups.set(key, group);
+            }
+
+            const metricsByGroup = new Map();
+            const groupEntries = [...groups.entries()];
+            for (let offset = 0; offset < groupEntries.length; offset += 4) {
+              const batch = groupEntries.slice(offset, offset + 4);
+              const results = await Promise.all(batch.map(async ([key, group]) => {
+                const response = await db.rpc('get_options_iv_group_metrics', {
+                  p_underlying: underlying,
+                  p_option_type: group.option_type,
+                  p_delta_bucket: group.delta_bucket,
+                  p_dte_bucket: group.dte_bucket,
+                  p_since: cutoff,
+                  p_now: new Date(now).toISOString()
+                });
+                const summary = Array.isArray(response) ? response[0] : response;
+                if (!summary || typeof summary !== 'object') {
+                  throw new Error('IV group aggregate returned no summary for ' + key);
+                }
+                return [key, summary];
+              }));
+              for (const [key, summary] of results) metricsByGroup.set(key, summary);
+            }
+
+            for (const ticker of selected) {
+              const group = buildIvHistoryGroup(ticker, underlying, now);
+              const key = group ? ivHistoryGroupKey(group) : null;
               if (!key) {
                 ticker.iv_rank = null;
+                ticker.iv_percentile = null;
                 ticker.iv_history_days = 0;
+                ticker.iv_percentile_days = 0;
                 ticker.iv_rank_block_reason = 'IV_GROUP_UNAVAILABLE';
+                ticker.iv_percentile_block_reason = 'IV_GROUP_UNAVAILABLE';
                 continue;
               }
-              const result = calculateRollingIvRank(
-                byGroup.get(key) || [],
+              const result = calculateIvMetricsFromSummary(
+                metricsByGroup.get(key) || null,
                 ticker.iv_current,
                 now,
                 ivHistoryPolicy
               );
               ticker.iv_rank = result.ivRank;
+              ticker.iv_percentile = result.ivPercentile;
               ticker.iv_history_days = result.historyDays;
+              ticker.iv_percentile_days = result.dailySampleCount;
               ticker.iv_rank_method = result.method;
               ticker.iv_min_history_days = result.minimumHistoryDays;
-              ticker.iv_rank_block_reason = result.reason;
+              ticker.iv_rank_block_reason = result.ivRankReason;
+              ticker.iv_percentile_block_reason = result.ivPercentileReason;
               ticker.iv_delta_bucket = group.delta_bucket;
               ticker.iv_dte_bucket = group.dte_bucket;
             }
           } catch (error) {
             for (const ticker of selected) {
               ticker.iv_rank = null;
+              ticker.iv_percentile = null;
               ticker.iv_rank_block_reason = 'IV_HISTORY_PERSISTENCE_OR_QUERY_FAILED';
+              ticker.iv_percentile_block_reason = 'IV_HISTORY_PERSISTENCE_OR_QUERY_FAILED';
             }
-            await this.log('WARN', 'Grouped rolling Options IV Rank unavailable; all affected entries fail closed', {
+            await this.log('WARN', 'Grouped rolling Options IV metrics unavailable; affected entries fail closed', {
               underlying, observations: ivObservations.length,
               error: String(error?.message || error).slice(0, 240),
               orderRoutingAttempted: false
@@ -3310,9 +3346,18 @@ export class DeltaEngine {
       });
       if (!fifteen.ok || !hourly.ok) {
         this.optionsRegimeCandleCache.delete(symbol);
+        const diagnostic = result => ({
+          valid: result.ok === true,
+          regime: 'UNKNOWN',
+          reason: result.ok === true ? null : result.reason,
+          candleCount: result.count ?? 0,
+          ageSeconds: result.ageSeconds ?? null
+        });
         return {
           regime: 'UNKNOWN',
-          reason: !fifteen.ok ? '15M_' + fifteen.reason : '1H_' + hourly.reason
+          reason: !fifteen.ok ? '15M_' + fifteen.reason : '1H_' + hourly.reason,
+          fifteenMinute: diagnostic(fifteen),
+          hourly: diagnostic(hourly)
         };
       }
       this.optionsRegimeCandleCache.set(symbol, {
@@ -3378,8 +3423,20 @@ export class DeltaEngine {
         ? await this.getOptionsMarketRegime(asset).catch(error => ({ regime: 'UNKNOWN', reason: String(error?.message || error) }))
         : { regime: 'UNKNOWN', reason: 'REGIME_FEATURE_DISABLED' };
       const marketRegime = regimeSnapshot.regime || 'UNKNOWN';
+      // Keep both timeframe measurements with the candidate so a legitimate
+      // UNKNOWN (neutral ADX / disagreement) is distinguishable from bad data.
+      const regimeDiagnostics = {
+        marketRegimeReason: regimeSnapshot.reason || 'REGIME_REASON_UNAVAILABLE',
+        marketRegime15m: regimeSnapshot.fifteenMinute?.regime || 'UNKNOWN',
+        marketRegime1h: regimeSnapshot.hourly?.regime || 'UNKNOWN',
+        marketRegime15mAdx: regimeSnapshot.fifteenMinute?.adx ?? null,
+        marketRegime1hAdx: regimeSnapshot.hourly?.adx ?? null,
+        marketRegime15mEmaSlopeAtr: regimeSnapshot.fifteenMinute?.emaSlopeAtr ?? null,
+        marketRegime1hEmaSlopeAtr: regimeSnapshot.hourly?.emaSlopeAtr ?? null
+      };
       const buyCfg = {
         ...cfg,
+        ...regimeDiagnostics,
         minDays: regimeBased ? 3 : cfg.minDays,
         maxDays: regimeBased ? 10 : cfg.maxDays,
         regimeBased,
@@ -3387,6 +3444,7 @@ export class DeltaEngine {
       };
       const sellCfg = {
         ...cfg,
+        ...regimeDiagnostics,
         minDays: regimeBased ? 1 : cfg.minDays,
         maxDays: regimeBased ? 3 : cfg.maxDays,
         regimeBased,
@@ -3437,6 +3495,12 @@ export class DeltaEngine {
               vega: row.vega, bid: row.bid, ask: row.ask, openInterest: row.oi, volume: row.volume,
               underlyingSymbol: row.underlyingSymbol, underlyingScore: row.underlyingScore,
               underlyingRawScore: row.underlyingRawScore, underlyingStage: row.underlyingStage,
+              marketRegime: row.marketRegime, marketRegimeReason: row.marketRegimeReason,
+              marketRegime15m: row.marketRegime15m, marketRegime1h: row.marketRegime1h,
+              marketRegime15mAdx: row.marketRegime15mAdx, marketRegime1hAdx: row.marketRegime1hAdx,
+              marketRegime15mEmaSlopeAtr: row.marketRegime15mEmaSlopeAtr,
+              marketRegime1hEmaSlopeAtr: row.marketRegime1hEmaSlopeAtr,
+              ivRank: row.ivRank, ivPercentile: row.ivPercentile,
               executionLocked, routeConfigured, signalOnly: CONFIG.signalOnly, testnetProductVerified: best.ticker.testnet_product_verified === true, riskModel: 'FULL_PREMIUM_PLUS_TWO_SIDE_FEES' }, 'OPTIONS_BUY')
           });
           out.push(row);
@@ -3507,6 +3571,12 @@ export class DeltaEngine {
               hedgeStrike: row.hedgeStrike, hedgeDelta: row.hedgeDelta, credit: row.credit,
               underlyingSymbol: row.underlyingSymbol, underlyingScore: row.underlyingScore,
               underlyingRawScore: row.underlyingRawScore, underlyingStage: row.underlyingStage,
+              marketRegime: row.marketRegime, marketRegimeReason: row.marketRegimeReason,
+              marketRegime15m: row.marketRegime15m, marketRegime1h: row.marketRegime1h,
+              marketRegime15mAdx: row.marketRegime15mAdx, marketRegime1hAdx: row.marketRegime1hAdx,
+              marketRegime15mEmaSlopeAtr: row.marketRegime15mEmaSlopeAtr,
+              marketRegime1hEmaSlopeAtr: row.marketRegime1hEmaSlopeAtr,
+              ivRank: row.ivRank, ivPercentile: row.ivPercentile,
               maxRiskPerSpread: row.maxRiskPerSpread, executionLocked: row.executionLocked,
               optionRouteReady: row.optionRouteReady, signalOnly: CONFIG.signalOnly,
               definedRiskOnly: settings.options_sell_defined_risk_only !== false }, 'OPTIONS_SELL')
@@ -3868,6 +3938,7 @@ export class DeltaEngine {
       volume_usd: s.volumeUsd,
       market_regime: s.marketRegime || 'UNKNOWN',
       iv_rank: s.ivRank,
+      iv_percentile: s.ivPercentile,
       iv_current: n(s.ticker?.iv_current) || null,
       iv_delta_bucket: s.ticker?.iv_delta_bucket || null,
       iv_dte_bucket: s.ticker?.iv_dte_bucket || null,
@@ -3902,12 +3973,22 @@ export class DeltaEngine {
         turnoverSymbol: s.ticker?.turnover_symbol || null,
         marketDataSource: 'production_public',
         marketRegime: s.marketRegime || 'UNKNOWN',
+        marketRegimeReason: s.marketRegimeReason || null,
+        marketRegime15m: s.marketRegime15m || 'UNKNOWN',
+        marketRegime1h: s.marketRegime1h || 'UNKNOWN',
+        marketRegime15mAdx: s.marketRegime15mAdx ?? null,
+        marketRegime1hAdx: s.marketRegime1hAdx ?? null,
+        marketRegime15mEmaSlopeAtr: s.marketRegime15mEmaSlopeAtr ?? null,
+        marketRegime1hEmaSlopeAtr: s.marketRegime1hEmaSlopeAtr ?? null,
         ivRank: s.ivRank ?? null,
+        ivPercentile: s.ivPercentile ?? null,
         ivCurrent: s.ticker?.iv_current ?? null,
         ivDeltaBucket: s.ticker?.iv_delta_bucket ?? null,
         ivDteBucket: s.ticker?.iv_dte_bucket ?? null,
         ivHistoryDays: s.ticker?.iv_history_days ?? 0,
         ivRankBlockReason: s.ticker?.iv_rank_block_reason ?? null,
+        ivPercentileDays: s.ticker?.iv_percentile_days ?? 0,
+        ivPercentileBlockReason: s.ticker?.iv_percentile_block_reason ?? null,
         // Keep cached detail fields aligned with the top-level Greek columns so
         // the dashboard and any detail-based consumers read the same values.
         delta: s.delta,

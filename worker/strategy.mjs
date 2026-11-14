@@ -51,7 +51,15 @@ const OPTIONS_BUY_DETAIL_FIELDS = Object.freeze([
   'underlyingStage',
   'executionLocked',
   'marketRegime',
-  'ivRank'
+  'marketRegimeReason',
+  'marketRegime15m',
+  'marketRegime1h',
+  'marketRegime15mAdx',
+  'marketRegime1hAdx',
+  'marketRegime15mEmaSlopeAtr',
+  'marketRegime1hEmaSlopeAtr',
+  'ivRank',
+  'ivPercentile'
 ]);
 
 const OPTIONS_SELL_DETAIL_FIELDS = Object.freeze([
@@ -77,7 +85,15 @@ const OPTIONS_SELL_DETAIL_FIELDS = Object.freeze([
   'credit',
   'maxRiskPerSpread',
   'marketRegime',
-  'ivRank'
+  'marketRegimeReason',
+  'marketRegime15m',
+  'marketRegime1h',
+  'marketRegime15mAdx',
+  'marketRegime1hAdx',
+  'marketRegime15mEmaSlopeAtr',
+  'marketRegime1hEmaSlopeAtr',
+  'ivRank',
+  'ivPercentile'
 ]);
 
 function trimAllowedDetails(details, allowlist, maxFields) {

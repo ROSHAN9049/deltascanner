@@ -28,8 +28,11 @@ function harness({
     cached_at: new Date(NOW).toISOString(),
     market_regime: strategy === 'OPTIONS_BUY' ? 'TRENDING' : 'SIDEWAYS',
     iv_rank: strategy === 'OPTIONS_BUY' ? 30 : 60,
+    iv_percentile: strategy === 'OPTIONS_BUY' ? 10 : 90,
     details: {
-      analysisReady: true, optionType: 'CALL', strike: 80000,
+      analysisReady: true, ivRank: strategy === 'OPTIONS_BUY' ? 30 : 60,
+      ivPercentile: strategy === 'OPTIONS_BUY' ? 10 : 90,
+      optionType: 'CALL', strike: 80000,
       delta: strategy === 'OPTIONS_BUY' ? 0.55 : 0.30,
       dte: 57, underlyingSymbol: 'BTCUSD',
       hedgeSymbol: HEDGE, hedgeStrike: 82000, hedgeDelta: 0.1
@@ -466,5 +469,23 @@ test('Options daily loss at or beyond 2% of equity blocks new entries', async ()
   });
   assert.equal(preview.executionAllowed, false);
   assert.match(preview.executionLockReason, /daily loss limit reached/i);
+  assert.equal(apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
+});
+
+test('Options execution blocks when daily IV Percentile is unavailable even on manual-test path', async () => {
+  const { executor, apiCalls } = harness({
+    strategy: 'OPTIONS_BUY',
+    candidatePatch: {
+      iv_percentile: null,
+      details: { ivPercentile: null }
+    },
+    manualOverrideEnabled: true
+  });
+  await assert.rejects(
+    executor.previewOptionsOrder({
+      symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1, manualTestOverride: true
+    }),
+    /IV Percentile unavailable or insufficient daily history/
+  );
   assert.equal(apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
 });

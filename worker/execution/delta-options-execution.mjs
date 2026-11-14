@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { parseDeltaOptionSymbol } from './delta-options-policy.mjs';
-import { evaluateIvRank, evaluateOptionsExit } from '../options-regime-strategy.mjs';
+import { evaluateIvMetrics, evaluateOptionsExit } from '../options-regime-strategy.mjs';
 import { executeDefinedRiskSellExit } from '../options-exit-sequence.mjs';
 import {
   assertOptionsExecutionAllowed,
@@ -158,7 +158,7 @@ export function createDeltaOptionsExecution({
       'dd_option_cache',
       'symbol=eq.' + encodeURIComponent(symbol) +
         '&strategy=eq.' + encodeURIComponent(strategy) +
-        '&select=symbol,strategy,score,stage,cached_at,details,market_regime,iv_rank&limit=2'
+        '&select=symbol,strategy,score,stage,cached_at,details,market_regime,iv_rank,iv_percentile&limit=2'
     );
     if (!Array.isArray(rows) || rows.length !== 1) {
       throw new Error('A unique current Options candidate is not present in dd_option_cache');
@@ -170,8 +170,9 @@ export function createDeltaOptionsExecution({
     }
     const details = parseDetails(row.details);
     const ivRank = number(row.iv_rank ?? details.ivRank);
-    const ivRankGate = evaluateIvRank(strategy, ivRank);
-    if (!ivRankGate.allowed) throw new Error(ivRankGate.reason);
+    const ivPercentile = number(row.iv_percentile ?? details.ivPercentile);
+    const ivMetricsGate = evaluateIvMetrics(strategy, ivRank, ivPercentile);
+    if (!ivMetricsGate.allowed) throw new Error(ivMetricsGate.reason);
     const marketRegime = clean(row.market_regime || details.marketRegime).toUpperCase();
     if (isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED)) {
       const expectedRegime = strategy === 'OPTIONS_BUY' ? 'TRENDING' : 'SIDEWAYS';
@@ -186,7 +187,7 @@ export function createDeltaOptionsExecution({
       throw new Error('Options candidate is not confirmed by the worker analysis gates');
     }
     return {
-      ...row, details, ivRank, marketRegime, cachedAt: new Date(cachedAtMs).toISOString(),
+      ...row, details, ivRank, ivPercentile, marketRegime, cachedAt: new Date(cachedAtMs).toISOString(),
       manualTestOverride: manualTestOverride === true
     };
   }
@@ -805,7 +806,7 @@ export function createDeltaOptionsExecution({
       expiry_ms: product.parsed.expiryMs, dte: product.parsed.dte,
       peak_premium: preview.premium, current_premium: preview.premium, status: 'ENTRY_PENDING',
       realized_pnl_verified: false, opened_at: new Date(now()).toISOString(), updated_at: new Date(now()).toISOString(),
-      raw: { environment: 'testnet', iv_rank: candidate.ivRank, regime: candidate.marketRegime, entry_pending: true }
+      raw: { environment: 'testnet', iv_rank: candidate.ivRank, iv_percentile: candidate.ivPercentile, regime: candidate.marketRegime, entry_pending: true }
     };
     const inserted = await database.insert('dd_option_positions', row);
     if (Array.isArray(inserted) && inserted.length === 0) throw new Error('Options position reservation was not confirmed; entry blocked');
@@ -836,7 +837,7 @@ export function createDeltaOptionsExecution({
       expiry_ms: product.parsed.expiryMs, dte: product.parsed.dte,
       peak_premium: entryPremium, current_premium: entryPremium, status: 'OPEN',
       realized_pnl_verified: false, opened_at: new Date(now()).toISOString(), updated_at: new Date(now()).toISOString(),
-      raw: { environment: 'testnet', iv_rank: candidate.ivRank, regime: candidate.marketRegime,
+      raw: { environment: 'testnet', iv_rank: candidate.ivRank, iv_percentile: candidate.ivPercentile, regime: candidate.marketRegime,
         entry_order_state: order?.state ?? null, hedge_entry_order_state: hedgeOrder?.state ?? null,
         exit_policy: preview.strategy === 'OPTIONS_BUY' ? 'TP_50_SL_30_BREAKEVEN_AFTER_1R' : 'TP_50_DECAY_SL_2X_DTE_0_5' }
     };

@@ -4,7 +4,9 @@ import {
   detectOptionsMarketRegime,
   strategyForOptionsRegime,
   normalizeIvRank,
+  normalizeIvPercentile,
   evaluateIvRank,
+  evaluateIvMetrics,
   evaluateOptionsExit
 } from '../worker/options-regime-strategy.mjs';
 
@@ -86,4 +88,32 @@ test('SELL exit logic enforces 50% decay, 2x premium stop and 0.5 DTE exit', () 
     'STOP_LOSS_2X_PREMIUM');
   assert.equal(evaluateOptionsExit({ strategy: 'OPTIONS_SELL', entryPremium: 100, currentPremium: 80, dte: 0.5 }).reason,
     'TIME_EXIT_DTE_0_5_DAYS');
+});
+
+test('IV Rank and daily IV Percentile must both pass strategy thresholds', () => {
+  assert.equal(evaluateIvMetrics('OPTIONS_BUY', 39.99, 19.99).allowed, true);
+  assert.equal(evaluateIvMetrics('OPTIONS_BUY', 39.99, 20).reason,
+    'BUY requires IV Percentile < 20');
+  assert.equal(evaluateIvMetrics('OPTIONS_BUY', 40, 5).reason,
+    'BUY requires IV Rank < 40');
+  assert.equal(evaluateIvMetrics('OPTIONS_SELL', 50.01, 80).reason,
+    'SELL requires IV Percentile > 80');
+  assert.equal(evaluateIvMetrics('OPTIONS_SELL', 50.01, 80.01).allowed, true);
+  assert.equal(evaluateIvMetrics('OPTIONS_SELL', 50.01, null).reason,
+    'IV Percentile unavailable or insufficient daily history; entry blocked');
+  assert.equal(normalizeIvPercentile({ details: { ivPercentile: '18.5' } }), 18.5);
+  assert.equal(normalizeIvPercentile({ iv_percentile: 101 }), null);
+});
+
+test('regime results expose both timeframe measurements for UNKNOWN diagnosis', () => {
+  const result = detectOptionsMarketRegime({
+    candles15m: makeCandles({ mode: 'trend', step: 0.5 }),
+    candles1h: makeCandles({ mode: 'sideways' })
+  });
+  assert.equal(result.regime, 'UNKNOWN');
+  assert.equal(result.reason, 'TIMEFRAME_DISAGREEMENT_OR_NEUTRAL_ADX');
+  assert.equal(result.fifteenMinute.valid, true);
+  assert.equal(result.hourly.valid, true);
+  assert.ok(Number.isFinite(result.fifteenMinute.adx));
+  assert.ok(Number.isFinite(result.hourly.adx));
 });

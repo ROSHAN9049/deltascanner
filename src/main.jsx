@@ -944,9 +944,9 @@ function OptionTable({
   emptyMessage = 'No option candidates returned for the current market snapshot.'
 }) {
   const hasSellRiskColumns = type === 'SELL';
-  const columnCount = hasSellRiskColumns ? 19 : 17;
+  const columnCount = hasSellRiskColumns ? 22 : 20;
   return <div className="tablewrap"><table><thead><tr>
-    <th>TIME</th><th>UNDERLYING</th><th>CONTRACT</th><th>TYPE</th><th>STRIKE</th><th>DTE</th><th>Δ</th><th>DELTA RANGE CHECK</th><th>BID</th><th>ASK</th><th>SPREAD</th><th>OI</th><th>VOL</th><th>SCORE</th><th>STAGE</th>{hasSellRiskColumns ? <><th>PROTECTIVE LEG</th><th>MAX LOSS / SPREAD (RAW)</th></> : null}<th>STATUS</th><th>ACTION</th>
+    <th>TIME</th><th>UNDERLYING</th><th>CONTRACT</th><th>TYPE</th><th>STRIKE</th><th>DTE</th><th>Δ</th><th>DELTA RANGE CHECK</th><th>BID</th><th>ASK</th><th>SPREAD</th><th>IV RANK</th><th>IV PERCENTILE</th><th>REGIME</th><th>OI</th><th>VOL</th><th>SCORE</th><th>STAGE</th>{hasSellRiskColumns ? <><th>PROTECTIVE LEG</th><th>MAX LOSS / SPREAD (RAW)</th></> : null}<th>STATUS</th><th>ACTION</th>
   </tr></thead><tbody>{rows.slice(0,30).map(s => {
     let d = s.details || {};
     if (typeof d === 'string') { try { d = JSON.parse(d); } catch { d = {}; } }
@@ -966,6 +966,18 @@ function OptionTable({
     );
     const rawMaxLoss = safeNum(d.maxRiskPerSpread);
     const maxLossAvailable = protectiveLegConfirmed && rawMaxLoss !== null && rawMaxLoss > 0;
+    const ivRank = safeNum(d.ivRank ?? s.iv_rank);
+    const ivPercentile = safeNum(d.ivPercentile ?? s.iv_percentile);
+    const ivPercentileDays = safeNum(d.ivPercentileDays);
+    const ivPercentileReason = d.ivPercentileBlockReason || 'Daily percentile history is not yet available';
+    const marketRegime = String(d.marketRegime ?? s.market_regime ?? 'UNKNOWN').toUpperCase();
+    const regimeDetail = [
+      d.marketRegimeReason || 'Regime reason unavailable',
+      '15m ' + String(d.marketRegime15m || 'UNKNOWN') +
+        (safeNum(d.marketRegime15mAdx) === null ? '' : ' ADX ' + safeNum(d.marketRegime15mAdx).toFixed(1)),
+      '1h ' + String(d.marketRegime1h || 'UNKNOWN') +
+        (safeNum(d.marketRegime1hAdx) === null ? '' : ' ADX ' + safeNum(d.marketRegime1hAdx).toFixed(1))
+    ].join(' · ');
     const candidateVerified = s.stage === 'CONFIRMED' && d.analysisReady === true &&
       (!hasSellRiskColumns || protectiveLegConfirmed);
     const manualOverrideCandidate = isManualOverrideOptionCandidate({
@@ -994,6 +1006,11 @@ function OptionTable({
       <td>{fmtRawPrice(d.bid)}</td>
       <td>{fmtRawPrice(d.ask)}</td>
       <td>{safeNum(s.spread_pct) === null ? '—' : safeNum(s.spread_pct).toFixed(2) + '%'}</td>
+      <td title={d.ivRankBlockReason || ''}>{ivRank === null ? '—' : ivRank.toFixed(1) + '%'}</td>
+      <td title={ivPercentile === null ? ivPercentileReason : 'Completed IST days: ' + (ivPercentileDays ?? '—')}>{ivPercentile === null
+        ? 'WAIT · ' + (ivPercentileDays ?? 0) + '/20d'
+        : ivPercentile.toFixed(1) + '%'}</td>
+      <td className={marketRegime === 'UNKNOWN' ? 'warn' : 'muted'} title={regimeDetail}>{marketRegime}</td>
       <td>{safeNum(d.openInterest) === null ? '—' : safeNum(d.openInterest).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
       <td>{safeNum(d.volume) === null ? '—' : safeNum(d.volume).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
       <td><b>{safeNum(s.score) === null ? '—' : safeNum(s.score).toFixed(0)}</b>/100</td>
