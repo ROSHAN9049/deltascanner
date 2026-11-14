@@ -46,21 +46,22 @@ const config = {
 test('ETH Options can confirm from a fresh normalized market signal even when its Futures route is unavailable', () => {
   // This snapshot is taken before Futures risk/sizing. The Futures path below
   // intentionally changes its own signal to SKIPPED_INSUFFICIENT_CAPITAL.
-  const optionsUnderlying = selectOptionsUnderlyingSignal([marketSignal], { scoreMin: 80 });
-  const futuresSignalAfterGates = {
-    ...marketSignal,
-    stage: 'SKIPPED_INSUFFICIENT_CAPITAL',
-    ready: false,
-    blocked: [
-      'Symbol is outside the fixed Delta Testnet futures allowlist',
-      'Delta Testnet route unavailable: no verified live, operational product for this symbol',
-      'Risk budget insufficient for 1 contract'
-    ]
-  };
+  const futuresSignal = { ...marketSignal };
+  const optionsUnderlying = selectOptionsUnderlyingSignal([futuresSignal], { scoreMin: 80 });
+
+  // Model the in-place Futures execution mutation performed later in the
+  // engine's risk/sizing loop after the independent Options snapshot exists.
+  futuresSignal.stage = 'SKIPPED_INSUFFICIENT_CAPITAL';
+  futuresSignal.ready = false;
+  futuresSignal.blocked = [
+    'Symbol is outside the fixed Delta Testnet futures allowlist',
+    'Delta Testnet route unavailable: no verified live, operational product for this symbol',
+    'Risk budget insufficient for 1 contract'
+  ];
 
   const option = analyseOption(putTicker, optionsUnderlying, 'OPTIONS_BUY', config);
 
-  assert.equal(futuresSignalAfterGates.stage, 'SKIPPED_INSUFFICIENT_CAPITAL');
+  assert.equal(futuresSignal.stage, 'SKIPPED_INSUFFICIENT_CAPITAL');
   assert.equal(optionsUnderlying.stage, 'CONFIRMED');
   assert.equal(optionsUnderlying.optionsUnderlyingConfirmed, true);
   assert.equal(option.underlyingSymbol, 'ETHUSD');
