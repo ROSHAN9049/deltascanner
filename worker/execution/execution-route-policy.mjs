@@ -10,15 +10,13 @@ export const DELTA_TESTNET_FUTURES_ALLOWLIST = Object.freeze([
   'XAUTUSD',
   'PAXGUSD',
   'NVDAXUSD',
-  '1000SHIBUSD',
-  // Candidate symbols still require live, operational Testnet product metadata.
-  'BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD', 'ADAUSD'
+  '1000SHIBUSD'
 ]);
 
 const allowedSymbols = new Set(DELTA_TESTNET_FUTURES_ALLOWLIST);
 
 export const DEFAULT_DELTA_TESTNET_GRID_SYMBOL_POOL = Object.freeze([
-  'PAXGUSD', 'NVDAXUSD', 'SPYXUSD', 'XAUTUSD', 'SLVONUSD', 'ADAUSD'
+  'PAXGUSD', 'NVDAXUSD', 'SPYXUSD', 'XAUTUSD'
 ]);
 
 export function resolveDeltaTestnetGridSymbolPool(poolValue, legacyValue) {
