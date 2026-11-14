@@ -426,7 +426,7 @@ test('filled close with exchange-flat confirmation marks canonical position CLOS
   assert.equal(result.positionClosed, true);
   assert.equal(closed.status, 'CLOSED');
   assert.equal(closed.close_order_id, 501);
-  assert.equal(closed.exit_order_id, 501);
+  assert.equal(Object.hasOwn(closed, 'exit_order_id'), false);
   assert.equal(closed.exit_price, '101.25');
   assert.equal(closed.exit_reason, 'TIMEOUT');
   assert.equal(closed.close_reason, 'TIMEOUT');
