@@ -1,6 +1,8 @@
 import {
   getOptionsDatabaseExecutionGate,
-  OPTIONS_DATABASE_EXECUTION_LOCK_REASON
+  getOptionsExecutionGate,
+  OPTIONS_DATABASE_EXECUTION_LOCK_REASON,
+  OPTIONS_EXECUTION_LOCK_REASON
 } from './options-execution-lock.mjs';
 
 const DEFAULT_API_ORIGIN = 'https://deltascanner-api-v2.hostless.app';
@@ -64,7 +66,7 @@ export function createOptionsAutoTrigger({
   }
 
   const enabled = isEnabled(env.AUTO_EXECUTE_OPTIONS);
-  const fullAutoExecute = isEnabled(env.FULL_AUTO_EXECUTE);
+  const fullAutoExecuteConfigured = isEnabled(env.FULL_AUTO_EXECUTE);
   let timer = null;
   let started = false;
   let inFlight = null;
@@ -72,8 +74,8 @@ export function createOptionsAutoTrigger({
   async function writeHeartbeat(status, extra = {}) {
     await logger('INFO', '[AUTO-TRIGGER] Worker heartbeat', {
       enabled,
-      mode: fullAutoExecute ? 'AUTO_EXECUTE' : 'PREVIEW_ONLY',
-      fullAutoExecute,
+      mode: fullAutoExecuteConfigured ? 'AUTO_EXECUTE' : 'PREVIEW_ONLY',
+      fullAutoExecute: fullAutoExecuteConfigured,
       status,
       candidateReady: false,
       lastScanAt: new Date(now()).toISOString(),
@@ -91,9 +93,24 @@ export function createOptionsAutoTrigger({
       }
 
       try {
-        if (clean(env.DELTA_EXECUTION_MODE).toLowerCase() !== 'testnet') {
-          await writeHeartbeat('BLOCKED_NOT_TESTNET', { reason: 'Worker execution profile is not Delta Testnet' });
+        if (clean(env.DELTA_EXECUTION_MODE).toLowerCase() !== 'testnet' ||
+            upper(env.DELTA_ENVIRONMENT) !== 'TESTNET') {
+          await writeHeartbeat('BLOCKED_NOT_TESTNET', {
+            reason: 'Worker Options auto-trigger requires DELTA_EXECUTION_MODE=testnet and DELTA_ENVIRONMENT=TESTNET'
+          });
           return { status: 'BLOCKED_NOT_TESTNET', previewRequested: false };
+        }
+        if (fullAutoExecuteConfigured) {
+          const executionGate = getOptionsExecutionGate(env);
+          if (!executionGate.allowed) {
+            await writeHeartbeat('BLOCKED_OPTIONS_ENV_EXECUTION_DISABLED', {
+              reason: OPTIONS_EXECUTION_LOCK_REASON,
+              mode: executionGate.mode,
+              environment: executionGate.environment,
+              flagEnabled: executionGate.flagEnabled
+            });
+            return { status: 'BLOCKED_OPTIONS_ENV_EXECUTION_DISABLED', previewRequested: false };
+          }
         }
         if (!engineSecret) throw new Error('ENGINE_SECRET is unavailable');
         const previewUrl = resolvePreviewUrl(env.OPTIONS_AUTO_TRIGGER_API_URL);

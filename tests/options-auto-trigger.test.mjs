@@ -38,6 +38,8 @@ function harness({
     OPTIONS_REGIME_STRATEGY_ENABLED: 'true',
     OPTIONS_EXIT_MONITOR_ENABLED: 'true',
     DELTA_EXECUTION_MODE: 'testnet',
+    DELTA_ENVIRONMENT: 'TESTNET',
+    OPTIONS_EXECUTION_ALLOWED: 'true',
     ENGINE_SECRET: 'worker-secret',
     OPTIONS_AUTO_TRIGGER_API_URL: 'https://deltascanner-api-v2.hostless.app',
     ...envPatch
@@ -241,4 +243,30 @@ test('full-auto candidate logs automatic execution before calling the execute en
   assert.ok(requests[1].url.endsWith('/api/options/execute'));
   assert.ok(logs.some(args => args[1] === '[AUTO-TRIGGER] Executing automatically...'));
   assert.ok(logs.every(args => args[1] !== '[AUTO-TRIGGER] Candidate ready for execution. Token acquired. Waiting for manual execution.'));
+});
+
+test('Options auto-trigger requires both the Testnet execution mode and TESTNET environment', async () => {
+  for (const envPatch of [
+    { DELTA_ENVIRONMENT: 'SIGNAL_ONLY' },
+    { DELTA_ENVIRONMENT: '' },
+    { DELTA_EXECUTION_MODE: 'disabled' }
+  ]) {
+    const { worker, calls } = harness({ envPatch });
+    const result = await worker.runOnce();
+    assert.equal(result.status, 'BLOCKED_NOT_TESTNET');
+    assert.equal(calls.some(call => call.kind === 'fetch'), false);
+  }
+});
+
+test('FULL_AUTO_EXECUTE cannot submit when OPTIONS_EXECUTION_ALLOWED is false or missing', async () => {
+  for (const value of ['false', '']) {
+    const { worker, calls, logs } = harness({
+      envPatch: { FULL_AUTO_EXECUTE: 'true', OPTIONS_EXECUTION_ALLOWED: value }
+    });
+    const result = await worker.runOnce();
+    assert.equal(result.status, 'BLOCKED_OPTIONS_ENV_EXECUTION_DISABLED');
+    assert.equal(calls.some(call => call.kind === 'fetch'), false);
+    const heartbeat = logs.find(args => args[1] === '[AUTO-TRIGGER] Worker heartbeat');
+    assert.equal(heartbeat?.[2]?.status, 'BLOCKED_OPTIONS_ENV_EXECUTION_DISABLED');
+  }
 });
