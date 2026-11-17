@@ -37,10 +37,8 @@ import { manageDeltaTestnetMultiGrid } from './execution/delta-multi-grid-engine
 import { calculateAutoGridRange, calculateAtrGridRange, hasGridAutoRangeExposure, isAutoGridRangeRefreshDue, isGridAtrSnapshotRefreshRequired, selectLatestCompletedDailyCandle, utcDayKey } from '../shared/grid-auto-range.js';
 import { assertDirectDeltaExecutionMode, getExecutionRouteBlockReason, DELTA_TESTNET_FUTURES_ALLOWLIST, isAllowedDeltaTestnetFutureSymbol, isEligibleDeltaTestnetPerpetualProduct, isMarketTickFresh, canStartWorkerInExecutionProfile } from './execution/execution-route-policy.mjs';
 import { canExecuteDeltaTestnetOrders, checkDeltaTestnetPrivateApi, isPrivateApiConnectivityError } from './execution/testnet-private-api-health.mjs';
-import {
-  assessStrategyPositionCap,
-  normalizeStrategyPositionKey
-} from '../shared/strategy-position-limits.js';
+import { normalizeStrategyPositionKey } from '../shared/strategy-position-limits.js';
+import { loadStrategyPositionCapSnapshot } from './strategy-position-cap-snapshot.mjs';
 import { DEFAULT_CANDLE_CACHE_SYMBOL_LIMIT, pruneCandleCacheState, resolveCandleCacheSymbolLimit, selectTopCandleSymbols } from './candle-cache-policy.mjs';
 import { formatMemoryLog, MEMORY_LOG_INTERVAL_MS, summarizeMemoryUsage } from './memory-monitor.mjs';
 import { cleanupWebSocketListeners } from './websocket-lifecycle.mjs';
@@ -2294,39 +2292,13 @@ export class DeltaEngine {
       };
     }
 
-    const strategyFilter = strategyKey === 'OPTIONS'
-      ? 'strategy=in.(OPTIONS_BUY,OPTIONS_SELL,OPTIONS)'
-      : 'strategy=eq.' + encodeURIComponent(strategyKey);
-    const recentFilledAfter = encodeURIComponent(
-      new Date(Date.now() - 120_000).toISOString()
-    );
     try {
-      const [openPositions, pendingOrders, recentlyFilledOrders] = await Promise.all([
-        db.select(
-          'dd_delta_positions',
-          strategyFilter + '&status=eq.OPEN&select=id,symbol,strategy,entry_order_id,client_order_id,order_id&limit=200'
-        ),
-        db.select(
-          'dd_orders',
-          strategyFilter + '&role=eq.ENTRY&state=in.(PENDING,UNKNOWN,NEW,OPEN,PARTIALLY_FILLED)&select=id,client_order_id,strategy,role,state,created_at&limit=200'
-        ),
-        db.select(
-          'dd_orders',
-          strategyFilter + '&role=eq.ENTRY&state=eq.FILLED&created_at=gte.' + recentFilledAfter +
-            '&select=id,client_order_id,strategy,role,state,created_at&limit=200'
-        )
-      ]);
-      if (!Array.isArray(openPositions) || !Array.isArray(pendingOrders) ||
-          !Array.isArray(recentlyFilledOrders)) {
-        throw new Error('Position or entry-reservation query returned malformed data');
-      }
-      return assessStrategyPositionCap({
-        strategy: strategyKey,
+      const snapshot = await loadStrategyPositionCapSnapshot({
+        database: db,
         settings,
-        openPositions,
-        pendingOrders: [...pendingOrders, ...recentlyFilledOrders],
-        now: Date.now()
+        strategies: [strategyKey]
       });
+      return snapshot[strategyKey];
     } catch (error) {
       const message = 'Per-strategy position-cap snapshot unavailable for ' + strategyKey +
         '; new entries fail closed';
@@ -2347,7 +2319,32 @@ export class DeltaEngine {
     }
   }
 
-  async riskGate(signal, strategy, account, settings, openPositions, trades) {
+  // One analysis pass shares a single DB snapshot across every ticker's
+  // Momentum/Scalping signal evaluation. openTrade() still performs its own
+  // fresh lookup immediately before the final entry risk gate.
+  async getStrategyPositionCapSnapshot(settings = {}) {
+    const strategies = ['MOMENTUM', 'SCALPING'];
+    try {
+      return await loadStrategyPositionCapSnapshot({ database: db, settings, strategies });
+    } catch (error) {
+      await this.log('WARN', 'Shared strategy position-cap snapshot unavailable; analysis readiness fails closed', {
+        strategies,
+        error: String(error?.message || error).slice(0, 240)
+      }).catch(() => {});
+      return Object.fromEntries(strategies.map(strategy => [strategy, {
+        strategy,
+        limit: null,
+        openPositions: null,
+        pendingReservations: null,
+        exposure: null,
+        status: 'UNKNOWN',
+        blocked: true,
+        reason: 'Strategy position-cap data unavailable for ' + strategy + '; new entries fail closed'
+      }]));
+    }
+  }
+
+  async riskGate(signal, strategy, account, settings, openPositions, trades, suppliedPositionCap = null) {
     const reasons = [...(signal.blocked || [])];
     const continuous = settings.continuous_mode !== false;
 
@@ -2386,7 +2383,8 @@ export class DeltaEngine {
     }
     const duplicateBlocker = duplicatePositionBlocker(openPositions, signal.symbol);
     if (duplicateBlocker) reasons.push(duplicateBlocker);
-    const strategyPositionCap = await this.getStrategyPositionCapAssessment(strategy, settings);
+    const strategyPositionCap = suppliedPositionCap ||
+      await this.getStrategyPositionCapAssessment(strategy, settings);
     if (strategyPositionCap.status !== 'PASS') {
       reasons.push(strategyPositionCap.reason);
     }
@@ -3601,6 +3599,10 @@ export class DeltaEngine {
     const btc5 = this.getCandles(btc, '5m');
     const btc15 = this.getCandles(btc, '15m');
 
+    // The per-ticker signal gate uses a shared, read-only position snapshot.
+    // Final entry routing re-reads capacity in openTrade() before any order.
+    const strategyPositionCapSnapshot = await this.getStrategyPositionCapSnapshot(settings);
+
     // Shadow-only hourly BTC regime: deliberately separate from the legacy
     // btc5/btc15 arrays passed into analyse(), so live signal decisions remain unchanged.
     let shadowRegime = null;
@@ -3794,10 +3796,13 @@ export class DeltaEngine {
       );
 
       for (const s of [mom, scalp]) {
+        const strategyName = s === mom ? 'MOMENTUM' : 'SCALPING';
         const sizingCandidate = String(s?.stage || '').toUpperCase() === 'CONFIRMED' && s?.ready === true;
         const size = sizingCandidate ? this.positionSizing(s, account, settings) : null;
-        const gate = await this.riskGate(s, s === mom ? 'MOMENTUM' : 'SCALPING', account, settings, openPositions, trades);
-        const strategyName = s === mom ? 'MOMENTUM' : 'SCALPING';
+        const gate = await this.riskGate(
+          s, strategyName, account, settings, openPositions, trades,
+          strategyPositionCapSnapshot[strategyName]
+        );
         const validEntryBrackets =
           Number.isFinite(Number(s?.sl)) && Number(s.sl) > 0 &&
           Number.isFinite(Number(s?.tp)) && Number(s.tp) > 0;
