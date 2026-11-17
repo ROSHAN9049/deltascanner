@@ -22,18 +22,21 @@ export async function loadStrategyPositionCapSnapshot({
   const [openPositions, entryOrders] = await Promise.all([
     database.select(
       'dd_delta_positions',
-      'status=eq.OPEN&select=id,symbol,strategy,status,entry_order_id,client_order_id,order_id&limit=1000'
+      'status=eq.OPEN&select=id,symbol,strategy,status,entry_order_id,client_order_id,order_id&limit=1001'
     ),
     database.select(
       'dd_orders',
       'role=eq.ENTRY&or=(state.in.(PENDING,UNKNOWN,NEW,OPEN,PARTIALLY_FILLED),and(state.eq.FILLED,created_at.gte.' +
         recentFilledAfter +
-        '))&select=id,client_order_id,strategy,role,state,created_at&limit=1000'
+        '))&select=id,client_order_id,strategy,role,state,created_at&limit=1001'
     )
   ]);
 
   if (!Array.isArray(openPositions) || !Array.isArray(entryOrders)) {
     throw new Error('Position or entry-reservation query returned malformed data');
+  }
+  if (openPositions.length >= 1001 || entryOrders.length >= 1001) {
+    throw new Error('Position or entry-reservation snapshot exceeded its safe row cap; new entries fail closed');
   }
 
   return Object.fromEntries(keys.map(strategy => [strategy, assessStrategyPositionCap({

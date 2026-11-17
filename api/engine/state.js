@@ -4,6 +4,11 @@ import { findWorkerHeartbeatRow, normalizeWorkerExecutionMode, normalizeEmergenc
 import { indiaDateKey } from '../../src/date-utils.js';
 import { summarizeVerifiedDeltaClosedPnl } from '../../server/delta-closed-pnl.js';
 import { createEngineSessionCookie, hasEngineAccess, isEngineSessionValid } from '../../server/engine-session.js';
+import { createTtlSingleFlightCache } from '../../server/request-cache.js';
+
+// Coalesce frequent dashboard state refreshes without sharing private account data.
+const engineStateCache = createTtlSingleFlightCache({ ttlMs: 15_000 });
+
 
 function normalizedScoreFromSignalRow(row) {
   let details = row?.details;
@@ -24,6 +29,8 @@ export default async function handler(req, res) {
   }
 
   try {
+    const cacheKey = privateDataAuthorized ? 'private' : 'public';
+    const payload = await engineStateCache.get(cacheKey, async () => {
     const todayStart = indiaDateKey(new Date()) + 'T00:00:00+05:30';
     const todayStartQuery = encodeURIComponent(todayStart);
     const last24HoursQuery = encodeURIComponent(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
@@ -141,7 +148,7 @@ export default async function handler(req, res) {
         ? Number(executedTradesTodayCount) : null
     };
 
-    return res.status(200).json(protectEngineState({
+    return protectEngineState({
       success: true,
       environment: CONFIG.environment,
       executionCoverage: {
@@ -190,7 +197,9 @@ export default async function handler(req, res) {
       deltaTestnetClosedTodayCount: closedTodayCount,
       deltaTestnetClosedTodayPnl,
       deltaTestnetClosedTodayPnlComplete
-    }, privateDataAuthorized));
+    }, privateDataAuthorized);
+    });
+    return res.status(200).json(payload);
   } catch (error) {
     return res.status(503).json({
       success: false,

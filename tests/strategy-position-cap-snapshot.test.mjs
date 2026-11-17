@@ -53,3 +53,19 @@ test('malformed database response rejects so the caller can fail closed', async 
     /malformed data/
   );
 });
+
+test('oversized snapshot fails closed rather than using potentially truncated rows', async () => {
+  const database = {
+    async select(table) {
+      return table === 'dd_delta_positions'
+        ? Array.from({ length: 1001 }, (_, index) => ({
+            id: String(index), status: 'OPEN', strategy: 'MOMENTUM'
+          }))
+        : [];
+    }
+  };
+  await assert.rejects(
+    loadStrategyPositionCapSnapshot({ database, strategies: ['MOMENTUM'] }),
+    /exceeded its safe row cap/
+  );
+});

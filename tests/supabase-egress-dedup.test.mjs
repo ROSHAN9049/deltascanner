@@ -27,3 +27,11 @@ test('rotation ledger materializer uses the batched idempotent cleanup helper', 
   assert.match(tracker, /rotationLedgerCleanupCompletedIds/);
   assert.doesNotMatch(tracker, /database\.remove\(\s*'dd_rotation_ledger',\s*'execution_id=eq\.'/);
 });
+
+test('engine-state API uses a short-lived cache split by authorization scope', async () => {
+  const api = await readFile(new URL('../api/engine/state.js', import.meta.url), 'utf8');
+  assert.match(api, /createTtlSingleFlightCache\(\{ ttlMs: 15_000 \}\)/);
+  assert.match(api, /privateDataAuthorized \? 'private' : 'public'/);
+  assert.match(api, /engineStateCache\.get\(cacheKey, async \(\) =>/);
+  assert.match(api, /return res\.status\(200\)\.json\(payload\)/);
+});

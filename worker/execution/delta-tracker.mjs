@@ -1382,6 +1382,9 @@ export class DeltaTestnetTracker {
           });
         if (rotationRows.length) {
           await this.database.upsertMany('dd_rotation_ledger', rotationRows, 'execution_id');
+          for (const row of rotationRows) {
+            this.rotationLedgerCleanupCompletedIds.delete(row.execution_id);
+          }
           await this.database.log('INFO', 'Profit Rotation accounting events materialized from verified profitable closes', {
             rowsMaterialized: rotationRows.length,
             source: 'exchange realized P&L + verified funding and wallet fee ledger',
