@@ -35,3 +35,13 @@ test('engine-state API uses a short-lived cache split by authorization scope', a
   assert.match(api, /engineStateCache\.get\(cacheKey, async \(\) =>/);
   assert.match(api, /return res\.status\(200\)\.json\(payload\)/);
 });
+
+test('position-cap snapshots require exact counts to detect server-side row caps', async () => {
+  const helper = await readFile(new URL('../worker/strategy-position-cap-snapshot.mjs', import.meta.url), 'utf8');
+  const db = await readFile(new URL('../server/db.js', import.meta.url), 'utf8');
+  assert.match(helper, /database\.selectWithCount\(/);
+  assert.match(helper, /openTotal !== openPositions\.length/);
+  assert.match(helper, /entryOrderTotal !== entryOrders\.length/);
+  assert.match(db, /Prefer: 'count=exact'/);
+  assert.match(db, /Range: '0-' \+ \(limit - 1\)/);
+});

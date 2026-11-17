@@ -32,6 +32,32 @@ export function exactCountFromResponse(contentRange) {
   const total = Number(match[1]);
   return Number.isSafeInteger(total) && total >= 0 ? total : null;
 }
+export async function selectWithCount(table, query, maxRows = 1000) {
+  assertDb();
+  const limit = Number(maxRows);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) {
+    throw new RangeError('selectWithCount maxRows must be an integer from 1 to 1000');
+  }
+  const key = CONFIG.supabaseAdminKey;
+  const headers = {
+    apikey: key,
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+    Prefer: 'count=exact',
+    Range: '0-' + (limit - 1)
+  };
+  if (!key.startsWith('sb_secret_')) headers.Authorization = 'Bearer ' + key;
+  const path = table + '?' + (query || '');
+  const res = await fetch(CONFIG.supabaseUrl.replace(/\\/$/, '') + '/rest/v1/' + path, { headers });
+  const txt = await res.text();
+  if (!res.ok) throw new Error('Supabase selectWithCount ' + res.status + ': ' + txt.slice(0, 500));
+  const rows = txt ? JSON.parse(txt) : [];
+  const total = exactCountFromResponse(res.headers.get('content-range'));
+  if (!Array.isArray(rows) || total === null) {
+    throw new Error('Supabase exact row count was unavailable for ' + table);
+  }
+  return { rows, total };
+}
 export async function count(table, query) {
   assertDb();
   const key = CONFIG.supabaseAdminKey;

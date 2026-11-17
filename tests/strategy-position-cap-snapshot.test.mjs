@@ -5,21 +5,23 @@ import { loadStrategyPositionCapSnapshot } from '../worker/strategy-position-cap
 test('loads one open-position query and one entry-order query for multiple strategies', async () => {
   const calls = [];
   const database = {
-    async select(table, query) {
+    async selectWithCount(table, query) {
       calls.push({ table, query });
       if (table === 'dd_delta_positions') {
-        return [
+        const rows = [
           { id: 'p1', symbol: 'XAUTUSD', status: 'OPEN', strategy: 'MOMENTUM', entry_order_id: 'entry-1' },
           { id: 'p2', symbol: 'PAXGUSD', status: 'OPEN', strategy: 'SCALPING', entry_order_id: 'entry-2' }
         ];
+        return { rows, total: rows.length };
       }
       if (table === 'dd_orders') {
-        return [
+        const rows = [
           { id: 'o1', client_order_id: 'pending-1', strategy: 'MOMENTUM', role: 'ENTRY', state: 'PENDING' },
           { id: 'o2', client_order_id: 'filled-1', strategy: 'MOMENTUM', role: 'ENTRY', state: 'FILLED', created_at: '2026-11-17T00:00:00.000Z' }
         ];
+        return { rows, total: rows.length };
       }
-      return [];
+      return { rows: [], total: 0 };
     }
   };
 
@@ -47,7 +49,7 @@ test('loads one open-position query and one entry-order query for multiple strat
 });
 
 test('malformed database response rejects so the caller can fail closed', async () => {
-  const database = { async select() { return null; } };
+  const database = { async selectWithCount() { return null; } };
   await assert.rejects(
     loadStrategyPositionCapSnapshot({ database, strategies: ['MOMENTUM'] }),
     /malformed data/
@@ -56,16 +58,19 @@ test('malformed database response rejects so the caller can fail closed', async 
 
 test('oversized snapshot fails closed rather than using potentially truncated rows', async () => {
   const database = {
-    async select(table) {
+    async selectWithCount(table) {
       return table === 'dd_delta_positions'
-        ? Array.from({ length: 1001 }, (_, index) => ({
-            id: String(index), status: 'OPEN', strategy: 'MOMENTUM'
-          }))
-        : [];
+        ? {
+            rows: Array.from({ length: 1000 }, (_, index) => ({
+              id: String(index), status: 'OPEN', strategy: 'MOMENTUM'
+            })),
+            total: 1001
+          }
+        : { rows: [], total: 0 };
     }
   };
   await assert.rejects(
     loadStrategyPositionCapSnapshot({ database, strategies: ['MOMENTUM'] }),
-    /exceeded its safe row cap/
+    /truncated or exceeded its safe row cap/
   );
 });
