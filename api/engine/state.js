@@ -35,8 +35,7 @@ export default async function handler(req, res) {
     const todayStart = indiaDateKey(new Date()) + 'T00:00:00+05:30';
     const todayStartQuery = encodeURIComponent(todayStart);
     const last24HoursQuery = encodeURIComponent(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
-    const [settingsRows, signals, signalCache, marketCache, optionCache, rawLogs, ledger, ledgerRowCount] = await Promise.all([
-      select('dd_settings', 'id=eq.1&select=*'),
+    const [signals, signalCache, marketCache, optionCache, rawLogs, ledger, ledgerRowCount] = await Promise.all([
       select('dd_signals', 'order=captured_at.desc&limit=200'),
       select('dd_signal_cache', 'order=score.desc'),
       select('dd_market_cache', 'active=eq.true&order=market_rank.asc'),
@@ -52,8 +51,6 @@ export default async function handler(req, res) {
     const workerGridAutoRangeStatus = resolveWorkerGridAutoRangeStatus(heartbeatLog);
     const deltaExecutionMode = normalizeWorkerExecutionMode(heartbeatLog);
     const deltaExecutionModeSource = deltaExecutionMode === 'unknown' ? 'unavailable' : 'supabase-worker-heartbeat';
-    const privateDataAuthorized = Boolean(CONFIG.engineSecret) && hasEngineAccess(req, CONFIG.engineSecret);
-
     // Hide legacy bridge records from dashboard logs even if they remain in the
     // historical database. Current Delta Testnet telemetry and errors remain visible.
     const legacyBridgeMarker = ['trade', 'tron'].join('');
@@ -124,11 +121,6 @@ export default async function handler(req, res) {
         ])
       : [{ ok: false, row: null }, null];
 
-    const rawSettings = Array.isArray(settingsRows) ? settingsRows[0] || null : null;
-    const settings = rawSettings ? {
-      ...rawSettings,
-      emergency_stop: normalizeEmergencyStopValue(rawSettings.emergency_stop)
-    } : null;
     const deltaTestnetPositions = deltaTestnetPositionRows || [];
     const deltaTestnetOrders = deltaTestnetOrderRows || [];
     const deltaTestnetTrades = deltaTestnetTradeRows || [];
@@ -149,7 +141,7 @@ export default async function handler(req, res) {
         ? Number(executedTradesTodayCount) : null
     };
 
-    return protectEngineState({
+    return {
       success: true,
       environment: CONFIG.environment,
       executionCoverage: {
@@ -174,7 +166,7 @@ export default async function handler(req, res) {
         gridTestnetDiagnostics: heartbeatLog?.data?.gridTestnetDiagnostics || null,
         optionsTestnetDiagnostics: heartbeatLog?.data?.optionsTestnetDiagnostics || null
       },
-      settings,
+      settings: null,
       activity,
       signals: signals || [],
       signalCache: signalCache || [],
@@ -198,9 +190,20 @@ export default async function handler(req, res) {
       deltaTestnetClosedTodayCount: closedTodayCount,
       deltaTestnetClosedTodayPnl,
       deltaTestnetClosedTodayPnlComplete
-    }, privateDataAuthorized);
+    };
     });
-    return res.status(200).json(payload);
+
+    // Settings contain emergency-stop and automatic-entry interlocks. Read
+    // this single small row fresh on every request; the large dashboard
+    // snapshots remain cached and auth-separated for 15 seconds.
+    const settingsRows = await select('dd_settings', 'id=eq.1&select=*');
+    const rawSettings = Array.isArray(settingsRows) ? settingsRows[0] || null : null;
+    const settings = rawSettings ? {
+      ...rawSettings,
+      emergency_stop: normalizeEmergencyStopValue(rawSettings.emergency_stop)
+    } : null;
+
+    return res.status(200).json(protectEngineState({ ...payload, settings }, privateDataAuthorized));
   } catch (error) {
     return res.status(503).json({
       success: false,
