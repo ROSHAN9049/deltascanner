@@ -29,6 +29,7 @@ export default async function handler(req, res) {
   }
 
   try {
+    const privateDataAuthorized = Boolean(CONFIG.engineSecret) && hasEngineAccess(req, CONFIG.engineSecret);
     const cacheKey = privateDataAuthorized ? 'private' : 'public';
     const payload = await engineStateCache.get(cacheKey, async () => {
     const todayStart = indiaDateKey(new Date()) + 'T00:00:00+05:30';
