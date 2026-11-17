@@ -33,7 +33,8 @@ test('engine-state API uses a short-lived cache split by authorization scope', a
   assert.match(api, /createTtlSingleFlightCache\(\{ ttlMs: 15_000 \}\)/);
   assert.match(api, /privateDataAuthorized \? 'private' : 'public'/);
   assert.match(api, /engineStateCache\.get\(cacheKey, async \(\) =>/);
-  assert.match(api, /return res\.status\(200\)\.json\(payload\)/);
+  assert.ok(api.includes('return res.status(200).json(protectEngineState({ ...payload, settings }, privateDataAuthorized))'));
+  assert.ok(api.includes("const settingsRows = await select('dd_settings'"));
 });
 
 test('position-cap snapshots require exact counts to detect server-side row caps', async () => {
