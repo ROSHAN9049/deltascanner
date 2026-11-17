@@ -19,6 +19,40 @@ const numberOrNull = value => {
 };
 const nowIso = () => new Date().toISOString();
 
+export async function cleanupRotationLedgerRowsOnce({
+  database,
+  executionIds = [],
+  completedIds = new Set()
+} = {}) {
+  if (typeof database?.remove !== 'function') return 0;
+  const pending = [...new Set((Array.isArray(executionIds) ? executionIds : [])
+    .map(value => stringValue(value))
+    .filter(Boolean))]
+    .filter(id => !completedIds.has(id));
+  if (!pending.length) return 0;
+
+  // Keep PostgREST DELETE URLs bounded while deleting many stale ledger keys
+  // in one request per batch rather than issuing one request per trade.
+  let deletedKeys = 0;
+  for (let offset = 0; offset < pending.length; offset += 100) {
+    const batch = pending.slice(offset, offset + 100);
+    const filter = 'execution_id=in.(' + batch.map(encodeURIComponent).join(',') + ')';
+    await database.remove('dd_rotation_ledger', filter);
+    for (const id of batch) {
+      completedIds.add(id);
+      deletedKeys += 1;
+    }
+    // The materializer only revisits its latest 1,000 closed rows. A bounded
+    // cache is enough to suppress repeat cleanup without unbounded worker growth.
+    while (completedIds.size > 2000) {
+      const oldest = completedIds.values().next().value;
+      if (oldest === undefined) break;
+      completedIds.delete(oldest);
+    }
+  }
+  return deletedKeys;
+}
+
 export function strategyFromClientOrderId(clientOrderId, fallback = 'MOMENTUM') {
   const prefix = stringValue(clientOrderId).toUpperCase().split('-')[0];
   if (prefix === 'DDM') return 'MOMENTUM';
@@ -196,6 +230,7 @@ export class DeltaTestnetTracker {
     this.fillSyncInterval = null;
     this.fillSyncInFlight = null;
     this.fillTradeMaterializerInFlight = null;
+    this.rotationLedgerCleanupCompletedIds = new Set();
     this.fillSyncLastWarningAt = 0;
     this.walletSyncInterval = null;
     this.walletSyncInFlight = null;
@@ -1307,6 +1342,7 @@ export class DeltaTestnetTracker {
         // The old engine ledger keyed trades by the entry client_order_id. Once
         // the canonical Delta position lifecycle row exists, hide that legacy
         // duplicate and discard its duplicate Profit Rotation accounting event.
+        const rotationLedgerCleanupIds = new Set();
         for (const trade of trades) {
           const positionId = String(trade.execution_id || '').replace(/^delta-testnet-position:/, '');
           const sourcePosition = closedRows.find(row => String(row.id) === positionId);
@@ -1319,12 +1355,7 @@ export class DeltaTestnetTracker {
                 { result: 'SUPERSEDED', net_pnl: null, net_pnl_verified: false }
               ).catch(() => {});
             }
-            if (typeof this.database.remove === 'function') {
-              await this.database.remove(
-                'dd_rotation_ledger',
-                'execution_id=eq.' + encodeURIComponent(legacyClientOrderId)
-              ).catch(() => {});
-            }
+            rotationLedgerCleanupIds.add(legacyClientOrderId);
           }
         }
 
@@ -1357,15 +1388,24 @@ export class DeltaTestnetTracker {
             fundsMoved: false
           }).catch(() => {});
         }
-        if (typeof this.database.remove === 'function') {
-          const profitableIds = new Set(rotationRows.map(row => row.execution_id));
-          for (const trade of trades) {
-            if (!profitableIds.has(trade.execution_id)) {
-              await this.database.remove(
-                'dd_rotation_ledger',
-                'execution_id=eq.' + encodeURIComponent(trade.execution_id)
-              ).catch(() => {});
-            }
+        const profitableIds = new Set(rotationRows.map(row => row.execution_id));
+        for (const trade of trades) {
+          if (!profitableIds.has(trade.execution_id)) {
+            rotationLedgerCleanupIds.add(trade.execution_id);
+          }
+        }
+        if (rotationLedgerCleanupIds.size) {
+          try {
+            await cleanupRotationLedgerRowsOnce({
+              database: this.database,
+              executionIds: [...rotationLedgerCleanupIds],
+              completedIds: this.rotationLedgerCleanupCompletedIds
+            });
+          } catch (error) {
+            await this.logSocketWarning('Profit Rotation stale-ledger batch cleanup failed; IDs will be retried', {
+              count: rotationLedgerCleanupIds.size,
+              error: String(error?.message || error).slice(0, 200)
+            }, 'WARN');
           }
         }
 
