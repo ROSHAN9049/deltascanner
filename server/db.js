@@ -48,7 +48,8 @@ export async function selectWithCount(table, query, maxRows = 1000) {
   };
   if (!key.startsWith('sb_secret_')) headers.Authorization = 'Bearer ' + key;
   const path = table + '?' + (query || '');
-  const res = await fetch(CONFIG.supabaseUrl.replace(/\\/$/, '') + '/rest/v1/' + path, { headers });
+  const baseUrl = CONFIG.supabaseUrl.endsWith('/') ? CONFIG.supabaseUrl.slice(0, -1) : CONFIG.supabaseUrl;
+  const res = await fetch(baseUrl + '/rest/v1/' + path, { headers });
   const txt = await res.text();
   if (!res.ok) throw new Error('Supabase selectWithCount ' + res.status + ': ' + txt.slice(0, 500));
   const rows = txt ? JSON.parse(txt) : [];
