@@ -4,6 +4,7 @@ import * as defaultDb from '../../server/db.js';
 import { indiaDateKey } from '../../src/date-utils.js';
 import { isAllowedDeltaTestnetFutureSymbol, isEligibleDeltaTestnetPerpetualProduct, isMarketTickFresh } from './execution-route-policy.mjs';
 import { createDeltaOptionsExecution } from './delta-options-execution.mjs';
+import { assertOptionsExecutionAllowed, DELTA_INDIA_TESTNET_REST_BASE } from '../options-execution-lock.mjs';
 
 export const DELTA_TESTNET_REST_BASE = 'https://cdn-ind.testnet.deltaex.org';
 export const DELTA_TESTNET_PRIVATE_WS_URL = 'wss://socket-ind.testnet.deltaex.org';
@@ -263,6 +264,64 @@ export function createDeltaExecutor({
       throw error;
     }
     return data || { success: true, result: null };
+  }
+
+  async function requestDemoOptions(method, path, params = {}, body = null) {
+    // Options have a completely separate Demo credential path. Never reuse
+    // the Futures keypair and never allow a configurable/live API hostname.
+    assertOptionsExecutionAllowed(env);
+    const apiKey = stringOrEmpty(env.DELTA_DEMO_API_KEY);
+    const apiSecret = stringOrEmpty(env.DELTA_DEMO_API_SECRET);
+    const configuredBase = stringOrEmpty(env.DELTA_TESTNET_REST_BASE || DELTA_INDIA_TESTNET_REST_BASE).replace(/\/+$/, '');
+    if (!apiKey || !apiSecret || configuredBase !== DELTA_INDIA_TESTNET_REST_BASE ||
+        DELTA_TESTNET_REST_BASE !== DELTA_INDIA_TESTNET_REST_BASE) {
+      throw new Error('Delta Demo Options credentials or fixed India Testnet endpoint are unavailable');
+    }
+    const verb = String(method || '').trim().toUpperCase();
+    const route = String(path || '');
+    if (!['GET', 'POST', 'PUT', 'DELETE'].includes(verb) || !route.startsWith('/v2/')) {
+      throw new Error('Delta Demo Options request route is invalid');
+    }
+    const query = encodeQuery(params);
+    const payload = body === null || body === undefined ? '' : JSON.stringify(body);
+    const timestamp = String(Math.floor(now() / 1000));
+    const signature = deltaHmacSha256(apiSecret, verb + timestamp + route + query + payload);
+    const headers = {
+      Accept: 'application/json',
+      'User-Agent': 'DealDost-Delta-India-Demo-Options/1.0',
+      'api-key': apiKey,
+      signature,
+      timestamp
+    };
+    if (body !== null && body !== undefined) headers['Content-Type'] = 'application/json';
+    const response = await fetchImpl(DELTA_INDIA_TESTNET_REST_BASE + route + query, {
+      method: verb,
+      headers,
+      body: body === null || body === undefined ? undefined : payload
+    });
+    const rawText = await response.text();
+    let data = null;
+    try { data = rawText ? JSON.parse(rawText) : null; } catch {}
+    if (!response.ok || data?.success === false) {
+      const code = stringOrEmpty(data?.error?.code || data?.error?.name);
+      const reason = stringOrEmpty(data?.error?.message || data?.error?.code || data?.message);
+      const error = new Error('Delta India Demo ' + verb + ' ' + route + ' failed (' +
+        response.status + '): ' + (code || reason || 'request_failed'));
+      error.status = response.status;
+      error.code = code || 'delta_demo_options_request_failed';
+      throw error;
+    }
+    return data || { success: true, result: null };
+  }
+
+  async function getDemoOptionsAccountSnapshot() {
+    assertOptionsExecutionAllowed(env);
+    const wallet = await requestDemoOptions('GET', '/v2/wallet/balances');
+    const equity = accountEquity(wallet);
+    if (!(equity > 0)) throw new Error('Delta Demo account equity is unavailable; Options entries fail closed');
+    const available = accountAvailable(wallet, equity);
+    if (!(available > 0)) throw new Error('Delta Demo available balance is unavailable or zero; Options entries fail closed');
+    return { equity, available, raw: wallet };
   }
 
   async function withSymbolLock(symbol, operation) {
@@ -1499,9 +1558,11 @@ export function createDeltaExecutor({
 
   const optionsExecution = createDeltaOptionsExecution({
     env,
-    request,
+    // Keep Futures request()/getAccountSnapshot() on their existing route.
+    // Options use the independent DELTA_DEMO_* keypair and fixed Testnet host.
+    request: requestDemoOptions,
     database,
-    getAccountSnapshot,
+    getAccountSnapshot: getDemoOptionsAccountSnapshot,
     logExecutor,
     buildClientOrderId,
     now,
