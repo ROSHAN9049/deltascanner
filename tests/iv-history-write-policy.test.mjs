@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  IV_GROUP_METRICS_CACHE_TTL_MS,
   IV_HISTORY_PERSIST_INTERVAL_MS,
   IV_RETRY_BASE_DELAY_MS,
   IV_RETRY_MAX_DELAY_MS,
   clearIvRetryFailure,
+  isIvGroupMetricsCacheFresh,
   isIvRetryReady,
   markIvHistoryObservationsPersisted,
   recordIvRetryFailure,
@@ -32,6 +34,16 @@ test('new IV observations persist immediately, then at the thirty-minute cadence
   markIvHistoryObservationsPersisted([row], lastPersisted, 10_000);
   assert.deepEqual(selectDueIvHistoryObservations([row], lastPersisted, 10_000 + IV_HISTORY_PERSIST_INTERVAL_MS - 1), []);
   assert.deepEqual(selectDueIvHistoryObservations([row], lastPersisted, 10_000 + IV_HISTORY_PERSIST_INTERVAL_MS), [row]);
+});
+
+test('grouped IV metrics cache stays fresh until the next permitted history sample', () => {
+  const cached = { summary: { observation_count: 100 }, cachedAt: 50_000 };
+  assert.equal(IV_GROUP_METRICS_CACHE_TTL_MS, IV_HISTORY_PERSIST_INTERVAL_MS);
+  assert.equal(isIvGroupMetricsCacheFresh(cached, 50_000), true);
+  assert.equal(isIvGroupMetricsCacheFresh(cached, 50_000 + IV_GROUP_METRICS_CACHE_TTL_MS - 1), true);
+  assert.equal(isIvGroupMetricsCacheFresh(cached, 50_000 + IV_GROUP_METRICS_CACHE_TTL_MS), false);
+  assert.equal(isIvGroupMetricsCacheFresh(cached, 49_999), false);
+  assert.equal(isIvGroupMetricsCacheFresh(null, 50_001), false);
 });
 
 test('a changed option history bucket receives its own first observation', () => {
