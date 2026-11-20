@@ -377,10 +377,13 @@ export function createDeltaOptionsExecution({
       resolveProduct(contract),
       getQuote(contract),
       getAccountSnapshot(),
-      database.select('dd_settings', 'id=eq.1&select=options_max_risk_pct,max_options_positions,enabled,emergency_stop,last_tick_at,options_buy_min_delta,options_buy_max_delta,options_sell_min_delta,options_sell_max_delta,options_min_days_to_expiry,options_max_days_to_expiry')
+      database.select('dd_settings', 'id=eq.1&select=options_max_risk_pct,max_options_positions,enabled,emergency_stop,last_tick_at,options_buy_min_delta,options_buy_max_delta,options_sell_min_delta,options_sell_max_delta,options_min_days_to_expiry,options_max_days_to_expiry,options_min_oi,options_min_volume,options_max_spread_pct')
     ]);
     const settings = Array.isArray(settingsRows) && settingsRows.length === 1 ? settingsRows[0] : null;
     if (!settings) throw new Error('Options risk settings are unavailable; preview blocked');
+    if (quantity < product.minSize || (quantity - product.minSize) % product.sizeStep !== 0) {
+      throw new Error('Options quantity violates the exact Demo product minimum size or contract-size increment');
+    }
     if (product.parsed.dte < 0.5) throw new Error('Options contract has less than 0.5 days to expiry; gamma-risk entry blocked');
     if (useManualTestOverride) {
       assertManualCandidateQualification(candidate, product, settings, strategyKey);
@@ -392,6 +395,12 @@ export function createDeltaOptionsExecution({
     const verifiedAvailable = verifiedAvailableBalance(account?.raw);
     if (verifiedAvailable === null) {
       throw new Error('Verified Delta Testnet available balance is unavailable; Options preview blocked');
+    }
+    const spreadPct = ((quote.ask - quote.bid) / ((quote.ask + quote.bid) / 2)) * 100;
+    const configuredMaxSpreadPct = number(settings.options_max_spread_pct) ?? 1.5;
+    if (!Number.isFinite(spreadPct) || spreadPct < 0 || spreadPct > configuredMaxSpreadPct) {
+      throw new Error('Options order blocked: live Demo quote spread exceeds the unchanged ' +
+        configuredMaxSpreadPct.toFixed(2) + '% maximum');
     }
     const optionsRiskPct = number(settings.options_max_risk_pct);
     if (optionsRiskPct === null || optionsRiskPct <= 0) {
@@ -450,6 +459,22 @@ export function createDeltaOptionsExecution({
     if (!(verifiedAvailable > 0) || loss.maxLossUsd > verifiedAvailable) {
       throw new Error('Options order blocked: available Testnet balance is below the conservative maximum loss');
     }
+    const isBuy = strategyKey === 'OPTIONS_BUY';
+    const stopPremium = snapPriceToTick(
+      premium * (isBuy ? 0.70 : 2.0),
+      product.tickSize,
+      isBuy ? 'down' : 'up'
+    );
+    const takeProfitPremium = snapPriceToTick(
+      premium * (isBuy ? 1.50 : 0.50),
+      product.tickSize,
+      isBuy ? 'up' : 'down'
+    );
+    if (!(stopPremium > 0) || !(takeProfitPremium > 0) ||
+        (isBuy && !(stopPremium < premium && takeProfitPremium > premium)) ||
+        (!isBuy && !(takeProfitPremium < premium && stopPremium > premium))) {
+      throw new Error('Options SL/TP bracket levels are invalid for the verified product tick size');
+    }
     const gate = getOptionsExecutionGate(env);
     const issuedAt = now();
     const token = signQuoteToken({
@@ -462,6 +487,11 @@ export function createDeltaOptionsExecution({
       hedgeContractId: hedgeProduct?.id ?? null,
       premium,
       hedgePremium,
+      stopPremium,
+      takeProfitPremium,
+      minSize: product.minSize,
+      sizeStep: product.sizeStep,
+      spreadPct,
       maxLossUsd: loss.maxLossUsd,
       equity: account.equity,
       manualTestOverride: useManualTestOverride,
@@ -479,6 +509,11 @@ export function createDeltaOptionsExecution({
       hedgeContractId: hedgeProduct?.id ?? null,
       contractValue: product.contractValue,
       tickSize: product.tickSize,
+      minSize: product.minSize,
+      sizeStep: product.sizeStep,
+      spreadPct,
+      stopPremium,
+      takeProfitPremium,
       maxLossUsd: loss.maxLossUsd,
       spreadMaxLossBeforeFees: loss.spreadLossBeforeFees ?? null,
       hedgeOnlyExposure: loss.hedgeOnlyExposure ?? null,
@@ -491,6 +526,7 @@ export function createDeltaOptionsExecution({
       manualTestOverride: useManualTestOverride,
       executionAllowed: false,
       executionLockReason: gate.reason,
+      environment: 'DELTA_DEMO',
       quoteToken: token
     };
     let entrySafetyReason = null;
