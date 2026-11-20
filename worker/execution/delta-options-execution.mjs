@@ -753,6 +753,16 @@ export function createDeltaOptionsExecution({
         error.ambiguous = true;
         throw error;
       }
+      if (hasBracket) {
+        await verifyExchangeSideBracket(order, product, String(side).toUpperCase(), qty, {
+          stop: bracketStopLossPrice,
+          takeProfit: bracketTakeProfitPrice,
+          strategy,
+          maxLossUsd,
+          executionKey,
+          manualTestOverride
+        });
+      }
       const state = clean(order.state || 'UNKNOWN').toUpperCase();
       const accepted = !['REJECTED','FAILED','ERROR'].includes(state);
       await database.update(
@@ -849,6 +859,63 @@ export function createDeltaOptionsExecution({
       throw error;
     }
     return detail;
+  }
+
+  async function verifyExchangeSideBracket(order, product, side, qty, {
+    stop, takeProfit, strategy, maxLossUsd, executionKey, manualTestOverride = false
+  } = {}) {
+    const detail = await getOrderDetail(order);
+    const reportedStop = number(detail?.bracket_stop_loss_price ??
+      detail?.bracketStopLossPrice ?? detail?.bracket_stop?.stop_price);
+    const reportedTakeProfit = number(detail?.bracket_take_profit_price ??
+      detail?.bracketTakeProfitPrice ?? detail?.bracket_take_profit?.limit_price);
+    const tolerance = Math.max(1e-8, Number(product.tickSize) / 2);
+    if (reportedStop !== null && reportedTakeProfit !== null &&
+        Math.abs(reportedStop - Number(stop)) <= tolerance &&
+        Math.abs(reportedTakeProfit - Number(takeProfit)) <= tolerance) {
+      return { verified: true, stop: reportedStop, takeProfit: reportedTakeProfit };
+    }
+
+    await logExecutor('ERROR', '[OptionsExecutor] Delta India Demo did not echo the requested exchange-side SL/TP bracket', {
+      environment: 'DELTA_DEMO',
+      symbol: product.symbol,
+      orderId: order?.id ?? null,
+      side,
+      size: qty,
+      expectedStop: stop,
+      expectedTakeProfit: takeProfit,
+      reportedStop,
+      reportedTakeProfit,
+      action: 'CANCEL_OR_REDUCE_ONLY_UNWIND'
+    });
+
+    const cancellation = await cancelProtective(order);
+    if (!cancellation.confirmed) {
+      const error = new Error('Exchange-side Options bracket could not be verified and entry cancellation is unconfirmed; manual reconciliation required');
+      error.ambiguous = true;
+      throw error;
+    }
+    if (cancellation.filledQty > 0) {
+      const closeSide = side === 'BUY' ? 'SELL' : 'BUY';
+      const closeOrder = await submitLeg(product, closeSide, cancellation.filledQty, null, {
+        strategy,
+        role: 'UNWIND',
+        maxLossUsd,
+        reduceOnly: true,
+        executionKey,
+        manualTestOverride
+      });
+      const closeFill = await waitForProtectiveFill(closeOrder, cancellation.filledQty);
+      if (closeFill?.fullyFilled !== true || Number(closeFill.filledQty) !== cancellation.filledQty) {
+        const error = new Error('Options bracket was not verified and reduce-only exposure unwind is not fully confirmed');
+        error.ambiguous = true;
+        throw error;
+      }
+    }
+    const error = new Error('Delta Demo API did not confirm the exchange-side SL/TP bracket; the entry was canceled or fully unwound');
+    error.code = 'OPTIONS_EXCHANGE_BRACKET_UNVERIFIED';
+    error.status = 409;
+    throw error;
   }
 
   function fillStatus(order) {
