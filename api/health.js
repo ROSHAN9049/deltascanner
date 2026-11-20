@@ -28,27 +28,41 @@ export default async function handler(req, res) {
     // Exchange health is an independent, cached probe of Delta TESTNET's public
     // products endpoint. Lease and heartbeat fields remain separate worker-health
     // observations so lease expiry cannot masquerade as exchange unavailability.
-    const [settingsRows, leaseRows, retentionLogs, exchangeProbe, optionsAutoTriggerLogs] = await Promise.all([
-      select('dd_settings', 'id=eq.1&select=last_tick_at,worker_started_at,updated_at'),
-      select('dd_engine_lease', 'id=eq.1&select=worker_id,expires_at,heartbeat_at'),
-      select(
+    const safeSelect = async (table, query, label) => {
+      try {
+        return { ok: true, rows: await select(table, query), error: null };
+      } catch (error) {
+        console.error('[health] ' + label + ' unavailable:', error.message);
+        return { ok: false, rows: [], error };
+      }
+    };
+    const [settingsResult, leaseResult, retentionResult, exchangeProbeResult, optionsLogsResult] = await Promise.all([
+      safeSelect('dd_settings', 'id=eq.1&select=last_tick_at,worker_started_at,updated_at', 'Worker settings'),
+      safeSelect('dd_engine_lease', 'id=eq.1&select=worker_id,expires_at,heartbeat_at', 'Worker lease'),
+      safeSelect(
         'dd_engine_logs',
-        'message=eq.%5BRetention%5D%20Run%20summary&select=created_at,message,data&order=created_at.desc&limit=100'
-      ).catch(error => {
-        console.error('[health] Retention telemetry unavailable:', error.message);
-        return [];
-      }),
-      getDeltaTestnetHealth(),
-      select(
+        'message=eq.%5BRetention%5D%20Run%20summary&select=created_at,message,data&order=created_at.desc&limit=100',
+        'Retention telemetry'
+      ),
+      getDeltaTestnetHealth().catch(error => ({
+        healthy: false,
+        checkedAt: null,
+        status: null,
+        source: 'delta-testnet-public-api',
+        error: String(error?.message || error).slice(0, 240),
+        cached: false
+      })),
+      safeSelect(
         'dd_engine_logs',
-        'message=eq.%5BAUTO-TRIGGER%5D%20Worker%20heartbeat&select=created_at,data&order=created_at.desc&limit=1'
-      ).catch(error => {
-        console.error('[health] Options auto-trigger telemetry unavailable:', error.message);
-        return [];
-      })
+        'message=eq.%5BAUTO-TRIGGER%5D%20Worker%20heartbeat&select=created_at,data&order=created_at.desc&limit=1',
+        'Options auto-trigger telemetry'
+      )
     ]);
-    const settings = settingsRows?.[0] || {};
-    const lease = leaseRows?.[0] || {};
+    const settings = settingsResult.rows?.[0] || {};
+    const lease = leaseResult.rows?.[0] || {};
+    const retentionLogs = retentionResult.rows;
+    const optionsAutoTriggerLogs = optionsLogsResult.rows;
+    const databaseHealthy = settingsResult.ok && leaseResult.ok;
     const retention = summarizeRetentionHealth(retentionLogs, { defaultConfigDays: 1 });
     const optionsAutoTrigger = summarizeOptionsAutoTriggerHealth(optionsAutoTriggerLogs);
 
@@ -66,7 +80,7 @@ export default async function handler(req, res) {
     // These flags intentionally report independent facts: an exchange can be
     // reachable even while a worker lease is expired, and a live lease cannot
     // prove the exchange API is reachable.
-    const exchangeHealthy = exchangeProbe?.healthy === true;
+    const exchangeHealthy = exchangeProbeResult?.healthy === true;
 
     return res.status(200).json({
       success: true,
@@ -77,11 +91,13 @@ export default async function handler(req, res) {
       optionsAutoTrigger,
       exchange: CONFIG.signalOnly ? 'Delta Exchange India · Production Market Feed' : 'Delta Exchange India Demo',
       exchangeHealthy,
-      exchangeProbeAt: exchangeProbe?.checkedAt || null,
-      exchangeProbeStatus: exchangeProbe?.status ?? null,
-      exchangeProbeSource: exchangeProbe?.source || 'delta-testnet-public-api',
-      exchangeProbeError: exchangeProbe?.healthy === true ? null : exchangeProbe?.error || 'Delta Testnet health probe unavailable',
-      exchangeProbeCached: exchangeProbe?.cached === true,
+      databaseHealthy,
+      databaseError: databaseHealthy ? null : 'Supabase worker-state read unavailable; execution health is UNKNOWN',
+      exchangeProbeAt: exchangeProbeResult?.checkedAt || null,
+      exchangeProbeStatus: exchangeProbeResult?.status ?? null,
+      exchangeProbeSource: exchangeProbeResult?.source || 'delta-testnet-public-api',
+      exchangeProbeError: exchangeProbeResult?.healthy === true ? null : exchangeProbeResult?.error || 'Delta Testnet health probe unavailable',
+      exchangeProbeCached: exchangeProbeResult?.cached === true,
       timeDriftMs: null,
       lastTickAt: settings.last_tick_at || null,
       workerStartedAt: settings.worker_started_at || null,
