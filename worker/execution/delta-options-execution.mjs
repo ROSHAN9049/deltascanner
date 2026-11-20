@@ -410,6 +410,7 @@ export function createDeltaOptionsExecution({
     let hedgeQuote = null;
     let premium;
     let hedgePremium = null;
+    let hedgeSpreadPct = null;
     let loss;
 
     if (strategyKey === 'OPTIONS_BUY') {
@@ -434,6 +435,11 @@ export function createDeltaOptionsExecution({
       const expectedStrike = number(candidate.details.hedgeStrike);
       if (expectedStrike === null || expectedStrike !== hedgeProduct.parsed.strike) {
         throw new Error('Protective hedge strike does not match the cached worker candidate');
+      }
+      hedgeSpreadPct = ((hedgeQuote.ask - hedgeQuote.bid) / ((hedgeQuote.ask + hedgeQuote.bid) / 2)) * 100;
+      if (!Number.isFinite(hedgeSpreadPct) || hedgeSpreadPct < 0 || hedgeSpreadPct > configuredMaxSpreadPct) {
+        throw new Error('Protective hedge quote spread exceeds the unchanged ' +
+          configuredMaxSpreadPct.toFixed(2) + '% maximum');
       }
       premium = quote.bid;
       hedgePremium = hedgeQuote.ask;
@@ -487,6 +493,7 @@ export function createDeltaOptionsExecution({
       hedgeContractId: hedgeProduct?.id ?? null,
       premium,
       hedgePremium,
+      hedgeSpreadPct,
       stopPremium,
       takeProfitPremium,
       minSize: product.minSize,
@@ -504,6 +511,7 @@ export function createDeltaOptionsExecution({
       side: strategyKey === 'OPTIONS_BUY' ? 'BUY' : 'SELL',
       premium,
       hedgePremium,
+      hedgeSpreadPct,
       hedgeSymbol: hedgeProduct?.symbol || null,
       contractId: product.id,
       hedgeContractId: hedgeProduct?.id ?? null,
@@ -1124,6 +1132,11 @@ export function createDeltaOptionsExecution({
           (preview.hedgePremium !== null &&
             Math.abs(Number(expected.hedgePremium) - preview.hedgePremium) > tolerance) ||
           Math.abs(Number(expected.maxLossUsd) - preview.maxLossUsd) > 1e-8 ||
+          Math.abs(Number(expected.stopPremium) - preview.stopPremium) > tolerance ||
+          Math.abs(Number(expected.takeProfitPremium) - preview.takeProfitPremium) > tolerance ||
+          Math.abs(Number(expected.spreadPct) - preview.spreadPct) > 0.01 ||
+          (preview.hedgeSpreadPct !== null &&
+            Math.abs(Number(expected.hedgeSpreadPct) - preview.hedgeSpreadPct) > 0.01) ||
           Number(expected.equity) > preview.equity + 1e-8) {
         throw new Error('Options quote, product ID, equity or candidate changed since preview; refresh before execution');
       }
