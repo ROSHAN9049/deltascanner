@@ -458,7 +458,7 @@ test('manual Testnet override still enforces the configured maximum-loss budget'
   const { executor, apiCalls } = harness({
     strategy: 'OPTIONS_BUY',
     manualOverrideEnabled: true,
-    candidatePatch: { stage: 'SETUP', score: 20, details: { analysisReady: false } },
+    candidatePatch: { stage: 'SETUP', score: 95, details: { analysisReady: false } },
     settingsPatch: { options_max_risk_pct: 0.001 }
   });
   await assert.rejects(
@@ -596,8 +596,8 @@ test('Options daily loss at or beyond 2% of equity blocks new entries', async ()
   assert.equal(apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
 });
 
-test('Options execution blocks when daily IV Percentile is unavailable even on manual-test path', async () => {
-  const { executor, apiCalls } = harness({
+test('Demo manual quality override logs missing daily IV Percentile but keeps the candidate execution-safe', async () => {
+  const { executor, apiCalls, logs } = harness({
     strategy: 'OPTIONS_BUY',
     candidatePatch: {
       iv_percentile: null,
@@ -605,11 +605,10 @@ test('Options execution blocks when daily IV Percentile is unavailable even on m
     },
     manualOverrideEnabled: true
   });
-  await assert.rejects(
-    executor.previewOptionsOrder({
-      symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1, manualTestOverride: true
-    }),
-    /IV Percentile unavailable or insufficient daily history/
-  );
+  const preview = await executor.previewOptionsOrder({
+    symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1, manualTestOverride: true
+  });
+  assert.equal(preview.executionAllowed, true);
+  assert.ok(logs.some(args => args[2]?.qualityFiltersObserved?.includes('IV_PERCENTILE_FILTER')));
   assert.equal(apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
 });
