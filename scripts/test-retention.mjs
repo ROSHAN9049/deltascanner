@@ -65,6 +65,7 @@ try {
             return { rows: [] };
           }
           if (/DELETE FROM public\.dd_engine_logs/i.test(sql)) return { rows: [] };
+          if (/DELETE FROM public\.dd_iv_history/i.test(sql)) return { rows: [] };
           throw new Error('Unexpected SQL in env-fallback test');
         }
       });
@@ -85,6 +86,7 @@ try {
     const logs = [];
     let signalBatchNumber = 0;
     let engineLogBatchNumber = 0;
+    let ivHistoryBatchNumber = 0;
     engine.maintenanceLog = async (level, message, data = {}) => logs.push({ level, message, data });
     engine.getMaintenancePool = async () => ({
       query: async (sql, params = []) => {
@@ -104,6 +106,12 @@ try {
             rows: Array.from({ length: engineLogBatchNumber === 1 ? 5000 : 5 }, (_, index) => ({ id: index + 1 }))
           };
         }
+        if (/DELETE FROM public\.dd_iv_history/i.test(sql)) {
+          ivHistoryBatchNumber += 1;
+          return {
+            rows: Array.from({ length: ivHistoryBatchNumber === 1 ? 5000 : 2 }, (_, index) => ({ id: index + 1 }))
+          };
+        }
         throw new Error('Unexpected SQL in retention test');
       }
     });
@@ -113,17 +121,25 @@ try {
     assert.equal(result.effectiveDays, 7);
     assert.equal(result.totalDeleted, 5001);
     assert.equal(result.totalEngineLogsDeleted, 5005);
+    assert.equal(result.totalIvHistoryDeleted, 5002);
     const deleteCalls = calls.filter(call => /DELETE FROM/i.test(call.sql));
     const signalDeleteCalls = deleteCalls.filter(call => /DELETE FROM public\.dd_signals/i.test(call.sql));
     const logDeleteCalls = deleteCalls.filter(call => /DELETE FROM public\.dd_engine_logs/i.test(call.sql));
+    const ivHistoryDeleteCalls = deleteCalls.filter(call => /DELETE FROM public\.dd_iv_history/i.test(call.sql));
     assert.equal(signalDeleteCalls.length, 2, '5001 signal rows must be deleted in two bounded batches');
     assert.equal(logDeleteCalls.length, 2, '5005 engine log rows must be deleted in two bounded batches');
-    for (const call of deleteCalls) assert.deepEqual(call.params, [7, 5000]);
+    assert.equal(ivHistoryDeleteCalls.length, 2, '5002 IV history rows must be deleted in two bounded batches');
+    for (const call of deleteCalls) {
+      const expectedDays = /DELETE FROM public\.dd_iv_history/i.test(call.sql) ? 30 : 7;
+      assert.deepEqual(call.params, [expectedDays, 5000]);
+    }
     assert.ok(logDeleteCalls.every(call => /created_at < NOW\(\)/i.test(call.sql)));
+    assert.ok(ivHistoryDeleteCalls.every(call => /observed_at < NOW\(\)/i.test(call.sql)));
     assert.ok(deleteCalls.every(call => !/dd_trades|dd_positions|dd_orders|dd_tradetron_events|position_ledger|webhook_events|system_meta/i.test(call.sql)));
     assert.ok(logs.some(log => /Critical row-count threshold exceeded/.test(log.message)));
     assert.ok(logs.some(log => /\[Retention\] Deleted 5000 rows/.test(log.message)));
     assert.ok(logs.some(log => /\[Retention\] Deleted 5000 engine log rows/.test(log.message)));
+    assert.ok(logs.some(log => /\[Retention\] Deleted 5000 IV history rows/.test(log.message)));
   });
 
   await run('disk monitor pauses signal history at high size and preserves configured retention at critical count', async () => {
@@ -221,6 +237,7 @@ try {
         if (/SELECT COUNT\(\*\)::text AS signal_rows/i.test(sql)) return { rows: [{ signal_rows: '100' }] };
         if (/WITH batch AS/i.test(sql) && /DELETE FROM public\.dd_signals/i.test(sql)) return { rows: [] };
         if (/DELETE FROM public\.dd_engine_logs/i.test(sql)) return { rows: [] };
+        if (/DELETE FROM public\.dd_iv_history/i.test(sql)) return { rows: [] };
         throw new Error('Unexpected SQL in retention health summary test');
       }
     });
