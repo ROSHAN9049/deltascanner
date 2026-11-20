@@ -4,6 +4,9 @@ import {
   OPTIONS_EXECUTION_ALLOWED,
   OPTIONS_EXECUTION_LOCK_REASON,
   isOptionsExecutionAllowed,
+  getOptionsExecutionMode,
+  getOptionsExecutionGate,
+  getOptionsManualTestOverrideGate,
   OPTIONS_DATABASE_EXECUTION_LOCK_REASON,
   getOptionsDatabaseExecutionGate
 } from '../worker/options-execution-lock.mjs';
@@ -12,7 +15,7 @@ import { DeltaEngine } from '../worker/engine.mjs';
 test('Options entry hard-lock is false independent of route configuration', () => {
   assert.equal(OPTIONS_EXECUTION_ALLOWED, false);
   assert.equal(isOptionsExecutionAllowed(), false);
-  assert.match(OPTIONS_EXECUTION_LOCK_REASON, /maximum loss/i);
+  assert.match(OPTIONS_EXECUTION_LOCK_REASON, /disabled/i);
 });
 
 test('database Options execution flag is a strict default-off gate', () => {
@@ -60,4 +63,45 @@ test('actual engine refuses BUY and SELL Options through the only supported entr
   assert.equal(sellResult, false);
   assert.equal(buyCalls, 0);
   assert.equal(spreadCalls, 0);
+});
+
+const demoEnv = {
+  OPTIONS_EXECUTION_MODE: 'demo',
+  DELTA_EXECUTION_MODE: 'testnet',
+  DELTA_ENVIRONMENT: 'TESTNET',
+  DELTA_TESTNET_REST_BASE: 'https://cdn-ind.testnet.deltaex.org',
+  DELTA_DEMO_API_KEY: 'demo-key',
+  DELTA_DEMO_API_SECRET: 'demo-secret',
+  OPTIONS_EXECUTION_ALLOWED: 'true',
+  OPTIONS_EXIT_MONITOR_ENABLED: 'true',
+  ALLOW_MANUAL_OVERRIDE_FOR_TEST: 'true'
+};
+
+test('Options Demo mode requires the isolated Delta India Testnet profile, credentials and exit monitor', () => {
+  assert.equal(getOptionsExecutionMode({}).mode, undefined);
+  assert.equal(getOptionsExecutionMode({}), 'disabled');
+  assert.equal(getOptionsExecutionGate(demoEnv).allowed, true);
+  assert.equal(getOptionsManualTestOverrideGate(demoEnv).allowed, true);
+  for (const patch of [
+    { DELTA_EXECUTION_MODE: 'live' },
+    { DELTA_ENVIRONMENT: 'PRODUCTION' },
+    { DELTA_TESTNET_REST_BASE: 'https://api.india.delta.exchange' },
+    { DELTA_DEMO_API_KEY: '' },
+    { DELTA_DEMO_API_SECRET: '' },
+    { OPTIONS_EXECUTION_ALLOWED: 'false' },
+    { OPTIONS_EXIT_MONITOR_ENABLED: 'false' }
+  ]) {
+    assert.equal(getOptionsExecutionGate({ ...demoEnv, ...patch }).allowed, false);
+  }
+});
+
+test('Options live mode is always blocked even when all Demo/Testnet flags are otherwise enabled', () => {
+  const gate = getOptionsExecutionGate({ ...demoEnv, OPTIONS_EXECUTION_MODE: 'live' });
+  assert.equal(gate.allowed, false);
+  assert.match(gate.reason, /not implemented|permanently blocked/i);
+});
+
+test('invalid Options execution mode fails closed to disabled', () => {
+  assert.equal(getOptionsExecutionMode({ OPTIONS_EXECUTION_MODE: 'prod' }), 'disabled');
+  assert.equal(getOptionsExecutionGate({ ...demoEnv, OPTIONS_EXECUTION_MODE: 'prod' }).allowed, false);
 });
