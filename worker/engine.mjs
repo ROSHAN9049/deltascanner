@@ -330,6 +330,7 @@ export class DeltaEngine {
     this.retentionStartupTimer = null;
     this.retentionInterval = null;
     this.diskMonitorInterval = null;
+    this.diskMonitorInFlight = null;
     this.retentionInFlight = null;
     this.retentionInFlightDays = null;
     this.pendingRetentionRequest = null;
@@ -2988,7 +2989,7 @@ export class DeltaEngine {
     }
 
     this.diskMonitorInterval = setInterval(() => {
-      void this.checkDiskHealth();
+      void this.runDiskHealthCheckSafely();
     }, DISK_MONITOR_INTERVAL_MS);
     this.diskMonitorInterval.unref?.();
   }
@@ -3122,6 +3123,17 @@ export class DeltaEngine {
     }
   }
 
+  async runDiskHealthCheckSafely() {
+    if (this.diskMonitorInFlight) return this.diskMonitorInFlight;
+    const operation = this.checkDiskHealth();
+    this.diskMonitorInFlight = operation;
+    try {
+      await operation;
+    } finally {
+      if (this.diskMonitorInFlight === operation) this.diskMonitorInFlight = null;
+    }
+  }
+
   async checkDiskHealth() {
     if (!hasMaintenanceDatabaseUrl()) {
       await this.maintenanceLog('WARN', '[Disk] Disk monitor disabled (no DATABASE_URL or SUPABASE_DB_URL)', {});
@@ -3210,6 +3222,12 @@ export class DeltaEngine {
     this.retentionInterval = null;
     this.diskMonitorInterval = null;
 
+    // Let in-flight maintenance queries finish before ending their shared pool.
+    // The supervisor may restart this same engine instance after a lease loss.
+    const pendingMaintenance = [this.diskMonitorInFlight, this.retentionInFlight].filter(Boolean);
+    if (pendingMaintenance.length) await Promise.allSettled(pendingMaintenance);
+    this.diskMonitorInFlight = null;
+
     if (this.closeMaintenancePool) {
       try {
         await this.closeMaintenancePool();
@@ -3220,6 +3238,9 @@ export class DeltaEngine {
     this.maintenancePool = null;
     this.maintenancePoolPromise = null;
     this.closeMaintenancePool = null;
+    // runEngineWithRecovery reuses this DeltaEngine after a transient lease/DB
+    // failure; allow the next run() to recreate its maintenance timers and pool.
+    this.maintenanceStarted = false;
   }
 
   isDuplicateSignalObservation(row, now = Date.now()) {
@@ -5830,7 +5851,7 @@ export class DeltaEngine {
       });
       await this.hydrateSignalDedupCache();
       // Verify database headroom before the first scan can append a history batch.
-      if (hasMaintenanceDatabaseUrl()) await this.checkDiskHealth();
+      if (hasMaintenanceDatabaseUrl()) await this.runDiskHealthCheckSafely();
 
       while (this.running) {
         let cycle = null;
