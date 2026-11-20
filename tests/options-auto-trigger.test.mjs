@@ -251,6 +251,33 @@ test('Options auto-trigger health only reports fresh, enabled preview-only heart
   assert.equal(autoExecute.mode, 'AUTO_EXECUTE');
   assert.equal(autoExecute.fullAutoExecute, true);
 });
+test('Demo Options execution does not inherit the global Futures FULL_AUTO_EXECUTE flag', async () => {
+  const { worker, calls } = harness({
+    envPatch: {
+      FULL_AUTO_EXECUTE: 'true',
+      OPTIONS_EXECUTION_MODE: 'demo',
+      OPTIONS_DEMO_AUTO_EXECUTE: 'false',
+      OPTIONS_EXIT_MONITOR_ENABLED: 'true',
+      DELTA_DEMO_API_KEY: 'demo-key',
+      DELTA_DEMO_API_SECRET: 'demo-secret',
+      ALLOW_MANUAL_OVERRIDE_FOR_TEST: 'true',
+      DELTA_TESTNET_REST_BASE: 'https://cdn-ind.testnet.deltaex.org'
+    },
+    cacheRows: [{
+      ...CANDIDATE, stage: 'SETUP', market_regime: 'UNKNOWN',
+      iv_rank: 48, iv_percentile: null, oi: 1, volume: 2,
+      spread_pct: 0.4, delta: 0.55, dte: 8,
+      details: { ...CANDIDATE.details, analysisReady: false, delta: 0.55, dte: 8, ivPercentile: null }
+    }]
+  });
+  const result = await worker.runOnce();
+  assert.equal(result.status, 'CANDIDATE_READY');
+  const requests = calls.filter(call => call.kind === 'fetch');
+  assert.equal(requests.length, 1);
+  assert.ok(requests[0].url.endsWith('/api/options/preview'));
+  assert.equal(calls.some(call => call.kind === 'fetch' && call.url.endsWith('/api/options/execute')), false);
+});
+
 test('Demo full-auto passes the isolated Demo credentials and manual quality override only in Testnet', async () => {
   const demoCandidate = {
     symbol: 'P-BTC-59600-171126',
@@ -272,7 +299,8 @@ test('Demo full-auto passes the isolated Demo credentials and manual quality ove
   };
   const { worker, calls, logs } = harness({
     envPatch: {
-      FULL_AUTO_EXECUTE: 'true',
+      FULL_AUTO_EXECUTE: 'false',
+      OPTIONS_DEMO_AUTO_EXECUTE: 'true',
       OPTIONS_EXECUTION_MODE: 'demo',
       OPTIONS_EXIT_MONITOR_ENABLED: 'true',
       OPTIONS_REGIME_STRATEGY_ENABLED: 'false',
