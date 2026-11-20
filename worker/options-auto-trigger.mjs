@@ -69,7 +69,12 @@ export function createOptionsAutoTrigger({
   }
 
   const enabled = isEnabled(env.AUTO_EXECUTE_OPTIONS);
-  const fullAutoExecuteConfigured = isEnabled(env.FULL_AUTO_EXECUTE);
+  // Demo Options automation has its own opt-in and never toggles the global
+  // Futures FULL_AUTO_EXECUTE switch.
+  const demoExecutionConfigured = getOptionsExecutionMode(env) === 'demo';
+  const fullAutoExecuteConfigured = demoExecutionConfigured
+    ? isEnabled(env.OPTIONS_DEMO_AUTO_EXECUTE)
+    : isEnabled(env.FULL_AUTO_EXECUTE);
   let timer = null;
   let started = false;
   let inFlight = null;
@@ -349,7 +354,9 @@ export function createOptionsAutoTrigger({
           return { status: 'BLOCKED_PREVIEW', previewRequested: true, candidate: upper(candidate.symbol) };
         }
 
-        const fullAutoExecute = isEnabled(env.FULL_AUTO_EXECUTE);
+        const fullAutoExecute = demoMode
+          ? isEnabled(env.OPTIONS_DEMO_AUTO_EXECUTE)
+          : isEnabled(env.FULL_AUTO_EXECUTE);
         await logger(
           'INFO',
           fullAutoExecute
