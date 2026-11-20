@@ -25,7 +25,7 @@ function observation(symbol = 'C-BTC-90000-211126', group = {}) {
   };
 }
 
-test('new IV observations persist immediately, then at the five-minute cadence', () => {
+test('new IV observations persist immediately, then at the thirty-minute cadence', () => {
   const lastPersisted = new Map();
   const row = observation();
   assert.deepEqual(selectDueIvHistoryObservations([row], lastPersisted, 10_000), [row]);
