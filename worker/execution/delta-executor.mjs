@@ -4,7 +4,7 @@ import * as defaultDb from '../../server/db.js';
 import { indiaDateKey } from '../../src/date-utils.js';
 import { isAllowedDeltaTestnetFutureSymbol, isEligibleDeltaTestnetPerpetualProduct, isMarketTickFresh } from './execution-route-policy.mjs';
 import { createDeltaOptionsExecution } from './delta-options-execution.mjs';
-import { assertOptionsExecutionAllowed, DELTA_INDIA_TESTNET_REST_BASE } from '../options-execution-lock.mjs';
+import { DELTA_INDIA_TESTNET_REST_BASE } from '../options-execution-lock.mjs';
 
 export const DELTA_TESTNET_REST_BASE = 'https://cdn-ind.testnet.deltaex.org';
 export const DELTA_TESTNET_PRIVATE_WS_URL = 'wss://socket-ind.testnet.deltaex.org';
@@ -267,15 +267,18 @@ export function createDeltaExecutor({
   }
 
   async function requestDemoOptions(method, path, params = {}, body = null) {
-    // Options have a completely separate Demo credential path. Never reuse
-    // the Futures keypair and never allow a configurable/live API hostname.
-    assertOptionsExecutionAllowed(env);
+    // This is an exit-capable, Testnet-only transport. Entry permissions are
+    // asserted separately by placeOptionsOrder; never disable the exit path
+    // merely because new entries have been locked.
+    const deltaMode = stringOrEmpty(env.DELTA_EXECUTION_MODE || 'disabled').toLowerCase();
+    const environment = stringOrEmpty(env.DELTA_ENVIRONMENT).toUpperCase();
     const apiKey = stringOrEmpty(env.DELTA_DEMO_API_KEY);
     const apiSecret = stringOrEmpty(env.DELTA_DEMO_API_SECRET);
     const configuredBase = stringOrEmpty(env.DELTA_TESTNET_REST_BASE || DELTA_INDIA_TESTNET_REST_BASE).replace(/\/+$/, '');
-    if (!apiKey || !apiSecret || configuredBase !== DELTA_INDIA_TESTNET_REST_BASE ||
+    if (deltaMode !== 'testnet' || environment !== 'TESTNET' ||
+        !apiKey || !apiSecret || configuredBase !== DELTA_INDIA_TESTNET_REST_BASE ||
         DELTA_TESTNET_REST_BASE !== DELTA_INDIA_TESTNET_REST_BASE) {
-      throw new Error('Delta Demo Options credentials or fixed India Testnet endpoint are unavailable');
+      throw new Error('Delta Demo Options API access requires Testnet profile, dedicated Demo credentials and the exact India Testnet endpoint');
     }
     const verb = String(method || '').trim().toUpperCase();
     const route = String(path || '');
@@ -315,7 +318,6 @@ export function createDeltaExecutor({
   }
 
   async function getDemoOptionsAccountSnapshot() {
-    assertOptionsExecutionAllowed(env);
     const wallet = await requestDemoOptions('GET', '/v2/wallet/balances');
     const equity = accountEquity(wallet);
     if (!(equity > 0)) throw new Error('Delta Demo account equity is unavailable; Options entries fail closed');
