@@ -52,8 +52,21 @@ function harness({
         enabled: true,
         auto_trade: true,
         emergency_stop: false,
+        options_enabled: true,
+        options_buy_enabled: true,
+        options_sell_enabled: true,
         options_execution_enabled: true,
         max_options_positions: 4,
+        options_max_open_positions: 1,
+        options_min_oi: 50,
+        options_min_volume: 1,
+        options_max_spread_pct: 1.5,
+        options_min_days_to_expiry: 2,
+        options_max_days_to_expiry: 14,
+        options_buy_min_delta: 0.45,
+        options_buy_max_delta: 0.65,
+        options_sell_min_delta: 0.20,
+        options_sell_max_delta: 0.35,
         ...settingsPatch
       }];
       if (table === 'dd_option_cache') return cacheRows;
