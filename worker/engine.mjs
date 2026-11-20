@@ -2072,7 +2072,21 @@ export class DeltaEngine {
     const symbol = String(signal?.symbol || 'UNKNOWN').toUpperCase();
     const equity = n(account?.equity);
     const available = n(account?.available);
-    const contractValue = n(signal?.contractValue);
+    const productMeta = this.productMap?.get(symbol) || null;
+    const tickerMeta = this.tickerMap?.get(symbol) || null;
+    const contractValueCandidates = [
+      ['signal.contractValue', signal?.contractValue],
+      ['signal.contract_value', signal?.contract_value],
+      ['signal.product.contract_value', signal?.product?.contract_value],
+      ['signal.ticker.contract_value', signal?.ticker?.contract_value],
+      ['tickerMap.contract_value', tickerMeta?.contract_value],
+      ['productMap.contract_value', productMeta?.contract_value]
+    ];
+    const resolvedContractValue = contractValueCandidates.find(([, value]) => n(value) > 0);
+    const contractValue = n(resolvedContractValue?.[1]);
+    const contractValueSource = resolvedContractValue?.[0] || null;
+    const notionalType = signal?.notionalType ?? signal?.notional_type ??
+      signal?.product?.notional_type ?? productMeta?.notional_type;
     const price = n(signal?.price);
     const stopPrice = n(signal?.sl);
     const stopDistance = stopPrice > 0 ? Math.abs(price - stopPrice) : 0;
@@ -2090,6 +2104,9 @@ export class DeltaEngine {
         availableMargin: available,
         riskPct,
         contractValue,
+        contractValueSource,
+        executionProductAvailable: productMeta?.executionProductAvailable ?? null,
+        marketDataProductId: productMeta?.marketDataProductId ?? null,
         entryPrice: price,
         stopPrice,
         stopDistance,
@@ -2099,6 +2116,15 @@ export class DeltaEngine {
         ...details
       }));
     };
+
+    if (testnet && productMeta?.executionProductAvailable === false) {
+      logSizing(0, 'TESTNET_PRODUCT_NOT_VERIFIED', {
+        executionProductAvailable: false,
+        marketDataProductId: productMeta.marketDataProductId ?? null,
+        testnetProductId: productMeta.id ?? null
+      });
+      return null;
+    }
 
     const stage = String(signal?.stage || '').toUpperCase();
     if (stage !== 'CONFIRMED') {
@@ -2135,9 +2161,9 @@ export class DeltaEngine {
       return null;
     }
 
-    if (signal.notionalType && signal.notionalType !== 'vanilla') {
+    if (notionalType && notionalType !== 'vanilla') {
       logSizing(0, 'unsupported contract notional type', {
-        notionalType: signal.notionalType
+        notionalType
       });
       return null;
     }
