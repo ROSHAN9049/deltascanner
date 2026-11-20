@@ -212,8 +212,22 @@ function harness({
           unfilled_size: hedgePartial ? 0 : 1
         } };
       }
-      if (!hedgeFilled) return { result: { id: 100, state: 'open', size: 1, unfilled_size: 1 } };
-      if (hedgePartial) return { result: { id: 100, state: 'open', size: 1, unfilled_size: 0 } };
+      if (!hedgeFilled) return { result: {
+        id: 100, state: 'open', size: 1, unfilled_size: 1,
+        ...(requestOrders.get(100)?.bracket_stop_loss_price ? {
+          bracket_stop_loss_price: requestOrders.get(100).bracket_stop_loss_price,
+          bracket_take_profit_price: requestOrders.get(100).bracket_take_profit_price,
+          bracket_stop_trigger_method: requestOrders.get(100).bracket_stop_trigger_method
+        } : {})
+      } };
+      if (hedgePartial) return { result: {
+        id: 100, state: 'open', size: 1, unfilled_size: 0,
+        ...(requestOrders.get(100)?.bracket_stop_loss_price ? {
+          bracket_stop_loss_price: requestOrders.get(100).bracket_stop_loss_price,
+          bracket_take_profit_price: requestOrders.get(100).bracket_take_profit_price,
+          bracket_stop_trigger_method: requestOrders.get(100).bracket_stop_trigger_method
+        } : {})
+      } };
       const currentOrder = requestOrders.get(100) || {};
       const averageFillPrice = Number(currentOrder.product_id) === 101 ? 910 : 250;
       applyFilledOrder(100, averageFillPrice);
@@ -271,6 +285,22 @@ function harness({
   });
   return { executor, apiCalls, storedOrders, logs };
 }
+
+test('Demo BUY limit entry with no fill is canceled and never leaves a resting order', async () => {
+  const { executor, apiCalls, optionRows } = harness({
+    strategy: 'OPTIONS_BUY',
+    hedgeFilled: false
+  });
+  const preview = await executor.previewOptionsOrder({ symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1 });
+  await assert.rejects(
+    executor.placeOptionsOrder({
+      symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1, quoteToken: preview.quoteToken
+    }),
+    error => error?.code === 'OPTIONS_ENTRY_NOT_FILLED'
+  );
+  assert.ok(apiCalls.some(call => call.method === 'DELETE' && call.path === '/v2/orders'));
+  assert.equal(optionRows[0].status, 'CLOSED');
+});
 
 test('mock Delta Testnet API executes a long BTC call as a single limit BUY', async () => {
   const { executor, apiCalls } = harness({ strategy: 'OPTIONS_BUY' });
