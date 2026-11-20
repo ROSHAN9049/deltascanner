@@ -15,8 +15,13 @@ const CANDIDATE = {
   market_regime: 'TRENDING',
   iv_rank: 30,
   iv_percentile: 10,
+  oi: 100,
+  volume: 10,
+  spread_pct: 0.25,
+  delta: 0.55,
+  dte: 8,
   cached_at: new Date(NOW).toISOString(),
-  details: { analysisReady: true, marketRegime: 'TRENDING', ivRank: 30, ivPercentile: 10, ivPercentileDays: 20 }
+  details: { analysisReady: true, marketRegime: 'TRENDING', ivRank: 30, ivPercentile: 10, ivPercentileDays: 20, delta: 0.55, dte: 8 }
 };
 
 function harness({
@@ -167,6 +172,7 @@ test('database Options opt-in false blocks before preview or execution', async (
 
 test('open option position with the same symbol blocks duplicate preview requests', async () => {
   const { worker, calls } = harness({
+    settingsPatch: { options_max_open_positions: 2 },
     openPositions: [{ symbol: CANDIDATE.symbol }]
   });
   const result = await worker.runOnce();
