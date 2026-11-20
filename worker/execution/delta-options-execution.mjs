@@ -1301,8 +1301,8 @@ export function createDeltaOptionsExecution({
           fill = await confirmBuyEntryFillOrCancelAndUnwind(
             order, product, preview.qty, preview, executionKey
           );
-          await recordOptionPosition({ executionKey, preview, candidate, product, order, fill });
           positionRecorded = true;
+          await recordOptionPosition({ executionKey, preview, candidate, product, order, fill });
           positionVerification = await requireDemoPositionVerification(executionKey, [
             { product, side: 'BUY', qty: preview.qty }
           ]);
@@ -1366,10 +1366,10 @@ export function createDeltaOptionsExecution({
       const hedgeOrderId = lifecycle.hedgeOrder?.id ?? null;
       if (regimeBased) {
         if (lifecycle.success) {
+          positionRecorded = true;
           await recordOptionPosition({ executionKey, preview, candidate, product, hedgeProduct,
             order: lifecycle.shortOrder, fill: lifecycle.shortOrder?._shortFill,
             hedgeOrder: lifecycle.hedgeOrder, hedgeFill: lifecycle.shortOrder?._hedgeFill });
-          positionRecorded = true;
         } else {
           const hasUnresolvedExposure = lifecycle.hedgeExposureRemains === true || lifecycle.shortSubmitted === true;
           await database.update('dd_option_positions',
@@ -1423,8 +1423,7 @@ export function createDeltaOptionsExecution({
       };
     } catch (error) {
       if (reservationPersisted && reservedExecutionKey) {
-        const reconciliationRequired = error?.ambiguous === true || positionRecorded ||
-          error?.code !== 'OPTIONS_EXCHANGE_BRACKET_UNVERIFIED';
+        const reconciliationRequired = error?.ambiguous === true || positionRecorded;
         const at = new Date(now()).toISOString();
         await database.update('dd_option_positions',
           'position_key=eq.' + encodeURIComponent(reservedExecutionKey) +
