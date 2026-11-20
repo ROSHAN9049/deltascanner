@@ -984,6 +984,44 @@ export function createDeltaOptionsExecution({
     return { confirmed: false, filledQty: fillStatus(latest).filledQty, order: latest };
   }
 
+  async function confirmBuyEntryFillOrCancelAndUnwind(order, product, qty, preview, executionKey) {
+    let fill = await waitForProtectiveFill(order, qty);
+    if (fill?.fullyFilled === true && Number(fill.filledQty) === Number(qty) && positive(fill.averageFillPrice)) {
+      return fill;
+    }
+    const cancellation = await cancelProtective(order);
+    if (cancellation.confirmed !== true) {
+      const error = new Error('Demo Options BUY did not fill in time and exchange cancellation is unconfirmed');
+      error.ambiguous = true;
+      throw error;
+    }
+    const finalStatus = cancellation.order ? fillStatus(cancellation.order) : null;
+    if (finalStatus?.fullyFilled === true &&
+        Number(finalStatus.filledQty) === Number(qty) &&
+        positive(finalStatus.averageFillPrice)) {
+      return finalStatus;
+    }
+    const cancelledFilledQty = cancellation.filledQty;
+    if (!Number.isSafeInteger(Number(cancelledFilledQty)) || Number(cancelledFilledQty) < 0) {
+      const error = new Error('Demo Options BUY cancellation returned an unknown filled quantity; reconcile before retry');
+      error.ambiguous = true;
+      throw error;
+    }
+    if (Number(cancelledFilledQty) > 0) {
+      await submitAndConfirmReduceOnlyUnwind(
+        product, order, Number(cancelledFilledQty), preview, executionKey
+      );
+    }
+    const error = new Error(
+      Number(cancelledFilledQty) > 0
+        ? 'Demo Options BUY was partially filled, then canceled and fully unwound; no position was opened'
+        : 'Demo Options BUY was not filled and the resting order was canceled; no position was opened'
+    );
+    error.code = 'OPTIONS_ENTRY_NOT_FILLED';
+    error.status = 409;
+    throw error;
+  }
+
   async function submitAndConfirmReduceOnlyUnwind(product, originalHedgeOrder, filledQty, preview, executionKey) {
     const unwindOrder = await submitLeg(product, 'SELL', filledQty, null, {
       strategy: 'OPTIONS_SELL',
@@ -1260,11 +1298,9 @@ export function createDeltaOptionsExecution({
         let fill = null;
         let positionVerification = null;
         if (regimeBased) {
-          fill = await waitForProtectiveFill(order, preview.qty);
-          if (fill?.fullyFilled !== true || Number(fill.filledQty) !== preview.qty || !positive(fill.averageFillPrice)) {
-            const error = new Error('Long option fill is not fully confirmed; position requires exchange reconciliation');
-            error.ambiguous = true; throw error;
-          }
+          fill = await confirmBuyEntryFillOrCancelAndUnwind(
+            order, product, preview.qty, preview, executionKey
+          );
           await recordOptionPosition({ executionKey, preview, candidate, product, order, fill });
           positionRecorded = true;
           positionVerification = await requireDemoPositionVerification(executionKey, [
