@@ -237,6 +237,7 @@ try {
         if (/SELECT COUNT\(\*\)::text AS signal_rows/i.test(sql)) return { rows: [{ signal_rows: '100' }] };
         if (/WITH batch AS/i.test(sql) && /DELETE FROM public\.dd_signals/i.test(sql)) return { rows: [] };
         if (/DELETE FROM public\.dd_engine_logs/i.test(sql)) return { rows: [] };
+        if (/DELETE FROM public\.dd_iv_history/i.test(sql)) return { rows: [] };
         throw new Error('Unexpected SQL in retention health summary test');
       }
     });
