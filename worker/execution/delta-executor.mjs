@@ -146,6 +146,25 @@ function accountAvailable(wallet, equity) {
   return equity;
 }
 
+function accountAvailableVerified(wallet) {
+  const candidates = [
+    wallet?.meta?.available_balance,
+    wallet?.meta?.available_margin,
+    wallet?.result?.available_balance
+  ].map(numberOrNull).filter(value => value !== null && value >= 0);
+  if (candidates.length) return candidates[0];
+  const result = Array.isArray(wallet?.result)
+    ? wallet.result
+    : Array.isArray(wallet?.result?.balances) ? wallet.result.balances : [];
+  const settlementAssets = new Set(['USD', 'USDT', 'USDC', 'INR']);
+  const balances = result.filter(row =>
+    settlementAssets.has(stringOrEmpty(row?.asset_symbol || row?.currency || row?.symbol).toUpperCase())
+  );
+  const verified = balances.map(row => numberOrNull(row?.available_balance))
+    .filter(value => value !== null && value >= 0);
+  return verified.length ? verified.reduce((sum, value) => sum + value, 0) : null;
+}
+
 function terminalState(state) {
   return new Set(['filled', 'closed', 'cancelled', 'canceled', 'rejected', 'expired', 'failed', 'exited'])
     .has(stringOrEmpty(state).toLowerCase());
@@ -321,8 +340,8 @@ export function createDeltaExecutor({
     const wallet = await requestDemoOptions('GET', '/v2/wallet/balances');
     const equity = accountEquity(wallet);
     if (!(equity > 0)) throw new Error('Delta Demo account equity is unavailable; Options entries fail closed');
-    const available = accountAvailable(wallet, equity);
-    if (!(available > 0)) throw new Error('Delta Demo available balance is unavailable or zero; Options entries fail closed');
+    const available = accountAvailableVerified(wallet);
+    if (!(available > 0)) throw new Error('Delta Demo available margin is unavailable or zero; Options entries fail closed');
     return { equity, available, raw: wallet };
   }
 
