@@ -72,4 +72,6 @@ The market scanner still includes BTC, ETH and XAUT as configured. This India Op
 
 Each entry order requests an exchange-side SL/TP bracket. The executor then reads the order back and requires the exchange to echo the bracket levels; if not, it cancels the entry and reduces any confirmed partial fill. An ambiguous cancellation or unwind moves the position to reconciliation-required and blocks blind retry. After fill, the executor also verifies the signed contract quantity in the Demo account's Options position snapshot.
 
+The 60-second exit monitor and Demo credentials must remain enabled while any Demo Options position is open, even after setting `OPTIONS_EXECUTION_MODE=disabled` to stop new entries. The Demo transport remains pinned to the Testnet host so existing positions can still be managed; disable the monitor or remove the Demo keys only after the Demo account and `dd_option_positions` have no open/reconciliation-required rows.
+
 To configure the Worker, add the Demo credentials and explicit Demo flags in Hostless; leave all live keys and production settings untouched. The environment template keeps `OPTIONS_EXECUTION_MODE=disabled`, Demo credentials empty, `OPTIONS_EXECUTION_ALLOWED=false`, and `OPTIONS_EXIT_MONITOR_ENABLED=false` by default.
