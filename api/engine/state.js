@@ -62,6 +62,8 @@ export default async function handler(req, res) {
       readDashboardRows('dd_signal_cache', 'order=score.desc'),
       readDashboardRows('dd_market_cache', 'active=eq.true&order=market_rank.asc'),
       readDashboardRows('dd_option_cache', 'order=score.desc'),
+      // General activity logs are best-effort and never determine worker mode.
+      readDashboardRows('dd_engine_logs', 'order=created_at.desc&limit=200'),
       // Keep the worker-mode safety check independent from the general log list.
       // A large/failed history read must not hide a fresh heartbeat; this one-row
       // query still fails closed when the heartbeat itself cannot be verified.
