@@ -88,11 +88,9 @@ export function createDeltaOptionsExecution({
   function assertTestnetProfile() {
     const mode = lower(env.DELTA_EXECUTION_MODE || 'disabled');
     const environment = clean(env.DELTA_ENVIRONMENT).toUpperCase();
-    const optionsMode = getOptionsExecutionMode(env);
-    if (optionsMode !== 'demo' || mode !== 'testnet' || environment !== 'TESTNET') {
-      throw new Error('Delta Options operations are Demo-only and require OPTIONS_EXECUTION_MODE=demo, DELTA_EXECUTION_MODE=testnet and DELTA_ENVIRONMENT=TESTNET');
+    if (mode !== 'testnet' || environment !== 'TESTNET') {
+      throw new Error('Delta Options market-data and preview operations require the explicit Delta India Testnet profile');
     }
-    assertOptionsExecutionAllowed(env);
   }
 
   function requireManualTestOverride() {
@@ -227,8 +225,16 @@ export function createDeltaOptionsExecution({
       if (ivPercentile === null || (strategy === 'OPTIONS_BUY' ? ivPercentile >= 20 : ivPercentile <= 80)) reasons.push('IV_PERCENTILE_FILTER');
       const openInterest = number(row.oi ?? details.openInterest);
       const volume = number(row.volume ?? details.volume);
-      const minimumOi = number(settings.options_min_oi);
-      const minimumVolume = number(settings.options_min_volume);
+      const qualitySettingsRows = await database.select(
+        'dd_settings',
+        'id=eq.1&select=options_min_oi,options_min_volume'
+      );
+      if (!Array.isArray(qualitySettingsRows) || qualitySettingsRows.length !== 1) {
+        throw new Error('Demo Options quality-filter audit settings are unavailable');
+      }
+      const qualitySettings = qualitySettingsRows[0];
+      const minimumOi = number(qualitySettings.options_min_oi);
+      const minimumVolume = number(qualitySettings.options_min_volume);
       if (openInterest === null || (minimumOi !== null && openInterest < minimumOi)) reasons.push('OI_BELOW_MINIMUM');
       if (volume === null || (minimumVolume !== null && volume < minimumVolume)) reasons.push('VOLUME_BELOW_MINIMUM');
       if (delta === null) reasons.push('DELTA_UNAVAILABLE');
@@ -588,6 +594,9 @@ export function createDeltaOptionsExecution({
 
   async function assertEntrySafety(preview) {
     assertTestnetProfile();
+    // Preview-only scanning may run with execution disabled; actual entry
+    // always requires the complete Demo-only env gate.
+    assertOptionsExecutionAllowed(env);
     const settingsRows = await database.select(
       'dd_settings',
       'id=eq.1&select=id,enabled,auto_trade,emergency_stop,options_enabled,options_buy_enabled,options_sell_enabled,options_execution_enabled,last_tick_at,max_options_positions,options_max_open_positions,options_daily_loss_limit_pct'
