@@ -26,7 +26,7 @@ import { detectOptionsMarketRegime } from './options-regime-strategy.mjs';
 import { selectOptionsUnderlyingSignal } from './options-underlying-confirmation.mjs';
 import { calculateIvMetricsFromSummary, extractCurrentImpliedVolatility } from './options-iv-rank.mjs';
 import { buildIvHistoryGroup, ivHistoryGroupKey } from './options-iv-grouping.mjs';
-import { markIvHistoryObservationsPersisted, selectDueIvHistoryObservations } from './iv-history-write-policy.mjs';
+import { clearIvRetryFailure, isIvRetryReady, markIvHistoryObservationsPersisted, recordIvRetryFailure, selectDueIvHistoryObservations } from './iv-history-write-policy.mjs';
 import { selectBestOptionCandidates } from './options-candidate-selection.mjs';
 import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from './signal-failure-diagnostics.mjs';
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
@@ -283,7 +283,9 @@ export class DeltaEngine {
     this.lastOptionProductFetch = 0;
     this.lastOptionTickerFetch = 0;
     this.ivHistoryLastPersistedAt = new Map();
+    this.ivHistoryWriteRetryByUnderlying = new Map();
     this.ivGroupMetricsCache = new Map();
+    this.ivGroupMetricsRetryByUnderlying = new Map();
     this.tickerMap = new Map();
     this.products = [];
     this.productMap = new Map();
@@ -2661,28 +2663,55 @@ export class DeltaEngine {
             : group ? 'IV_DAILY_HISTORY_NOT_READY' : 'IV_GROUP_UNAVAILABLE';
         }
         if (ivObservations.length && typeof db.insertMany === 'function') {
-          try {
-            const observedAt = new Date(now).toISOString();
-            const dueObservations = selectDueIvHistoryObservations(
-              ivObservations,
-              this.ivHistoryLastPersistedAt,
-              now
-            );
-            if (dueObservations.length) {
-              await db.insertMany('dd_iv_history', dueObservations.map(({ ticker, iv, group }) => ({
-                symbol: ticker.symbol,
-                ...group,
-                iv_current: iv,
-                observed_at: observedAt,
-                source: 'delta_public_option_ticker'
-              })));
-              // Advance the local cadence only after the bulk write succeeds.
-              markIvHistoryObservationsPersisted(dueObservations, this.ivHistoryLastPersistedAt, now);
+          const observedAt = new Date(now).toISOString();
+          const dueObservations = selectDueIvHistoryObservations(
+            ivObservations,
+            this.ivHistoryLastPersistedAt,
+            now
+          );
+          let historyWriteAvailable = true;
+          if (dueObservations.length) {
+            if (!isIvRetryReady(this.ivHistoryWriteRetryByUnderlying, underlying, now)) {
+              historyWriteAvailable = false;
+            } else {
+              try {
+                await db.insertMany('dd_iv_history', dueObservations.map(({ ticker, iv, group }) => ({
+                  symbol: ticker.symbol,
+                  ...group,
+                  iv_current: iv,
+                  observed_at: observedAt,
+                  source: 'delta_public_option_ticker'
+                })));
+                markIvHistoryObservationsPersisted(dueObservations, this.ivHistoryLastPersistedAt, now);
+                clearIvRetryFailure(this.ivHistoryWriteRetryByUnderlying, underlying);
+              } catch (error) {
+                const retry = recordIvRetryFailure(this.ivHistoryWriteRetryByUnderlying, underlying, now);
+                historyWriteAvailable = false;
+                await this.log('WARN', 'Options IV history write failed; retry backoff scheduled', {
+                  underlying,
+                  observations: dueObservations.length,
+                  retryDelayMs: retry.retryDelayMs,
+                  retryAt: new Date(retry.retryAt).toISOString(),
+                  error: String(error?.message || error).slice(0, 240),
+                  orderRoutingAttempted: false
+                }).catch(() => {});
+              }
             }
+          }
 
-            // Current IV remains live on every option ticker. Persisted history is
-            // sampled every five minutes, and grouped summaries are cached for the
-            // same window to reduce repeated full-window aggregate reads.
+          // A failed or deferred history write keeps IV-derived Options entries
+          // fail-closed. Current IV remains live, but no fresh rank is inferred
+          // from a history snapshot whose persistence cycle did not complete.
+          if (!historyWriteAvailable) {
+            for (const ticker of selected) {
+              ticker.iv_rank = null;
+              ticker.iv_percentile = null;
+              ticker.iv_rank_block_reason = 'IV_HISTORY_WRITE_RETRY_BACKOFF';
+              ticker.iv_percentile_block_reason = 'IV_HISTORY_WRITE_RETRY_BACKOFF';
+            }
+          } else {
+            // Current IV stays live on every ticker. Persisted history and grouped
+            // rolling summaries are throttled independently to protect Postgres.
             const cutoff = new Date(now - 30 * 86_400_000).toISOString();
             const groups = new Map();
             for (const ticker of selected) {
@@ -2696,11 +2725,20 @@ export class DeltaEngine {
             const groupEntries = [...groups.entries()];
             for (const [key, group] of groupEntries) {
               const cached = this.ivGroupMetricsCache.get(key);
-              let summary = cached && now >= cached.cachedAt &&
+              const cachedSummary = cached && now >= cached.cachedAt &&
                 now - cached.cachedAt < 5 * 60 * 1000
                 ? cached.summary
                 : null;
-              if (!summary) {
+              if (cachedSummary) {
+                metricsByGroup.set(key, cachedSummary);
+                continue;
+              }
+              if (!isIvRetryReady(this.ivGroupMetricsRetryByUnderlying, underlying, now)) {
+                metricsByGroup.set(key, null);
+                continue;
+              }
+
+              try {
                 const response = await db.rpc('get_options_iv_group_metrics', {
                   p_underlying: underlying,
                   p_option_type: group.option_type,
@@ -2709,16 +2747,30 @@ export class DeltaEngine {
                   p_since: cutoff,
                   p_now: new Date(now).toISOString()
                 });
-                summary = Array.isArray(response) ? response[0] : response;
+                const summary = Array.isArray(response) ? response[0] : response;
                 if (!summary || typeof summary !== 'object') {
                   throw new Error('IV group aggregate returned no summary for ' + key);
                 }
                 this.ivGroupMetricsCache.set(key, { summary, cachedAt: now });
+                clearIvRetryFailure(this.ivGroupMetricsRetryByUnderlying, underlying);
+                metricsByGroup.set(key, summary);
+              } catch (error) {
+                const retry = recordIvRetryFailure(this.ivGroupMetricsRetryByUnderlying, underlying, now);
+                metricsByGroup.set(key, null);
+                await this.log('WARN', 'Grouped Options IV metrics failed; retry backoff scheduled and affected entries fail closed', {
+                  underlying,
+                  group: key,
+                  retryDelayMs: retry.retryDelayMs,
+                  retryAt: new Date(retry.retryAt).toISOString(),
+                  error: String(error?.message || error).slice(0, 240),
+                  orderRoutingAttempted: false
+                }).catch(() => {});
+                // Do not attempt more expensive group RPCs for this underlying
+                // during the same scan after one has timed out.
+                break;
               }
-              metricsByGroup.set(key, summary);
             }
-            // Group cardinality is naturally small; prune expired keys after each
-            // underlying refresh to keep the worker-local cache bounded.
+
             for (const [key, entry] of this.ivGroupMetricsCache) {
               if (now < entry.cachedAt || now - entry.cachedAt > 10 * 60 * 1000) {
                 this.ivGroupMetricsCache.delete(key);
@@ -2740,8 +2792,20 @@ export class DeltaEngine {
                 ticker.iv_percentile_block_reason = 'IV_GROUP_UNAVAILABLE';
                 continue;
               }
+              const summary = metricsByGroup.get(key) || null;
+              if (!summary) {
+                const retry = this.ivGroupMetricsRetryByUnderlying.get(underlying);
+                const backoffActive = retry && now < retry.retryAt;
+                ticker.iv_rank = null;
+                ticker.iv_percentile = null;
+                ticker.iv_rank_block_reason = backoffActive
+                  ? 'IV_GROUP_METRICS_RETRY_BACKOFF' : 'IV_GROUP_METRICS_UNAVAILABLE';
+                ticker.iv_percentile_block_reason = backoffActive
+                  ? 'IV_GROUP_METRICS_RETRY_BACKOFF' : 'IV_GROUP_METRICS_UNAVAILABLE';
+                continue;
+              }
               const result = calculateIvMetricsFromSummary(
-                metricsByGroup.get(key) || null,
+                summary,
                 ticker.iv_current,
                 now,
                 ivHistoryPolicy
@@ -2757,23 +2821,6 @@ export class DeltaEngine {
               ticker.iv_delta_bucket = group.delta_bucket;
               ticker.iv_dte_bucket = group.dte_bucket;
             }
-          } catch (error) {
-            for (const ticker of selected) {
-              ticker.iv_rank = null;
-              ticker.iv_percentile = null;
-              ticker.iv_rank_block_reason = 'IV_HISTORY_PERSISTENCE_OR_QUERY_FAILED';
-              ticker.iv_percentile_block_reason = 'IV_HISTORY_PERSISTENCE_OR_QUERY_FAILED';
-            }
-            await this.log('WARN', 'Grouped rolling Options IV metrics unavailable; affected entries fail closed', {
-              underlying, observations: ivObservations.length,
-              dueObservations: selectDueIvHistoryObservations(
-                ivObservations,
-                this.ivHistoryLastPersistedAt,
-                now
-              ).length,
-              error: String(error?.message || error).slice(0, 240),
-              orderRoutingAttempted: false
-            }).catch(() => {});
           }
         }
         counts[underlying] = selected.length;

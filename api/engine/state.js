@@ -10,6 +10,19 @@ import { createTtlSingleFlightCache } from '../../server/request-cache.js';
 const engineStateCache = createTtlSingleFlightCache({ ttlMs: 15_000 });
 
 
+async function readDashboardRows(table, query) {
+  try {
+    const rows = await select(table, query);
+    return { rows: Array.isArray(rows) ? rows : [], available: true };
+  } catch (error) {
+    // Non-safety dashboard datasets are independent: one timed-out history or
+    // telemetry query must not turn every otherwise-readable panel into HTTP 500.
+    // Heartbeat failure still resolves to an empty set, so execution mode remains UNKNOWN.
+    console.error('[engine/state] Dashboard dataset unavailable: ' + table + ': ' + error.message);
+    return { rows: [], available: false };
+  }
+}
+
 function normalizedScoreFromSignalRow(row) {
   let details = row?.details;
   if (typeof details === 'string') {
@@ -35,15 +48,41 @@ export default async function handler(req, res) {
     const todayStart = indiaDateKey(new Date()) + 'T00:00:00+05:30';
     const todayStartQuery = encodeURIComponent(todayStart);
     const last24HoursQuery = encodeURIComponent(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
-    const [signals, signalCache, marketCache, optionCache, rawLogs, ledger, ledgerRowCount] = await Promise.all([
-      select('dd_signals', 'order=captured_at.desc&limit=200'),
-      select('dd_signal_cache', 'order=score.desc'),
-      select('dd_market_cache', 'active=eq.true&order=market_rank.asc'),
-      select('dd_option_cache', 'order=score.desc'),
-      select('dd_engine_logs', 'order=created_at.desc&limit=200'),
-      select('dd_rotation_ledger', 'order=created_at.desc&limit=200'),
+    const [
+      signalsResult,
+      signalCacheResult,
+      marketCacheResult,
+      optionCacheResult,
+      rawLogsResult,
+      ledgerResult,
+      ledgerRowCount
+    ] = await Promise.all([
+      readDashboardRows('dd_signals', 'order=captured_at.desc&limit=200'),
+      readDashboardRows('dd_signal_cache', 'order=score.desc'),
+      readDashboardRows('dd_market_cache', 'active=eq.true&order=market_rank.asc'),
+      readDashboardRows('dd_option_cache', 'order=score.desc'),
+      // Heartbeat telemetry must be fresh. A failed read yields UNKNOWN mode;
+      // it is never substituted with an older heartbeat snapshot.
+      readDashboardRows('dd_engine_logs', 'order=created_at.desc&limit=200'),
+      readDashboardRows('dd_rotation_ledger', 'order=created_at.desc&limit=200'),
       count('dd_rotation_ledger', 'select=execution_id').catch(() => null)
     ]);
+    const signals = signalsResult.rows;
+    const signalCache = signalCacheResult.rows;
+    const marketCache = marketCacheResult.rows;
+    const optionCache = optionCacheResult.rows;
+    const rawLogs = rawLogsResult.rows;
+    const ledger = ledgerResult.rows;
+    const dataAvailability = {
+      signals: signalsResult.available,
+      signalCache: signalCacheResult.available,
+      marketCache: marketCacheResult.available,
+      optionCache: optionCacheResult.available,
+      workerHeartbeat: rawLogsResult.available,
+      logs: rawLogsResult.available,
+      rotationLedger: ledgerResult.available,
+      rotationLedgerCount: ledgerRowCount !== null
+    };
 
     // The heartbeat's environment mode is shared with the dashboard through
     // Supabase. It no longer depends on any legacy bridge or mirror metadata.
@@ -167,6 +206,7 @@ export default async function handler(req, res) {
         optionsTestnetDiagnostics: heartbeatLog?.data?.optionsTestnetDiagnostics || null
       },
       settings: null,
+      dataAvailability,
       activity,
       signals: signals || [],
       signalCache: signalCache || [],

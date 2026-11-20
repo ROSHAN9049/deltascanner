@@ -38,6 +38,22 @@ test('engine-state API uses a short-lived cache split by authorization scope', a
   assert.match(api, /settingsAvailable = Boolean\(rawSettings\)/);
   assert.match(api, /Fresh safety-settings read unavailable/);
   assert.ok(api.includes("const settingsRows = await select('dd_settings'"));
+  assert.match(api, /async function readDashboardRows\(table, query\)/);
+  assert.match(api, /dataAvailability/);
+  assert.match(api, /Heartbeat failure still resolves to an empty set, so execution mode remains UNKNOWN/);
+  assert.match(api, /readDashboardRows\('dd_signals'/);
+  assert.match(api, /readDashboardRows\('dd_engine_logs'/);
+});
+
+test('Options IV write and aggregate failures use bounded backoff and remain fail-closed', async () => {
+  const engine = await readFile(new URL('../worker/engine.mjs', import.meta.url), 'utf8');
+  const policy = await readFile(new URL('../worker/iv-history-write-policy.mjs', import.meta.url), 'utf8');
+  assert.match(engine, /isIvRetryReady\(this\.ivHistoryWriteRetryByUnderlying, underlying, now\)/);
+  assert.match(engine, /isIvRetryReady\(this\.ivGroupMetricsRetryByUnderlying, underlying, now\)/);
+  assert.match(engine, /IV_HISTORY_WRITE_RETRY_BACKOFF/);
+  assert.match(engine, /IV_GROUP_METRICS_RETRY_BACKOFF/);
+  assert.match(engine, /retry backoff scheduled/);
+  assert.match(policy, /IV_RETRY_MAX_DELAY_MS = 5 \* 60 \* 1000/);
 });
 
 test('position-cap snapshots require exact counts to detect server-side row caps', async () => {

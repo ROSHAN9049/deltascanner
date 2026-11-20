@@ -2,7 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   IV_HISTORY_PERSIST_INTERVAL_MS,
+  IV_RETRY_BASE_DELAY_MS,
+  IV_RETRY_MAX_DELAY_MS,
+  clearIvRetryFailure,
+  isIvRetryReady,
   markIvHistoryObservationsPersisted,
+  recordIvRetryFailure,
   selectDueIvHistoryObservations
 } from '../worker/iv-history-write-policy.mjs';
 
@@ -43,4 +48,42 @@ test('invalid observations and clock regressions are not written', () => {
   markIvHistoryObservationsPersisted([row], lastPersisted, 30_000);
   assert.deepEqual(selectDueIvHistoryObservations([row], lastPersisted, 29_999), []);
   assert.deepEqual(selectDueIvHistoryObservations([{ ticker: { symbol: 'invalid' }, group: {} }], lastPersisted, 40_000), []);
+});
+
+test('transient IV database failures use bounded exponential retry backoff', () => {
+  const retries = new Map();
+  const first = recordIvRetryFailure(retries, 'BTC', 100_000);
+  assert.equal(first.failures, 1);
+  assert.equal(first.retryDelayMs, IV_RETRY_BASE_DELAY_MS);
+  assert.equal(isIvRetryReady(retries, 'BTC', first.retryAt - 1), false);
+  assert.equal(isIvRetryReady(retries, 'BTC', first.retryAt), true);
+
+  const second = recordIvRetryFailure(retries, 'BTC', first.retryAt);
+  assert.equal(second.failures, 2);
+  assert.equal(second.retryDelayMs, IV_RETRY_BASE_DELAY_MS * 2);
+  const third = recordIvRetryFailure(retries, 'BTC', second.retryAt);
+  assert.equal(third.retryDelayMs, IV_RETRY_BASE_DELAY_MS * 4);
+  const fourth = recordIvRetryFailure(retries, 'BTC', third.retryAt);
+  assert.equal(fourth.retryDelayMs, IV_RETRY_MAX_DELAY_MS);
+  const fifth = recordIvRetryFailure(retries, 'BTC', fourth.retryAt);
+  assert.equal(fifth.retryDelayMs, IV_RETRY_MAX_DELAY_MS);
+});
+
+test('IV retry backoff is isolated by key and clears after a confirmed success', () => {
+  const retries = new Map();
+  recordIvRetryFailure(retries, 'BTC', 10_000);
+  assert.equal(isIvRetryReady(retries, 'ETH', 10_001), true);
+  assert.equal(isIvRetryReady(retries, 'BTC', 10_001), false);
+  assert.equal(clearIvRetryFailure(retries, 'BTC'), true);
+  assert.equal(isIvRetryReady(retries, 'BTC', 10_002), true);
+  assert.equal(clearIvRetryFailure(retries, 'BTC'), false);
+  assert.equal(retries.has('BTC'), false);
+});
+
+test('IV retry state stays bounded under many failing underlying keys', () => {
+  const retries = new Map();
+  for (let i = 0; i < 200; i++) recordIvRetryFailure(retries, 'UNDERLYING-' + i, 1_000);
+  assert.equal(retries.size, 128);
+  assert.equal(retries.has('UNDERLYING-0'), false);
+  assert.equal(retries.has('UNDERLYING-199'), true);
 });
