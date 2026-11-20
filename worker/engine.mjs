@@ -19,6 +19,8 @@ import {
   isOptionsExecutionAllowed,
   OPTIONS_EXECUTION_LOCK_REASON,
   getOptionsDatabaseExecutionGate,
+  getOptionsExecutionMode,
+  getOptionsManualTestOverrideGate,
   OPTIONS_DATABASE_EXECUTION_LOCK_REASON
 } from './options-execution-lock.mjs';
 import { countOptionProductsByUnderlying, replaceOptionCacheSnapshot } from './options-cache-snapshot.mjs';
@@ -4274,6 +4276,83 @@ export class DeltaEngine {
       return false;
     }
 
+    const normalizedStrategy = String(strategy || '').trim().toUpperCase();
+    if (normalizedStrategy === 'OPTIONS_BUY' || normalizedStrategy === 'OPTIONS_SELL') {
+      const optionsMode = getOptionsExecutionMode(process.env);
+      if (optionsMode !== 'demo') {
+        await this.log('WARN', 'Options entry blocked: execution mode is disabled or live; only explicit Delta India Demo is supported', {
+          symbol: signal?.symbol ?? null,
+          strategy: normalizedStrategy,
+          optionsExecutionMode: optionsMode,
+          executionBlocked: true,
+          orderRoutingAttempted: false
+        }).catch(() => {});
+        return false;
+      }
+      if (!isMarketTickFresh(this.lastTickAt)) {
+        await this.log('WARN', 'Options Demo entry blocked: underlying market tick is stale or unavailable', {
+          symbol: signal?.symbol ?? null,
+          strategy: normalizedStrategy,
+          lastTickAt: this.lastTickAt || null,
+          executionBlocked: true
+        }).catch(() => {});
+        return false;
+      }
+      const manualTestOverride = getOptionsManualTestOverrideGate(process.env).allowed;
+      try {
+        const preview = await deltaExecutor.previewOptionsOrder({
+          symbol: String(signal?.symbol || '').toUpperCase(),
+          strategy: normalizedStrategy,
+          qty: 1,
+          manualTestOverride
+        });
+        if (preview?.executionAllowed !== true || !preview?.quoteToken) {
+          await this.log('WARN', 'Options Demo preview blocked by execution, contract, account or risk gates', {
+            environment: 'DELTA_DEMO',
+            symbol: signal?.symbol ?? null,
+            strategy: normalizedStrategy,
+            reason: preview?.executionLockReason || 'Options Demo preview is not executable',
+            executionBlocked: true,
+            orderRoutingAttempted: false
+          }).catch(() => {});
+          return false;
+        }
+        const result = await deltaExecutor.placeOptionsOrder({
+          symbol: String(signal?.symbol || '').toUpperCase(),
+          strategy: normalizedStrategy,
+          qty: 1,
+          quoteToken: preview.quoteToken,
+          manualTestOverride
+        });
+        await this.log(result?.success === true ? 'INFO' : 'ERROR',
+          'Delta India Demo Options execution result', {
+            environment: 'DELTA_DEMO',
+            symbol: signal?.symbol ?? null,
+            strategy: normalizedStrategy,
+            side: preview.side,
+            size: preview.qty,
+            entry: result?.entry ?? null,
+            sl: result?.sl ?? preview.stopPremium,
+            tp: result?.tp ?? preview.takeProfitPremium,
+            orderId: result?.order?.id ?? result?.shortOrder?.id ?? null,
+            hedgeOrderId: result?.hedgeOrder?.id ?? result?.hedge_order_id ?? null,
+            status: result?.state || result?.status || 'UNKNOWN',
+            positionVerification: result?.positionVerification ?? null
+          }).catch(() => {});
+        return result?.success === true;
+      } catch (error) {
+        await this.log('ERROR', 'Delta India Demo Options execution failed closed', {
+          environment: 'DELTA_DEMO',
+          symbol: signal?.symbol ?? null,
+          strategy: normalizedStrategy,
+          reason: String(error?.message || error).slice(0, 240),
+          executionBlocked: true,
+          doNotBlindlyRetry: error?.ambiguous === true
+        }).catch(() => {});
+        return false;
+      }
+    }
+
     const expectedProductId = Number(signal?.productId);
     if (signal?.executionProductAvailable !== true ||
         !isAllowedDeltaTestnetFutureSymbol(signal?.symbol) ||
@@ -4297,12 +4376,6 @@ export class DeltaEngine {
       return false;
     }
 
-    if (strategy === 'OPTIONS_BUY' || strategy === 'OPTIONS_SELL') {
-      // Options are locked until direct Delta Testnet option execution has its
-      // own verified contract sizing and exchange-side protection path.
-      // Never route options through a legacy external strategy bridge.
-      return false;
-    }
     const normalizedScore = Number(signal?.normalizedScore);
     const normalizedScorePass =
       Number.isFinite(normalizedScore) && normalizedScore >= 80;
