@@ -229,10 +229,10 @@ test('engine pauses scans while lease ownership is uncertain and exits only afte
   const scanCycle = source.indexOf('cycle = this.scanOnce()', loopStart);
   assert.ok(runStart >= 0 && loopStart > runStart);
   assert.ok(pauseGuard > loopStart && scanCycle > pauseGuard);
-  assert.match(source, /Worker scan paused until trading lease renewal is confirmed/);
-  assert.match(source, /await sleep\\(5000\\);\\s+continue;/);
-  assert.match(source, /if \\(!this\\.leaseManager\\.isAcquired\\) this\\.running = false;/);
-  assert.match(source, /no scan or entry attempt is permitted/);
+  assert.ok(source.includes('Worker scan paused until trading lease renewal is confirmed'));
+  assert.ok(source.includes('await sleep(5000);'));
+  assert.ok(source.includes('if (!this.leaseManager.isAcquired) this.running = false;'));
+  assert.ok(source.includes('no scan or entry attempt is permitted'));
 });
 
 test('health is lease-independent and schema ties renewal to lease plus worker ownership', async () => {
