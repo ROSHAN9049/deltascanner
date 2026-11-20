@@ -1179,9 +1179,13 @@ export function createDeltaOptionsExecution({
     const lockKey = requestedSymbol + ':' + requestedStrategy;
     if (activeSymbols.has(lockKey)) throw new Error('Options execution for this candidate is already in progress');
     activeSymbols.add(lockKey);
+    let reservedExecutionKey = null;
+    let reservationPersisted = false;
+    let positionRecorded = false;
     try {
       const expected = verifyQuoteToken(quoteToken);
       const executionKey = crypto.createHash('sha256').update(String(quoteToken)).digest('hex').slice(0, 18);
+      reservedExecutionKey = executionKey;
       if (expected.symbol !== requestedSymbol || expected.strategy !== requestedStrategy ||
           Number(expected.qty) !== quantity ||
           Boolean(expected.manualTestOverride) !== useManualTestOverride) {
@@ -1226,7 +1230,10 @@ export function createDeltaOptionsExecution({
           throw new Error('Options contract DTE is outside the regime-based expiry window');
         }
       }
-      if (regimeBased) await reserveOptionPosition({ executionKey, preview, candidate, product, hedgeProduct });
+      if (regimeBased) {
+        await reserveOptionPosition({ executionKey, preview, candidate, product, hedgeProduct });
+        reservationPersisted = true;
+      }
       if (preview.strategy === 'OPTIONS_BUY') {
         const order = await submitLeg(product, 'BUY', preview.qty, preview.premium, {
           strategy: 'OPTIONS_BUY', role: 'ENTRY', maxLossUsd: preview.maxLossUsd, executionKey,
@@ -1243,6 +1250,7 @@ export function createDeltaOptionsExecution({
             error.ambiguous = true; throw error;
           }
           await recordOptionPosition({ executionKey, preview, candidate, product, order, fill });
+          positionRecorded = true;
           positionVerification = await requireDemoPositionVerification(executionKey, [
             { product, side: 'BUY', qty: preview.qty }
           ]);
@@ -1309,6 +1317,7 @@ export function createDeltaOptionsExecution({
           await recordOptionPosition({ executionKey, preview, candidate, product, hedgeProduct,
             order: lifecycle.shortOrder, fill: lifecycle.shortOrder?._shortFill,
             hedgeOrder: lifecycle.hedgeOrder, hedgeFill: lifecycle.shortOrder?._hedgeFill });
+          positionRecorded = true;
         } else {
           const hasUnresolvedExposure = lifecycle.hedgeExposureRemains === true || lifecycle.shortSubmitted === true;
           await database.update('dd_option_positions',
@@ -1360,6 +1369,38 @@ export function createDeltaOptionsExecution({
         hedge_order_id: hedgeOrderId,
         max_loss: preview.maxLossUsd
       };
+    } catch (error) {
+      if (reservationPersisted && reservedExecutionKey) {
+        const reconciliationRequired = error?.ambiguous === true || positionRecorded ||
+          error?.code !== 'OPTIONS_EXCHANGE_BRACKET_UNVERIFIED';
+        const at = new Date(now()).toISOString();
+        await database.update('dd_option_positions',
+          'position_key=eq.' + encodeURIComponent(reservedExecutionKey) +
+          '&status=in.(ENTRY_PENDING,OPEN,HEDGE_CLOSE_PENDING)', {
+            status: reconciliationRequired ? 'RECONCILIATION_REQUIRED' : 'CLOSED',
+            realized_pnl: reconciliationRequired ? null : 0,
+            realized_pnl_verified: !reconciliationRequired,
+            closed_at: reconciliationRequired ? null : at,
+            exit_reason: reconciliationRequired ? null : 'ENTRY_ABORTED',
+            updated_at: at,
+            raw: {
+              environment: 'DELTA_DEMO',
+              entry_error: String(error?.code || error?.message || 'unknown').slice(0, 240),
+              ambiguous: error?.ambiguous === true,
+              reconciliation_required: reconciliationRequired,
+              doNotBlindlyRetry: true
+            }
+          }).catch(() => {});
+        await logExecutor(reconciliationRequired ? 'ERROR' : 'WARN',
+          '[OptionsExecutor] Demo entry reservation finalized after failure', {
+            environment: 'DELTA_DEMO',
+            executionKey: reservedExecutionKey,
+            status: reconciliationRequired ? 'RECONCILIATION_REQUIRED' : 'CLOSED',
+            reason: String(error?.message || error).slice(0, 240),
+            doNotBlindlyRetry: true
+          }).catch(() => {});
+      }
+      throw error;
     } finally {
       activeSymbols.delete(lockKey);
     }
