@@ -30,10 +30,13 @@ test('Options execution gate is default-off and requires both Testnet profile gu
     DELTA_EXECUTION_MODE: 'testnet', DELTA_ENVIRONMENT: 'SIGNAL_ONLY',
     OPTIONS_EXECUTION_ALLOWED: 'true'
   }), false);
+  assert.equal(getOptionsExecutionGate(DEMO_PROFILE).allowed, true);
   assert.equal(getOptionsExecutionGate({
-    DELTA_EXECUTION_MODE: 'testnet', DELTA_ENVIRONMENT: 'TESTNET',
-    OPTIONS_EXECUTION_ALLOWED: 'true'
-  }).allowed, true);
+    ...DEMO_PROFILE, OPTIONS_EXECUTION_MODE: 'disabled'
+  }).allowed, false);
+  assert.equal(getOptionsExecutionGate({
+    ...DEMO_PROFILE, OPTIONS_EXECUTION_MODE: 'live'
+  }).allowed, false);
 });
 
 test('manual Options override is default-off and requires an explicit Testnet-only flag', () => {
@@ -48,11 +51,7 @@ test('manual Options override is default-off and requires an explicit Testnet-on
     DELTA_ENVIRONMENT: 'SIGNAL_ONLY',
     ALLOW_MANUAL_OVERRIDE_FOR_TEST: 'true'
   }).allowed, false);
-  assert.equal(getOptionsManualTestOverrideGate({
-    DELTA_EXECUTION_MODE: 'testnet',
-    DELTA_ENVIRONMENT: 'TESTNET',
-    ALLOW_MANUAL_OVERRIDE_FOR_TEST: 'TRUE'
-  }).allowed, true);
+  assert.equal(getOptionsManualTestOverrideGate(DEMO_PROFILE).allowed, true);
   assert.throws(() => assertOptionsManualTestOverrideAllowed({}), /ALLOW_MANUAL_OVERRIDE_FOR_TEST=true/);
 });
 
