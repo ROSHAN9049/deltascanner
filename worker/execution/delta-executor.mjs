@@ -493,7 +493,10 @@ export function createDeltaExecutor({
       (!fill?.product_symbol ||
         stringOrEmpty(fill.product_symbol).toUpperCase() === normalizedSymbol)
     );
-    const entryOrderId = stringOrEmpty(position?.entry_order_id);
+    // dd_delta_positions.order_id has historically stored the original Delta entry order ID.
+    // Prefer the explicit field, but fall back to that verified legacy field so fill
+    // reconciliation does not depend on a client_order_id being returned by /v2/fills.
+    const entryOrderId = stringOrEmpty(position?.entry_order_id ?? position?.order_id);
     const entryClientOrderId = stringOrEmpty(position?.client_order_id);
     const positionSide = stringOrEmpty(position?.side).toUpperCase();
     const closeSide = positionSide === 'BUY' ? 'SELL' : positionSide === 'SELL' ? 'BUY' : null;
@@ -893,6 +896,7 @@ export function createDeltaExecutor({
         opened_at: position.opened_at || timestamp,
         closed_at: null,
         updated_at: timestamp,
+        entry_order_id: String(order?.id ?? position.order_id ?? ''),
         order_id: String(order?.id ?? position.order_id ?? ''),
         client_order_id: clientOrderId,
         product_id: position.product_id ?? product.id,
