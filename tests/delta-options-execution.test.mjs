@@ -8,6 +8,19 @@ import {
   getOptionsManualTestOverrideGate,
   assertOptionsManualTestOverrideAllowed
 } from '../worker/options-execution-lock.mjs';
+
+const DEMO_PROFILE = {
+  OPTIONS_EXECUTION_MODE: 'demo',
+  DELTA_EXECUTION_MODE: 'testnet',
+  DELTA_ENVIRONMENT: 'TESTNET',
+  DELTA_TESTNET_REST_BASE: 'https://cdn-ind.testnet.deltaex.org',
+  DELTA_DEMO_API_KEY: 'demo-key',
+  DELTA_DEMO_API_SECRET: 'demo-secret',
+  OPTIONS_EXECUTION_ALLOWED: 'true',
+  OPTIONS_EXIT_MONITOR_ENABLED: 'true',
+  ALLOW_MANUAL_OVERRIDE_FOR_TEST: 'true'
+};
+
 import {
   calculateLongOptionMaxLoss,
   calculateDefinedRiskSpreadMaxLoss,
