@@ -123,7 +123,7 @@ export function createOptionsAutoTrigger({
 
         const settingsRows = await database.select(
           'dd_settings',
-          'id=eq.1&select=enabled,auto_trade,emergency_stop,options_execution_enabled,max_options_positions,options_min_oi,options_min_volume,options_max_spread_pct,options_min_days_to_expiry,options_max_days_to_expiry'
+          'id=eq.1&select=enabled,auto_trade,emergency_stop,options_enabled,options_buy_enabled,options_sell_enabled,options_execution_enabled,max_options_positions,options_max_open_positions,options_min_oi,options_min_volume,options_max_spread_pct,options_min_days_to_expiry,options_max_days_to_expiry,options_buy_min_delta,options_buy_max_delta,options_sell_min_delta,options_sell_max_delta'
         );
         if (!Array.isArray(settingsRows) || settingsRows.length !== 1) {
           throw new Error('Options auto-trigger settings are missing or ambiguous');
@@ -153,6 +153,10 @@ export function createOptionsAutoTrigger({
           await writeHeartbeat('BLOCKED_AUTO_TRADE', { reason: 'auto_trade is not true' });
           return { status: 'BLOCKED_AUTO_TRADE', previewRequested: false };
         }
+        if (settings.options_enabled !== true) {
+          await writeHeartbeat('BLOCKED_OPTIONS_DISABLED', { reason: 'options_enabled is false or unknown' });
+          return { status: 'BLOCKED_OPTIONS_DISABLED', previewRequested: false };
+        }
         if (settings.emergency_stop !== false) {
           await writeHeartbeat('BLOCKED_ESTOP', { reason: 'emergency_stop is active or unknown' });
           return { status: 'BLOCKED_ESTOP', previewRequested: false };
@@ -166,10 +170,13 @@ export function createOptionsAutoTrigger({
           return { status: 'BLOCKED_OPTIONS_EXECUTION_DISABLED', previewRequested: false };
         }
 
-        const maxPositions = finite(settings.max_options_positions);
-        if (!Number.isSafeInteger(maxPositions) || maxPositions < 1) {
-          throw new Error('max_options_positions is missing or invalid');
+        const globalMaxPositions = finite(settings.max_options_positions);
+        const strategyMaxPositions = finite(settings.options_max_open_positions);
+        if (!Number.isSafeInteger(globalMaxPositions) || globalMaxPositions < 1 ||
+            !Number.isSafeInteger(strategyMaxPositions) || strategyMaxPositions < 1) {
+          throw new Error('Options position caps are missing or invalid');
         }
+        const maxPositions = Math.min(globalMaxPositions, strategyMaxPositions);
 
         const scanAt = now();
         const recentFilledAfter = encodeURIComponent(new Date(scanAt - 120_000).toISOString());
@@ -223,6 +230,8 @@ export function createOptionsAutoTrigger({
         const candidates = cacheRows.filter(row => {
           const symbol = upper(row?.symbol);
           const strategy = upper(row?.strategy);
+          if (strategy === 'OPTIONS_BUY' && settings.options_buy_enabled !== true) return false;
+          if (strategy === 'OPTIONS_SELL' && settings.options_sell_enabled !== true) return false;
           const cachedAt = Date.parse(row?.cached_at || '');
           const details = parseDetails(row?.details);
           const marketRegime = upper(row?.market_regime || details.marketRegime);
