@@ -207,8 +207,9 @@ function harness({
       }
       if (!hedgeFilled) return { result: { id: 100, state: 'open', size: 1, unfilled_size: 1 } };
       if (hedgePartial) return { result: { id: 100, state: 'open', size: 1, unfilled_size: 0 } };
-      applyFilledOrder(100, 250);
-      return { result: { id: 100, state: 'filled', size: 1, unfilled_size: 0, average_fill_price: 250 } };
+      const averageFillPrice = Number(requestOrders.get(100)?.product_id) === 101 ? 910 : 250;
+      applyFilledOrder(100, averageFillPrice);
+      return { result: { id: 100, state: 'filled', size: 1, unfilled_size: 0, average_fill_price: averageFillPrice } };
     }
     if (method === 'GET' && path === '/v2/orders/101') {
       if (shortState === 'rejected') {
