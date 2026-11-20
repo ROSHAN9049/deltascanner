@@ -130,7 +130,7 @@ try {
     assert.equal(logDeleteCalls.length, 2, '5005 engine log rows must be deleted in two bounded batches');
     assert.equal(ivHistoryDeleteCalls.length, 2, '5002 IV history rows must be deleted in two bounded batches');
     for (const call of deleteCalls) {
-      const expectedDays = /DELETE FROM public\\.dd_iv_history/i.test(call.sql) ? 30 : 7;
+      const expectedDays = /DELETE FROM public\.dd_iv_history/i.test(call.sql) ? 30 : 7;
       assert.deepEqual(call.params, [expectedDays, 5000]);
     }
     assert.ok(logDeleteCalls.every(call => /created_at < NOW\(\)/i.test(call.sql)));
