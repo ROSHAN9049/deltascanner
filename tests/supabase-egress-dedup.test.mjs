@@ -76,10 +76,10 @@ test('dashboard and health message-filtered engine logs have a registered messag
   const runner = await readFile(new URL('../scripts/apply-all-migrations.mjs', import.meta.url), 'utf8');
   const health = await readFile(new URL('../api/health.js', import.meta.url), 'utf8');
   const state = await readFile(new URL('../api/engine/state.js', import.meta.url), 'utf8');
-  assert.match(migration, /CREATE INDEX IF NOT EXISTS dd_engine_logs_message_created_idx/i);
-  assert.match(migration, /ON public\\.dd_engine_logs \\(message, created_at DESC\\)/i);
-  assert.match(runner, /20261120000100_engine_log_message_latest_idx/);
-  assert.match(health, /message=eq\\.%5BAUTO-TRIGGER%5D/);
-  assert.match(health, /message=eq\\.%5BRetention%5D/);
-  assert.match(state, /message=like\\.Worker%20heartbeat%20scan\\*/);
+  assert.ok(migration.includes('CREATE INDEX IF NOT EXISTS dd_engine_logs_message_created_idx'));
+  assert.ok(migration.includes('ON public.dd_engine_logs (message, created_at DESC)'));
+  assert.ok(runner.includes('20261120000100_engine_log_message_latest_idx'));
+  assert.ok(health.includes('message=eq.%5BAUTO-TRIGGER%5D'));
+  assert.ok(health.includes('message=eq.%5BRetention%5D'));
+  assert.ok(state.includes('message=like.Worker%20heartbeat%20scan*'));
 });
