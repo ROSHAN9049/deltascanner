@@ -1600,8 +1600,7 @@ export function createDeltaOptionsExecution({
   }
 
   async function monitorOptionsExits() {
-    if (!(isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED) || isOptionsDemoExecution(env)) ||
-        !isEnabled(env.OPTIONS_EXIT_MONITOR_ENABLED)) {
+    if (!isEnabled(env.OPTIONS_EXIT_MONITOR_ENABLED)) {
       return { status: 'DISABLED', monitored: 0, exits: 0 };
     }
     assertTestnetProfile();
