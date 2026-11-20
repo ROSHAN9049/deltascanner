@@ -191,19 +191,32 @@ export default async function handler(req, res) {
       deltaTestnetClosedTodayPnl,
       deltaTestnetClosedTodayPnlComplete
     };
-    });
+    }, { staleIfErrorMs: 120_000 });
 
     // Settings contain emergency-stop and automatic-entry interlocks. Read
     // this single small row fresh on every request; the large dashboard
     // snapshots remain cached and auth-separated for 15 seconds.
-    const settingsRows = await select('dd_settings', 'id=eq.1&select=*');
-    const rawSettings = Array.isArray(settingsRows) ? settingsRows[0] || null : null;
+    let rawSettings = null;
+    let settingsAvailable = false;
+    try {
+      const settingsRows = await select('dd_settings', 'id=eq.1&select=*');
+      rawSettings = Array.isArray(settingsRows) ? settingsRows[0] || null : null;
+      settingsAvailable = Boolean(rawSettings);
+    } catch (error) {
+      // Do not reuse cached auto-trade or E-STOP flags. Public market/signal data
+      // may be served from the short stale cache, while settings remain UNKNOWN.
+      console.error('[engine/state] Fresh safety-settings read unavailable:', error.message);
+    }
     const settings = rawSettings ? {
       ...rawSettings,
       emergency_stop: normalizeEmergencyStopValue(rawSettings.emergency_stop)
     } : null;
 
-    return res.status(200).json(protectEngineState({ ...payload, settings }, privateDataAuthorized));
+    return res.status(200).json(protectEngineState({
+      ...payload,
+      settings,
+      settingsAvailable
+    }, privateDataAuthorized));
   } catch (error) {
     return res.status(503).json({
       success: false,

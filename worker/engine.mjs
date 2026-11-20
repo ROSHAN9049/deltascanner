@@ -26,6 +26,7 @@ import { detectOptionsMarketRegime } from './options-regime-strategy.mjs';
 import { selectOptionsUnderlyingSignal } from './options-underlying-confirmation.mjs';
 import { calculateIvMetricsFromSummary, extractCurrentImpliedVolatility } from './options-iv-rank.mjs';
 import { buildIvHistoryGroup, ivHistoryGroupKey } from './options-iv-grouping.mjs';
+import { markIvHistoryObservationsPersisted, selectDueIvHistoryObservations } from './iv-history-write-policy.mjs';
 import { selectBestOptionCandidates } from './options-candidate-selection.mjs';
 import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from './signal-failure-diagnostics.mjs';
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
@@ -281,6 +282,8 @@ export class DeltaEngine {
     this.optionProductMap = new Map();
     this.lastOptionProductFetch = 0;
     this.lastOptionTickerFetch = 0;
+    this.ivHistoryLastPersistedAt = new Map();
+    this.ivGroupMetricsCache = new Map();
     this.tickerMap = new Map();
     this.products = [];
     this.productMap = new Map();
@@ -2660,18 +2663,26 @@ export class DeltaEngine {
         if (ivObservations.length && typeof db.insertMany === 'function') {
           try {
             const observedAt = new Date(now).toISOString();
-            await db.insertMany('dd_iv_history', ivObservations.map(({ ticker, iv, group }) => ({
-              symbol: ticker.symbol,
-              ...group,
-              iv_current: iv,
-              observed_at: observedAt,
-              source: 'delta_public_option_ticker'
-            })));
+            const dueObservations = selectDueIvHistoryObservations(
+              ivObservations,
+              this.ivHistoryLastPersistedAt,
+              now
+            );
+            if (dueObservations.length) {
+              await db.insertMany('dd_iv_history', dueObservations.map(({ ticker, iv, group }) => ({
+                symbol: ticker.symbol,
+                ...group,
+                iv_current: iv,
+                observed_at: observedAt,
+                source: 'delta_public_option_ticker'
+              })));
+              // Advance the local cadence only after the bulk write succeeds.
+              markIvHistoryObservationsPersisted(dueObservations, this.ivHistoryLastPersistedAt, now);
+            }
 
-            // Aggregate each selected underlying/type/delta/DTE group in Postgres.
-            // This covers every observation in the rolling 30-day window without
-            // PostgREST's 10k row cap, oversized downloads, or broad-query timeouts.
-            // Queries run in small batches to keep database concurrency bounded.
+            // Current IV remains live on every option ticker. Persisted history is
+            // sampled every five minutes, and grouped summaries are cached for the
+            // same window to reduce repeated full-window aggregate reads.
             const cutoff = new Date(now - 30 * 86_400_000).toISOString();
             const groups = new Map();
             for (const ticker of selected) {
@@ -2683,9 +2694,13 @@ export class DeltaEngine {
 
             const metricsByGroup = new Map();
             const groupEntries = [...groups.entries()];
-            for (let offset = 0; offset < groupEntries.length; offset += 4) {
-              const batch = groupEntries.slice(offset, offset + 4);
-              const results = await Promise.all(batch.map(async ([key, group]) => {
+            for (const [key, group] of groupEntries) {
+              const cached = this.ivGroupMetricsCache.get(key);
+              let summary = cached && now >= cached.cachedAt &&
+                now - cached.cachedAt < 5 * 60 * 1000
+                ? cached.summary
+                : null;
+              if (!summary) {
                 const response = await db.rpc('get_options_iv_group_metrics', {
                   p_underlying: underlying,
                   p_option_type: group.option_type,
@@ -2694,13 +2709,23 @@ export class DeltaEngine {
                   p_since: cutoff,
                   p_now: new Date(now).toISOString()
                 });
-                const summary = Array.isArray(response) ? response[0] : response;
+                summary = Array.isArray(response) ? response[0] : response;
                 if (!summary || typeof summary !== 'object') {
                   throw new Error('IV group aggregate returned no summary for ' + key);
                 }
-                return [key, summary];
-              }));
-              for (const [key, summary] of results) metricsByGroup.set(key, summary);
+                this.ivGroupMetricsCache.set(key, { summary, cachedAt: now });
+              }
+              metricsByGroup.set(key, summary);
+            }
+            // Group cardinality is naturally small; prune expired keys after each
+            // underlying refresh to keep the worker-local cache bounded.
+            for (const [key, entry] of this.ivGroupMetricsCache) {
+              if (now < entry.cachedAt || now - entry.cachedAt > 10 * 60 * 1000) {
+                this.ivGroupMetricsCache.delete(key);
+              }
+            }
+            while (this.ivGroupMetricsCache.size > 128) {
+              this.ivGroupMetricsCache.delete(this.ivGroupMetricsCache.keys().next().value);
             }
 
             for (const ticker of selected) {
@@ -2741,6 +2766,11 @@ export class DeltaEngine {
             }
             await this.log('WARN', 'Grouped rolling Options IV metrics unavailable; affected entries fail closed', {
               underlying, observations: ivObservations.length,
+              dueObservations: selectDueIvHistoryObservations(
+                ivObservations,
+                this.ivHistoryLastPersistedAt,
+                now
+              ).length,
               error: String(error?.message || error).slice(0, 240),
               orderRoutingAttempted: false
             }).catch(() => {});

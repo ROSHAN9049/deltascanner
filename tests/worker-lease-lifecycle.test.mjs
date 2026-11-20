@@ -221,7 +221,9 @@ test('health is lease-independent and schema ties renewal to lease plus worker o
   assert.match(engineSource, /renewEveryMs: 15_000/);
   assert.match(engineSource, /this\.activeScanPromise = cycle/);
   assert.match(engineSource, /Do not close scan dependencies or relinquish the lease while scanOnce/);
-  assert.match(health, /const exchangeHealthy = exchangeProbe\?\.healthy === true/);
+  assert.match(health, /const exchangeHealthy = exchangeProbeResult\?\.healthy === true/);
+  assert.match(health, /const databaseHealthy = settingsResult\.ok && leaseResult\.ok/);
+  assert.match(health, /execution health is UNKNOWN/);
   assert.match(health, /const workerLeaseActive = Number\.isFinite\(leaseExpiresMs\) && leaseExpiresMs > nowMs/);
   assert.match(schema, /lease_id = p_lease_id and worker_id = p_worker_id/);
   assert.match(migration, /lease_id = p_lease_id and worker_id = p_worker_id/);
