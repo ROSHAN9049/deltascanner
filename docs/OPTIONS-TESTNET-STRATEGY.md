@@ -64,6 +64,8 @@ The execution path now has an independent mode selector. The default is fail-clo
 
 Demo credentials are read only from `DELTA_DEMO_API_KEY` and `DELTA_DEMO_API_SECRET`. They must be generated from the separate Delta Demo account and stored directly in the private Hostless Worker environment. Do not use live-account keys, commit credentials, or paste credentials into chat.
 
+Demo auto-entry has a separate `OPTIONS_DEMO_AUTO_EXECUTE=true` opt-in. Do not turn on global `FULL_AUTO_EXECUTE` for Options Demo testing; that flag remains reserved for existing Futures/global automation and must not be changed for this feature.
+
 The Demo candidate-quality override is separately gated by `ALLOW_MANUAL_OVERRIDE_FOR_TEST=true`. It may log and relax only underlying confirmation/stage, OI, volume, IV Rank/Percentile, regime and target-delta-band analysis filters. The normalized score must still be at least 80. Hard controls remain: approved BTC/ETH contract identity, exact Demo product ID and contract multiplier, valid quote, configured 2–14 DTE, spread no wider than 1.50%, verified account equity and available balance, configured Options loss budget plus 0.5% hard equity cap, daily loss limit, DB trading enabled, E-STOP false, Options strategy enabled, BUY/SELL strategy toggle, strictest of the global and Options-specific open-position caps, SELL protective BUY fill before any short SELL, exchange-side bracket acknowledgement, fill confirmation and exchange position reconciliation.
 
 The market scanner still includes BTC, ETH and XAUT as configured. This India Options executor currently routes only verified BTC and ETH contracts. XAUT Options remain scan-only until the India-specific contract and settlement rules are verified.
