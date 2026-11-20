@@ -54,6 +54,7 @@ export default async function handler(req, res) {
       marketCacheResult,
       optionCacheResult,
       rawLogsResult,
+      heartbeatResult,
       ledgerResult,
       ledgerRowCount
     ] = await Promise.all([
@@ -61,9 +62,10 @@ export default async function handler(req, res) {
       readDashboardRows('dd_signal_cache', 'order=score.desc'),
       readDashboardRows('dd_market_cache', 'active=eq.true&order=market_rank.asc'),
       readDashboardRows('dd_option_cache', 'order=score.desc'),
-      // Heartbeat telemetry must be fresh. A failed read yields UNKNOWN mode;
-      // it is never substituted with an older heartbeat snapshot.
-      readDashboardRows('dd_engine_logs', 'order=created_at.desc&limit=200'),
+      // Keep the worker-mode safety check independent from the general log list.
+      // A large/failed history read must not hide a fresh heartbeat; this one-row
+      // query still fails closed when the heartbeat itself cannot be verified.
+      readDashboardRows('dd_engine_logs', 'message=like.Worker%20heartbeat%20scan*&select=id,level,message,created_at,data&order=created_at.desc&limit=1'),
       readDashboardRows('dd_rotation_ledger', 'order=created_at.desc&limit=200'),
       count('dd_rotation_ledger', 'select=execution_id').catch(() => null)
     ]);
@@ -78,7 +80,9 @@ export default async function handler(req, res) {
       signalCache: signalCacheResult.available,
       marketCache: marketCacheResult.available,
       optionCache: optionCacheResult.available,
-      workerHeartbeat: rawLogsResult.available,
+      workerHeartbeat: heartbeatResult.available && heartbeatResult.rows.some(row =>
+        String(row?.message || '').startsWith('Worker heartbeat scan')
+      ),
       logs: rawLogsResult.available,
       rotationLedger: ledgerResult.available,
       rotationLedgerCount: ledgerRowCount !== null
@@ -86,7 +90,12 @@ export default async function handler(req, res) {
 
     // The heartbeat's environment mode is shared with the dashboard through
     // Supabase. It no longer depends on any legacy bridge or mirror metadata.
-    const heartbeatLog = findWorkerHeartbeatRow(rawLogs);
+    const heartbeatLog = findWorkerHeartbeatRow(heartbeatResult.rows);
+    // Retain the independently verified heartbeat in the payload even when the
+    // best-effort 200-row activity log query fails or returns a truncated window.
+    const rawLogsWithHeartbeat = heartbeatLog
+      ? [heartbeatLog, ...(rawLogs || []).filter(row => String(row?.id ?? '') !== String(heartbeatLog.id ?? ''))]
+      : rawLogs;
     const workerGridAutoRangeStatus = resolveWorkerGridAutoRangeStatus(heartbeatLog);
     const deltaExecutionMode = normalizeWorkerExecutionMode(heartbeatLog);
     const deltaExecutionModeSource = deltaExecutionMode === 'unknown' ? 'unavailable' : 'supabase-worker-heartbeat';
@@ -95,7 +104,7 @@ export default async function handler(req, res) {
     const legacyBridgeMarker = ['trade', 'tron'].join('');
     const containsLegacyBridgeMarker = value =>
       new RegExp(legacyBridgeMarker, 'i').test(String(value || ''));
-    const logs = (rawLogs || []).filter(row =>
+    const logs = (rawLogsWithHeartbeat || []).filter(row =>
       !containsLegacyBridgeMarker(row?.message) &&
       !containsLegacyBridgeMarker(JSON.stringify(row?.data || {}))
     );
