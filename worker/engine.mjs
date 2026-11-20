@@ -166,6 +166,20 @@ const ENGINE_LOG_RETENTION_DELETE_SQL = `
   WHERE target.id = batch.id
   RETURNING target.id
 `;
+const IV_HISTORY_RETENTION_DAYS = 30;
+const IV_HISTORY_RETENTION_DELETE_SQL = `
+  WITH batch AS (
+    SELECT id
+    FROM public.dd_iv_history
+    WHERE observed_at < NOW() - ($1::int * INTERVAL '1 day')
+    ORDER BY observed_at ASC
+    LIMIT $2::int
+  )
+  DELETE FROM public.dd_iv_history AS target
+  USING batch
+  WHERE target.id = batch.id
+  RETURNING target.id
+`;
 
 export function duplicatePositionBlocker(openPositions, symbol) {
   const selected = String(symbol || '').toUpperCase();
@@ -3021,13 +3035,13 @@ export class DeltaEngine {
     const runStartedAt = iso();
     this.retentionInFlightDays = requestedDays;
     this.retentionInFlight = this.performSignalRetention(requestedDays, reason);
-    let result = { success: false, effectiveDays: requestedDays, totalDeleted: 0, totalEngineLogsDeleted: 0 };
+    let result = { success: false, effectiveDays: requestedDays, totalDeleted: 0, totalEngineLogsDeleted: 0, totalIvHistoryDeleted: 0 };
     let effectiveDays = requestedDays;
     try {
       result = await this.retentionInFlight;
       effectiveDays = result?.effectiveDays ?? requestedDays;
     } catch (error) {
-      result = { success: false, effectiveDays, totalDeleted: 0, totalEngineLogsDeleted: 0 };
+      result = { success: false, effectiveDays, totalDeleted: 0, totalEngineLogsDeleted: 0, totalIvHistoryDeleted: 0 };
       await this.maintenanceLog('WARN', '[Retention] Task failed; worker continues: ' + safeMaintenanceError(error), { reason });
     } finally {
       this.retentionInFlight = null;
@@ -3040,12 +3054,17 @@ export class DeltaEngine {
     const engineLogRowsDeleted = Number.isSafeInteger(result?.totalEngineLogsDeleted) && result.totalEngineLogsDeleted >= 0
       ? result.totalEngineLogsDeleted
       : 0;
+    const ivHistoryRowsDeleted = Number.isSafeInteger(result?.totalIvHistoryDeleted) && result.totalIvHistoryDeleted >= 0
+      ? result.totalIvHistoryDeleted
+      : 0;
     await this.maintenanceLog(result?.success === true ? 'INFO' : 'WARN', '[Retention] Run summary', {
       status: result?.success === true ? 'SUCCESS' : 'FAILURE',
       runStartedAt,
       runCompletedAt: iso(),
       rowsDeleted,
       engineLogRowsDeleted,
+      ivHistoryRowsDeleted,
+      ivHistoryRetentionDays: IV_HISTORY_RETENTION_DAYS,
       configDays: RETENTION_DAYS,
       effectiveDays,
       reason
@@ -3062,13 +3081,14 @@ export class DeltaEngine {
     const startedAt = Date.now();
     let totalDeleted = 0;
     let totalEngineLogsDeleted = 0;
+    let totalIvHistoryDeleted = 0;
     let effectiveDays = requestedDays;
 
     try {
       const pool = await this.getMaintenancePool();
       if (!pool) {
         await this.maintenanceLog('WARN', '[Retention] Retention disabled (no DATABASE_URL)', { reason });
-        return { success: false, effectiveDays, totalDeleted, totalEngineLogsDeleted };
+        return { success: false, effectiveDays, totalDeleted, totalEngineLogsDeleted, totalIvHistoryDeleted };
       }
 
       const countResult = await pool.query('SELECT COUNT(*)::text AS signal_rows FROM public.dd_signals');
@@ -3115,12 +3135,24 @@ export class DeltaEngine {
         await sleep(100);
       }
 
-      return { success: true, effectiveDays, totalDeleted, totalEngineLogsDeleted };
+      while (true) {
+        const ivResult = await pool.query(IV_HISTORY_RETENTION_DELETE_SQL, [IV_HISTORY_RETENTION_DAYS, RETENTION_BATCH_SIZE]);
+        const deleted = Array.isArray(ivResult.rows) ? ivResult.rows.length : 0;
+        totalIvHistoryDeleted += deleted;
+        const elapsedSeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+        await this.maintenanceLog('INFO',
+          `[Retention] Deleted ${deleted} IV history rows (total ${totalIvHistoryDeleted}, elapsed ${elapsedSeconds}s)`,
+          { reason, batch: deleted, totalIvHistoryDeleted, elapsedSeconds: Number(elapsedSeconds), retentionDays: IV_HISTORY_RETENTION_DAYS });
+        if (deleted === 0 || deleted < RETENTION_BATCH_SIZE) break;
+        await sleep(100);
+      }
+
+      return { success: true, effectiveDays, totalDeleted, totalEngineLogsDeleted, totalIvHistoryDeleted };
     } catch (error) {
       await this.maintenanceLog('WARN',
         '[Retention] Task failed; worker continues: ' + safeMaintenanceError(error),
-        { reason, totalDeleted, totalEngineLogsDeleted, retentionDays: effectiveDays });
-      return { success: false, effectiveDays, totalDeleted, totalEngineLogsDeleted };
+        { reason, totalDeleted, totalEngineLogsDeleted, totalIvHistoryDeleted, retentionDays: effectiveDays });
+      return { success: false, effectiveDays, totalDeleted, totalEngineLogsDeleted, totalIvHistoryDeleted };
     }
   }
 
