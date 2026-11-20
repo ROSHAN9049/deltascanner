@@ -207,6 +207,20 @@ test('network errors, invalid JSON, and timed-out requests all fail closed', asy
   assert.match(timedOut.error, /timeout|aborted/i);
 });
 
+test('maintenance resources are drained and re-created after engine recovery', async () => {
+  const engine = await readFile(new URL('../worker/engine.mjs', import.meta.url), 'utf8');
+  assert.match(engine, /this\.diskMonitorInFlight = null/);
+  assert.match(engine, /runDiskHealthCheckSafely\(\)/);
+  assert.match(engine, /this\.diskMonitorInterval = setInterval\(\(\) => \{\s*void this\.runDiskHealthCheckSafely\(\)/);
+  const stopStart = engine.indexOf('  async stopMaintenanceTasks() {');
+  const stopEnd = engine.indexOf('\\n  isDuplicateSignalObservation', stopStart);
+  const stopBody = engine.slice(stopStart, stopEnd);
+  assert.match(stopBody, /const pendingMaintenance = \[this\.diskMonitorInFlight, this\.retentionInFlight\]/);
+  assert.match(stopBody, /await Promise\.allSettled\(pendingMaintenance\)/);
+  assert.match(stopBody, /this\.maintenanceStarted = false/);
+  assert.match(engine, /if \(hasMaintenanceDatabaseUrl\(\)\) await this\.runDiskHealthCheckSafely\(\)/);
+});
+
 test('health is lease-independent and schema ties renewal to lease plus worker ownership', async () => {
   const [engineSource, health, schema, migration] = await Promise.all([
     readFile(new URL('../worker/engine.mjs', import.meta.url), 'utf8'),
