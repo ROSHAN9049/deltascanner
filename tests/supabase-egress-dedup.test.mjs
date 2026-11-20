@@ -42,6 +42,9 @@ test('engine-state API uses a short-lived cache split by authorization scope', a
   assert.match(api, /dataAvailability/);
   assert.match(api, /Heartbeat failure still resolves to an empty set, so execution mode remains UNKNOWN/);
   assert.match(api, /readDashboardRows\('dd_signals'/);
+  assert.match(api, /message=like\.Worker%20heartbeat%20scan\*/);
+  assert.match(api, /workerHeartbeat: heartbeatResult\.available/);
+  assert.match(api, /const rawLogsWithHeartbeat = heartbeatLog/);
   assert.match(api, /readDashboardRows\('dd_engine_logs'/);
 });
 
