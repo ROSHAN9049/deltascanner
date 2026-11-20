@@ -60,8 +60,15 @@ function harness({
     async select(table, query = '') {
       if (table === 'dd_option_cache') return [candidate];
       if (table === 'dd_settings') return [{
+        options_enabled: true,
+        options_buy_enabled: true,
+        options_sell_enabled: true,
         options_max_risk_pct: 0.30,
         max_options_positions: 4,
+        options_max_open_positions: 1,
+        options_min_oi: 50,
+        options_min_volume: 1,
+        options_max_spread_pct: 1.5,
         options_buy_min_delta: 0.45,
         options_buy_max_delta: 0.65,
         options_sell_min_delta: 0.20,
