@@ -221,6 +221,20 @@ test('maintenance resources are drained and re-created after engine recovery', a
   assert.match(engine, /if \(hasMaintenanceDatabaseUrl\(\)\) await this\.runDiskHealthCheckSafely\(\)/);
 });
 
+test('engine pauses scans while lease ownership is uncertain and exits only after confirmed loss', async () => {
+  const source = await readFile(new URL('../worker/engine.mjs', import.meta.url), 'utf8');
+  const runStart = source.indexOf('  async run() {');
+  const loopStart = source.indexOf('      while (this.running) {', runStart);
+  const pauseGuard = source.indexOf('if (this.leaseEnforced && !this.leaseManager.isHeld)', loopStart);
+  const scanCycle = source.indexOf('cycle = this.scanOnce()', loopStart);
+  assert.ok(runStart >= 0 && loopStart > runStart);
+  assert.ok(pauseGuard > loopStart && scanCycle > pauseGuard);
+  assert.ok(source.includes('Worker scan paused until trading lease renewal is confirmed'));
+  assert.ok(source.includes('await sleep(5000);'));
+  assert.ok(source.includes('if (!this.leaseManager.isAcquired) this.running = false;'));
+  assert.ok(source.includes('no scan or entry attempt is permitted'));
+});
+
 test('health is lease-independent and schema ties renewal to lease plus worker ownership', async () => {
   const [engineSource, health, schema, migration] = await Promise.all([
     readFile(new URL('../worker/engine.mjs', import.meta.url), 'utf8'),

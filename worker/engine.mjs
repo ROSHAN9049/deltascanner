@@ -318,6 +318,7 @@ export class DeltaEngine {
     this.wsConnected = false;
     this.candleRestHealingNeeded = false;
     this.lastLeaseContentionLogAt = 0;
+    this.lastLeaseUncertainLogAt = 0;
     this.consecutiveLeaseFailures = 0;
     this.lastDuplicateWorkerLogAt = 0;
 
@@ -5854,6 +5855,26 @@ export class DeltaEngine {
       if (hasMaintenanceDatabaseUrl()) await this.runDiskHealthCheckSafely();
 
       while (this.running) {
+        // A failed renewal makes ownership uncertain, not confirmed lost.
+        // Pause all scans while the lease manager retries. The final entry gate
+        // also remains closed until a successful DB renewal confirms ownership.
+        if (this.leaseEnforced && !this.leaseManager.isHeld) {
+          if (!this.leaseManager.isAcquired) {
+            this.running = false;
+            break;
+          }
+          const now = Date.now();
+          if (now - this.lastLeaseUncertainLogAt >= 30_000) {
+            this.lastLeaseUncertainLogAt = now;
+            await this.log('WARN', 'Worker scan paused until trading lease renewal is confirmed', {
+              workerId: CONFIG.workerId,
+              leaseTtlSeconds: this.leaseManager.ttlSeconds,
+              reason: 'Lease renewal result is uncertain; no scan or entry attempt is permitted'
+            }).catch(() => {});
+          }
+          await sleep(5000);
+          continue;
+        }
         let cycle = null;
         try {
           cycle = this.scanOnce();
@@ -5891,7 +5912,7 @@ export class DeltaEngine {
             await this.log('ERROR', 'Engine failed closed for cycle', {
               error: message, code: error?.code || null, status: error?.status || null, details: error?.details || null
             });
-            if (!this.leaseManager.isHeld) this.running = false;
+            if (!this.leaseManager.isAcquired) this.running = false;
           }
         } finally {
           if (this.activeScanPromise === cycle) this.activeScanPromise = null;
