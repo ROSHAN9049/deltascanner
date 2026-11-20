@@ -225,6 +225,12 @@ export function createDeltaOptionsExecution({
       if (details.analysisReady !== true) reasons.push('UNDERLYING_ANALYSIS_NOT_READY');
       if (ivRank === null || (strategy === 'OPTIONS_BUY' ? ivRank >= 40 : ivRank <= 50)) reasons.push('IV_RANK_FILTER');
       if (ivPercentile === null || (strategy === 'OPTIONS_BUY' ? ivPercentile >= 20 : ivPercentile <= 80)) reasons.push('IV_PERCENTILE_FILTER');
+      const openInterest = number(row.oi ?? details.openInterest);
+      const volume = number(row.volume ?? details.volume);
+      const minimumOi = number(settings.options_min_oi);
+      const minimumVolume = number(settings.options_min_volume);
+      if (openInterest === null || (minimumOi !== null && openInterest < minimumOi)) reasons.push('OI_BELOW_MINIMUM');
+      if (volume === null || (minimumVolume !== null && volume < minimumVolume)) reasons.push('VOLUME_BELOW_MINIMUM');
       if (delta === null) reasons.push('DELTA_UNAVAILABLE');
       await logExecutor('WARN', '[OptionsExecutor] Demo-only candidate quality filters observed; mandatory score/risk/size/expiry/spread/hedge checks remain active', {
         environment: 'DELTA_DEMO',
@@ -584,7 +590,7 @@ export function createDeltaOptionsExecution({
     assertTestnetProfile();
     const settingsRows = await database.select(
       'dd_settings',
-      'id=eq.1&select=id,enabled,auto_trade,emergency_stop,options_execution_enabled,last_tick_at,max_options_positions,options_daily_loss_limit_pct'
+      'id=eq.1&select=id,enabled,auto_trade,emergency_stop,options_enabled,options_buy_enabled,options_sell_enabled,options_execution_enabled,last_tick_at,max_options_positions,options_max_open_positions,options_daily_loss_limit_pct'
     );
     if (!Array.isArray(settingsRows) || settingsRows.length !== 1) {
       throw new Error('Options entry settings are unavailable; order blocked');
@@ -593,6 +599,13 @@ export function createDeltaOptionsExecution({
     if (settings.enabled !== true) throw new Error('Trading engine is disabled; Options entry blocked');
     if (settings.auto_trade !== true) throw new Error('Auto Trade is off or unknown; Options entry blocked');
     if (settings.emergency_stop !== false) throw new Error('Emergency Stop is active or unknown; Options entry blocked');
+    if (settings.options_enabled !== true) throw new Error('Options strategy is disabled in dd_settings');
+    if (preview.strategy === 'OPTIONS_BUY' && settings.options_buy_enabled !== true) {
+      throw new Error('Options BUY is disabled in dd_settings');
+    }
+    if (preview.strategy === 'OPTIONS_SELL' && settings.options_sell_enabled !== true) {
+      throw new Error('Options SELL is disabled in dd_settings');
+    }
     if (!getOptionsDatabaseExecutionGate(settings).allowed) {
       throw new Error(OPTIONS_DATABASE_EXECUTION_LOCK_REASON + ' Options entry blocked');
     }
@@ -646,10 +659,13 @@ export function createDeltaOptionsExecution({
     ) || exchangeOptionSymbols.some(symbol => keys.includes(symbol))) {
       throw new Error('An Options order, reservation or exchange position already exists for this contract');
     }
-    const maxOptionsPositions = Number(settings.max_options_positions);
-    if (!Number.isSafeInteger(maxOptionsPositions) || maxOptionsPositions < 1) {
-      throw new Error('Configured max_options_positions is unavailable or invalid; Options entry blocked');
+    const configuredMaxOptionsPositions = Number(settings.max_options_positions);
+    const strategyMaxPositions = Number(settings.options_max_open_positions);
+    if (!Number.isSafeInteger(configuredMaxOptionsPositions) || configuredMaxOptionsPositions < 1 ||
+        !Number.isSafeInteger(strategyMaxPositions) || strategyMaxPositions < 1) {
+      throw new Error('Configured Options position caps are unavailable or invalid; entry blocked');
     }
+    const maxOptionsPositions = Math.min(configuredMaxOptionsPositions, strategyMaxPositions);
     const occupied = new Set([
       ...positions.map(row => clean(row.symbol).toUpperCase()),
       ...optionPositions.map(row => clean(row.symbol).toUpperCase()),
@@ -1231,8 +1247,8 @@ export function createDeltaOptionsExecution({
         }
       }
       if (regimeBased) {
-        await reserveOptionPosition({ executionKey, preview, candidate, product, hedgeProduct });
         reservationPersisted = true;
+        await reserveOptionPosition({ executionKey, preview, candidate, product, hedgeProduct });
       }
       if (preview.strategy === 'OPTIONS_BUY') {
         const order = await submitLeg(product, 'BUY', preview.qty, preview.premium, {
