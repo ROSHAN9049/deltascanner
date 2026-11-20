@@ -5,6 +5,8 @@ import { executeDefinedRiskSellExit } from '../options-exit-sequence.mjs';
 import {
   assertOptionsExecutionAllowed,
   getOptionsExecutionGate,
+  getOptionsExecutionMode,
+  isOptionsDemoExecution,
   assertOptionsManualTestOverrideAllowed,
   getOptionsDatabaseExecutionGate,
   OPTIONS_DATABASE_EXECUTION_LOCK_REASON
@@ -40,6 +42,19 @@ function assertTickAligned(price, tickSize, symbol) {
   }
 }
 
+function snapPriceToTick(value, tickSize, direction) {
+  const price = positive(value);
+  const tick = positive(tickSize);
+  if (!price || !tick) throw new Error('Options bracket price or tick size is invalid');
+  const units = price / tick;
+  const snappedUnits = direction === 'up'
+    ? Math.ceil(units - 1e-10)
+    : Math.floor(units + 1e-10);
+  const snapped = Number((snappedUnits * tick).toPrecision(12));
+  if (!(snapped > 0)) throw new Error('Options bracket price rounded to a non-positive value');
+  return snapped;
+}
+
 function parseDetails(value) {
   if (value && typeof value === 'object' && !Array.isArray(value)) return value;
   if (typeof value === 'string') {
@@ -73,9 +88,11 @@ export function createDeltaOptionsExecution({
   function assertTestnetProfile() {
     const mode = lower(env.DELTA_EXECUTION_MODE || 'disabled');
     const environment = clean(env.DELTA_ENVIRONMENT).toUpperCase();
-    if (mode !== 'testnet' || environment !== 'TESTNET') {
-      throw new Error('Delta Options operations require DELTA_EXECUTION_MODE=testnet and DELTA_ENVIRONMENT=TESTNET');
+    const optionsMode = getOptionsExecutionMode(env);
+    if (optionsMode !== 'demo' || mode !== 'testnet' || environment !== 'TESTNET') {
+      throw new Error('Delta Options operations are Demo-only and require OPTIONS_EXECUTION_MODE=demo, DELTA_EXECUTION_MODE=testnet and DELTA_ENVIRONMENT=TESTNET');
     }
+    assertOptionsExecutionAllowed(env);
   }
 
   function requireManualTestOverride() {
@@ -130,11 +147,19 @@ export function createDeltaOptionsExecution({
     const contractValue = positive(product.contract_value);
     const tickSize = positive(product.tick_size);
     const feeRate = number(product.taker_commission_rate);
+    // Delta documents integer contract size. Honour product-specific size
+    // fields when the catalogue supplies them; otherwise the verified API
+    // contract is one whole option contract per size unit.
+    const minSize = positive(product.minimum_order_size ?? product.min_order_size ??
+      product.product_specs?.minimum_order_size) ?? 1;
+    const sizeStep = positive(product.order_size_increment ?? product.size_increment ??
+      product.product_specs?.order_size_increment) ?? 1;
     if (!Number.isSafeInteger(id) || id <= 0 || !contractValue || !tickSize ||
-        feeRate === null || feeRate < 0 || feeRate > 0.02) {
-      throw new Error('Delta Testnet Options product metadata is incomplete or outside verified bounds: ' + normalized);
+        feeRate === null || feeRate < 0 || feeRate > 0.02 ||
+        !Number.isSafeInteger(minSize) || !Number.isSafeInteger(sizeStep)) {
+      throw new Error('Delta India Demo Options product metadata is incomplete or outside verified bounds: ' + normalized);
     }
-    return { ...product, id, contractValue, tickSize, feeRate, parsed };
+    return { ...product, id, contractValue, tickSize, feeRate, minSize, sizeStep, parsed };
   }
 
   async function getQuote(symbol) {
@@ -158,7 +183,7 @@ export function createDeltaOptionsExecution({
       'dd_option_cache',
       'symbol=eq.' + encodeURIComponent(symbol) +
         '&strategy=eq.' + encodeURIComponent(strategy) +
-        '&select=symbol,strategy,score,stage,cached_at,details,market_regime,iv_rank,iv_percentile&limit=2'
+        '&select=symbol,strategy,score,stage,cached_at,details,market_regime,iv_rank,iv_percentile,oi,volume,delta,spread_pct&limit=2'
     );
     if (!Array.isArray(rows) || rows.length !== 1) {
       throw new Error('A unique current Options candidate is not present in dd_option_cache');
@@ -171,20 +196,50 @@ export function createDeltaOptionsExecution({
     const details = parseDetails(row.details);
     const ivRank = number(row.iv_rank ?? details.ivRank);
     const ivPercentile = number(row.iv_percentile ?? details.ivPercentile);
-    const ivMetricsGate = evaluateIvMetrics(strategy, ivRank, ivPercentile);
-    if (!ivMetricsGate.allowed) throw new Error(ivMetricsGate.reason);
     const marketRegime = clean(row.market_regime || details.marketRegime).toUpperCase();
-    if (isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED)) {
-      const expectedRegime = strategy === 'OPTIONS_BUY' ? 'TRENDING' : 'SIDEWAYS';
-      if (marketRegime !== expectedRegime) throw new Error('Market regime does not permit this Options strategy');
-      if (!isEnabled(env.OPTIONS_EXIT_MONITOR_ENABLED)) {
-        throw new Error('60-second Options exit monitor must be enabled before regime-based entries');
+    const demoQualityOverride = isOptionsDemoExecution(env) && manualTestOverride === true;
+    const normalizedScore = number(row.score);
+    if (normalizedScore === null || normalizedScore < 80) {
+      throw new Error('Options candidate normalized score is below the mandatory 80 minimum');
+    }
+    if (!demoQualityOverride) {
+      const ivMetricsGate = evaluateIvMetrics(strategy, ivRank, ivPercentile);
+      if (!ivMetricsGate.allowed) throw new Error(ivMetricsGate.reason);
+      if (isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED)) {
+        const expectedRegime = strategy === 'OPTIONS_BUY' ? 'TRENDING' : 'SIDEWAYS';
+        if (marketRegime !== expectedRegime) throw new Error('Market regime does not permit this Options strategy');
+        if (!isEnabled(env.OPTIONS_EXIT_MONITOR_ENABLED)) {
+          throw new Error('60-second Options exit monitor must be enabled before regime-based entries');
+        }
       }
     }
     if (!manualTestOverride &&
         (clean(row.stage).toUpperCase() !== 'CONFIRMED' ||
-         !(number(row.score) >= 80) || details.analysisReady !== true)) {
+         details.analysisReady !== true)) {
       throw new Error('Options candidate is not confirmed by the worker analysis gates');
+    }
+    if (demoQualityOverride) {
+      const delta = number(details.delta ?? row.delta);
+      const reasons = [];
+      if (clean(row.stage).toUpperCase() !== 'CONFIRMED') reasons.push('UNDERLYING_NOT_CONFIRMED');
+      if (details.analysisReady !== true) reasons.push('UNDERLYING_ANALYSIS_NOT_READY');
+      if (ivRank === null || (strategy === 'OPTIONS_BUY' ? ivRank >= 40 : ivRank <= 50)) reasons.push('IV_RANK_FILTER');
+      if (ivPercentile === null || (strategy === 'OPTIONS_BUY' ? ivPercentile >= 20 : ivPercentile <= 80)) reasons.push('IV_PERCENTILE_FILTER');
+      if (delta === null) reasons.push('DELTA_UNAVAILABLE');
+      await logExecutor('WARN', '[OptionsExecutor] Demo-only candidate quality filters observed; mandatory score/risk/size/expiry/spread/hedge checks remain active', {
+        environment: 'DELTA_DEMO',
+        symbol: clean(row.symbol).toUpperCase(),
+        strategy,
+        score: normalizedScore,
+        stage: clean(row.stage).toUpperCase(),
+        openInterest: number(row.oi ?? details.openInterest),
+        volume: number(row.volume ?? details.volume),
+        ivRank,
+        ivPercentile,
+        delta,
+        marketRegime,
+        qualityFiltersObserved: reasons
+      });
     }
     return {
       ...row, details, ivRank, ivPercentile, marketRegime, cachedAt: new Date(cachedAtMs).toISOString(),
@@ -211,13 +266,20 @@ export function createDeltaOptionsExecution({
     const isBuy = strategyKey === 'OPTIONS_BUY';
     const deltaMin = number(isBuy ? settings.options_buy_min_delta : settings.options_sell_min_delta);
     const deltaMax = number(isBuy ? settings.options_buy_max_delta : settings.options_sell_max_delta);
-    if (deltaMin === null || deltaMax === null || deltaMin <= 0 || deltaMax < deltaMin ||
-        Math.abs(delta) < deltaMin || Math.abs(delta) > deltaMax) {
+    const demoQualityOverride = isOptionsDemoExecution(env);
+    if (!demoQualityOverride &&
+        (deltaMin === null || deltaMax === null || deltaMin <= 0 || deltaMax < deltaMin ||
+         Math.abs(delta) < deltaMin || Math.abs(delta) > deltaMax)) {
       throw new Error('Manual test override blocked: option Delta is outside the configured ' +
         (isBuy ? 'BUY' : 'SELL') + ' band');
     }
+    if (demoQualityOverride && (Math.abs(delta) < 0.05 || Math.abs(delta) > 0.95)) {
+      throw new Error('Demo candidate Delta must remain within the hard 0.05–0.95 validity band');
+    }
 
-    const regimeBased = isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED);
+    // Demo mode bypasses only regime-based expiry tightening; configured
+    // minimum/maximum DTE from dd_settings remain mandatory.
+    const regimeBased = isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED) && !demoQualityOverride;
     const minDays = regimeBased ? (isBuy ? 3 : 1) : number(settings.options_min_days_to_expiry);
     const maxDays = regimeBased ? (isBuy ? 10 : 3) : number(settings.options_max_days_to_expiry);
     if (minDays === null || maxDays === null || minDays < 0.5 || maxDays < minDays ||
@@ -236,8 +298,8 @@ export function createDeltaOptionsExecution({
 
   function signQuoteToken(payload) {
     const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
-    const secret = clean(env.DELTA_TESTNET_API_SECRET);
-    if (!secret) throw new Error('Delta Testnet signing secret is unavailable');
+    const secret = clean(env.DELTA_DEMO_API_SECRET);
+    if (!secret) throw new Error('Delta Demo Options signing secret is unavailable');
     const signature = crypto.createHmac('sha256', secret).update(encoded).digest('base64url');
     return encoded + '.' + signature;
   }
@@ -247,8 +309,8 @@ export function createDeltaOptionsExecution({
     if (pieces.length !== 2 || !pieces[0] || !pieces[1]) {
       throw new Error('Options preview confirmation token is invalid');
     }
-    const secret = clean(env.DELTA_TESTNET_API_SECRET);
-    if (!secret) throw new Error('Delta Testnet signing secret is unavailable');
+    const secret = clean(env.DELTA_DEMO_API_SECRET);
+    if (!secret) throw new Error('Delta Demo Options signing secret is unavailable');
     const expected = crypto.createHmac('sha256', secret).update(pieces[0]).digest();
     let supplied;
     try { supplied = Buffer.from(pieces[1], 'base64url'); } catch { supplied = Buffer.alloc(0); }
