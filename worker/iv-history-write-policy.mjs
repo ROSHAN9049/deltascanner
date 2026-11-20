@@ -1,4 +1,4 @@
-export const IV_HISTORY_PERSIST_INTERVAL_MS = 5 * 60 * 1000;
+export const IV_HISTORY_PERSIST_INTERVAL_MS = 30 * 60 * 1000;
 export const IV_RETRY_BASE_DELAY_MS = 60 * 1000;
 export const IV_RETRY_MAX_DELAY_MS = 5 * 60 * 1000;
 const MAX_RETRY_STATES = 128;
