@@ -69,3 +69,17 @@ test('position-cap snapshots require exact counts to detect server-side row caps
   assert.match(db, /Prefer: 'count=exact'/);
   assert.match(db, /Range: '0-' \+ \(limit - 1\)/);
 });
+
+
+test('dashboard and health message-filtered engine logs have a registered message-first index migration', async () => {
+  const migration = await readFile(new URL('../db/migrations/20261120000100_engine_log_message_latest_idx.sql', import.meta.url), 'utf8');
+  const runner = await readFile(new URL('../scripts/apply-all-migrations.mjs', import.meta.url), 'utf8');
+  const health = await readFile(new URL('../api/health.js', import.meta.url), 'utf8');
+  const state = await readFile(new URL('../api/engine/state.js', import.meta.url), 'utf8');
+  assert.ok(migration.includes('CREATE INDEX IF NOT EXISTS dd_engine_logs_message_created_idx'));
+  assert.ok(migration.includes('ON public.dd_engine_logs (message, created_at DESC)'));
+  assert.ok(runner.includes('20261120000100_engine_log_message_latest_idx'));
+  assert.ok(health.includes('message=eq.%5BAUTO-TRIGGER%5D'));
+  assert.ok(health.includes('message=eq.%5BRetention%5D'));
+  assert.ok(state.includes('message=like.Worker%20heartbeat%20scan*'));
+});
