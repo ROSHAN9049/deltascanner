@@ -386,7 +386,7 @@ test('mock Delta Testnet API keeps OPTIONS execution disabled when the env flag 
     executor.placeOptionsOrder({
       symbol: SHORT, strategy: 'OPTIONS_SELL', qty: 1, quoteToken: preview.quoteToken
     }),
-    /Options execution remains locked/
+    /Options execution is disabled by default|OPTIONS_EXECUTION_ALLOWED=true/
   );
   assert.equal(apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
 });
