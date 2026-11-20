@@ -60,3 +60,38 @@ test('failed loads are not cached and can be retried', async () => {
   }), { ok: true });
   assert.equal(attempts, 2);
 });
+
+
+test('stale-if-error serves the last good value without extending its age', async () => {
+  let now = 1_000;
+  let loads = 0;
+  const cache = createTtlSingleFlightCache({ ttlMs: 100, now: () => now });
+  const loader = async () => ({ sequence: ++loads });
+  assert.deepEqual(await cache.get('public', loader), { sequence: 1 });
+  now += 150;
+  assert.deepEqual(await cache.get('public', async () => {
+    loads += 1;
+    throw new Error('database timeout');
+  }, { staleIfErrorMs: 500 }), { sequence: 1 });
+  assert.equal(loads, 2);
+  now += 300;
+  assert.deepEqual(await cache.get('public', async () => {
+    loads += 1;
+    throw new Error('database timeout');
+  }, { staleIfErrorMs: 500 }), { sequence: 1 });
+  now += 100;
+  await assert.rejects(cache.get('public', async () => {
+    loads += 1;
+    throw new Error('database timeout');
+  }, { staleIfErrorMs: 500 }), /database timeout/);
+});
+
+test('stale-if-error never returns an expired safety value after its max age', async () => {
+  let now = 1_000;
+  const cache = createTtlSingleFlightCache({ ttlMs: 50, now: () => now });
+  await cache.get('settings', async () => ({ emergencyStop: false }));
+  now += 1_001;
+  await assert.rejects(cache.get('settings', async () => {
+    throw new Error('settings unavailable');
+  }, { staleIfErrorMs: 1_000 }), /settings unavailable/);
+});
