@@ -1,4 +1,12 @@
 export const IV_HISTORY_PERSIST_INTERVAL_MS = 30 * 60 * 1000;
+export const IV_GROUP_METRICS_CACHE_TTL_MS = IV_HISTORY_PERSIST_INTERVAL_MS;
+
+export function isIvGroupMetricsCacheFresh(entry, now = Date.now()) {
+  const timestamp = Number(now);
+  const cachedAt = Number(entry?.cachedAt);
+  return Number.isFinite(timestamp) && Number.isFinite(cachedAt) &&
+    timestamp >= cachedAt && timestamp - cachedAt < IV_GROUP_METRICS_CACHE_TTL_MS;
+}
 export const IV_RETRY_BASE_DELAY_MS = 60 * 1000;
 export const IV_RETRY_MAX_DELAY_MS = 5 * 60 * 1000;
 const MAX_RETRY_STATES = 128;

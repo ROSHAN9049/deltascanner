@@ -26,7 +26,7 @@ import { detectOptionsMarketRegime } from './options-regime-strategy.mjs';
 import { selectOptionsUnderlyingSignal } from './options-underlying-confirmation.mjs';
 import { calculateIvMetricsFromSummary, extractCurrentImpliedVolatility } from './options-iv-rank.mjs';
 import { buildIvHistoryGroup, ivHistoryGroupKey } from './options-iv-grouping.mjs';
-import { clearIvRetryFailure, isIvRetryReady, markIvHistoryObservationsPersisted, recordIvRetryFailure, selectDueIvHistoryObservations } from './iv-history-write-policy.mjs';
+import { clearIvRetryFailure, isIvGroupMetricsCacheFresh, isIvRetryReady, markIvHistoryObservationsPersisted, recordIvRetryFailure, selectDueIvHistoryObservations } from './iv-history-write-policy.mjs';
 import { selectBestOptionCandidates } from './options-candidate-selection.mjs';
 import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from './signal-failure-diagnostics.mjs';
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
@@ -2741,8 +2741,7 @@ export class DeltaEngine {
             const groupEntries = [...groups.entries()];
             for (const [key, group] of groupEntries) {
               const cached = this.ivGroupMetricsCache.get(key);
-              const cachedSummary = cached && now >= cached.cachedAt &&
-                now - cached.cachedAt < 5 * 60 * 1000
+              const cachedSummary = isIvGroupMetricsCacheFresh(cached, now)
                 ? cached.summary
                 : null;
               if (cachedSummary) {
@@ -2788,7 +2787,7 @@ export class DeltaEngine {
             }
 
             for (const [key, entry] of this.ivGroupMetricsCache) {
-              if (now < entry.cachedAt || now - entry.cachedAt > 10 * 60 * 1000) {
+              if (!isIvGroupMetricsCacheFresh(entry, now)) {
                 this.ivGroupMetricsCache.delete(key);
               }
             }
