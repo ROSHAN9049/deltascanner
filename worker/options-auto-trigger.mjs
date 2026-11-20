@@ -1,6 +1,8 @@
 import {
   getOptionsDatabaseExecutionGate,
   getOptionsExecutionGate,
+  getOptionsExecutionMode,
+  getOptionsManualTestOverrideGate,
   OPTIONS_DATABASE_EXECUTION_LOCK_REASON,
   OPTIONS_EXECUTION_LOCK_REASON
 } from './options-execution-lock.mjs';
@@ -88,6 +90,9 @@ export function createOptionsAutoTrigger({
     if (inFlight) return inFlight;
     inFlight = (async () => {
       const engineSecret = clean(env.ENGINE_SECRET);
+      const demoMode = getOptionsExecutionMode(env) === 'demo';
+      const demoOverrideGate = getOptionsManualTestOverrideGate(env);
+      const demoQualityOverride = demoMode && demoOverrideGate.allowed;
       if (!enabled) {
         await writeHeartbeat('DISABLED');
         return { status: 'DISABLED', previewRequested: false };
@@ -118,17 +123,27 @@ export function createOptionsAutoTrigger({
 
         const settingsRows = await database.select(
           'dd_settings',
-          'id=eq.1&select=enabled,auto_trade,emergency_stop,options_execution_enabled,max_options_positions'
+          'id=eq.1&select=enabled,auto_trade,emergency_stop,options_execution_enabled,max_options_positions,options_min_oi,options_min_volume,options_max_spread_pct,options_min_days_to_expiry,options_max_days_to_expiry'
         );
         if (!Array.isArray(settingsRows) || settingsRows.length !== 1) {
           throw new Error('Options auto-trigger settings are missing or ambiguous');
         }
         const settings = settingsRows[0];
-        if (!isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED) || !isEnabled(env.OPTIONS_EXIT_MONITOR_ENABLED)) {
+        if ((!isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED) && !demoMode) ||
+            !isEnabled(env.OPTIONS_EXIT_MONITOR_ENABLED)) {
           await writeHeartbeat('BLOCKED_REGIME_OR_EXIT_MONITOR_DISABLED', {
-            reason: 'Regime strategy and 60-second Options exit monitor must both be enabled'
+            reason: 'Regime strategy or explicit Demo mode, plus the 60-second Options exit monitor, is required',
+            demoMode
           });
           return { status: 'BLOCKED_REGIME_OR_EXIT_MONITOR_DISABLED', previewRequested: false };
+        }
+        if (demoMode && !demoOverrideGate.allowed) {
+          await writeHeartbeat('BLOCKED_DEMO_QUALITY_OVERRIDE_DISABLED', {
+            reason: demoOverrideGate.reason,
+            demoMode: true,
+            manualOverrideEnabled: false
+          });
+          return { status: 'BLOCKED_DEMO_QUALITY_OVERRIDE_DISABLED', previewRequested: false };
         }
         if (settings.enabled !== true) {
           await writeHeartbeat('BLOCKED_ENGINE_DISABLED');
@@ -161,7 +176,7 @@ export function createOptionsAutoTrigger({
         const [cacheRows, openPositions, optionPositions, activeOrders, recentFilledOrders] = await Promise.all([
           database.select(
             'dd_option_cache',
-            'stage=eq.CONFIRMED&select=symbol,strategy,score,stage,cached_at,details,market_regime,iv_rank&order=score.desc&limit=100'
+            'select=symbol,strategy,score,stage,cached_at,details,market_regime,iv_rank,iv_percentile,oi,volume,delta,spread_pct&order=score.desc&limit=100'
           ),
           database.select(
             'dd_delta_positions',
@@ -200,6 +215,11 @@ export function createOptionsAutoTrigger({
           return { status: 'BLOCKED_POSITION_CAP', previewRequested: false };
         }
 
+        const configuredSpreadLimit = finite(settings.options_max_spread_pct) ?? 1.5;
+        const configuredMinOi = finite(settings.options_min_oi) ?? 50;
+        const configuredMinVolume = finite(settings.options_min_volume) ?? 1;
+        const configuredMinDte = finite(settings.options_min_days_to_expiry) ?? 2;
+        const configuredMaxDte = finite(settings.options_max_days_to_expiry) ?? 14;
         const candidates = cacheRows.filter(row => {
           const symbol = upper(row?.symbol);
           const strategy = upper(row?.strategy);
@@ -208,6 +228,11 @@ export function createOptionsAutoTrigger({
           const marketRegime = upper(row?.market_regime || details.marketRegime);
           const ivRank = finite(row?.iv_rank ?? details.ivRank);
           const ivPercentile = finite(row?.iv_percentile ?? details.ivPercentile);
+          const oi = finite(row?.oi ?? details.openInterest);
+          const volume = finite(row?.volume ?? details.volume);
+          const spreadPct = finite(row?.spread_pct ?? details.spreadPct ?? details.spread_pct);
+          const delta = finite(row?.delta ?? details.delta);
+          const dte = finite(row?.dte ?? details.dte);
           const regimeRouteOk = strategy === 'OPTIONS_BUY'
             ? marketRegime === 'TRENDING'
             : marketRegime === 'SIDEWAYS';
@@ -215,15 +240,58 @@ export function createOptionsAutoTrigger({
             (strategy === 'OPTIONS_BUY' ? ivRank < 40 : ivRank > 50);
           const ivPercentileOk = ivPercentile !== null && ivPercentile >= 0 && ivPercentile <= 100 &&
             (strategy === 'OPTIONS_BUY' ? ivPercentile < 20 : ivPercentile > 80);
-          return symbol &&
-            OPTION_STRATEGIES.has(strategy) &&
-            regimeRouteOk && ivRankOk && ivPercentileOk &&
-            upper(row?.stage) === 'CONFIRMED' &&
-            finite(row?.score) >= 80 &&
-            details.analysisReady === true &&
-            Number.isFinite(cachedAt) &&
+          const exactIndiaUniverse = /^([CP])-(BTC|ETH)-/.test(symbol);
+          const hedgeDelta = finite(details.hedgeDelta);
+          const hardDemoChecks = exactIndiaUniverse &&
+            spreadPct !== null && spreadPct >= 0 && spreadPct <= configuredSpreadLimit &&
+            delta !== null && Math.abs(delta) >= 0.05 && Math.abs(delta) <= 0.95 &&
+            dte !== null && dte >= configuredMinDte && dte <= configuredMaxDte &&
+            (strategy !== 'OPTIONS_SELL' ||
+              (Boolean(clean(details.hedgeSymbol)) && hedgeDelta !== null &&
+                Math.abs(hedgeDelta) >= 0.05 && Math.abs(hedgeDelta) <= 0.15));
+          const timestampOk = Number.isFinite(cachedAt) &&
             cachedAt <= scanAt + 5000 &&
             scanAt - cachedAt <= MAX_CANDIDATE_AGE_MS;
+          const baseChecks = OPTION_STRATEGIES.has(strategy) &&
+            finite(row?.score) !== null && finite(row?.score) >= 80 &&
+            timestampOk;
+          if (demoMode && demoQualityOverride) {
+            if (!hardDemoChecks || !baseChecks) return false;
+            const observed = [];
+            if (upper(row?.stage) !== 'CONFIRMED') observed.push('UNDERLYING_NOT_CONFIRMED');
+            if (details.analysisReady !== true) observed.push('ANALYSIS_NOT_READY');
+            if (oi === null || oi < configuredMinOi) observed.push('OI_BELOW_MINIMUM');
+            if (volume === null || volume < configuredMinVolume) observed.push('VOLUME_BELOW_MINIMUM');
+            if (!ivRankOk) observed.push('IV_RANK_FILTER');
+            if (!ivPercentileOk) observed.push('IV_PERCENTILE_FILTER');
+            if (!regimeRouteOk) observed.push('MARKET_REGIME_FILTER');
+            const buyMin = finite(settings.options_buy_min_delta) ?? 0.45;
+            const buyMax = finite(settings.options_buy_max_delta) ?? 0.65;
+            const sellMin = finite(settings.options_sell_min_delta) ?? 0.20;
+            const sellMax = finite(settings.options_sell_max_delta) ?? 0.35;
+            const targetDelta = strategy === 'OPTIONS_BUY'
+              ? Math.abs(delta) >= buyMin && Math.abs(delta) <= buyMax
+              : Math.abs(delta) >= sellMin && Math.abs(delta) <= sellMax;
+            if (!targetDelta) observed.push('DELTA_TARGET_BAND');
+            if (observed.length) {
+              void logger('WARN', '[AUTO-TRIGGER] Demo-only candidate quality filters observed; only approved quality filters may be relaxed', {
+                environment: 'DELTA_DEMO',
+                symbol,
+                strategy,
+                score: finite(row?.score),
+                stage: upper(row?.stage),
+                oi, volume, spreadPct, delta, ivRank, ivPercentile,
+                marketRegime,
+                relaxedFilters: observed
+              });
+            }
+            return true;
+          }
+          return baseChecks &&
+            regimeRouteOk && ivRankOk && ivPercentileOk &&
+            upper(row?.stage) === 'CONFIRMED' &&
+            details.analysisReady === true &&
+            spreadPct !== null && spreadPct <= configuredSpreadLimit;
         }).sort((a, b) => (finite(b.score) || 0) - (finite(a.score) || 0));
 
         const candidate = candidates.find(row => !occupied.has(upper(row.symbol)));
@@ -246,7 +314,7 @@ export function createOptionsAutoTrigger({
             symbol: upper(candidate.symbol),
             strategy: upper(candidate.strategy),
             qty: 1,
-            manualOverride: false
+            manualOverride: demoQualityOverride
           })
         });
         let payload;
@@ -311,7 +379,7 @@ if (fullAutoExecute) {
         strategy: upper(candidate.strategy),
         qty: 1,
         quoteToken: preview.quoteToken,
-        manualOverride: false
+        manualOverride: demoQualityOverride
       })
     });
     
@@ -321,7 +389,14 @@ if (fullAutoExecute) {
     }
     
     await logger('INFO', `[AUTO-TRIGGER] ✅ ORDER EXECUTED SUCCESSFULLY: ${upper(candidate.symbol)}`, {
-      orderId: execPayload?.order?.id || execPayload?.orderId || 'unknown'
+      environment: demoMode ? 'DELTA_DEMO' : 'TESTNET',
+      orderId: execPayload?.result?.order?.id || execPayload?.result?.shortOrder?.id ||
+        execPayload?.result?.hedge_order_id || execPayload?.order?.id || execPayload?.orderId || 'unknown',
+      fill: execPayload?.result?.fill || execPayload?.result?.shortOrder?._shortFill || null,
+      entry: execPayload?.result?.entry ?? null,
+      sl: execPayload?.result?.sl ?? null,
+      tp: execPayload?.result?.tp ?? null,
+      status: execPayload?.result?.state || execPayload?.result?.status || 'UNKNOWN'
     });
     await writeHeartbeat('ORDER_EXECUTED', { candidateReady: false, orderSubmitted: true, symbol: upper(candidate.symbol) });
     return { status: 'ORDER_EXECUTED', previewRequested: true, orderSubmitted: true, candidate: upper(candidate.symbol) };
