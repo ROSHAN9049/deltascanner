@@ -939,6 +939,71 @@ export function createDeltaOptionsExecution({
     return row;
   }
 
+  async function verifyDemoOptionPositions(expectedLegs = []) {
+    if (!Array.isArray(expectedLegs) || !expectedLegs.length) {
+      throw new Error('Demo Options position verification requires expected filled legs');
+    }
+    let lastChecks = [];
+    let lastRowCount = 0;
+    for (let attempt = 0; attempt < 11; attempt += 1) {
+      const response = await request('GET', '/v2/positions/margined', {
+        contract_types: 'call_options,put_options'
+      });
+      if (!Array.isArray(response?.result)) {
+        throw new Error('Delta Demo Options positions endpoint returned a malformed snapshot');
+      }
+      const rows = response.result;
+      lastRowCount = rows.length;
+      lastChecks = expectedLegs.map(expected => {
+        const matching = rows.filter(row =>
+          clean(row?.product_symbol || row?.symbol).toUpperCase() === clean(expected.product.symbol).toUpperCase() &&
+          Number(row?.product_id ?? row?.productId) === Number(expected.product.id)
+        );
+        const signedSize = matching.reduce((sum, row) =>
+          sum + (number(row?.size ?? row?.signed_size ?? row?.qty) ?? 0), 0);
+        const sideSign = expected.side === 'SELL' ? -1 : 1;
+        return {
+          symbol: expected.product.symbol,
+          productId: expected.product.id,
+          expectedSide: expected.side,
+          expectedSize: expected.qty,
+          observedSignedSize: signedSize,
+          verified: matching.length > 0 &&
+            Math.sign(signedSize) === sideSign &&
+            Math.abs(signedSize) >= expected.qty
+        };
+      });
+      if (lastChecks.every(row => row.verified)) {
+        await logExecutor('INFO', '[OptionsExecutor] Delta India Demo exchange positions verified after fills', {
+          environment: 'DELTA_DEMO',
+          positions: lastChecks,
+          snapshotRows: lastRowCount
+        });
+        return { verified: true, positions: lastChecks, snapshotRows: lastRowCount };
+      }
+      if (attempt < 10) await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    return { verified: false, positions: lastChecks, snapshotRows: lastRowCount };
+  }
+
+  async function requireDemoPositionVerification(executionKey, expectedLegs) {
+    const verification = await verifyDemoOptionPositions(expectedLegs);
+    if (verification.verified) return verification;
+    await database.update('dd_option_positions',
+      'position_key=eq.' + encodeURIComponent(executionKey) + '&status=eq.OPEN', {
+        status: 'RECONCILIATION_REQUIRED',
+        updated_at: new Date(now()).toISOString(),
+        raw: { exchange_position_verification: verification, reconciliation_required: true }
+      }).catch(() => {});
+    await logExecutor('ERROR', '[OptionsExecutor] Demo order fill lacks exchange position confirmation; locked for reconciliation', {
+      environment: 'DELTA_DEMO',
+      executionKey,
+      positions: verification.positions,
+      snapshotRows: verification.snapshotRows
+    });
+    return verification;
+  }
+
   async function recordOptionPosition({
     executionKey, preview, candidate, product, hedgeProduct = null,
     order, fill, hedgeOrder = null, hedgeFill = null
@@ -1000,6 +1065,8 @@ export function createDeltaOptionsExecution({
       qty: actualQty,
       entry_price: entryPremium,
       current_price: entryPremium,
+      sl_price: preview.stopPremium,
+      tp_price: preview.takeProfitPremium,
       unrealized_pnl: 0,
       realized_pnl: null,
       status: 'OPEN',
@@ -1062,6 +1129,12 @@ export function createDeltaOptionsExecution({
       }
       await assertEntrySafety(preview);
       const product = await resolveProduct(preview.symbol);
+      const candidate = await getCandidate(requestedSymbol, requestedStrategy, {
+        manualTestOverride: useManualTestOverride
+      });
+      if (candidate.cachedAt !== preview.cachedAt) {
+        throw new Error('Options candidate changed after preview; refresh the Demo preview before execution');
+      }
       const demoMode = isOptionsDemoExecution(env);
       const regimeBased = demoMode || isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED);
       const regimeConstrainedExpiry = isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED) && !demoMode;
@@ -1081,15 +1154,20 @@ export function createDeltaOptionsExecution({
           bracketStopLossPrice: preview.stopPremium,
           bracketTakeProfitPrice: preview.takeProfitPremium
         });
+        let fill = null;
+        let positionVerification = null;
         if (regimeBased) {
-          const fill = await waitForProtectiveFill(order, preview.qty);
+          fill = await waitForProtectiveFill(order, preview.qty);
           if (fill?.fullyFilled !== true || Number(fill.filledQty) !== preview.qty || !positive(fill.averageFillPrice)) {
             const error = new Error('Long option fill is not fully confirmed; position requires exchange reconciliation');
             error.ambiguous = true; throw error;
           }
           await recordOptionPosition({ executionKey, preview, candidate, product, order, fill });
+          positionVerification = await requireDemoPositionVerification(executionKey, [
+            { product, side: 'BUY', qty: preview.qty }
+          ]);
         }
-        const entryPrice = positive(order?._fill?.averageFillPrice);
+        const entryPrice = positive(fill?.averageFillPrice);
         await logExecutor('INFO', '[OptionsExecutor] Delta India Demo long Options order result', {
           environment: 'DELTA_DEMO',
           symbol: preview.symbol,
@@ -1099,14 +1177,16 @@ export function createDeltaOptionsExecution({
           sl: preview.stopPremium,
           tp: preview.takeProfitPremium,
           order_id: order.id ?? null,
-          status: order?._fill?.state || clean(order.state || 'UNKNOWN').toUpperCase(),
+          status: fill?.state || clean(order.state || 'UNKNOWN').toUpperCase(),
           contract_id: product.id,
           max_loss: preview.maxLossUsd,
           manual_test_override: preview.manualTestOverride === true
         });
         return {
-          success: true, state: order?._fill?.state || clean(order.state || 'UNKNOWN').toUpperCase(),
-          order, fill: order?._fill ?? null,
+          success: positionVerification?.verified !== false,
+          state: positionVerification?.verified === false ? 'RECONCILIATION_REQUIRED' : (fill?.state || clean(order.state || 'UNKNOWN').toUpperCase()),
+          order, fill,
+          positionVerification,
           contract_id: product.id, hedge_order_id: null,
           entry: entryPrice, sl: preview.stopPremium, tp: preview.takeProfitPremium,
           max_loss: preview.maxLossUsd
@@ -1163,8 +1243,14 @@ export function createDeltaOptionsExecution({
             });
         }
       }
-      await logExecutor(lifecycle.success ? 'INFO' : 'ERROR',
-        '[OptionsExecutor] Defined-risk Testnet spread lifecycle result', {
+      const positionVerification = lifecycle.success
+        ? await requireDemoPositionVerification(executionKey, [
+            { product: hedgeProduct, side: 'BUY', qty: preview.qty },
+            { product, side: 'SELL', qty: preview.qty }
+          ])
+        : null;
+      await logExecutor(lifecycle.success && positionVerification?.verified !== false ? 'INFO' : 'ERROR',
+        '[OptionsExecutor] Defined-risk Delta India Demo spread lifecycle result', {
           symbol: preview.symbol,
           hedge_symbol: preview.hedgeSymbol,
           contract_id: product.id,
@@ -1176,10 +1262,19 @@ export function createDeltaOptionsExecution({
           state: lifecycle.state,
           short_submitted: lifecycle.shortSubmitted === true,
           hedge_exposure_remains: lifecycle.hedgeExposureRemains === true,
+          entry: positive(lifecycle.shortOrder?._shortFill?.averageFillPrice),
+          sl: preview.stopPremium,
+          tp: preview.takeProfitPremium,
+          order_id: lifecycle.shortOrder?.id ?? null,
+          status: lifecycle.shortOrder?._shortFill?.state || lifecycle.state,
+          position_verification: positionVerification,
           reason: lifecycle.reason || null
         });
       return {
         ...lifecycle,
+        success: lifecycle.success && positionVerification?.verified !== false,
+        state: positionVerification?.verified === false ? 'RECONCILIATION_REQUIRED' : lifecycle.state,
+        positionVerification,
         contract_id: product.id,
         hedge_contract_id: hedgeProduct.id,
         hedge_order_id: hedgeOrderId,
