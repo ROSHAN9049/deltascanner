@@ -78,7 +78,6 @@ const demoEnv = {
 };
 
 test('Options Demo mode requires the isolated Delta India Testnet profile, credentials and exit monitor', () => {
-  assert.equal(getOptionsExecutionMode({}).mode, undefined);
   assert.equal(getOptionsExecutionMode({}), 'disabled');
   assert.equal(getOptionsExecutionGate(demoEnv).allowed, true);
   assert.equal(getOptionsManualTestOverrideGate(demoEnv).allowed, true);
