@@ -207,16 +207,34 @@ function harness({
       }
       if (!hedgeFilled) return { result: { id: 100, state: 'open', size: 1, unfilled_size: 1 } };
       if (hedgePartial) return { result: { id: 100, state: 'open', size: 1, unfilled_size: 0 } };
-      const averageFillPrice = Number(requestOrders.get(100)?.product_id) === 101 ? 910 : 250;
+      const currentOrder = requestOrders.get(100) || {};
+      const averageFillPrice = Number(currentOrder.product_id) === 101 ? 910 : 250;
       applyFilledOrder(100, averageFillPrice);
-      return { result: { id: 100, state: 'filled', size: 1, unfilled_size: 0, average_fill_price: averageFillPrice } };
+      return { result: {
+        id: 100, state: 'filled', size: 1, unfilled_size: 0,
+        average_fill_price: averageFillPrice,
+        ...(currentOrder.bracket_stop_loss_price ? {
+          bracket_stop_loss_price: currentOrder.bracket_stop_loss_price,
+          bracket_take_profit_price: currentOrder.bracket_take_profit_price,
+          bracket_stop_trigger_method: currentOrder.bracket_stop_trigger_method
+        } : {})
+      } };
     }
     if (method === 'GET' && path === '/v2/orders/101') {
       if (shortState === 'rejected') {
         return { result: { id: 101, state: 'rejected', size: 1, unfilled_size: 1 } };
       }
+      const currentOrder = requestOrders.get(101) || {};
       applyFilledOrder(101, 900);
-      return { result: { id: 101, state: 'filled', size: 1, unfilled_size: 0, average_fill_price: 900 } };
+      return { result: {
+        id: 101, state: 'filled', size: 1, unfilled_size: 0,
+        average_fill_price: 900,
+        ...(currentOrder.bracket_stop_loss_price ? {
+          bracket_stop_loss_price: currentOrder.bracket_stop_loss_price,
+          bracket_take_profit_price: currentOrder.bracket_take_profit_price,
+          bracket_stop_trigger_method: currentOrder.bracket_stop_trigger_method
+        } : {})
+      } };
     }
     if (method === 'GET' && path === '/v2/orders/102') {
       applyFilledOrder(102, 240);
@@ -263,7 +281,7 @@ test('mock Delta Testnet API executes a long BTC call as a single limit BUY', as
   assert.equal(orderCalls[0].body.product_id, 101);
   assert.equal(orderCalls[0].body.bracket_stop_loss_price, '637.00');
   assert.equal(orderCalls[0].body.bracket_take_profit_price, '1365.00');
-  assert.equal(result.fill.averageFillPrice, 250);
+  assert.equal(result.fill.averageFillPrice, 910);
   assert.equal(result.positionVerification.verified, true);
 });
 
