@@ -283,7 +283,7 @@ function harness({
     now: () => NOW,
     isMarketTickFresh: () => true
   });
-  return { executor, apiCalls, storedOrders, logs };
+  return { executor, apiCalls, storedOrders, optionRows, logs };
 }
 
 test('Demo BUY limit entry with no fill is canceled and never leaves a resting order', async () => {
@@ -316,8 +316,8 @@ test('mock Delta Testnet API executes a long BTC call as a single limit BUY', as
   assert.equal(orderCalls[0].body.side, 'buy');
   assert.equal(orderCalls[0].body.order_type, 'limit_order');
   assert.equal(orderCalls[0].body.product_id, 101);
-  assert.equal(orderCalls[0].body.bracket_stop_loss_price, '637.00');
-  assert.equal(orderCalls[0].body.bracket_take_profit_price, '1365.00');
+  assert.equal(Number(orderCalls[0].body.bracket_stop_loss_price), 637);
+  assert.equal(Number(orderCalls[0].body.bracket_take_profit_price), 1365);
   assert.equal(result.fill.averageFillPrice, 910);
   assert.equal(result.positionVerification.verified, true);
 });
