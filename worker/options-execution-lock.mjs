@@ -7,7 +7,7 @@ export const OPTIONS_MAX_LOSS_EQUITY_PCT = 0.5;
 export const DELTA_INDIA_TESTNET_REST_BASE = 'https://cdn-ind.testnet.deltaex.org';
 
 export const OPTIONS_EXECUTION_LOCK_REASON =
-  'Options execution remains locked unless OPTIONS_EXECUTION_MODE=demo, Delta Testnet is explicit, demo credentials exist, and all execution interlocks pass.';
+  'Options execution is disabled by default and remains locked unless OPTIONS_EXECUTION_MODE=demo, Delta Testnet is explicit, demo credentials exist, and all execution interlocks pass.';
 export const OPTIONS_LIVE_EXECUTION_LOCK_REASON =
   'Live Options execution is not implemented and is permanently blocked by this build.';
 export const OPTIONS_DATABASE_EXECUTION_LOCK_REASON =
