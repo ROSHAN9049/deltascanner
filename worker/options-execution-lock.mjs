@@ -48,7 +48,7 @@ export function getOptionsExecutionGate(env = process.env) {
   const flag = String(env?.OPTIONS_EXECUTION_ALLOWED ?? '').trim().toLowerCase();
   const credentials = getOptionsDemoCredentialsGate(env);
   const base = String(env?.DELTA_TESTNET_REST_BASE ?? DELTA_INDIA_TESTNET_REST_BASE)
-    .trim().replace(/\\/+$/, '');
+    .trim();
   const exitMonitorEnabled = String(env?.OPTIONS_EXIT_MONITOR_ENABLED ?? '').trim().toLowerCase() === 'true';
   const allowed = optionsMode === 'demo' &&
     deltaMode === 'testnet' &&
