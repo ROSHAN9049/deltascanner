@@ -1,8 +1,8 @@
 export const OPTIONS_EXIT_MONITOR_INTERVAL_MS = 60_000;
 const enabled = value => String(value ?? '').trim().toLowerCase() === 'true';
-const demoMode = env => String(env?.OPTIONS_EXECUTION_MODE ?? 'disabled').trim().toLowerCase() === 'demo';
-const shouldRun = env => enabled(env.OPTIONS_EXIT_MONITOR_ENABLED) &&
-  (enabled(env.OPTIONS_REGIME_STRATEGY_ENABLED) || demoMode(env));
+// Exit monitoring remains active in Delta Testnet even after new entries are
+// disabled. Turn this flag off only after all Demo Options positions are closed.
+const shouldRun = env => enabled(env.OPTIONS_EXIT_MONITOR_ENABLED);
 export function createOptionsExitMonitor({
   env = process.env, monitor, logger = async () => {},
   setIntervalFn = setInterval, clearIntervalFn = clearInterval
