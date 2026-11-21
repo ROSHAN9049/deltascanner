@@ -49,19 +49,20 @@ export function getOptionsExecutionGate(env = process.env) {
   const credentials = getOptionsDemoCredentialsGate(env);
   const base = String(env?.DELTA_TESTNET_REST_BASE ?? DELTA_INDIA_TESTNET_REST_BASE)
     .trim();
+  const restBaseMatched = base === DELTA_INDIA_TESTNET_REST_BASE;
   const exitMonitorEnabled = String(env?.OPTIONS_EXIT_MONITOR_ENABLED ?? '').trim().toLowerCase() === 'true';
   const allowed = optionsMode === 'demo' &&
     deltaMode === 'testnet' &&
     environment === 'TESTNET' &&
     flag === 'true' &&
     credentials.allowed &&
-    base === DELTA_INDIA_TESTNET_REST_BASE &&
+    restBaseMatched &&
     exitMonitorEnabled;
   let reason = null;
   if (optionsMode === 'live') reason = OPTIONS_LIVE_EXECUTION_LOCK_REASON;
   else if (optionsMode !== 'demo') reason = OPTIONS_EXECUTION_LOCK_REASON;
   else if (deltaMode !== 'testnet' || environment !== 'TESTNET') reason = 'Options Demo mode requires DELTA_EXECUTION_MODE=testnet and DELTA_ENVIRONMENT=TESTNET';
-  else if (base !== DELTA_INDIA_TESTNET_REST_BASE) reason = 'Options Demo mode is pinned to the Delta India Testnet REST endpoint';
+  else if (!restBaseMatched) reason = 'Options Demo mode is pinned to the Delta India Testnet REST endpoint';
   else if (flag !== 'true') reason = 'OPTIONS_EXECUTION_ALLOWED=true is required for Demo Options execution';
   else if (!credentials.allowed) reason = credentials.reason;
   else if (!exitMonitorEnabled) reason = 'OPTIONS_EXIT_MONITOR_ENABLED=true is mandatory for Demo Options entries';
@@ -72,6 +73,9 @@ export function getOptionsExecutionGate(env = process.env) {
     environment,
     flagEnabled: flag === 'true',
     credentialsConfigured: credentials.allowed,
+    demoApiKeyConfigured: credentials.hasApiKey,
+    demoApiSecretConfigured: credentials.hasApiSecret,
+    restBaseMatched,
     exitMonitorEnabled,
     reason
   });

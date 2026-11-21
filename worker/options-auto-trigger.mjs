@@ -96,6 +96,7 @@ export function createOptionsAutoTrigger({
     inFlight = (async () => {
       const engineSecret = clean(env.ENGINE_SECRET);
       const demoMode = getOptionsExecutionMode(env) === 'demo';
+      const executionGate = getOptionsExecutionGate(env);
       const demoOverrideGate = getOptionsManualTestOverrideGate(env);
       const demoQualityOverride = demoMode && demoOverrideGate.allowed;
       if (!enabled) {
@@ -112,13 +113,23 @@ export function createOptionsAutoTrigger({
           return { status: 'BLOCKED_NOT_TESTNET', previewRequested: false };
         }
         if (fullAutoExecuteConfigured) {
-          const executionGate = getOptionsExecutionGate(env);
           if (!executionGate.allowed) {
             await writeHeartbeat('BLOCKED_OPTIONS_ENV_EXECUTION_DISABLED', {
-              reason: OPTIONS_EXECUTION_LOCK_REASON,
-              mode: executionGate.mode,
+              executionGateReason: executionGate.reason || OPTIONS_EXECUTION_LOCK_REASON,
+              optionsExecutionMode: executionGate.mode,
+              deltaMode: executionGate.deltaMode,
               environment: executionGate.environment,
-              flagEnabled: executionGate.flagEnabled
+              flagEnabled: executionGate.flagEnabled,
+              credentialsConfigured: executionGate.credentialsConfigured,
+              demoApiKeyConfigured: executionGate.demoApiKeyConfigured,
+              demoApiSecretConfigured: executionGate.demoApiSecretConfigured,
+              restBaseMatched: executionGate.restBaseMatched,
+              exitMonitorEnabled: executionGate.exitMonitorEnabled,
+              manualTestOverrideAllowed: demoOverrideGate.allowed,
+              manualTestOverrideReason: demoOverrideGate.reason,
+              optionsDemoAutoExecuteEnabled: isEnabled(env.OPTIONS_DEMO_AUTO_EXECUTE),
+              optionsExitMonitorEnvEnabled: isEnabled(env.OPTIONS_EXIT_MONITOR_ENABLED),
+              optionsRegimeStrategyEnvEnabled: isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED)
             });
             return { status: 'BLOCKED_OPTIONS_ENV_EXECUTION_DISABLED', previewRequested: false };
           }

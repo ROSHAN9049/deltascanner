@@ -1300,15 +1300,30 @@ export function createDeltaExecutor({
       const bracketContainsLiveMark = direction === 'BUY'
         ? stop < liveMarkPrice && liveMarkPrice < target
         : target < liveMarkPrice && liveMarkPrice < stop;
-      if (!bracketContainsLiveMark) {
-        const referenceDriftPct = entry > 0 ? Math.abs(liveMarkPrice - entry) / entry * 100 : null;
-        await logExecutor('WARN', '[Executor] Blocked bracket order: live mark moved outside requested SL/TP bracket', {
+      const referenceDriftPct = entry > 0 ? Math.abs(liveMarkPrice - entry) / entry * 100 : null;
+      const driftWithinStopDistance = referenceDriftPct !== null &&
+        slDistancePct !== null && referenceDriftPct <= slDistancePct + 1e-9;
+      if (!bracketContainsLiveMark || !driftWithinStopDistance) {
+        const reason = !bracketContainsLiveMark
+          ? 'LIVE_MARK_OUTSIDE_BRACKET'
+          : 'LIVE_MARK_DRIFT_EXCEEDS_STOP_DISTANCE';
+        const logMessage = !bracketContainsLiveMark
+          ? '[Executor] Blocked bracket order: live mark moved outside requested SL/TP bracket'
+          : '[Executor] Blocked bracket order: Testnet mark drift exceeds signal stop distance';
+        await logExecutor('WARN', logMessage, {
           environment: 'testnet', symbol: normalizedSymbol, side: direction,
-          referenceEntryPrice: entry, liveMarkPrice, referenceDriftPct,
+          referenceEntryPrice: entry, liveMarkPrice, referenceDriftPct, slDistancePct,
           stopLossPrice: stop, takeProfitPrice: target,
-          executionBlocked: true, reason: 'LIVE_MARK_OUTSIDE_BRACKET'
+          signalReferenceSource: 'production_public_market_data',
+          executionMarkSource: 'delta_india_testnet_rest',
+          bracketContainsLiveMark,
+          driftWithinStopDistance,
+          executionBlocked: true, reason
         });
-        throw new Error('Live mark has moved outside the requested SL/TP bracket; refresh signal before entry');
+        const errorMessage = !bracketContainsLiveMark
+          ? 'Live mark has moved outside the requested SL/TP bracket; refresh signal before entry'
+          : 'Live Testnet mark no longer matches the signal risk envelope; refresh signal before entry';
+        throw new Error(errorMessage);
       }
 
       const strategy = strategyValue(options?.strategy);
