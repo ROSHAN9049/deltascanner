@@ -1413,7 +1413,11 @@ export function createDeltaOptionsExecution({
           order, fill,
           positionVerification,
           contract_id: product.id, hedge_order_id: null,
+          side: 'BUY',
+          size: preview.qty,
           entry: entryPrice, sl: preview.stopPremium, tp: preview.takeProfitPremium,
+          order_id: order.id ?? null,
+          status: fill?.state || clean(order.state || 'UNKNOWN').toUpperCase(),
           max_loss: preview.maxLossUsd
         };
       }
