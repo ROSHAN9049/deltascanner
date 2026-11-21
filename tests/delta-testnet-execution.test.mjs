@@ -240,7 +240,7 @@ test('SNDKBUSD production/Testnet price divergence remains blocked before order 
   });
   await assert.rejects(
     executor.placeBracketOrder('SNDKBUSD', 'SELL', 1, 78.8, 80.0, 75.8),
-    /Live mark has moved outside the requested SL\\/TP bracket/
+    /Live mark has moved outside the requested SL\/TP bracket/
   );
   assert.equal(
     runtime.httpCalls.some(call => new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST'),
