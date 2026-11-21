@@ -1300,7 +1300,6 @@ export function createDeltaExecutor({
       const bracketContainsLiveMark = direction === 'BUY'
         ? stop < liveMarkPrice && liveMarkPrice < target
         : target < liveMarkPrice && liveMarkPrice < stop;
-      const slDistancePct = entry > 0 ? Math.abs(stop - entry) / entry * 100 : null;
       const referenceDriftPct = entry > 0 ? Math.abs(liveMarkPrice - entry) / entry * 100 : null;
       const driftWithinStopDistance = referenceDriftPct !== null &&
         slDistancePct !== null && referenceDriftPct <= slDistancePct + 1e-9;
