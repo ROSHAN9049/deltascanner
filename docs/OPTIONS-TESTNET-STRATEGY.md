@@ -52,3 +52,26 @@ The feature is still **operationally locked by default**. Keep `OPTIONS_EXECUTIO
 - Live/production Options order routing.
 - Automatic recovery that guesses the state of an ambiguous exchange acknowledgement. Such cases retain protective exposure and require reconciliation before another order.
 - Changes to Momentum, Scalping, Grid, Futures settings, risk percentages or existing positions.
+
+
+## Phase 3 — Isolated Delta India Demo execution
+
+The execution path now has an independent mode selector. The default is fail-closed:
+
+- `OPTIONS_EXECUTION_MODE=disabled`: no Options order routing.
+- `OPTIONS_EXECUTION_MODE=demo`: only Delta India Demo/Testnet, only when `DELTA_EXECUTION_MODE=testnet`, `DELTA_ENVIRONMENT=TESTNET`, `OPTIONS_EXECUTION_ALLOWED=true`, the exact REST host is `https://cdn-ind.testnet.deltaex.org`, the dedicated Demo API keypair is configured, and the 60-second exit monitor is enabled.
+- `OPTIONS_EXECUTION_MODE=live`: permanently blocked by this build. No live Options route is implemented.
+
+Demo credentials are read only from `DELTA_DEMO_API_KEY` and `DELTA_DEMO_API_SECRET`. They must be generated from the separate Delta Demo account and stored directly in the private Hostless Worker environment. Do not use live-account keys, commit credentials, or paste credentials into chat.
+
+Demo auto-entry has a separate `OPTIONS_DEMO_AUTO_EXECUTE=true` opt-in. Do not turn on global `FULL_AUTO_EXECUTE` for Options Demo testing; that flag remains reserved for existing Futures/global automation and must not be changed for this feature.
+
+The Demo candidate-quality override is separately gated by `ALLOW_MANUAL_OVERRIDE_FOR_TEST=true`. It may log and relax only underlying confirmation/stage, OI, volume, IV Rank/Percentile, regime and target-delta-band analysis filters. The normalized score must still be at least 80. Hard controls remain: approved BTC/ETH contract identity, exact Demo product ID and contract multiplier, valid quote, configured 2–14 DTE, spread no wider than 1.50%, verified account equity and available balance, configured Options loss budget plus 0.5% hard equity cap, daily loss limit, DB trading enabled, E-STOP false, Options strategy enabled, BUY/SELL strategy toggle, strictest of the global and Options-specific open-position caps, SELL protective BUY fill before any short SELL, exchange-side bracket acknowledgement, fill confirmation and exchange position reconciliation.
+
+The market scanner still includes BTC, ETH and XAUT as configured. This India Options executor currently routes only verified BTC and ETH contracts. XAUT Options remain scan-only until the India-specific contract and settlement rules are verified.
+
+Each entry order requests an exchange-side SL/TP bracket. After fill, the executor verifies either explicit bracket data on the parent order or both active reduce-only stop-loss and take-profit child orders returned by the Demo exchange. If neither representation confirms protection, it cancels any still-open parent and reduces the confirmed filled quantity. An ambiguous cancellation or unwind moves the position to reconciliation-required and blocks blind retry. After fill, the executor also verifies the signed contract quantity in the Demo account's Options position snapshot.
+
+The 60-second exit monitor and Demo credentials must remain enabled while any Demo Options position is open, even after setting `OPTIONS_EXECUTION_MODE=disabled` to stop new entries. The Demo transport remains pinned to the Testnet host so existing positions can still be managed; disable the monitor or remove the Demo keys only after the Demo account and `dd_option_positions` have no open/reconciliation-required rows.
+
+Configure both the Hostless `deltascanner-api` Worker and `deltascanner-api-v2` API App with the common Demo execution profile and dedicated Demo keypair, because the Worker poller calls the separate API App preview/execute routes. On the Worker only, additionally set `AUTO_EXECUTE_OPTIONS=true` and `OPTIONS_DEMO_AUTO_EXECUTE=true`; keep `FULL_AUTO_EXECUTE` unchanged. Keep both services on the exact Demo/Testnet URL and do not place Demo keys in the Site service. Leave all live keys and production settings untouched. The environment template keeps `OPTIONS_EXECUTION_MODE=disabled`, Demo credentials empty, `OPTIONS_EXECUTION_ALLOWED=false`, and `OPTIONS_EXIT_MONITOR_ENABLED=false` by default.

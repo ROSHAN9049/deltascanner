@@ -31,3 +31,45 @@ test('exit monitor polls every 60 seconds and stops its timer', async () => {
   await worker.stop();
   assert.deepEqual(cleared, timers);
 });
+
+test('exit monitor remains active in Testnet after the new-entry mode is disabled', async () => {
+  const timers = [];
+  let calls = 0;
+  const worker = createOptionsExitMonitor({
+    env: {
+      OPTIONS_EXECUTION_MODE: 'disabled',
+      OPTIONS_REGIME_STRATEGY_ENABLED: 'false',
+      OPTIONS_EXIT_MONITOR_ENABLED: 'true',
+      DELTA_EXECUTION_MODE: 'testnet',
+      DELTA_ENVIRONMENT: 'TESTNET'
+    },
+    monitor: async () => { calls += 1; return { status: 'OK', monitored: 1, exits: 0 }; },
+    setIntervalFn: (callback, delay) => {
+      const timer = { callback, delay, unref() {} };
+      timers.push(timer);
+      return timer;
+    }
+  });
+  await worker.start();
+  assert.equal(timers.length, 1);
+  assert.equal(calls, 1);
+  await worker.stop();
+});
+
+test('exit monitor also runs in explicit Demo mode without Regime strategy flag', async () => {
+  const timers = [];
+  let calls = 0;
+  const worker = createOptionsExitMonitor({
+    env: { OPTIONS_EXECUTION_MODE: 'demo', OPTIONS_REGIME_STRATEGY_ENABLED: 'false', OPTIONS_EXIT_MONITOR_ENABLED: 'true' },
+    monitor: async () => { calls += 1; return { status: 'OK', monitored: 1, exits: 0 }; },
+    setIntervalFn: (callback, delay) => {
+      const timer = { callback, delay, unref() {} };
+      timers.push(timer);
+      return timer;
+    }
+  });
+  await worker.start();
+  assert.equal(timers.length, 1);
+  assert.equal(calls, 1);
+  await worker.stop();
+});

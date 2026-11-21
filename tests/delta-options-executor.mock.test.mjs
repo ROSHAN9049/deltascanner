@@ -8,14 +8,18 @@ const HEDGE = 'C-BTC-82000-311226';
 
 function harness({
   enabled = true, shortState = 'open', hedgeFilled = true, hedgePartial = false,
-  strategy = 'OPTIONS_SELL', manualOverrideEnabled = false, candidatePatch = {}, settingsPatch = {}, closedOptionPositions = []
+  strategy = 'OPTIONS_SELL', manualOverrideEnabled = false, candidatePatch = {}, settingsPatch = {},
+  closedOptionPositions = [], bracketEcho = true, bracketChildren = true
 } = {}) {
   const env = {
     DELTA_EXECUTION_MODE: 'testnet',
     DELTA_ENVIRONMENT: 'TESTNET',
+    OPTIONS_EXECUTION_MODE: 'demo',
+    OPTIONS_EXIT_MONITOR_ENABLED: 'true',
     OPTIONS_EXECUTION_ALLOWED: enabled ? 'true' : 'false',
     ALLOW_MANUAL_OVERRIDE_FOR_TEST: manualOverrideEnabled ? 'true' : 'false',
-    DELTA_TESTNET_API_SECRET: 'testnet-secret'
+    DELTA_DEMO_API_KEY: 'demo-test-key',
+    DELTA_DEMO_API_SECRET: 'demo-test-secret'
   };
   const products = [
     { id: 101, symbol: SHORT, contract_type: 'call_options', state: 'live',
@@ -43,7 +47,11 @@ function harness({
   Object.assign(candidate, candidatePatch);
   candidate.details = { ...baselineDetails, ...patchDetails };
   const storedOrders = [];
+  const optionRows = [];
   const canonicalRows = [];
+  const demoPositions = [];
+  const requestOrders = new Map();
+  const appliedPositionOrders = new Set();
   let nextCanonicalId = 700;
   const apiCalls = [];
   let hedgeCanceled = false;
@@ -53,8 +61,15 @@ function harness({
     async select(table, query = '') {
       if (table === 'dd_option_cache') return [candidate];
       if (table === 'dd_settings') return [{
+        options_enabled: true,
+        options_buy_enabled: true,
+        options_sell_enabled: true,
         options_max_risk_pct: 0.30,
         max_options_positions: 4,
+        options_max_open_positions: 1,
+        options_min_oi: 50,
+        options_min_volume: 1,
+        options_max_spread_pct: 1.5,
         options_buy_min_delta: 0.45,
         options_buy_max_delta: 0.65,
         options_sell_min_delta: 0.20,
@@ -76,7 +91,12 @@ function harness({
       }
       if (table === 'dd_option_positions') {
         if (query.includes('status=eq.CLOSED')) return closedOptionPositions;
-        return [];
+        if (query.includes('status=in.(')) {
+          return optionRows.filter(row =>
+            ['ENTRY_PENDING','OPEN','HEDGE_CLOSE_PENDING','RECONCILIATION_REQUIRED'].includes(row.status)
+          );
+        }
+        return optionRows;
       }
       if (table === 'dd_orders') {
         const idMatch = query.match(/client_order_id=eq.([^&]+)/);
@@ -93,6 +113,10 @@ function harness({
       return [];
     },
     async insert(table, row) {
+      if (table === 'dd_option_positions') {
+        optionRows.push({ ...row });
+        return [row];
+      }
       if (table !== 'dd_delta_positions') throw new Error('unexpected insert table ' + table);
       canonicalRows.push({ id: nextCanonicalId++, ...row });
       return null;
@@ -109,6 +133,14 @@ function harness({
       return [row];
     },
     async update(table, query, patch) {
+      if (table === 'dd_option_positions') {
+        const key = query.match(/position_key=eq.([^&]+)/)?.[1];
+        const row = optionRows.find(item => item.position_key === decodeURIComponent(key || '') &&
+          (!query.includes('status=eq.ENTRY_PENDING') || item.status === 'ENTRY_PENDING') &&
+          (!query.includes('status=eq.OPEN') || item.status === 'OPEN'));
+        if (row) Object.assign(row, patch);
+        return row ? [{ ...row }] : [];
+      }
       if (table === 'dd_delta_positions') {
         const id = Number(query.match(/id=eq.(\d+)/)?.[1]);
         const row = canonicalRows.find(item => item.id === id && (!query.includes('status=eq.OPEN') || item.status === 'OPEN'));
@@ -129,17 +161,49 @@ function harness({
     if (method === 'GET' && path === '/v2/products') return { result: products, meta: {} };
     if (method === 'GET' && path.startsWith('/v2/tickers/')) {
       const symbol = decodeURIComponent(path.slice('/v2/tickers/'.length));
-      const bidAsk = symbol === SHORT ? { bid: 900, ask: 910 } : { bid: 240, ask: 250 };
+      const bidAsk = symbol === SHORT ? { bid: 900, ask: 910 } : { bid: 249, ask: 250 };
       return { result: [{
         symbol,
         quotes: { best_bid: bidAsk.bid, best_ask: bidAsk.ask },
         mark_price: (bidAsk.bid + bidAsk.ask) / 2
       }] };
     }
-    if (method === 'GET' && path === '/v2/positions/margined') return { result: [] };
+    if (method === 'GET' && path === '/v2/positions/margined') {
+      return { result: demoPositions.map(row => ({ ...row })) };
+    }
+    if (method === 'GET' && path === '/v2/orders') {
+      if (!bracketChildren) return { result: [] };
+      const children = [];
+      for (const [id, order] of requestOrders.entries()) {
+        if (!order.bracket_stop_loss_price || !appliedPositionOrders.has(id)) continue;
+        const product = products.find(row => row.id === Number(order.product_id));
+        const closeSide = order.side === 'buy' ? 'sell' : 'buy';
+        children.push({
+          id: id + 1000,
+          product_id: product.id,
+          side: closeSide,
+          reduce_only: true,
+          size: Number(order.size),
+          state: 'open',
+          stop_order_type: 'stop_loss_order',
+          stop_price: Number(order.bracket_stop_loss_price)
+        }, {
+          id: id + 2000,
+          product_id: product.id,
+          side: closeSide,
+          reduce_only: true,
+          size: Number(order.size),
+          state: 'open',
+          stop_order_type: 'take_profit_order',
+          stop_price: Number(order.bracket_take_profit_price)
+        });
+      }
+      return { result: children };
+    }
     if (method === 'POST' && path === '/v2/orders') {
       const id = body.reduce_only === true ? 102 : body.side === 'buy' ? 100 : 101;
       const state = body.reduce_only === true ? 'open' : body.side === 'buy' ? 'open' : shortState;
+      requestOrders.set(id, { ...body });
       return { result: {
         id,
         state,
@@ -147,6 +211,30 @@ function harness({
         unfilled_size: body.size
       } };
     }
+    const applyFilledOrder = (id, averageFillPrice) => {
+      if (appliedPositionOrders.has(id)) return;
+      const order = requestOrders.get(id);
+      if (!order) return;
+      appliedPositionOrders.add(id);
+      const product = products.find(row => row.id === Number(order.product_id));
+      if (!product) return;
+      const signed = (order.side === 'sell' ? -1 : 1) * Number(order.size);
+      if (order.reduce_only === true) {
+        const existing = demoPositions.find(row => row.product_id === product.id);
+        if (existing) existing.size += signed;
+        for (let index = demoPositions.length - 1; index >= 0; index -= 1) {
+          if (Math.abs(demoPositions[index].size) < 1e-9) demoPositions.splice(index, 1);
+        }
+      } else {
+        demoPositions.push({
+          product_id: product.id,
+          product_symbol: product.symbol,
+          contract_type: product.contract_type,
+          size: signed,
+          entry_price: averageFillPrice
+        });
+      }
+    };
     if (method === 'GET' && path === '/v2/orders/100') {
       if (hedgeCanceled && (!hedgeFilled || hedgePartial)) {
         return { result: {
@@ -154,11 +242,53 @@ function harness({
           unfilled_size: hedgePartial ? 0 : 1
         } };
       }
-      if (!hedgeFilled) return { result: { id: 100, state: 'open', size: 1, unfilled_size: 1 } };
-      if (hedgePartial) return { result: { id: 100, state: 'open', size: 1, unfilled_size: 0 } };
-      return { result: { id: 100, state: 'filled', size: 1, unfilled_size: 0, average_fill_price: 250 } };
+      if (!hedgeFilled) return { result: {
+        id: 100, state: 'open', size: 1, unfilled_size: 1,
+        ...(bracketEcho && requestOrders.get(100)?.bracket_stop_loss_price ? {
+          bracket_stop_loss_price: requestOrders.get(100).bracket_stop_loss_price,
+          bracket_take_profit_price: requestOrders.get(100).bracket_take_profit_price,
+          bracket_stop_trigger_method: requestOrders.get(100).bracket_stop_trigger_method
+        } : {})
+      } };
+      if (hedgePartial) return { result: {
+        id: 100, state: 'open', size: 1, unfilled_size: 0,
+        ...(requestOrders.get(100)?.bracket_stop_loss_price ? {
+          bracket_stop_loss_price: requestOrders.get(100).bracket_stop_loss_price,
+          bracket_take_profit_price: requestOrders.get(100).bracket_take_profit_price,
+          bracket_stop_trigger_method: requestOrders.get(100).bracket_stop_trigger_method
+        } : {})
+      } };
+      const currentOrder = requestOrders.get(100) || {};
+      const averageFillPrice = Number(currentOrder.product_id) === 101 ? 910 : 250;
+      applyFilledOrder(100, averageFillPrice);
+      return { result: {
+        id: 100, state: 'filled', size: 1, unfilled_size: 0,
+        average_fill_price: averageFillPrice,
+        ...(bracketEcho && currentOrder.bracket_stop_loss_price ? {
+          bracket_stop_loss_price: currentOrder.bracket_stop_loss_price,
+          bracket_take_profit_price: currentOrder.bracket_take_profit_price,
+          bracket_stop_trigger_method: currentOrder.bracket_stop_trigger_method
+        } : {})
+      } };
+    }
+    if (method === 'GET' && path === '/v2/orders/101') {
+      if (shortState === 'rejected') {
+        return { result: { id: 101, state: 'rejected', size: 1, unfilled_size: 1 } };
+      }
+      const currentOrder = requestOrders.get(101) || {};
+      applyFilledOrder(101, 900);
+      return { result: {
+        id: 101, state: 'filled', size: 1, unfilled_size: 0,
+        average_fill_price: 900,
+        ...(currentOrder.bracket_stop_loss_price ? {
+          bracket_stop_loss_price: currentOrder.bracket_stop_loss_price,
+          bracket_take_profit_price: currentOrder.bracket_take_profit_price,
+          bracket_stop_trigger_method: currentOrder.bracket_stop_trigger_method
+        } : {})
+      } };
     }
     if (method === 'GET' && path === '/v2/orders/102') {
+      applyFilledOrder(102, 240);
       return { result: { id: 102, state: 'filled', size: 1, unfilled_size: 0, average_fill_price: 240 } };
     }
     if (method === 'DELETE' && path === '/v2/orders') {
@@ -183,8 +313,62 @@ function harness({
     now: () => NOW,
     isMarketTickFresh: () => true
   });
-  return { executor, apiCalls, storedOrders, logs };
+  return { executor, apiCalls, storedOrders, optionRows, logs };
 }
+
+test('Demo BUY limit entry with no fill is canceled and never leaves a resting order', async () => {
+  const { executor, apiCalls, optionRows } = harness({
+    strategy: 'OPTIONS_BUY',
+    hedgeFilled: false
+  });
+  const preview = await executor.previewOptionsOrder({ symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1 });
+  await assert.rejects(
+    executor.placeOptionsOrder({
+      symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1, quoteToken: preview.quoteToken
+    }),
+    error => error?.code === 'OPTIONS_ENTRY_NOT_FILLED'
+  );
+  assert.ok(apiCalls.some(call => call.method === 'DELETE' && call.path === '/v2/orders'));
+  assert.equal(optionRows[0].status, 'CLOSED');
+});
+
+test('Demo bracket protection is verified through exchange reduce-only child orders when parent detail does not echo it', async () => {
+  const { executor, apiCalls } = harness({
+    strategy: 'OPTIONS_BUY',
+    bracketEcho: false,
+    bracketChildren: true
+  });
+  const preview = await executor.previewOptionsOrder({ symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1 });
+  const result = await executor.placeOptionsOrder({
+    symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1, quoteToken: preview.quoteToken
+  });
+  assert.equal(result.success, true);
+  const activeOrderChecks = apiCalls.filter(call =>
+    call.method === 'GET' && call.path === '/v2/orders'
+  );
+  assert.equal(activeOrderChecks.length, 1);
+  assert.equal(result.positionVerification.verified, true);
+});
+
+test('Demo entry is reduced-only unwound if neither parent nor exchange child orders confirm SL/TP', async () => {
+  const { executor, apiCalls, optionRows } = harness({
+    strategy: 'OPTIONS_BUY',
+    bracketEcho: false,
+    bracketChildren: false
+  });
+  const preview = await executor.previewOptionsOrder({ symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1 });
+  await assert.rejects(
+    executor.placeOptionsOrder({
+      symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1, quoteToken: preview.quoteToken
+    }),
+    error => error?.code === 'OPTIONS_EXCHANGE_BRACKET_UNVERIFIED'
+  );
+  const orderCalls = apiCalls.filter(call => call.method === 'POST' && call.path === '/v2/orders');
+  assert.deepEqual(orderCalls.map(call => call.body.side), ['buy', 'sell']);
+  assert.equal(orderCalls[1].body.reduce_only, true);
+  assert.equal(optionRows[0].status, 'CLOSED');
+  assert.ok(apiCalls.some(call => call.method === 'GET' && call.path === '/v2/positions/margined'));
+});
 
 test('mock Delta Testnet API executes a long BTC call as a single limit BUY', async () => {
   const { executor, apiCalls } = harness({ strategy: 'OPTIONS_BUY' });
@@ -200,6 +384,10 @@ test('mock Delta Testnet API executes a long BTC call as a single limit BUY', as
   assert.equal(orderCalls[0].body.side, 'buy');
   assert.equal(orderCalls[0].body.order_type, 'limit_order');
   assert.equal(orderCalls[0].body.product_id, 101);
+  assert.equal(Number(orderCalls[0].body.bracket_stop_loss_price), 637);
+  assert.equal(Number(orderCalls[0].body.bracket_take_profit_price), 1365);
+  assert.equal(result.fill.averageFillPrice, 910);
+  assert.equal(result.positionVerification.verified, true);
 });
 
 test('mock Delta Testnet API confirms reduce-only unwind after a definitive short rejection', async () => {
@@ -235,6 +423,10 @@ test('mock Delta Testnet API resolves exact option IDs and submits protective BU
   assert.equal(orderCalls[1].body.product_id, 101);
   assert.equal(orderCalls[0].body.order_type, 'limit_order');
   assert.equal(orderCalls[1].body.order_type, 'limit_order');
+  assert.equal(orderCalls[0].body.bracket_stop_loss_price, undefined);
+  assert.ok(orderCalls[1].body.bracket_stop_loss_price);
+  assert.ok(orderCalls[1].body.bracket_take_profit_price);
+  assert.equal(result.positionVerification.verified, true);
   assert.ok(storedOrders.every(row => row.raw.contract_id > 0));
   assert.ok(logs.some(([, message, details]) =>
     String(message).includes('spread lifecycle result') &&
@@ -262,16 +454,16 @@ test('mock Delta Testnet API keeps OPTIONS execution disabled when the env flag 
     executor.placeOptionsOrder({
       symbol: SHORT, strategy: 'OPTIONS_SELL', qty: 1, quoteToken: preview.quoteToken
     }),
-    /Options execution remains locked/
+    /Options execution is disabled by default|OPTIONS_EXECUTION_ALLOWED=true/
   );
   assert.equal(apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
 });
 
-test('manual Testnet override previews and executes a low-score unconfirmed BUY without changing risk gates', async () => {
+test('manual Demo override previews and executes a score-qualified unconfirmed BUY without changing risk gates', async () => {
   const { executor, apiCalls, storedOrders } = harness({
     strategy: 'OPTIONS_BUY',
     manualOverrideEnabled: true,
-    candidatePatch: { stage: 'SETUP', score: 42, details: { analysisReady: false } }
+    candidatePatch: { stage: 'SETUP', score: 95, details: { analysisReady: false } }
   });
   const preview = await executor.previewOptionsOrder({
     symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1, manualTestOverride: true
@@ -306,18 +498,18 @@ test('manual Testnet override keeps Delta and expiry qualification mandatory', a
   const deltaCase = harness({
     strategy: 'OPTIONS_BUY',
     manualOverrideEnabled: true,
-    candidatePatch: { stage: 'SETUP', score: 20, details: { analysisReady: false, delta: 0.90 } }
+    candidatePatch: { stage: 'SETUP', score: 95, details: { analysisReady: false, delta: 0.99 } }
   });
   await assert.rejects(
     deltaCase.executor.previewOptionsOrder({
       symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1, manualTestOverride: true
     }),
-    /Delta is outside the configured BUY band/
+    /hard 0.05–0.95 validity band/
   );
   const dteCase = harness({
     strategy: 'OPTIONS_BUY',
     manualOverrideEnabled: true,
-    candidatePatch: { stage: 'SETUP', score: 20, details: { analysisReady: false } },
+    candidatePatch: { stage: 'SETUP', score: 95, details: { analysisReady: false } },
     settingsPatch: { options_max_days_to_expiry: 30 }
   });
   await assert.rejects(
@@ -334,7 +526,7 @@ test('manual Testnet override still enforces the configured maximum-loss budget'
   const { executor, apiCalls } = harness({
     strategy: 'OPTIONS_BUY',
     manualOverrideEnabled: true,
-    candidatePatch: { stage: 'SETUP', score: 20, details: { analysisReady: false } },
+    candidatePatch: { stage: 'SETUP', score: 95, details: { analysisReady: false } },
     settingsPatch: { options_max_risk_pct: 0.001 }
   });
   await assert.rejects(
@@ -349,7 +541,7 @@ test('manual Testnet override still enforces the configured maximum-loss budget'
 test('manual Testnet SELL override still requires and executes its protective hedge first', async () => {
   const { executor, apiCalls, storedOrders } = harness({
     manualOverrideEnabled: true,
-    candidatePatch: { stage: 'SETUP', score: 25, details: { analysisReady: false } }
+    candidatePatch: { stage: 'SETUP', score: 95, details: { analysisReady: false } }
   });
   const preview = await executor.previewOptionsOrder({
     symbol: SHORT, strategy: 'OPTIONS_SELL', qty: 1, manualTestOverride: true
@@ -369,7 +561,7 @@ test('manual Testnet SELL override still requires and executes its protective he
 test('manual Testnet SELL override rejects a missing protective hedge', async () => {
   const { executor, apiCalls } = harness({
     manualOverrideEnabled: true,
-    candidatePatch: { stage: 'SETUP', score: 25, details: { analysisReady: false, hedgeSymbol: '' } }
+    candidatePatch: { stage: 'SETUP', score: 95, details: { analysisReady: false, hedgeSymbol: '' } }
   });
   await assert.rejects(
     executor.previewOptionsOrder({
@@ -384,7 +576,7 @@ test('manual override mode is cryptographically bound to the preview confirmatio
   const { executor, apiCalls } = harness({
     strategy: 'OPTIONS_BUY',
     manualOverrideEnabled: true,
-    candidatePatch: { stage: 'SETUP', score: 25, details: { analysisReady: false } }
+    candidatePatch: { stage: 'SETUP', score: 95, details: { analysisReady: false } }
   });
   const preview = await executor.previewOptionsOrder({
     symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1, manualTestOverride: true
@@ -472,8 +664,8 @@ test('Options daily loss at or beyond 2% of equity blocks new entries', async ()
   assert.equal(apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
 });
 
-test('Options execution blocks when daily IV Percentile is unavailable even on manual-test path', async () => {
-  const { executor, apiCalls } = harness({
+test('Demo manual quality override logs missing daily IV Percentile but keeps the candidate execution-safe', async () => {
+  const { executor, apiCalls, logs } = harness({
     strategy: 'OPTIONS_BUY',
     candidatePatch: {
       iv_percentile: null,
@@ -481,11 +673,10 @@ test('Options execution blocks when daily IV Percentile is unavailable even on m
     },
     manualOverrideEnabled: true
   });
-  await assert.rejects(
-    executor.previewOptionsOrder({
-      symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1, manualTestOverride: true
-    }),
-    /IV Percentile unavailable or insufficient daily history/
-  );
+  const preview = await executor.previewOptionsOrder({
+    symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1, manualTestOverride: true
+  });
+  assert.equal(preview.executionAllowed, true);
+  assert.ok(logs.some(args => args[2]?.qualityFiltersObserved?.includes('IV_PERCENTILE_FILTER')));
   assert.equal(apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
 });

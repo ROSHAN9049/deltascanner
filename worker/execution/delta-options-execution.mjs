@@ -5,6 +5,8 @@ import { executeDefinedRiskSellExit } from '../options-exit-sequence.mjs';
 import {
   assertOptionsExecutionAllowed,
   getOptionsExecutionGate,
+  getOptionsExecutionMode,
+  isOptionsDemoExecution,
   assertOptionsManualTestOverrideAllowed,
   getOptionsDatabaseExecutionGate,
   OPTIONS_DATABASE_EXECUTION_LOCK_REASON
@@ -38,6 +40,19 @@ function assertTickAligned(price, tickSize, symbol) {
   if (Math.abs(aligned - value) > Math.max(1e-10, tick * 1e-6)) {
     throw new Error('Options quote is not aligned to the Testnet product tick size for ' + symbol);
   }
+}
+
+function snapPriceToTick(value, tickSize, direction) {
+  const price = positive(value);
+  const tick = positive(tickSize);
+  if (!price || !tick) throw new Error('Options bracket price or tick size is invalid');
+  const units = price / tick;
+  const snappedUnits = direction === 'up'
+    ? Math.ceil(units - 1e-10)
+    : Math.floor(units + 1e-10);
+  const snapped = Number((snappedUnits * tick).toPrecision(12));
+  if (!(snapped > 0)) throw new Error('Options bracket price rounded to a non-positive value');
+  return snapped;
 }
 
 function parseDetails(value) {
@@ -74,7 +89,7 @@ export function createDeltaOptionsExecution({
     const mode = lower(env.DELTA_EXECUTION_MODE || 'disabled');
     const environment = clean(env.DELTA_ENVIRONMENT).toUpperCase();
     if (mode !== 'testnet' || environment !== 'TESTNET') {
-      throw new Error('Delta Options operations require DELTA_EXECUTION_MODE=testnet and DELTA_ENVIRONMENT=TESTNET');
+      throw new Error('Delta Options market-data and preview operations require the explicit Delta India Testnet profile');
     }
   }
 
@@ -130,11 +145,22 @@ export function createDeltaOptionsExecution({
     const contractValue = positive(product.contract_value);
     const tickSize = positive(product.tick_size);
     const feeRate = number(product.taker_commission_rate);
+    // Delta documents integer contract size. Honour product-specific size
+    // fields when the catalogue supplies them; otherwise the verified API
+    // contract is one whole option contract per size unit.
+    const minSize = positive(product.minimum_order_size ?? product.min_order_size ??
+      product.product_specs?.minimum_order_size) ?? 1;
+    const sizeStep = positive(product.order_size_increment ?? product.size_increment ??
+      product.product_specs?.order_size_increment) ?? 1;
     if (!Number.isSafeInteger(id) || id <= 0 || !contractValue || !tickSize ||
-        feeRate === null || feeRate < 0 || feeRate > 0.02) {
-      throw new Error('Delta Testnet Options product metadata is incomplete or outside verified bounds: ' + normalized);
+        feeRate === null || feeRate < 0 || feeRate > 0.02 ||
+        !Number.isSafeInteger(minSize) || !Number.isSafeInteger(sizeStep)) {
+      throw new Error('Delta India Demo Options product metadata is incomplete or outside verified bounds: ' + normalized);
     }
-    return { ...product, id, contractValue, tickSize, feeRate, parsed };
+    return {
+      ...product, id, contractValue, tickSize, feeRate, minSize, sizeStep, parsed,
+      contractType: expectedType
+    };
   }
 
   async function getQuote(symbol) {
@@ -158,7 +184,7 @@ export function createDeltaOptionsExecution({
       'dd_option_cache',
       'symbol=eq.' + encodeURIComponent(symbol) +
         '&strategy=eq.' + encodeURIComponent(strategy) +
-        '&select=symbol,strategy,score,stage,cached_at,details,market_regime,iv_rank,iv_percentile&limit=2'
+        '&select=symbol,strategy,score,stage,cached_at,details,market_regime,iv_rank,iv_percentile,oi,volume,delta,spread_pct&limit=2'
     );
     if (!Array.isArray(rows) || rows.length !== 1) {
       throw new Error('A unique current Options candidate is not present in dd_option_cache');
@@ -171,20 +197,64 @@ export function createDeltaOptionsExecution({
     const details = parseDetails(row.details);
     const ivRank = number(row.iv_rank ?? details.ivRank);
     const ivPercentile = number(row.iv_percentile ?? details.ivPercentile);
-    const ivMetricsGate = evaluateIvMetrics(strategy, ivRank, ivPercentile);
-    if (!ivMetricsGate.allowed) throw new Error(ivMetricsGate.reason);
     const marketRegime = clean(row.market_regime || details.marketRegime).toUpperCase();
-    if (isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED)) {
-      const expectedRegime = strategy === 'OPTIONS_BUY' ? 'TRENDING' : 'SIDEWAYS';
-      if (marketRegime !== expectedRegime) throw new Error('Market regime does not permit this Options strategy');
-      if (!isEnabled(env.OPTIONS_EXIT_MONITOR_ENABLED)) {
-        throw new Error('60-second Options exit monitor must be enabled before regime-based entries');
+    const demoQualityOverride = isOptionsDemoExecution(env) && manualTestOverride === true;
+    const normalizedScore = number(row.score);
+    if (normalizedScore === null || normalizedScore < 80) {
+      throw new Error('Options candidate normalized score is below the mandatory 80 minimum');
+    }
+    if (!demoQualityOverride) {
+      const ivMetricsGate = evaluateIvMetrics(strategy, ivRank, ivPercentile);
+      if (!ivMetricsGate.allowed) throw new Error(ivMetricsGate.reason);
+      if (isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED)) {
+        const expectedRegime = strategy === 'OPTIONS_BUY' ? 'TRENDING' : 'SIDEWAYS';
+        if (marketRegime !== expectedRegime) throw new Error('Market regime does not permit this Options strategy');
+        if (!isEnabled(env.OPTIONS_EXIT_MONITOR_ENABLED)) {
+          throw new Error('60-second Options exit monitor must be enabled before regime-based entries');
+        }
       }
     }
     if (!manualTestOverride &&
         (clean(row.stage).toUpperCase() !== 'CONFIRMED' ||
-         !(number(row.score) >= 80) || details.analysisReady !== true)) {
+         details.analysisReady !== true)) {
       throw new Error('Options candidate is not confirmed by the worker analysis gates');
+    }
+    if (demoQualityOverride) {
+      const delta = number(details.delta ?? row.delta);
+      const reasons = [];
+      if (clean(row.stage).toUpperCase() !== 'CONFIRMED') reasons.push('UNDERLYING_NOT_CONFIRMED');
+      if (details.analysisReady !== true) reasons.push('UNDERLYING_ANALYSIS_NOT_READY');
+      if (ivRank === null || (strategy === 'OPTIONS_BUY' ? ivRank >= 40 : ivRank <= 50)) reasons.push('IV_RANK_FILTER');
+      if (ivPercentile === null || (strategy === 'OPTIONS_BUY' ? ivPercentile >= 20 : ivPercentile <= 80)) reasons.push('IV_PERCENTILE_FILTER');
+      const openInterest = number(row.oi ?? details.openInterest);
+      const volume = number(row.volume ?? details.volume);
+      const qualitySettingsRows = await database.select(
+        'dd_settings',
+        'id=eq.1&select=options_min_oi,options_min_volume'
+      );
+      if (!Array.isArray(qualitySettingsRows) || qualitySettingsRows.length !== 1) {
+        throw new Error('Demo Options quality-filter audit settings are unavailable');
+      }
+      const qualitySettings = qualitySettingsRows[0];
+      const minimumOi = number(qualitySettings.options_min_oi);
+      const minimumVolume = number(qualitySettings.options_min_volume);
+      if (openInterest === null || (minimumOi !== null && openInterest < minimumOi)) reasons.push('OI_BELOW_MINIMUM');
+      if (volume === null || (minimumVolume !== null && volume < minimumVolume)) reasons.push('VOLUME_BELOW_MINIMUM');
+      if (delta === null) reasons.push('DELTA_UNAVAILABLE');
+      await logExecutor('WARN', '[OptionsExecutor] Demo-only candidate quality filters observed; mandatory score/risk/size/expiry/spread/hedge checks remain active', {
+        environment: 'DELTA_DEMO',
+        symbol: clean(row.symbol).toUpperCase(),
+        strategy,
+        score: normalizedScore,
+        stage: clean(row.stage).toUpperCase(),
+        openInterest: number(row.oi ?? details.openInterest),
+        volume: number(row.volume ?? details.volume),
+        ivRank,
+        ivPercentile,
+        delta,
+        marketRegime,
+        qualityFiltersObserved: reasons
+      });
     }
     return {
       ...row, details, ivRank, ivPercentile, marketRegime, cachedAt: new Date(cachedAtMs).toISOString(),
@@ -211,13 +281,20 @@ export function createDeltaOptionsExecution({
     const isBuy = strategyKey === 'OPTIONS_BUY';
     const deltaMin = number(isBuy ? settings.options_buy_min_delta : settings.options_sell_min_delta);
     const deltaMax = number(isBuy ? settings.options_buy_max_delta : settings.options_sell_max_delta);
-    if (deltaMin === null || deltaMax === null || deltaMin <= 0 || deltaMax < deltaMin ||
-        Math.abs(delta) < deltaMin || Math.abs(delta) > deltaMax) {
+    const demoQualityOverride = isOptionsDemoExecution(env);
+    if (!demoQualityOverride &&
+        (deltaMin === null || deltaMax === null || deltaMin <= 0 || deltaMax < deltaMin ||
+         Math.abs(delta) < deltaMin || Math.abs(delta) > deltaMax)) {
       throw new Error('Manual test override blocked: option Delta is outside the configured ' +
         (isBuy ? 'BUY' : 'SELL') + ' band');
     }
+    if (demoQualityOverride && (Math.abs(delta) < 0.05 || Math.abs(delta) > 0.95)) {
+      throw new Error('Demo candidate Delta must remain within the hard 0.05–0.95 validity band');
+    }
 
-    const regimeBased = isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED);
+    // Demo mode bypasses only regime-based expiry tightening; configured
+    // minimum/maximum DTE from dd_settings remain mandatory.
+    const regimeBased = isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED) && !demoQualityOverride;
     const minDays = regimeBased ? (isBuy ? 3 : 1) : number(settings.options_min_days_to_expiry);
     const maxDays = regimeBased ? (isBuy ? 10 : 3) : number(settings.options_max_days_to_expiry);
     if (minDays === null || maxDays === null || minDays < 0.5 || maxDays < minDays ||
@@ -236,8 +313,8 @@ export function createDeltaOptionsExecution({
 
   function signQuoteToken(payload) {
     const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
-    const secret = clean(env.DELTA_TESTNET_API_SECRET);
-    if (!secret) throw new Error('Delta Testnet signing secret is unavailable');
+    const secret = clean(env.DELTA_DEMO_API_SECRET);
+    if (!secret) throw new Error('Delta Demo Options signing secret is unavailable');
     const signature = crypto.createHmac('sha256', secret).update(encoded).digest('base64url');
     return encoded + '.' + signature;
   }
@@ -247,8 +324,8 @@ export function createDeltaOptionsExecution({
     if (pieces.length !== 2 || !pieces[0] || !pieces[1]) {
       throw new Error('Options preview confirmation token is invalid');
     }
-    const secret = clean(env.DELTA_TESTNET_API_SECRET);
-    if (!secret) throw new Error('Delta Testnet signing secret is unavailable');
+    const secret = clean(env.DELTA_DEMO_API_SECRET);
+    if (!secret) throw new Error('Delta Demo Options signing secret is unavailable');
     const expected = crypto.createHmac('sha256', secret).update(pieces[0]).digest();
     let supplied;
     try { supplied = Buffer.from(pieces[1], 'base64url'); } catch { supplied = Buffer.alloc(0); }
@@ -315,10 +392,13 @@ export function createDeltaOptionsExecution({
       resolveProduct(contract),
       getQuote(contract),
       getAccountSnapshot(),
-      database.select('dd_settings', 'id=eq.1&select=options_max_risk_pct,max_options_positions,enabled,emergency_stop,last_tick_at,options_buy_min_delta,options_buy_max_delta,options_sell_min_delta,options_sell_max_delta,options_min_days_to_expiry,options_max_days_to_expiry')
+      database.select('dd_settings', 'id=eq.1&select=options_max_risk_pct,max_options_positions,enabled,emergency_stop,last_tick_at,options_buy_min_delta,options_buy_max_delta,options_sell_min_delta,options_sell_max_delta,options_min_days_to_expiry,options_max_days_to_expiry,options_min_oi,options_min_volume,options_max_spread_pct')
     ]);
     const settings = Array.isArray(settingsRows) && settingsRows.length === 1 ? settingsRows[0] : null;
     if (!settings) throw new Error('Options risk settings are unavailable; preview blocked');
+    if (quantity < product.minSize || (quantity - product.minSize) % product.sizeStep !== 0) {
+      throw new Error('Options quantity violates the exact Demo product minimum size or contract-size increment');
+    }
     if (product.parsed.dte < 0.5) throw new Error('Options contract has less than 0.5 days to expiry; gamma-risk entry blocked');
     if (useManualTestOverride) {
       assertManualCandidateQualification(candidate, product, settings, strategyKey);
@@ -331,6 +411,12 @@ export function createDeltaOptionsExecution({
     if (verifiedAvailable === null) {
       throw new Error('Verified Delta Testnet available balance is unavailable; Options preview blocked');
     }
+    const spreadPct = ((quote.ask - quote.bid) / ((quote.ask + quote.bid) / 2)) * 100;
+    const configuredMaxSpreadPct = number(settings.options_max_spread_pct) ?? 1.5;
+    if (!Number.isFinite(spreadPct) || spreadPct < 0 || spreadPct > configuredMaxSpreadPct) {
+      throw new Error('Options order blocked: live Demo quote spread exceeds the unchanged ' +
+        configuredMaxSpreadPct.toFixed(2) + '% maximum');
+    }
     const optionsRiskPct = number(settings.options_max_risk_pct);
     if (optionsRiskPct === null || optionsRiskPct <= 0) {
       throw new Error('Existing Options risk percentage is missing or invalid; preview blocked');
@@ -339,6 +425,7 @@ export function createDeltaOptionsExecution({
     let hedgeQuote = null;
     let premium;
     let hedgePremium = null;
+    let hedgeSpreadPct = null;
     let loss;
 
     if (strategyKey === 'OPTIONS_BUY') {
@@ -364,6 +451,11 @@ export function createDeltaOptionsExecution({
       if (expectedStrike === null || expectedStrike !== hedgeProduct.parsed.strike) {
         throw new Error('Protective hedge strike does not match the cached worker candidate');
       }
+      hedgeSpreadPct = ((hedgeQuote.ask - hedgeQuote.bid) / ((hedgeQuote.ask + hedgeQuote.bid) / 2)) * 100;
+      if (!Number.isFinite(hedgeSpreadPct) || hedgeSpreadPct < 0 || hedgeSpreadPct > configuredMaxSpreadPct) {
+        throw new Error('Protective hedge quote spread exceeds the unchanged ' +
+          configuredMaxSpreadPct.toFixed(2) + '% maximum');
+      }
       premium = quote.bid;
       hedgePremium = hedgeQuote.ask;
       assertTickAligned(premium, product.tickSize, contract);
@@ -388,6 +480,22 @@ export function createDeltaOptionsExecution({
     if (!(verifiedAvailable > 0) || loss.maxLossUsd > verifiedAvailable) {
       throw new Error('Options order blocked: available Testnet balance is below the conservative maximum loss');
     }
+    const isBuy = strategyKey === 'OPTIONS_BUY';
+    const stopPremium = snapPriceToTick(
+      premium * (isBuy ? 0.70 : 2.0),
+      product.tickSize,
+      isBuy ? 'down' : 'up'
+    );
+    const takeProfitPremium = snapPriceToTick(
+      premium * (isBuy ? 1.50 : 0.50),
+      product.tickSize,
+      isBuy ? 'up' : 'down'
+    );
+    if (!(stopPremium > 0) || !(takeProfitPremium > 0) ||
+        (isBuy && !(stopPremium < premium && takeProfitPremium > premium)) ||
+        (!isBuy && !(takeProfitPremium < premium && stopPremium > premium))) {
+      throw new Error('Options SL/TP bracket levels are invalid for the verified product tick size');
+    }
     const gate = getOptionsExecutionGate(env);
     const issuedAt = now();
     const token = signQuoteToken({
@@ -400,6 +508,12 @@ export function createDeltaOptionsExecution({
       hedgeContractId: hedgeProduct?.id ?? null,
       premium,
       hedgePremium,
+      hedgeSpreadPct,
+      stopPremium,
+      takeProfitPremium,
+      minSize: product.minSize,
+      sizeStep: product.sizeStep,
+      spreadPct,
       maxLossUsd: loss.maxLossUsd,
       equity: account.equity,
       manualTestOverride: useManualTestOverride,
@@ -412,11 +526,17 @@ export function createDeltaOptionsExecution({
       side: strategyKey === 'OPTIONS_BUY' ? 'BUY' : 'SELL',
       premium,
       hedgePremium,
+      hedgeSpreadPct,
       hedgeSymbol: hedgeProduct?.symbol || null,
       contractId: product.id,
       hedgeContractId: hedgeProduct?.id ?? null,
       contractValue: product.contractValue,
       tickSize: product.tickSize,
+      minSize: product.minSize,
+      sizeStep: product.sizeStep,
+      spreadPct,
+      stopPremium,
+      takeProfitPremium,
       maxLossUsd: loss.maxLossUsd,
       spreadMaxLossBeforeFees: loss.spreadLossBeforeFees ?? null,
       hedgeOnlyExposure: loss.hedgeOnlyExposure ?? null,
@@ -429,6 +549,7 @@ export function createDeltaOptionsExecution({
       manualTestOverride: useManualTestOverride,
       executionAllowed: false,
       executionLockReason: gate.reason,
+      environment: 'DELTA_DEMO',
       quoteToken: token
     };
     let entrySafetyReason = null;
@@ -476,9 +597,12 @@ export function createDeltaOptionsExecution({
 
   async function assertEntrySafety(preview) {
     assertTestnetProfile();
+    // Preview-only scanning may run with execution disabled; actual entry
+    // always requires the complete Demo-only env gate.
+    assertOptionsExecutionAllowed(env);
     const settingsRows = await database.select(
       'dd_settings',
-      'id=eq.1&select=id,enabled,auto_trade,emergency_stop,options_execution_enabled,last_tick_at,max_options_positions,options_daily_loss_limit_pct'
+      'id=eq.1&select=id,enabled,auto_trade,emergency_stop,options_enabled,options_buy_enabled,options_sell_enabled,options_execution_enabled,last_tick_at,max_options_positions,options_max_open_positions,options_daily_loss_limit_pct'
     );
     if (!Array.isArray(settingsRows) || settingsRows.length !== 1) {
       throw new Error('Options entry settings are unavailable; order blocked');
@@ -487,11 +611,19 @@ export function createDeltaOptionsExecution({
     if (settings.enabled !== true) throw new Error('Trading engine is disabled; Options entry blocked');
     if (settings.auto_trade !== true) throw new Error('Auto Trade is off or unknown; Options entry blocked');
     if (settings.emergency_stop !== false) throw new Error('Emergency Stop is active or unknown; Options entry blocked');
+    if (settings.options_enabled !== true) throw new Error('Options strategy is disabled in dd_settings');
+    if (preview.strategy === 'OPTIONS_BUY' && settings.options_buy_enabled !== true) {
+      throw new Error('Options BUY is disabled in dd_settings');
+    }
+    if (preview.strategy === 'OPTIONS_SELL' && settings.options_sell_enabled !== true) {
+      throw new Error('Options SELL is disabled in dd_settings');
+    }
     if (!getOptionsDatabaseExecutionGate(settings).allowed) {
       throw new Error(OPTIONS_DATABASE_EXECUTION_LOCK_REASON + ' Options entry blocked');
     }
-    if (isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED) && !isEnabled(env.OPTIONS_EXIT_MONITOR_ENABLED)) {
-      throw new Error('Options regime entries require OPTIONS_EXIT_MONITOR_ENABLED=true');
+    if ((isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED) || isOptionsDemoExecution(env)) &&
+        !isEnabled(env.OPTIONS_EXIT_MONITOR_ENABLED)) {
+      throw new Error('Options entries require OPTIONS_EXIT_MONITOR_ENABLED=true');
     }
     await assertDailyOptionsLossLimit(preview.equity, settings.options_daily_loss_limit_pct);
     if (!isMarketTickFresh(settings.last_tick_at, now())) {
@@ -539,10 +671,13 @@ export function createDeltaOptionsExecution({
     ) || exchangeOptionSymbols.some(symbol => keys.includes(symbol))) {
       throw new Error('An Options order, reservation or exchange position already exists for this contract');
     }
-    const maxOptionsPositions = Number(settings.max_options_positions);
-    if (!Number.isSafeInteger(maxOptionsPositions) || maxOptionsPositions < 1) {
-      throw new Error('Configured max_options_positions is unavailable or invalid; Options entry blocked');
+    const configuredMaxOptionsPositions = Number(settings.max_options_positions);
+    const strategyMaxPositions = Number(settings.options_max_open_positions);
+    if (!Number.isSafeInteger(configuredMaxOptionsPositions) || configuredMaxOptionsPositions < 1 ||
+        !Number.isSafeInteger(strategyMaxPositions) || strategyMaxPositions < 1) {
+      throw new Error('Configured Options position caps are unavailable or invalid; entry blocked');
     }
+    const maxOptionsPositions = Math.min(configuredMaxOptionsPositions, strategyMaxPositions);
     const occupied = new Set([
       ...positions.map(row => clean(row.symbol).toUpperCase()),
       ...optionPositions.map(row => clean(row.symbol).toUpperCase()),
@@ -557,7 +692,7 @@ export function createDeltaOptionsExecution({
 
   async function submitLeg(product, side, qty, price, {
     strategy, role, maxLossUsd, hedgeOrderId = null, reduceOnly = false, executionKey = null,
-    manualTestOverride = false
+    manualTestOverride = false, bracketStopLossPrice = null, bracketTakeProfitPrice = null
   } = {}) {
     const roleSuffix = role === 'PROTECTIVE_HEDGE' ? 'H' :
       role === 'UNWIND' ? 'U' : role === 'SHORT' ? 'S' :
@@ -581,6 +716,11 @@ export function createDeltaOptionsExecution({
       replay.statusCode = 409;
       throw replay;
     }
+    const hasBracket = bracketStopLossPrice !== null || bracketTakeProfitPrice !== null;
+    if (hasBracket && (!positive(bracketStopLossPrice) || !positive(bracketTakeProfitPrice) ||
+        reduceOnly || !['ENTRY','SHORT'].includes(role))) {
+      throw new Error('Demo Options entry bracket requires two positive prices on a non-reduce-only entry leg');
+    }
     const body = {
       product_id: product.id,
       size: qty,
@@ -588,6 +728,11 @@ export function createDeltaOptionsExecution({
       order_type: price === null ? 'market_order' : 'limit_order',
       client_order_id: clientOrderId,
       ...(price !== null ? { limit_price: String(price) } : {}),
+      ...(hasBracket ? {
+        bracket_stop_loss_price: String(bracketStopLossPrice),
+        bracket_take_profit_price: String(bracketTakeProfitPrice),
+        bracket_stop_trigger_method: 'mark_price'
+      } : {}),
       ...(reduceOnly ? { reduce_only: true } : {})
     };
     const reservation = {
@@ -611,7 +756,10 @@ export function createDeltaOptionsExecution({
         options_execution_key: executionKey,
         manual_test_override: manualTestOverride === true,
         contract_id: product.id,
-        reduce_only: reduceOnly
+        reduce_only: reduceOnly,
+        bracket_stop_loss_price: bracketStopLossPrice,
+        bracket_take_profit_price: bracketTakeProfitPrice,
+        bracket_stop_trigger_method: hasBracket ? 'mark_price' : null
       }
     };
     if (typeof database.insertIgnore !== 'function') {
@@ -652,8 +800,8 @@ export function createDeltaOptionsExecution({
           }
         }
       ).catch(() => {});
-      await logExecutor('INFO', '[OptionsExecutor] Delta Testnet option leg acknowledged', {
-        environment: 'testnet',
+      await logExecutor('INFO', '[OptionsExecutor] Delta India Demo option leg acknowledged', {
+        environment: 'DELTA_DEMO',
         symbol: product.symbol,
         productId: product.id,
         contract_id: product.id,
@@ -662,6 +810,10 @@ export function createDeltaOptionsExecution({
         orderId: order.id ?? null,
         orderState: state,
         role,
+        entry_price: price,
+        stop_loss_price: bracketStopLossPrice,
+        take_profit_price: bracketTakeProfitPrice,
+        bracketAttachedToEntry: hasBracket,
         max_loss: maxLossUsd,
         hedge_order_id: hedgeOrderId,
         options_execution_key: executionKey
@@ -692,7 +844,8 @@ export function createDeltaOptionsExecution({
           }
         }
       ).catch(() => {});
-      await logExecutor('ERROR', '[OptionsExecutor] Delta Testnet Options order failed', {
+      await logExecutor('ERROR', '[OptionsExecutor] Delta India Demo Options order failed', {
+        environment: 'DELTA_DEMO',
         symbol: product.symbol,
         productId: product.id,
         contract_id: product.id,
@@ -724,6 +877,145 @@ export function createDeltaOptionsExecution({
       throw error;
     }
     return detail;
+  }
+
+  async function verifyExchangeSideBracket(order, product, side, qty, {
+    stop, takeProfit, strategy, maxLossUsd, executionKey, manualTestOverride = false,
+    afterUnwind = null
+  } = {}) {
+    // Delta accepts bracket fields on CreateOrderRequest, but those fields
+    // are not guaranteed to be echoed by the parent order response. Prefer
+    // an explicit parent echo when present; otherwise verify both live
+    // reduce-only stop child orders returned by the exchange.
+    const detail = await getOrderDetail(order);
+    const tolerance = Math.max(1e-8, Number(product.tickSize) / 2);
+    const matchesPrice = (actual, expected) =>
+      actual !== null && Math.abs(actual - Number(expected)) <= tolerance;
+    const reportedStop = number(detail?.bracket_stop_loss_price ??
+      detail?.bracketStopLossPrice ?? detail?.bracket_stop?.stop_price);
+    const reportedTakeProfit = number(detail?.bracket_take_profit_price ??
+      detail?.bracketTakeProfitPrice ?? detail?.bracket_take_profit?.limit_price);
+    let verification = {
+      // The parent-order schema does not promise bracket fields. Even if
+      // undocumented fields happen to echo the request, only live child
+      // orders prove that exchange-side protection is active.
+      verified: false,
+      method: 'exchange_reduce_only_child_orders',
+      stopOrderId: null,
+      takeProfitOrderId: null,
+      reportedParentStop: reportedStop,
+      reportedParentTakeProfit: reportedTakeProfit
+    };
+
+    for (let attempt = 0; !verification.verified && attempt < 5; attempt += 1) {
+      const active = await request('GET', '/v2/orders', {
+        product_ids: product.id,
+        states: 'open,pending',
+        contract_types: product.contractType,
+        page_size: 100
+      });
+      if (!Array.isArray(active?.result)) {
+        throw new Error('Delta Demo active Options order snapshot is malformed; SL/TP verification blocked');
+      }
+      const closeSide = side === 'BUY' ? 'sell' : 'buy';
+      const children = active.result.filter(row =>
+        Number(row?.product_id ?? row?.productId) === Number(product.id) &&
+        lower(row?.side) === closeSide &&
+        (row?.reduce_only === true || lower(row?.reduce_only) === 'true') &&
+        Number(row?.size) === Number(qty) &&
+        !['cancelled','canceled','rejected','expired','filled','closed'].includes(lower(row?.state))
+      );
+      const stopChild = children.find(row =>
+        lower(row?.stop_order_type) === 'stop_loss_order' &&
+        matchesPrice(number(row?.stop_price ?? row?.trigger_price), stop)
+      );
+      const takeProfitChild = children.find(row =>
+        lower(row?.stop_order_type) === 'take_profit_order' &&
+        matchesPrice(number(row?.stop_price ?? row?.trigger_price), takeProfit)
+      );
+      if (stopChild && takeProfitChild) {
+        verification = {
+          verified: true,
+          method: 'exchange_reduce_only_child_orders',
+          stopOrderId: stopChild.id ?? null,
+          takeProfitOrderId: takeProfitChild.id ?? null,
+          stop: number(stopChild.stop_price ?? stopChild.trigger_price),
+          takeProfit: number(takeProfitChild.stop_price ?? takeProfitChild.trigger_price)
+        };
+        break;
+      }
+      if (attempt < 4) await new Promise(resolve => setTimeout(resolve, 350));
+    }
+
+    if (verification.verified) {
+      await logExecutor('INFO', '[OptionsExecutor] Delta India Demo exchange-side SL/TP protection verified', {
+        environment: 'DELTA_DEMO',
+        symbol: product.symbol,
+        parentOrderId: order?.id ?? null,
+        side,
+        size: qty,
+        stopLossPrice: stop,
+        takeProfitPrice: takeProfit,
+        verification
+      });
+      return verification;
+    }
+
+    await logExecutor('ERROR', '[OptionsExecutor] Delta India Demo exchange-side SL/TP protection not found; reduce-only unwind required', {
+      environment: 'DELTA_DEMO',
+      symbol: product.symbol,
+      parentOrderId: order?.id ?? null,
+      side,
+      size: qty,
+      expectedStop: stop,
+      expectedTakeProfit: takeProfit,
+      verification,
+      action: 'CANCEL_OR_REDUCE_ONLY_UNWIND'
+    });
+
+    const cancellation = await cancelProtective(order);
+    if (!cancellation.confirmed) {
+      const error = new Error('Exchange-side Options bracket could not be verified and entry cancellation is unconfirmed; manual reconciliation required');
+      error.ambiguous = true;
+      throw error;
+    }
+    if (cancellation.filledQty === null || !Number.isSafeInteger(Number(cancellation.filledQty)) ||
+        Number(cancellation.filledQty) < 0) {
+      const error = new Error('Exchange returned no reliable fill quantity while removing an unprotected Options entry; manual reconciliation required');
+      error.ambiguous = true;
+      throw error;
+    }
+    if (cancellation.filledQty > 0) {
+      const closeSide = side === 'BUY' ? 'SELL' : 'BUY';
+      const closeOrder = await submitLeg(product, closeSide, cancellation.filledQty, null, {
+        strategy,
+        role: 'UNWIND',
+        maxLossUsd,
+        reduceOnly: true,
+        executionKey,
+        manualTestOverride
+      });
+      const closeFill = await waitForProtectiveFill(closeOrder, cancellation.filledQty);
+      if (closeFill?.fullyFilled !== true || Number(closeFill.filledQty) !== cancellation.filledQty) {
+        const error = new Error('Options bracket was not verified and reduce-only exposure unwind is not fully confirmed');
+        error.ambiguous = true;
+        throw error;
+      }
+    }
+    if (typeof afterUnwind === 'function') {
+      try {
+        await afterUnwind();
+      } catch (cause) {
+        const error = new Error('Unprotected Options entry unwind completed but the protective hedge leg could not be closed: ' +
+          String(cause?.message || cause).slice(0, 180));
+        error.ambiguous = true;
+        throw error;
+      }
+    }
+    const error = new Error('Delta Demo API did not confirm exchange-side SL/TP child orders; the entry was canceled or fully unwound');
+    error.code = 'OPTIONS_EXCHANGE_BRACKET_UNVERIFIED';
+    error.status = 409;
+    throw error;
   }
 
   function fillStatus(order) {
@@ -762,18 +1054,60 @@ export function createDeltaOptionsExecution({
 
   async function cancelProtective(order) {
     const id = number(order?.id);
-    if (!Number.isSafeInteger(id) || id <= 0) return { confirmed: false, filledQty: 0 };
+    if (!Number.isSafeInteger(id) || id <= 0) return { confirmed: false, filledQty: null };
+    let latest = await getOrderDetail(order);
+    let status = fillStatus(latest);
+    if (['cancelled','canceled','rejected','expired','filled','closed'].includes(status.state)) {
+      return { confirmed: true, filledQty: status.filledQty, order: latest };
+    }
     await request('DELETE', '/v2/orders', {}, { id });
-    let latest = null;
     for (let attempt = 0; attempt < 5; attempt += 1) {
       latest = await getOrderDetail(order);
-      const status = fillStatus(latest);
+      status = fillStatus(latest);
       if (['cancelled','canceled','rejected','expired','filled','closed'].includes(status.state)) {
         return { confirmed: true, filledQty: status.filledQty, order: latest };
       }
       if (attempt < 4) await new Promise(resolve => setTimeout(resolve, 300));
     }
     return { confirmed: false, filledQty: fillStatus(latest).filledQty, order: latest };
+  }
+
+  async function confirmBuyEntryFillOrCancelAndUnwind(order, product, qty, preview, executionKey) {
+    let fill = await waitForProtectiveFill(order, qty);
+    if (fill?.fullyFilled === true && Number(fill.filledQty) === Number(qty) && positive(fill.averageFillPrice)) {
+      return fill;
+    }
+    const cancellation = await cancelProtective(order);
+    if (cancellation.confirmed !== true) {
+      const error = new Error('Demo Options BUY did not fill in time and exchange cancellation is unconfirmed');
+      error.ambiguous = true;
+      throw error;
+    }
+    const finalStatus = cancellation.order ? fillStatus(cancellation.order) : null;
+    if (finalStatus?.fullyFilled === true &&
+        Number(finalStatus.filledQty) === Number(qty) &&
+        positive(finalStatus.averageFillPrice)) {
+      return finalStatus;
+    }
+    const cancelledFilledQty = cancellation.filledQty;
+    if (!Number.isSafeInteger(Number(cancelledFilledQty)) || Number(cancelledFilledQty) < 0) {
+      const error = new Error('Demo Options BUY cancellation returned an unknown filled quantity; reconcile before retry');
+      error.ambiguous = true;
+      throw error;
+    }
+    if (Number(cancelledFilledQty) > 0) {
+      await submitAndConfirmReduceOnlyUnwind(
+        product, order, Number(cancelledFilledQty), preview, executionKey
+      );
+    }
+    const error = new Error(
+      Number(cancelledFilledQty) > 0
+        ? 'Demo Options BUY was partially filled, then canceled and fully unwound; no position was opened'
+        : 'Demo Options BUY was not filled and the resting order was canceled; no position was opened'
+    );
+    error.code = 'OPTIONS_ENTRY_NOT_FILLED';
+    error.status = 409;
+    throw error;
   }
 
   async function submitAndConfirmReduceOnlyUnwind(product, originalHedgeOrder, filledQty, preview, executionKey) {
@@ -806,11 +1140,85 @@ export function createDeltaOptionsExecution({
       expiry_ms: product.parsed.expiryMs, dte: product.parsed.dte,
       peak_premium: preview.premium, current_premium: preview.premium, status: 'ENTRY_PENDING',
       realized_pnl_verified: false, opened_at: new Date(now()).toISOString(), updated_at: new Date(now()).toISOString(),
-      raw: { environment: 'testnet', iv_rank: candidate.ivRank, iv_percentile: candidate.ivPercentile, regime: candidate.marketRegime, entry_pending: true }
+      raw: {
+        environment: 'DELTA_DEMO',
+        iv_rank: candidate.ivRank,
+        iv_percentile: candidate.ivPercentile,
+        regime: candidate.marketRegime,
+        stop_premium: preview.stopPremium,
+        take_profit_premium: preview.takeProfitPremium,
+        exchange_bracket_required: true,
+        entry_pending: true
+      }
     };
     const inserted = await database.insert('dd_option_positions', row);
     if (Array.isArray(inserted) && inserted.length === 0) throw new Error('Options position reservation was not confirmed; entry blocked');
     return row;
+  }
+
+  async function verifyDemoOptionPositions(expectedLegs = []) {
+    if (!Array.isArray(expectedLegs) || !expectedLegs.length) {
+      throw new Error('Demo Options position verification requires expected filled legs');
+    }
+    let lastChecks = [];
+    let lastRowCount = 0;
+    for (let attempt = 0; attempt < 11; attempt += 1) {
+      const response = await request('GET', '/v2/positions/margined', {
+        contract_types: 'call_options,put_options'
+      });
+      if (!Array.isArray(response?.result)) {
+        throw new Error('Delta Demo Options positions endpoint returned a malformed snapshot');
+      }
+      const rows = response.result;
+      lastRowCount = rows.length;
+      lastChecks = expectedLegs.map(expected => {
+        const matching = rows.filter(row =>
+          clean(row?.product_symbol || row?.symbol).toUpperCase() === clean(expected.product.symbol).toUpperCase() &&
+          Number(row?.product_id ?? row?.productId) === Number(expected.product.id)
+        );
+        const signedSize = matching.reduce((sum, row) =>
+          sum + (number(row?.size ?? row?.signed_size ?? row?.qty) ?? 0), 0);
+        const sideSign = expected.side === 'SELL' ? -1 : 1;
+        return {
+          symbol: expected.product.symbol,
+          productId: expected.product.id,
+          expectedSide: expected.side,
+          expectedSize: expected.qty,
+          observedSignedSize: signedSize,
+          verified: matching.length > 0 &&
+            Math.sign(signedSize) === sideSign &&
+            Math.abs(signedSize) >= expected.qty
+        };
+      });
+      if (lastChecks.every(row => row.verified)) {
+        await logExecutor('INFO', '[OptionsExecutor] Delta India Demo exchange positions verified after fills', {
+          environment: 'DELTA_DEMO',
+          positions: lastChecks,
+          snapshotRows: lastRowCount
+        });
+        return { verified: true, positions: lastChecks, snapshotRows: lastRowCount };
+      }
+      if (attempt < 10) await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    return { verified: false, positions: lastChecks, snapshotRows: lastRowCount };
+  }
+
+  async function requireDemoPositionVerification(executionKey, expectedLegs) {
+    const verification = await verifyDemoOptionPositions(expectedLegs);
+    if (verification.verified) return verification;
+    await database.update('dd_option_positions',
+      'position_key=eq.' + encodeURIComponent(executionKey) + '&status=eq.OPEN', {
+        status: 'RECONCILIATION_REQUIRED',
+        updated_at: new Date(now()).toISOString(),
+        raw: { exchange_position_verification: verification, reconciliation_required: true }
+      }).catch(() => {});
+    await logExecutor('ERROR', '[OptionsExecutor] Demo order fill lacks exchange position confirmation; locked for reconciliation', {
+      environment: 'DELTA_DEMO',
+      executionKey,
+      positions: verification.positions,
+      snapshotRows: verification.snapshotRows
+    });
+    return verification;
   }
 
   async function recordOptionPosition({
@@ -837,9 +1245,19 @@ export function createDeltaOptionsExecution({
       expiry_ms: product.parsed.expiryMs, dte: product.parsed.dte,
       peak_premium: entryPremium, current_premium: entryPremium, status: 'OPEN',
       realized_pnl_verified: false, opened_at: new Date(now()).toISOString(), updated_at: new Date(now()).toISOString(),
-      raw: { environment: 'testnet', iv_rank: candidate.ivRank, iv_percentile: candidate.ivPercentile, regime: candidate.marketRegime,
-        entry_order_state: order?.state ?? null, hedge_entry_order_state: hedgeOrder?.state ?? null,
-        exit_policy: preview.strategy === 'OPTIONS_BUY' ? 'TP_50_SL_30_BREAKEVEN_AFTER_1R' : 'TP_50_DECAY_SL_2X_DTE_0_5' }
+      raw: {
+        environment: 'DELTA_DEMO',
+        iv_rank: candidate.ivRank,
+        iv_percentile: candidate.ivPercentile,
+        regime: candidate.marketRegime,
+        entry_order_state: order?.state ?? null,
+        hedge_entry_order_state: hedgeOrder?.state ?? null,
+        stop_premium: preview.stopPremium,
+        take_profit_premium: preview.takeProfitPremium,
+        bracket_attached_to_entry: true,
+        bracket_trigger: 'mark_price',
+        exit_policy: preview.strategy === 'OPTIONS_BUY' ? 'TP_50_SL_30_BREAKEVEN_AFTER_1R' : 'TP_50_DECAY_SL_2X_DTE_0_5'
+      }
     };
     const openedAt = new Date(now()).toISOString();
     const updated = await database.update('dd_option_positions',
@@ -864,6 +1282,8 @@ export function createDeltaOptionsExecution({
       qty: actualQty,
       entry_price: entryPremium,
       current_price: entryPremium,
+      sl_price: preview.stopPremium,
+      tp_price: preview.takeProfitPremium,
       unrealized_pnl: 0,
       realized_pnl: null,
       status: 'OPEN',
@@ -901,9 +1321,13 @@ export function createDeltaOptionsExecution({
     const lockKey = requestedSymbol + ':' + requestedStrategy;
     if (activeSymbols.has(lockKey)) throw new Error('Options execution for this candidate is already in progress');
     activeSymbols.add(lockKey);
+    let reservedExecutionKey = null;
+    let reservationPersisted = false;
+    let positionRecorded = false;
     try {
       const expected = verifyQuoteToken(quoteToken);
       const executionKey = crypto.createHash('sha256').update(String(quoteToken)).digest('hex').slice(0, 18);
+      reservedExecutionKey = executionKey;
       if (expected.symbol !== requestedSymbol || expected.strategy !== requestedStrategy ||
           Number(expected.qty) !== quantity ||
           Boolean(expected.manualTestOverride) !== useManualTestOverride) {
@@ -921,43 +1345,90 @@ export function createDeltaOptionsExecution({
           (preview.hedgePremium !== null &&
             Math.abs(Number(expected.hedgePremium) - preview.hedgePremium) > tolerance) ||
           Math.abs(Number(expected.maxLossUsd) - preview.maxLossUsd) > 1e-8 ||
+          Math.abs(Number(expected.stopPremium) - preview.stopPremium) > tolerance ||
+          Math.abs(Number(expected.takeProfitPremium) - preview.takeProfitPremium) > tolerance ||
+          Math.abs(Number(expected.spreadPct) - preview.spreadPct) > 0.01 ||
+          (preview.hedgeSpreadPct !== null &&
+            Math.abs(Number(expected.hedgeSpreadPct) - preview.hedgeSpreadPct) > 0.01) ||
           Number(expected.equity) > preview.equity + 1e-8) {
         throw new Error('Options quote, product ID, equity or candidate changed since preview; refresh before execution');
       }
       await assertEntrySafety(preview);
       const product = await resolveProduct(preview.symbol);
-      const regimeBased = isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED);
+      const candidate = await getCandidate(requestedSymbol, requestedStrategy, {
+        manualTestOverride: useManualTestOverride
+      });
+      if (candidate.cachedAt !== preview.cachedAt) {
+        throw new Error('Options candidate changed after preview; refresh the Demo preview before execution');
+      }
+      const demoMode = isOptionsDemoExecution(env);
+      const regimeBased = demoMode || isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED);
+      const regimeConstrainedExpiry = isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED) && !demoMode;
       const hedgeProduct = preview.strategy === 'OPTIONS_SELL' ? await resolveProduct(preview.hedgeSymbol) : null;
-      if (regimeBased) {
+      if (regimeConstrainedExpiry) {
         const minimumDte = preview.strategy === 'OPTIONS_BUY' ? 3 : 1;
         const maximumDte = preview.strategy === 'OPTIONS_BUY' ? 10 : 3;
         if (product.parsed.dte < 0.5 || product.parsed.dte < minimumDte || product.parsed.dte > maximumDte) {
           throw new Error('Options contract DTE is outside the regime-based expiry window');
         }
       }
-      if (regimeBased) await reserveOptionPosition({ executionKey, preview, candidate, product, hedgeProduct });
+      if (regimeBased) {
+        reservationPersisted = true;
+        await reserveOptionPosition({ executionKey, preview, candidate, product, hedgeProduct });
+      }
       if (preview.strategy === 'OPTIONS_BUY') {
         const order = await submitLeg(product, 'BUY', preview.qty, preview.premium, {
           strategy: 'OPTIONS_BUY', role: 'ENTRY', maxLossUsd: preview.maxLossUsd, executionKey,
-          manualTestOverride: preview.manualTestOverride === true
+          manualTestOverride: preview.manualTestOverride === true,
+          bracketStopLossPrice: preview.stopPremium,
+          bracketTakeProfitPrice: preview.takeProfitPremium
         });
-        if (isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED)) {
-          const fill = await waitForProtectiveFill(order, preview.qty);
-          if (fill?.fullyFilled !== true || Number(fill.filledQty) !== preview.qty || !positive(fill.averageFillPrice)) {
-            const error = new Error('Long option fill is not fully confirmed; position requires exchange reconciliation');
-            error.ambiguous = true; throw error;
-          }
+        let fill = null;
+        let positionVerification = null;
+        if (regimeBased) {
+          fill = await confirmBuyEntryFillOrCancelAndUnwind(
+            order, product, preview.qty, preview, executionKey
+          );
+          await verifyExchangeSideBracket(order, product, 'BUY', preview.qty, {
+            stop: preview.stopPremium,
+            takeProfit: preview.takeProfitPremium,
+            strategy: preview.strategy,
+            maxLossUsd: preview.maxLossUsd,
+            executionKey,
+            manualTestOverride: preview.manualTestOverride === true
+          });
+          positionRecorded = true;
           await recordOptionPosition({ executionKey, preview, candidate, product, order, fill });
+          positionVerification = await requireDemoPositionVerification(executionKey, [
+            { product, side: 'BUY', qty: preview.qty }
+          ]);
         }
-        await logExecutor('INFO', '[OptionsExecutor] Long Options Testnet order submitted', {
-          symbol: preview.symbol, contract_id: product.id,
-          hedge_order_id: null, max_loss: preview.maxLossUsd,
-          manual_test_override: preview.manualTestOverride === true,
-          order_id: order.id ?? null
+        const entryPrice = positive(fill?.averageFillPrice);
+        await logExecutor('INFO', '[OptionsExecutor] Delta India Demo long Options order result', {
+          environment: 'DELTA_DEMO',
+          symbol: preview.symbol,
+          side: 'BUY',
+          size: preview.qty,
+          entry: entryPrice,
+          sl: preview.stopPremium,
+          tp: preview.takeProfitPremium,
+          order_id: order.id ?? null,
+          status: fill?.state || clean(order.state || 'UNKNOWN').toUpperCase(),
+          contract_id: product.id,
+          max_loss: preview.maxLossUsd,
+          manual_test_override: preview.manualTestOverride === true
         });
         return {
-          success: true, state: clean(order.state || 'UNKNOWN').toUpperCase(),
-          order, contract_id: product.id, hedge_order_id: null,
+          success: positionVerification?.verified !== false,
+          state: positionVerification?.verified === false ? 'RECONCILIATION_REQUIRED' : (fill?.state || clean(order.state || 'UNKNOWN').toUpperCase()),
+          order, fill,
+          positionVerification,
+          contract_id: product.id, hedge_order_id: null,
+          side: 'BUY',
+          size: preview.qty,
+          entry: entryPrice, sl: preview.stopPremium, tp: preview.takeProfitPremium,
+          order_id: order.id ?? null,
+          status: fill?.state || clean(order.state || 'UNKNOWN').toUpperCase(),
           max_loss: preview.maxLossUsd
         };
       }
@@ -979,9 +1450,11 @@ export function createDeltaOptionsExecution({
           const shortOrder = await submitLeg(product, 'SELL', preview.qty, preview.premium, {
             strategy: 'OPTIONS_SELL', role: 'SHORT', maxLossUsd: preview.maxLossUsd,
             hedgeOrderId: hedgeOrder?.id ?? null, executionKey,
-            manualTestOverride: preview.manualTestOverride === true
+            manualTestOverride: preview.manualTestOverride === true,
+            bracketStopLossPrice: preview.stopPremium,
+            bracketTakeProfitPrice: preview.takeProfitPremium
           });
-          if (!isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED)) return shortOrder;
+          if (!regimeBased) return shortOrder;
           const shortFill = await waitForProtectiveFill(shortOrder, preview.qty);
           if (shortFill?.fullyFilled !== true || Number(shortFill.filledQty) !== preview.qty || !positive(shortFill.averageFillPrice)) {
             const error = new Error('Short option fill is not fully confirmed; protective BUY remains until reconciliation');
@@ -993,6 +1466,44 @@ export function createDeltaOptionsExecution({
       const hedgeOrderId = lifecycle.hedgeOrder?.id ?? null;
       if (regimeBased) {
         if (lifecycle.success) {
+          await verifyExchangeSideBracket(lifecycle.shortOrder, product, 'SELL', preview.qty, {
+            stop: preview.stopPremium,
+            takeProfit: preview.takeProfitPremium,
+            strategy: preview.strategy,
+            maxLossUsd: preview.maxLossUsd,
+            executionKey,
+            manualTestOverride: preview.manualTestOverride === true,
+            afterUnwind: async () => {
+              const hedgeClose = await submitLeg(hedgeProduct, 'SELL', preview.qty, null, {
+                strategy: 'OPTIONS_SELL',
+                role: 'HEDGE_UNWIND',
+                maxLossUsd: 0,
+                hedgeOrderId: lifecycle.hedgeOrder?.id ?? null,
+                reduceOnly: true,
+                executionKey,
+                manualTestOverride: preview.manualTestOverride === true
+              });
+              const hedgeCloseFill = await waitForProtectiveFill(hedgeClose, preview.qty);
+              if (hedgeCloseFill?.fullyFilled !== true ||
+                  Number(hedgeCloseFill.filledQty) !== preview.qty ||
+                  !positive(hedgeCloseFill.averageFillPrice)) {
+                const error = new Error('Protective BUY hedge reduce-only close is not fully confirmed');
+                error.ambiguous = true;
+                throw error;
+              }
+              await logExecutor('WARN', '[OptionsExecutor] Delta India Demo protective hedge closed after unverified short-entry bracket', {
+                environment: 'DELTA_DEMO',
+                symbol: hedgeProduct.symbol,
+                side: 'SELL',
+                size: preview.qty,
+                entry: hedgeCloseFill.averageFillPrice,
+                hedgeEntryOrderId: lifecycle.hedgeOrder?.id ?? null,
+                hedgeCloseOrderId: hedgeClose.id ?? null,
+                status: hedgeCloseFill.state
+              });
+            }
+          });
+          positionRecorded = true;
           await recordOptionPosition({ executionKey, preview, candidate, product, hedgeProduct,
             order: lifecycle.shortOrder, fill: lifecycle.shortOrder?._shortFill,
             hedgeOrder: lifecycle.hedgeOrder, hedgeFill: lifecycle.shortOrder?._hedgeFill });
@@ -1010,8 +1521,14 @@ export function createDeltaOptionsExecution({
             });
         }
       }
-      await logExecutor(lifecycle.success ? 'INFO' : 'ERROR',
-        '[OptionsExecutor] Defined-risk Testnet spread lifecycle result', {
+      const positionVerification = lifecycle.success
+        ? await requireDemoPositionVerification(executionKey, [
+            { product: hedgeProduct, side: 'BUY', qty: preview.qty },
+            { product, side: 'SELL', qty: preview.qty }
+          ])
+        : null;
+      await logExecutor(lifecycle.success && positionVerification?.verified !== false ? 'INFO' : 'ERROR',
+        '[OptionsExecutor] Defined-risk Delta India Demo spread lifecycle result', {
           symbol: preview.symbol,
           hedge_symbol: preview.hedgeSymbol,
           contract_id: product.id,
@@ -1023,15 +1540,63 @@ export function createDeltaOptionsExecution({
           state: lifecycle.state,
           short_submitted: lifecycle.shortSubmitted === true,
           hedge_exposure_remains: lifecycle.hedgeExposureRemains === true,
+          entry: positive(lifecycle.shortOrder?._shortFill?.averageFillPrice),
+          sl: preview.stopPremium,
+          tp: preview.takeProfitPremium,
+          order_id: lifecycle.shortOrder?.id ?? null,
+          status: lifecycle.shortOrder?._shortFill?.state || lifecycle.state,
+          position_verification: positionVerification,
           reason: lifecycle.reason || null
         });
       return {
         ...lifecycle,
+        success: lifecycle.success && positionVerification?.verified !== false,
+        state: positionVerification?.verified === false ? 'RECONCILIATION_REQUIRED' : lifecycle.state,
+        positionVerification,
         contract_id: product.id,
         hedge_contract_id: hedgeProduct.id,
         hedge_order_id: hedgeOrderId,
+        side: 'SELL',
+        size: preview.qty,
+        entry: positive(lifecycle.shortOrder?._shortFill?.averageFillPrice),
+        sl: preview.stopPremium,
+        tp: preview.takeProfitPremium,
+        order_id: lifecycle.shortOrder?.id ?? null,
+        status: lifecycle.shortOrder?._shortFill?.state || lifecycle.state,
+        fill: lifecycle.shortOrder?._shortFill || null,
         max_loss: preview.maxLossUsd
       };
+    } catch (error) {
+      if (reservationPersisted && reservedExecutionKey) {
+        const reconciliationRequired = error?.ambiguous === true || positionRecorded;
+        const at = new Date(now()).toISOString();
+        await database.update('dd_option_positions',
+          'position_key=eq.' + encodeURIComponent(reservedExecutionKey) +
+          '&status=in.(ENTRY_PENDING,OPEN,HEDGE_CLOSE_PENDING)', {
+            status: reconciliationRequired ? 'RECONCILIATION_REQUIRED' : 'CLOSED',
+            realized_pnl: reconciliationRequired ? null : 0,
+            realized_pnl_verified: !reconciliationRequired,
+            closed_at: reconciliationRequired ? null : at,
+            exit_reason: reconciliationRequired ? null : 'ENTRY_ABORTED',
+            updated_at: at,
+            raw: {
+              environment: 'DELTA_DEMO',
+              entry_error: String(error?.code || error?.message || 'unknown').slice(0, 240),
+              ambiguous: error?.ambiguous === true,
+              reconciliation_required: reconciliationRequired,
+              doNotBlindlyRetry: true
+            }
+          }).catch(() => {});
+        await logExecutor(reconciliationRequired ? 'ERROR' : 'WARN',
+          '[OptionsExecutor] Demo entry reservation finalized after failure', {
+            environment: 'DELTA_DEMO',
+            executionKey: reservedExecutionKey,
+            status: reconciliationRequired ? 'RECONCILIATION_REQUIRED' : 'CLOSED',
+            reason: String(error?.message || error).slice(0, 240),
+            doNotBlindlyRetry: true
+          }).catch(() => {});
+      }
+      throw error;
     } finally {
       activeSymbols.delete(lockKey);
     }
@@ -1171,7 +1736,7 @@ export function createDeltaOptionsExecution({
   }
 
   async function monitorOptionsExits() {
-    if (!isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED) || !isEnabled(env.OPTIONS_EXIT_MONITOR_ENABLED)) {
+    if (!isEnabled(env.OPTIONS_EXIT_MONITOR_ENABLED)) {
       return { status: 'DISABLED', monitored: 0, exits: 0 };
     }
     assertTestnetProfile();

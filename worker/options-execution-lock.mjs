@@ -1,14 +1,37 @@
 /**
- * Options execution is a separately gated, manual Testnet capability.
- * Missing or malformed configuration is always treated as disabled.
+ * Options execution has an independent, explicit Demo-only mode.
+ * Live is deliberately unsupported. Missing or malformed configuration
+ * always resolves to disabled and cannot select a production endpoint.
  */
 export const OPTIONS_MAX_LOSS_EQUITY_PCT = 0.5;
+export const DELTA_INDIA_TESTNET_REST_BASE = 'https://cdn-ind.testnet.deltaex.org';
 
 export const OPTIONS_EXECUTION_LOCK_REASON =
-  'Options execution remains locked unless DELTA_EXECUTION_MODE=testnet, DELTA_ENVIRONMENT=TESTNET and OPTIONS_EXECUTION_ALLOWED=true; maximum loss must also be verified.';
-
+  'Options execution is disabled by default and remains locked unless OPTIONS_EXECUTION_MODE=demo, Delta Testnet is explicit, demo credentials exist, and all execution interlocks pass.';
+export const OPTIONS_LIVE_EXECUTION_LOCK_REASON =
+  'Live Options execution is not implemented and is permanently blocked by this build.';
 export const OPTIONS_DATABASE_EXECUTION_LOCK_REASON =
   'Options execution is disabled in public.dd_settings.options_execution_enabled.';
+
+export function getOptionsExecutionMode(env = process.env) {
+  const value = String(env?.OPTIONS_EXECUTION_MODE ?? 'disabled').trim().toLowerCase();
+  return ['disabled', 'demo', 'live'].includes(value) ? value : 'disabled';
+}
+
+export function isOptionsDemoExecution(env = process.env) {
+  return getOptionsExecutionMode(env) === 'demo';
+}
+
+export function getOptionsDemoCredentialsGate(env = process.env) {
+  const hasApiKey = Boolean(String(env?.DELTA_DEMO_API_KEY ?? '').trim());
+  const hasApiSecret = Boolean(String(env?.DELTA_DEMO_API_SECRET ?? '').trim());
+  return Object.freeze({
+    allowed: hasApiKey && hasApiSecret,
+    hasApiKey,
+    hasApiSecret,
+    reason: hasApiKey && hasApiSecret ? null : 'DELTA_DEMO_API_KEY and DELTA_DEMO_API_SECRET are required in the Worker environment'
+  });
+}
 
 export function getOptionsDatabaseExecutionGate(settings = {}) {
   const allowed = settings?.options_execution_enabled === true;
@@ -19,16 +42,38 @@ export function getOptionsDatabaseExecutionGate(settings = {}) {
 }
 
 export function getOptionsExecutionGate(env = process.env) {
-  const mode = String(env?.DELTA_EXECUTION_MODE ?? '').trim().toLowerCase();
+  const optionsMode = getOptionsExecutionMode(env);
+  const deltaMode = String(env?.DELTA_EXECUTION_MODE ?? '').trim().toLowerCase();
   const environment = String(env?.DELTA_ENVIRONMENT ?? '').trim().toUpperCase();
   const flag = String(env?.OPTIONS_EXECUTION_ALLOWED ?? '').trim().toLowerCase();
-  const allowed = mode === 'testnet' && environment === 'TESTNET' && flag === 'true';
+  const credentials = getOptionsDemoCredentialsGate(env);
+  const base = String(env?.DELTA_TESTNET_REST_BASE ?? DELTA_INDIA_TESTNET_REST_BASE)
+    .trim();
+  const exitMonitorEnabled = String(env?.OPTIONS_EXIT_MONITOR_ENABLED ?? '').trim().toLowerCase() === 'true';
+  const allowed = optionsMode === 'demo' &&
+    deltaMode === 'testnet' &&
+    environment === 'TESTNET' &&
+    flag === 'true' &&
+    credentials.allowed &&
+    base === DELTA_INDIA_TESTNET_REST_BASE &&
+    exitMonitorEnabled;
+  let reason = null;
+  if (optionsMode === 'live') reason = OPTIONS_LIVE_EXECUTION_LOCK_REASON;
+  else if (optionsMode !== 'demo') reason = OPTIONS_EXECUTION_LOCK_REASON;
+  else if (deltaMode !== 'testnet' || environment !== 'TESTNET') reason = 'Options Demo mode requires DELTA_EXECUTION_MODE=testnet and DELTA_ENVIRONMENT=TESTNET';
+  else if (base !== DELTA_INDIA_TESTNET_REST_BASE) reason = 'Options Demo mode is pinned to the Delta India Testnet REST endpoint';
+  else if (flag !== 'true') reason = 'OPTIONS_EXECUTION_ALLOWED=true is required for Demo Options execution';
+  else if (!credentials.allowed) reason = credentials.reason;
+  else if (!exitMonitorEnabled) reason = 'OPTIONS_EXIT_MONITOR_ENABLED=true is mandatory for Demo Options entries';
   return Object.freeze({
     allowed,
-    mode,
+    mode: optionsMode,
+    deltaMode,
     environment,
     flagEnabled: flag === 'true',
-    reason: allowed ? null : OPTIONS_EXECUTION_LOCK_REASON
+    credentialsConfigured: credentials.allowed,
+    exitMonitorEnabled,
+    reason
   });
 }
 
@@ -42,32 +87,35 @@ export function isOptionsExecutionAllowed(env = process.env) {
 export function assertOptionsExecutionAllowed(env = process.env) {
   const gate = getOptionsExecutionGate(env);
   if (!gate.allowed) {
-    const error = new Error(gate.reason);
-    error.code = 'OPTIONS_EXECUTION_LOCKED';
+    const error = new Error(gate.reason || OPTIONS_EXECUTION_LOCK_REASON);
+    error.code = gate.mode === 'live' ? 'OPTIONS_LIVE_EXECUTION_BLOCKED' : 'OPTIONS_EXECUTION_LOCKED';
     error.statusCode = 423;
     throw error;
   }
   return gate;
 }
 
-
 /**
- * Narrow override for one manually selected Options candidate during a
- * controlled Delta Testnet plumbing test. This gate never enables execution
- * by itself and is independent of OPTIONS_EXECUTION_ALLOWED.
+ * Relaxed candidate-quality qualification is available only in the explicit
+ * Delta Demo profile and requires a second, intentional test override switch.
+ * It never bypasses the hard score, loss, size, DTE, position, E-STOP, quote,
+ * bracket, hedge, or exchange reconciliation checks.
  */
 export const OPTIONS_MANUAL_TEST_OVERRIDE_LOCK_REASON =
-  'Manual Options test override requires DELTA_EXECUTION_MODE=testnet, DELTA_ENVIRONMENT=TESTNET and ALLOW_MANUAL_OVERRIDE_FOR_TEST=true.';
+  'Manual Options Demo override requires OPTIONS_EXECUTION_MODE=demo, the explicit Delta Testnet profile, ALLOW_MANUAL_OVERRIDE_FOR_TEST=true and demo credentials.';
 
 export function getOptionsManualTestOverrideGate(env = process.env) {
-  const mode = String(env?.DELTA_EXECUTION_MODE ?? '').trim().toLowerCase();
+  const mode = getOptionsExecutionMode(env);
+  const deltaMode = String(env?.DELTA_EXECUTION_MODE ?? '').trim().toLowerCase();
   const environment = String(env?.DELTA_ENVIRONMENT ?? '').trim().toUpperCase();
   const flag = String(env?.ALLOW_MANUAL_OVERRIDE_FOR_TEST ?? '').trim().toLowerCase();
-  const testnetProfile = mode === 'testnet' && environment === 'TESTNET';
-  const allowed = testnetProfile && flag === 'true';
+  const credentials = getOptionsDemoCredentialsGate(env);
+  const allowed = mode === 'demo' && deltaMode === 'testnet' &&
+    environment === 'TESTNET' && flag === 'true' && credentials.allowed;
   return Object.freeze({
     allowed,
     mode,
+    deltaMode,
     environment,
     flagEnabled: flag === 'true',
     reason: allowed ? null : OPTIONS_MANUAL_TEST_OVERRIDE_LOCK_REASON

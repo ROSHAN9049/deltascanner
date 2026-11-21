@@ -15,8 +15,13 @@ const CANDIDATE = {
   market_regime: 'TRENDING',
   iv_rank: 30,
   iv_percentile: 10,
+  oi: 100,
+  volume: 10,
+  spread_pct: 0.25,
+  delta: 0.55,
+  dte: 8,
   cached_at: new Date(NOW).toISOString(),
-  details: { analysisReady: true, marketRegime: 'TRENDING', ivRank: 30, ivPercentile: 10, ivPercentileDays: 20 }
+  details: { analysisReady: true, marketRegime: 'TRENDING', ivRank: 30, ivPercentile: 10, ivPercentileDays: 20, delta: 0.55, dte: 8 }
 };
 
 function harness({
@@ -52,8 +57,21 @@ function harness({
         enabled: true,
         auto_trade: true,
         emergency_stop: false,
+        options_enabled: true,
+        options_buy_enabled: true,
+        options_sell_enabled: true,
         options_execution_enabled: true,
         max_options_positions: 4,
+        options_max_open_positions: 1,
+        options_min_oi: 50,
+        options_min_volume: 1,
+        options_max_spread_pct: 1.5,
+        options_min_days_to_expiry: 2,
+        options_max_days_to_expiry: 14,
+        options_buy_min_delta: 0.45,
+        options_buy_max_delta: 0.65,
+        options_sell_min_delta: 0.20,
+        options_sell_max_delta: 0.35,
         ...settingsPatch
       }];
       if (table === 'dd_option_cache') return cacheRows;
@@ -154,6 +172,7 @@ test('database Options opt-in false blocks before preview or execution', async (
 
 test('open option position with the same symbol blocks duplicate preview requests', async () => {
   const { worker, calls } = harness({
+    settingsPatch: { options_max_open_positions: 2 },
     openPositions: [{ symbol: CANDIDATE.symbol }]
   });
   const result = await worker.runOnce();
@@ -232,9 +251,65 @@ test('Options auto-trigger health only reports fresh, enabled preview-only heart
   assert.equal(autoExecute.mode, 'AUTO_EXECUTE');
   assert.equal(autoExecute.fullAutoExecute, true);
 });
-test('full-auto candidate logs automatic execution before calling the execute endpoint', async () => {
+test('Demo Options execution does not inherit the global Futures FULL_AUTO_EXECUTE flag', async () => {
+  const { worker, calls } = harness({
+    envPatch: {
+      FULL_AUTO_EXECUTE: 'true',
+      OPTIONS_EXECUTION_MODE: 'demo',
+      OPTIONS_DEMO_AUTO_EXECUTE: 'false',
+      OPTIONS_EXIT_MONITOR_ENABLED: 'true',
+      DELTA_DEMO_API_KEY: 'demo-key',
+      DELTA_DEMO_API_SECRET: 'demo-secret',
+      ALLOW_MANUAL_OVERRIDE_FOR_TEST: 'true',
+      DELTA_TESTNET_REST_BASE: 'https://cdn-ind.testnet.deltaex.org'
+    },
+    cacheRows: [{
+      ...CANDIDATE, stage: 'SETUP', market_regime: 'UNKNOWN',
+      iv_rank: 48, iv_percentile: null, oi: 1, volume: 2,
+      spread_pct: 0.4, delta: 0.55, dte: 8,
+      details: { ...CANDIDATE.details, analysisReady: false, delta: 0.55, dte: 8, ivPercentile: null }
+    }]
+  });
+  const result = await worker.runOnce();
+  assert.equal(result.status, 'CANDIDATE_READY');
+  const requests = calls.filter(call => call.kind === 'fetch');
+  assert.equal(requests.length, 1);
+  assert.ok(requests[0].url.endsWith('/api/options/preview'));
+  assert.equal(calls.some(call => call.kind === 'fetch' && call.url.endsWith('/api/options/execute')), false);
+});
+
+test('Demo full-auto passes the isolated Demo credentials and manual quality override only in Testnet', async () => {
+  const demoCandidate = {
+    symbol: 'P-BTC-59600-171126',
+    strategy: 'OPTIONS_BUY',
+    score: 87,
+    stage: 'SETUP',
+    market_regime: 'UNKNOWN',
+    iv_rank: 48.29,
+    iv_percentile: null,
+    oi: 0.485,
+    volume: 3.968,
+    spread_pct: 0.3935,
+    cached_at: new Date(NOW).toISOString(),
+    details: {
+      analysisReady: false, dte: 12.5, delta: -0.5837,
+      optionType: 'PUT', strike: 59600, underlyingSymbol: 'BTCUSD',
+      ivRank: 48.29, ivPercentile: null, openInterest: 0.485, volume: 3.968
+    }
+  };
   const { worker, calls, logs } = harness({
-    envPatch: { FULL_AUTO_EXECUTE: 'true' }
+    envPatch: {
+      FULL_AUTO_EXECUTE: 'false',
+      OPTIONS_DEMO_AUTO_EXECUTE: 'true',
+      OPTIONS_EXECUTION_MODE: 'demo',
+      OPTIONS_EXIT_MONITOR_ENABLED: 'true',
+      OPTIONS_REGIME_STRATEGY_ENABLED: 'false',
+      DELTA_DEMO_API_KEY: 'demo-key',
+      DELTA_DEMO_API_SECRET: 'demo-secret',
+      ALLOW_MANUAL_OVERRIDE_FOR_TEST: 'true',
+      DELTA_TESTNET_REST_BASE: 'https://cdn-ind.testnet.deltaex.org'
+    },
+    cacheRows: [demoCandidate]
   });
   const result = await worker.runOnce();
   assert.equal(result.status, 'ORDER_EXECUTED');
@@ -242,7 +317,10 @@ test('full-auto candidate logs automatic execution before calling the execute en
   assert.equal(requests.length, 2);
   assert.ok(requests[0].url.endsWith('/api/options/preview'));
   assert.ok(requests[1].url.endsWith('/api/options/execute'));
+  assert.equal(JSON.parse(requests[0].init.body).manualOverride, true);
+  assert.equal(JSON.parse(requests[1].init.body).manualOverride, true);
   assert.ok(logs.some(args => args[1] === '[AUTO-TRIGGER] Executing automatically...'));
+  assert.ok(logs.some(args => String(args[1]).includes('Demo-only candidate quality filters observed')));
   assert.ok(logs.every(args => args[1] !== '[AUTO-TRIGGER] Candidate ready for execution. Token acquired. Waiting for manual execution.'));
 });
 
@@ -307,3 +385,39 @@ test('auto-trigger requires the strategy-specific daily IV Percentile threshold'
     assert.equal(calls.some(call => call.kind === 'fetch'), false);
   }
 });
+
+test('Demo quality override still enforces score, spread, DTE and supported underlying', async () => {
+  const base = {
+    symbol: 'P-BTC-59600-171126',
+    strategy: 'OPTIONS_BUY',
+    score: 87,
+    stage: 'SETUP',
+    market_regime: 'UNKNOWN',
+    iv_rank: 48,
+    iv_percentile: null,
+    oi: 0.485,
+    volume: 3.9,
+    spread_pct: 0.4,
+    cached_at: new Date(NOW).toISOString(),
+    details: { analysisReady: false, dte: 12, delta: -0.58, optionType: 'PUT', strike: 59600, underlyingSymbol: 'BTCUSD' }
+  };
+  const envPatch = {
+    OPTIONS_EXECUTION_MODE: 'demo',
+    OPTIONS_EXIT_MONITOR_ENABLED: 'true',
+    DELTA_DEMO_API_KEY: 'demo-key',
+    DELTA_DEMO_API_SECRET: 'demo-secret',
+    ALLOW_MANUAL_OVERRIDE_FOR_TEST: 'true',
+    DELTA_TESTNET_REST_BASE: 'https://cdn-ind.testnet.deltaex.org'
+  };
+  const blocked = [
+    { ...base, score: 79 },
+    { ...base, symbol: 'P-BTC-59600-171126', spread_pct: 1.51 },
+    { ...base, symbol: 'P-BTC-59600-171126', details: { ...base.details, dte: 1 } },
+    { ...base, symbol: 'P-XAUT-59600-171126' }
+  ];
+  const { worker, calls } = harness({ envPatch, cacheRows: blocked });
+  const result = await worker.runOnce();
+  assert.equal(result.status, 'READY');
+  assert.equal(calls.some(call => call.kind === 'fetch'), false);
+});
+

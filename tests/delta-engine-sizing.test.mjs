@@ -216,3 +216,48 @@ test('refreshProducts preserves the production scanner universe and overlays onl
   assert.equal(eth.id, null, 'reduce-only Testnet products cannot become entry routes');
   assert.equal(eth.executionProductAvailable, false);
 });
+
+test('position sizing falls back to verified product metadata when a signal omits contractValue', () => {
+  const localEngine = new DeltaEngine();
+  localEngine.productMap.set('AINUSD', {
+    executionProductAvailable: true,
+    marketDataProductId: 9001,
+    id: 9002,
+    contract_value: '0.001',
+    notional_type: 'vanilla'
+  });
+  const size = localEngine.positionSizing(
+    validSignal({ symbol: 'AINUSD', contractValue: undefined }),
+    { equity: 1000, available: 1000 },
+    settings
+  );
+  assert.ok(size);
+  assert.ok(size.qty > 0);
+  assert.equal(size.notionalPerContract, 0.1);
+});
+
+test('position sizing fails closed with explicit product-unverified reason when Testnet metadata is absent', () => {
+  const localEngine = new DeltaEngine();
+  const result = localEngine.positionSizing(
+    validSignal({ symbol: 'AINUSD', contractValue: undefined }),
+    { equity: 1000, available: 1000 },
+    settings
+  );
+  assert.equal(result, null);
+});
+
+test('position sizing does not treat unverified Testnet catalogue placeholders as contract value', () => {
+  const localEngine = new DeltaEngine();
+  localEngine.productMap.set('AINUSD', {
+    executionProductAvailable: false,
+    marketDataProductId: 9001,
+    id: null,
+    contract_value: 0
+  });
+  const result = localEngine.positionSizing(
+    validSignal({ symbol: 'AINUSD', contractValue: undefined }),
+    { equity: 1000, available: 1000 },
+    settings
+  );
+  assert.equal(result, null);
+});

@@ -4,6 +4,7 @@ import * as defaultDb from '../../server/db.js';
 import { indiaDateKey } from '../../src/date-utils.js';
 import { isAllowedDeltaTestnetFutureSymbol, isEligibleDeltaTestnetPerpetualProduct, isMarketTickFresh } from './execution-route-policy.mjs';
 import { createDeltaOptionsExecution } from './delta-options-execution.mjs';
+import { DELTA_INDIA_TESTNET_REST_BASE } from '../options-execution-lock.mjs';
 
 export const DELTA_TESTNET_REST_BASE = 'https://cdn-ind.testnet.deltaex.org';
 export const DELTA_TESTNET_PRIVATE_WS_URL = 'wss://socket-ind.testnet.deltaex.org';
@@ -145,6 +146,25 @@ function accountAvailable(wallet, equity) {
   return equity;
 }
 
+function accountAvailableVerified(wallet) {
+  const candidates = [
+    wallet?.meta?.available_balance,
+    wallet?.meta?.available_margin,
+    wallet?.result?.available_balance
+  ].map(numberOrNull).filter(value => value !== null && value >= 0);
+  if (candidates.length) return candidates[0];
+  const result = Array.isArray(wallet?.result)
+    ? wallet.result
+    : Array.isArray(wallet?.result?.balances) ? wallet.result.balances : [];
+  const settlementAssets = new Set(['USD', 'USDT', 'USDC', 'INR']);
+  const balances = result.filter(row =>
+    settlementAssets.has(stringOrEmpty(row?.asset_symbol || row?.currency || row?.symbol).toUpperCase())
+  );
+  const verified = balances.map(row => numberOrNull(row?.available_balance))
+    .filter(value => value !== null && value >= 0);
+  return verified.length ? verified.reduce((sum, value) => sum + value, 0) : null;
+}
+
 function terminalState(state) {
   return new Set(['filled', 'closed', 'cancelled', 'canceled', 'rejected', 'expired', 'failed', 'exited'])
     .has(stringOrEmpty(state).toLowerCase());
@@ -263,6 +283,66 @@ export function createDeltaExecutor({
       throw error;
     }
     return data || { success: true, result: null };
+  }
+
+  async function requestDemoOptions(method, path, params = {}, body = null) {
+    // This is an exit-capable, Testnet-only transport. Entry permissions are
+    // asserted separately by placeOptionsOrder; never disable the exit path
+    // merely because new entries have been locked.
+    const deltaMode = stringOrEmpty(env.DELTA_EXECUTION_MODE || 'disabled').toLowerCase();
+    const environment = stringOrEmpty(env.DELTA_ENVIRONMENT).toUpperCase();
+    const apiKey = stringOrEmpty(env.DELTA_DEMO_API_KEY);
+    const apiSecret = stringOrEmpty(env.DELTA_DEMO_API_SECRET);
+    const configuredBase = stringOrEmpty(env.DELTA_TESTNET_REST_BASE || DELTA_INDIA_TESTNET_REST_BASE).replace(/\/+$/, '');
+    if (deltaMode !== 'testnet' || environment !== 'TESTNET' ||
+        !apiKey || !apiSecret || configuredBase !== DELTA_INDIA_TESTNET_REST_BASE ||
+        DELTA_TESTNET_REST_BASE !== DELTA_INDIA_TESTNET_REST_BASE) {
+      throw new Error('Delta Demo Options API access requires Testnet profile, dedicated Demo credentials and the exact India Testnet endpoint');
+    }
+    const verb = String(method || '').trim().toUpperCase();
+    const route = String(path || '');
+    if (!['GET', 'POST', 'PUT', 'DELETE'].includes(verb) || !route.startsWith('/v2/')) {
+      throw new Error('Delta Demo Options request route is invalid');
+    }
+    const query = encodeQuery(params);
+    const payload = body === null || body === undefined ? '' : JSON.stringify(body);
+    const timestamp = String(Math.floor(now() / 1000));
+    const signature = deltaHmacSha256(apiSecret, verb + timestamp + route + query + payload);
+    const headers = {
+      Accept: 'application/json',
+      'User-Agent': 'DealDost-Delta-India-Demo-Options/1.0',
+      'api-key': apiKey,
+      signature,
+      timestamp
+    };
+    if (body !== null && body !== undefined) headers['Content-Type'] = 'application/json';
+    const response = await fetchImpl(DELTA_INDIA_TESTNET_REST_BASE + route + query, {
+      method: verb,
+      headers,
+      body: body === null || body === undefined ? undefined : payload
+    });
+    const rawText = await response.text();
+    let data = null;
+    try { data = rawText ? JSON.parse(rawText) : null; } catch {}
+    if (!response.ok || data?.success === false) {
+      const code = stringOrEmpty(data?.error?.code || data?.error?.name);
+      const reason = stringOrEmpty(data?.error?.message || data?.error?.code || data?.message);
+      const error = new Error('Delta India Demo ' + verb + ' ' + route + ' failed (' +
+        response.status + '): ' + (code || reason || 'request_failed'));
+      error.status = response.status;
+      error.code = code || 'delta_demo_options_request_failed';
+      throw error;
+    }
+    return data || { success: true, result: null };
+  }
+
+  async function getDemoOptionsAccountSnapshot() {
+    const wallet = await requestDemoOptions('GET', '/v2/wallet/balances');
+    const equity = accountEquity(wallet);
+    if (!(equity > 0)) throw new Error('Delta Demo account equity is unavailable; Options entries fail closed');
+    const available = accountAvailableVerified(wallet);
+    if (!(available > 0)) throw new Error('Delta Demo available margin is unavailable or zero; Options entries fail closed');
+    return { equity, available, raw: wallet };
   }
 
   async function withSymbolLock(symbol, operation) {
@@ -1499,9 +1579,11 @@ export function createDeltaExecutor({
 
   const optionsExecution = createDeltaOptionsExecution({
     env,
-    request,
+    // Keep Futures request()/getAccountSnapshot() on their existing route.
+    // Options use the independent DELTA_DEMO_* keypair and fixed Testnet host.
+    request: requestDemoOptions,
     database,
-    getAccountSnapshot,
+    getAccountSnapshot: getDemoOptionsAccountSnapshot,
     logExecutor,
     buildClientOrderId,
     now,
