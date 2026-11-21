@@ -157,7 +157,10 @@ export function createDeltaOptionsExecution({
         !Number.isSafeInteger(minSize) || !Number.isSafeInteger(sizeStep)) {
       throw new Error('Delta India Demo Options product metadata is incomplete or outside verified bounds: ' + normalized);
     }
-    return { ...product, id, contractValue, tickSize, feeRate, minSize, sizeStep, parsed };
+    return {
+      ...product, id, contractValue, tickSize, feeRate, minSize, sizeStep, parsed,
+      contractType: expectedType
+    };
   }
 
   async function getQuote(symbol) {
@@ -778,16 +781,6 @@ export function createDeltaOptionsExecution({
         error.ambiguous = true;
         throw error;
       }
-      if (hasBracket) {
-        await verifyExchangeSideBracket(order, product, String(side).toUpperCase(), qty, {
-          stop: bracketStopLossPrice,
-          takeProfit: bracketTakeProfitPrice,
-          strategy,
-          maxLossUsd,
-          executionKey,
-          manualTestOverride
-        });
-      }
       const state = clean(order.state || 'UNKNOWN').toUpperCase();
       const accepted = !['REJECTED','FAILED','ERROR'].includes(state);
       await database.update(
@@ -889,34 +882,102 @@ export function createDeltaOptionsExecution({
   async function verifyExchangeSideBracket(order, product, side, qty, {
     stop, takeProfit, strategy, maxLossUsd, executionKey, manualTestOverride = false
   } = {}) {
+    // Delta accepts bracket fields on CreateOrderRequest, but those fields
+    // are not guaranteed to be echoed by the parent order response. Prefer
+    // an explicit parent echo when present; otherwise verify both live
+    // reduce-only stop child orders returned by the exchange.
     const detail = await getOrderDetail(order);
+    const tolerance = Math.max(1e-8, Number(product.tickSize) / 2);
+    const matchesPrice = (actual, expected) =>
+      actual !== null && Math.abs(actual - Number(expected)) <= tolerance;
     const reportedStop = number(detail?.bracket_stop_loss_price ??
       detail?.bracketStopLossPrice ?? detail?.bracket_stop?.stop_price);
     const reportedTakeProfit = number(detail?.bracket_take_profit_price ??
       detail?.bracketTakeProfitPrice ?? detail?.bracket_take_profit?.limit_price);
-    const tolerance = Math.max(1e-8, Number(product.tickSize) / 2);
-    if (reportedStop !== null && reportedTakeProfit !== null &&
-        Math.abs(reportedStop - Number(stop)) <= tolerance &&
-        Math.abs(reportedTakeProfit - Number(takeProfit)) <= tolerance) {
-      return { verified: true, stop: reportedStop, takeProfit: reportedTakeProfit };
+    let verification = {
+      verified: matchesPrice(reportedStop, stop) && matchesPrice(reportedTakeProfit, takeProfit),
+      method: 'parent_order_echo',
+      stopOrderId: null,
+      takeProfitOrderId: null,
+      stop: reportedStop,
+      takeProfit: reportedTakeProfit
+    };
+
+    for (let attempt = 0; !verification.verified && attempt < 5; attempt += 1) {
+      const active = await request('GET', '/v2/orders', {
+        product_ids: product.id,
+        states: 'open,pending',
+        contract_types: product.contractType,
+        page_size: 100
+      });
+      if (!Array.isArray(active?.result)) {
+        throw new Error('Delta Demo active Options order snapshot is malformed; SL/TP verification blocked');
+      }
+      const closeSide = side === 'BUY' ? 'sell' : 'buy';
+      const children = active.result.filter(row =>
+        Number(row?.product_id ?? row?.productId) === Number(product.id) &&
+        lower(row?.side) === closeSide &&
+        row?.reduce_only === true &&
+        Number(row?.size) === Number(qty) &&
+        !['cancelled','canceled','rejected','expired','filled','closed'].includes(lower(row?.state))
+      );
+      const stopChild = children.find(row =>
+        lower(row?.stop_order_type) === 'stop_loss_order' &&
+        matchesPrice(number(row?.stop_price ?? row?.trigger_price), stop)
+      );
+      const takeProfitChild = children.find(row =>
+        lower(row?.stop_order_type) === 'take_profit_order' &&
+        matchesPrice(number(row?.stop_price ?? row?.trigger_price), takeProfit)
+      );
+      if (stopChild && takeProfitChild) {
+        verification = {
+          verified: true,
+          method: 'exchange_reduce_only_child_orders',
+          stopOrderId: stopChild.id ?? null,
+          takeProfitOrderId: takeProfitChild.id ?? null,
+          stop: number(stopChild.stop_price ?? stopChild.trigger_price),
+          takeProfit: number(takeProfitChild.stop_price ?? takeProfitChild.trigger_price)
+        };
+        break;
+      }
+      if (attempt < 4) await new Promise(resolve => setTimeout(resolve, 350));
     }
 
-    await logExecutor('ERROR', '[OptionsExecutor] Delta India Demo did not echo the requested exchange-side SL/TP bracket', {
+    if (verification.verified) {
+      await logExecutor('INFO', '[OptionsExecutor] Delta India Demo exchange-side SL/TP protection verified', {
+        environment: 'DELTA_DEMO',
+        symbol: product.symbol,
+        parentOrderId: order?.id ?? null,
+        side,
+        size: qty,
+        stopLossPrice: stop,
+        takeProfitPrice: takeProfit,
+        verification
+      });
+      return verification;
+    }
+
+    await logExecutor('ERROR', '[OptionsExecutor] Delta India Demo exchange-side SL/TP protection not found; reduce-only unwind required', {
       environment: 'DELTA_DEMO',
       symbol: product.symbol,
-      orderId: order?.id ?? null,
+      parentOrderId: order?.id ?? null,
       side,
       size: qty,
       expectedStop: stop,
       expectedTakeProfit: takeProfit,
-      reportedStop,
-      reportedTakeProfit,
+      verification,
       action: 'CANCEL_OR_REDUCE_ONLY_UNWIND'
     });
 
     const cancellation = await cancelProtective(order);
     if (!cancellation.confirmed) {
       const error = new Error('Exchange-side Options bracket could not be verified and entry cancellation is unconfirmed; manual reconciliation required');
+      error.ambiguous = true;
+      throw error;
+    }
+    if (cancellation.filledQty === null || !Number.isSafeInteger(Number(cancellation.filledQty)) ||
+        Number(cancellation.filledQty) < 0) {
+      const error = new Error('Exchange returned no reliable fill quantity while removing an unprotected Options entry; manual reconciliation required');
       error.ambiguous = true;
       throw error;
     }
@@ -937,7 +998,7 @@ export function createDeltaOptionsExecution({
         throw error;
       }
     }
-    const error = new Error('Delta Demo API did not confirm the exchange-side SL/TP bracket; the entry was canceled or fully unwound');
+    const error = new Error('Delta Demo API did not confirm exchange-side SL/TP child orders; the entry was canceled or fully unwound');
     error.code = 'OPTIONS_EXCHANGE_BRACKET_UNVERIFIED';
     error.status = 409;
     throw error;
@@ -979,12 +1040,16 @@ export function createDeltaOptionsExecution({
 
   async function cancelProtective(order) {
     const id = number(order?.id);
-    if (!Number.isSafeInteger(id) || id <= 0) return { confirmed: false, filledQty: 0 };
+    if (!Number.isSafeInteger(id) || id <= 0) return { confirmed: false, filledQty: null };
+    let latest = await getOrderDetail(order);
+    let status = fillStatus(latest);
+    if (['cancelled','canceled','rejected','expired','filled','closed'].includes(status.state)) {
+      return { confirmed: true, filledQty: status.filledQty, order: latest };
+    }
     await request('DELETE', '/v2/orders', {}, { id });
-    let latest = null;
     for (let attempt = 0; attempt < 5; attempt += 1) {
       latest = await getOrderDetail(order);
-      const status = fillStatus(latest);
+      status = fillStatus(latest);
       if (['cancelled','canceled','rejected','expired','filled','closed'].includes(status.state)) {
         return { confirmed: true, filledQty: status.filledQty, order: latest };
       }
@@ -1310,6 +1375,14 @@ export function createDeltaOptionsExecution({
           fill = await confirmBuyEntryFillOrCancelAndUnwind(
             order, product, preview.qty, preview, executionKey
           );
+          await verifyExchangeSideBracket(order, product, 'BUY', preview.qty, {
+            stop: preview.stopPremium,
+            takeProfit: preview.takeProfitPremium,
+            strategy: preview.strategy,
+            maxLossUsd: preview.maxLossUsd,
+            executionKey,
+            manualTestOverride: preview.manualTestOverride === true
+          });
           positionRecorded = true;
           await recordOptionPosition({ executionKey, preview, candidate, product, order, fill });
           positionVerification = await requireDemoPositionVerification(executionKey, [
@@ -1375,6 +1448,14 @@ export function createDeltaOptionsExecution({
       const hedgeOrderId = lifecycle.hedgeOrder?.id ?? null;
       if (regimeBased) {
         if (lifecycle.success) {
+          await verifyExchangeSideBracket(lifecycle.shortOrder, product, 'SELL', preview.qty, {
+            stop: preview.stopPremium,
+            takeProfit: preview.takeProfitPremium,
+            strategy: preview.strategy,
+            maxLossUsd: preview.maxLossUsd,
+            executionKey,
+            manualTestOverride: preview.manualTestOverride === true
+          });
           positionRecorded = true;
           await recordOptionPosition({ executionKey, preview, candidate, product, hedgeProduct,
             order: lifecycle.shortOrder, fill: lifecycle.shortOrder?._shortFill,
