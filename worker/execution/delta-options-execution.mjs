@@ -917,7 +917,7 @@ export function createDeltaOptionsExecution({
       const children = active.result.filter(row =>
         Number(row?.product_id ?? row?.productId) === Number(product.id) &&
         lower(row?.side) === closeSide &&
-        row?.reduce_only === true &&
+        (row?.reduce_only === true || lower(row?.reduce_only) === 'true') &&
         Number(row?.size) === Number(qty) &&
         !['cancelled','canceled','rejected','expired','filled','closed'].includes(lower(row?.state))
       );
