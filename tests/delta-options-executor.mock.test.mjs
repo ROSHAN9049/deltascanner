@@ -244,7 +244,7 @@ function harness({
       }
       if (!hedgeFilled) return { result: {
         id: 100, state: 'open', size: 1, unfilled_size: 1,
-        ...(bracketEcho && requestOrders.get(100)?.bracket_stop_loss_price ?
+        ...(bracketEcho && requestOrders.get(100)?.bracket_stop_loss_price ? {
           bracket_stop_loss_price: requestOrders.get(100).bracket_stop_loss_price,
           bracket_take_profit_price: requestOrders.get(100).bracket_take_profit_price,
           bracket_stop_trigger_method: requestOrders.get(100).bracket_stop_trigger_method
@@ -264,7 +264,7 @@ function harness({
       return { result: {
         id: 100, state: 'filled', size: 1, unfilled_size: 0,
         average_fill_price: averageFillPrice,
-        ...(bracketEcho && currentOrder.bracket_stop_loss_price ?
+        ...(bracketEcho && currentOrder.bracket_stop_loss_price ? {
           bracket_stop_loss_price: currentOrder.bracket_stop_loss_price,
           bracket_take_profit_price: currentOrder.bracket_take_profit_price,
           bracket_stop_trigger_method: currentOrder.bracket_stop_trigger_method
