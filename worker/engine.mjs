@@ -2119,11 +2119,12 @@ export class DeltaEngine {
       }));
     };
 
-    if (testnet && productMeta?.executionProductAvailable === false) {
+    if (testnet && productMeta?.executionProductAvailable !== true) {
       logSizing(0, 'TESTNET_PRODUCT_NOT_VERIFIED', {
-        executionProductAvailable: false,
-        marketDataProductId: productMeta.marketDataProductId ?? null,
-        testnetProductId: productMeta.id ?? null
+        executionProductAvailable: productMeta?.executionProductAvailable ?? null,
+        marketDataProductId: productMeta?.marketDataProductId ?? null,
+        testnetProductId: productMeta?.id ?? null,
+        contractValueAvailable: contractValue > 0
       });
       return null;
     }
