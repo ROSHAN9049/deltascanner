@@ -224,7 +224,7 @@ test('bracket entry blocks a Testnet mark drift larger than the signal stop dist
     'a mark drift larger than the SL risk distance must not submit an order'
   );
   const blocked = runtime.logs.find(row =>
-    row.message === '[Executor] Blocked bracket order: Testnet mark no longer matches the signal risk envelope'
+    row.message === '[Executor] Blocked bracket order: Testnet mark drift exceeds signal stop distance'
   );
   assert.equal(blocked?.data?.reason, 'LIVE_MARK_DRIFT_EXCEEDS_STOP_DISTANCE');
   assert.equal(blocked?.data?.bracketContainsLiveMark, true);
@@ -240,14 +240,14 @@ test('SNDKBUSD production/Testnet price divergence remains blocked before order 
   });
   await assert.rejects(
     executor.placeBracketOrder('SNDKBUSD', 'SELL', 1, 78.8, 80.0, 75.8),
-    /signal risk envelope/
+    /Live mark has moved outside the requested SL\\/TP bracket/
   );
   assert.equal(
     runtime.httpCalls.some(call => new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST'),
     false
   );
   const blocked = runtime.logs.find(row =>
-    row.message === '[Executor] Blocked bracket order: Testnet mark no longer matches the signal risk envelope'
+    row.message === '[Executor] Blocked bracket order: live mark moved outside requested SL/TP bracket'
   );
   assert.equal(blocked?.data?.reason, 'LIVE_MARK_OUTSIDE_BRACKET');
   assert.ok(blocked?.data?.referenceDriftPct > 80);

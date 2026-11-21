@@ -1308,7 +1308,10 @@ export function createDeltaExecutor({
         const reason = !bracketContainsLiveMark
           ? 'LIVE_MARK_OUTSIDE_BRACKET'
           : 'LIVE_MARK_DRIFT_EXCEEDS_STOP_DISTANCE';
-        await logExecutor('WARN', '[Executor] Blocked bracket order: Testnet mark no longer matches the signal risk envelope', {
+        const logMessage = !bracketContainsLiveMark
+          ? '[Executor] Blocked bracket order: live mark moved outside requested SL/TP bracket'
+          : '[Executor] Blocked bracket order: Testnet mark drift exceeds signal stop distance';
+        await logExecutor('WARN', logMessage, {
           environment: 'testnet', symbol: normalizedSymbol, side: direction,
           referenceEntryPrice: entry, liveMarkPrice, referenceDriftPct, slDistancePct,
           stopLossPrice: stop, takeProfitPrice: target,
@@ -1318,7 +1321,10 @@ export function createDeltaExecutor({
           driftWithinStopDistance,
           executionBlocked: true, reason
         });
-        throw new Error('Live Testnet mark no longer matches the signal risk envelope; refresh signal before entry');
+        const errorMessage = !bracketContainsLiveMark
+          ? 'Live mark has moved outside the requested SL/TP bracket; refresh signal before entry'
+          : 'Live Testnet mark no longer matches the signal risk envelope; refresh signal before entry';
+        throw new Error(errorMessage);
       }
 
       const strategy = strategyValue(options?.strategy);
