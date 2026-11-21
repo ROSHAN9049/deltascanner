@@ -236,6 +236,16 @@ test('position sizing falls back to verified product metadata when a signal omit
   assert.equal(size.notionalPerContract, 0.1);
 });
 
+test('position sizing fails closed with explicit product-unverified reason when Testnet metadata is absent', () => {
+  const localEngine = new DeltaEngine();
+  const result = localEngine.positionSizing(
+    validSignal({ symbol: 'AINUSD', contractValue: undefined }),
+    { equity: 1000, available: 1000 },
+    settings
+  );
+  assert.equal(result, null);
+});
+
 test('position sizing does not treat unverified Testnet catalogue placeholders as contract value', () => {
   const localEngine = new DeltaEngine();
   localEngine.productMap.set('AINUSD', {
