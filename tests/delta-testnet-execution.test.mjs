@@ -97,6 +97,7 @@ function fakeRuntime({
         { id: 181689, symbol: 'XAUTUSD', contract_type: 'perpetual_futures', state: 'live', trading_status: 'operational', only_reduce_only_orders_allowed: false },
         { id: 182001, symbol: 'PAXGUSD', contract_type: 'perpetual_futures', state: 'live', trading_status: 'operational', only_reduce_only_orders_allowed: false },
         { id: 182002, symbol: 'NVDAXUSD', contract_type: 'perpetual_futures', state: 'live', trading_status: 'operational', only_reduce_only_orders_allowed: false },
+        { id: 141835, symbol: 'SNDKBUSD', contract_type: 'perpetual_futures', state: 'live', trading_status: 'operational', only_reduce_only_orders_allowed: false },
         { id: 27, symbol: 'BTCUSD', contract_type: 'perpetual_futures', state: 'live', trading_status: 'operational', only_reduce_only_orders_allowed: false }
       ], meta: {} });
     }
