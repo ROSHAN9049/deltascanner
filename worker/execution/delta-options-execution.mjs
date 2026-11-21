@@ -895,12 +895,15 @@ export function createDeltaOptionsExecution({
     const reportedTakeProfit = number(detail?.bracket_take_profit_price ??
       detail?.bracketTakeProfitPrice ?? detail?.bracket_take_profit?.limit_price);
     let verification = {
-      verified: matchesPrice(reportedStop, stop) && matchesPrice(reportedTakeProfit, takeProfit),
-      method: 'parent_order_echo',
+      // The parent-order schema does not promise bracket fields. Even if
+      // undocumented fields happen to echo the request, only live child
+      // orders prove that exchange-side protection is active.
+      verified: false,
+      method: 'exchange_reduce_only_child_orders',
       stopOrderId: null,
       takeProfitOrderId: null,
-      stop: reportedStop,
-      takeProfit: reportedTakeProfit
+      reportedParentStop: reportedStop,
+      reportedParentTakeProfit: reportedTakeProfit
     };
 
     for (let attempt = 0; !verification.verified && attempt < 5; attempt += 1) {
