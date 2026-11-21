@@ -1512,6 +1512,14 @@ export function createDeltaOptionsExecution({
         contract_id: product.id,
         hedge_contract_id: hedgeProduct.id,
         hedge_order_id: hedgeOrderId,
+        side: 'SELL',
+        size: preview.qty,
+        entry: positive(lifecycle.shortOrder?._shortFill?.averageFillPrice),
+        sl: preview.stopPremium,
+        tp: preview.takeProfitPremium,
+        order_id: lifecycle.shortOrder?.id ?? null,
+        status: lifecycle.shortOrder?._shortFill?.state || lifecycle.state,
+        fill: lifecycle.shortOrder?._shortFill || null,
         max_loss: preview.maxLossUsd
       };
     } catch (error) {
