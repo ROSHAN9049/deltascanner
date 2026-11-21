@@ -406,13 +406,17 @@ if (fullAutoExecute) {
     
     await logger('INFO', `[AUTO-TRIGGER] ✅ ORDER EXECUTED SUCCESSFULLY: ${upper(candidate.symbol)}`, {
       environment: demoMode ? 'DELTA_DEMO' : 'TESTNET',
-      orderId: execPayload?.result?.order?.id || execPayload?.result?.shortOrder?.id ||
-        execPayload?.result?.hedge_order_id || execPayload?.order?.id || execPayload?.orderId || 'unknown',
+      symbol: upper(candidate.symbol),
+      side: execPayload?.result?.side || (upper(candidate.strategy) === 'OPTIONS_BUY' ? 'BUY' : 'SELL'),
+      size: execPayload?.result?.size ?? candidate.qty ?? 1,
+      orderId: execPayload?.result?.order_id || execPayload?.result?.order?.id ||
+        execPayload?.result?.shortOrder?.id || execPayload?.result?.hedge_order_id ||
+        execPayload?.order?.id || execPayload?.orderId || 'unknown',
       fill: execPayload?.result?.fill || execPayload?.result?.shortOrder?._shortFill || null,
       entry: execPayload?.result?.entry ?? null,
       sl: execPayload?.result?.sl ?? null,
       tp: execPayload?.result?.tp ?? null,
-      status: execPayload?.result?.state || execPayload?.result?.status || 'UNKNOWN'
+      status: execPayload?.result?.status || execPayload?.result?.state || 'UNKNOWN'
     });
     await writeHeartbeat('ORDER_EXECUTED', { candidateReady: false, orderSubmitted: true, symbol: upper(candidate.symbol) });
     return { status: 'ORDER_EXECUTED', previewRequested: true, orderSubmitted: true, candidate: upper(candidate.symbol) };
