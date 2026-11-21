@@ -209,6 +209,51 @@ test('bracket entry is a Testnet market order with exchange-side SL/TP and signe
   assert.equal(post.init.headers.timestamp, '1770000000');
 });
 
+test('bracket entry blocks a Testnet mark drift larger than the signal stop distance', async () => {
+  const runtime = fakeRuntime({ markPrice: 102.5 });
+  const executor = createDeltaExecutor({
+    env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database
+  });
+  await assert.rejects(
+    executor.placeBracketOrder('XAUTUSD', 'BUY', 1, 100, 98.5, 103),
+    /signal risk envelope/
+  );
+  assert.equal(
+    runtime.httpCalls.some(call => new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST'),
+    false,
+    'a mark drift larger than the SL risk distance must not submit an order'
+  );
+  const blocked = runtime.logs.find(row =>
+    row.message === '[Executor] Blocked bracket order: Testnet mark no longer matches the signal risk envelope'
+  );
+  assert.equal(blocked?.data?.reason, 'LIVE_MARK_DRIFT_EXCEEDS_STOP_DISTANCE');
+  assert.equal(blocked?.data?.bracketContainsLiveMark, true);
+  assert.equal(blocked?.data?.driftWithinStopDistance, false);
+  assert.equal(blocked?.data?.signalReferenceSource, 'production_public_market_data');
+  assert.equal(blocked?.data?.executionMarkSource, 'delta_india_testnet_rest');
+});
+
+test('SNDKBUSD production/Testnet price divergence remains blocked before order submission', async () => {
+  const runtime = fakeRuntime({ markPrice: 12.3 });
+  const executor = createDeltaExecutor({
+    env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database
+  });
+  await assert.rejects(
+    executor.placeBracketOrder('SNDKBUSD', 'SELL', 1, 78.8, 80.0, 75.8),
+    /signal risk envelope/
+  );
+  assert.equal(
+    runtime.httpCalls.some(call => new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST'),
+    false
+  );
+  const blocked = runtime.logs.find(row =>
+    row.message === '[Executor] Blocked bracket order: Testnet mark no longer matches the signal risk envelope'
+  );
+  assert.equal(blocked?.data?.reason, 'LIVE_MARK_OUTSIDE_BRACKET');
+  assert.ok(blocked?.data?.referenceDriftPct > 80);
+  assert.equal(blocked?.data?.executionBlocked, true);
+});
+
 test('Grid bracket entry uses a GTC non-reduce-only limit order with exchange-side SL/TP', async () => {
   const runtime = fakeRuntime({ orderState: 'open', markPrice: 2500 });
   const executor = createDeltaExecutor({

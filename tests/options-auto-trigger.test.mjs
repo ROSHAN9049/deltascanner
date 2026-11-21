@@ -421,3 +421,32 @@ test('Demo quality override still enforces score, spread, DTE and supported unde
   assert.equal(calls.some(call => call.kind === 'fetch'), false);
 });
 
+
+
+test('Demo execution block reports exact non-secret interlocks and never requests preview', async () => {
+  const { worker, calls, logs } = harness({
+    envPatch: {
+      OPTIONS_EXECUTION_MODE: 'demo',
+      OPTIONS_DEMO_AUTO_EXECUTE: 'true',
+      OPTIONS_EXIT_MONITOR_ENABLED: 'true',
+      DELTA_TESTNET_REST_BASE: 'https://cdn-ind.testnet.deltaex.org',
+      DELTA_DEMO_API_KEY: 'demo-key',
+      DELTA_DEMO_API_SECRET: ''
+    }
+  });
+  const result = await worker.runOnce();
+  assert.equal(result.status, 'BLOCKED_OPTIONS_ENV_EXECUTION_DISABLED');
+  assert.equal(calls.some(call => call.kind === 'fetch'), false);
+  const heartbeat = logs.find(args => args[1] === '[AUTO-TRIGGER] Worker heartbeat');
+  const data = heartbeat?.[2] || {};
+  assert.equal(data.mode, 'AUTO_EXECUTE');
+  assert.equal(data.optionsExecutionMode, 'demo');
+  assert.equal(data.credentialsConfigured, false);
+  assert.equal(data.demoApiKeyConfigured, true);
+  assert.equal(data.demoApiSecretConfigured, false);
+  assert.equal(data.restBaseMatched, true);
+  assert.equal(data.exitMonitorEnabled, true);
+  assert.equal(data.manualTestOverrideAllowed, false);
+  assert.match(data.executionGateReason, /DELTA_DEMO_API_KEY and DELTA_DEMO_API_SECRET/);
+  assert.equal(JSON.stringify(data).includes('demo-secret'), false);
+});

@@ -104,3 +104,38 @@ test('invalid Options execution mode fails closed to disabled', () => {
   assert.equal(getOptionsExecutionMode({ OPTIONS_EXECUTION_MODE: 'prod' }), 'disabled');
   assert.equal(getOptionsExecutionGate({ ...demoEnv, OPTIONS_EXECUTION_MODE: 'prod' }).allowed, false);
 });
+
+
+test('Options Demo gate exposes only safe booleans and the precise failing interlock', () => {
+  const ready = getOptionsExecutionGate(demoEnv);
+  assert.equal(ready.allowed, true);
+  assert.equal(ready.credentialsConfigured, true);
+  assert.equal(ready.demoApiKeyConfigured, true);
+  assert.equal(ready.demoApiSecretConfigured, true);
+  assert.equal(ready.restBaseMatched, true);
+  assert.equal(ready.exitMonitorEnabled, true);
+
+  const missingSecret = getOptionsExecutionGate({
+    ...demoEnv,
+    DELTA_DEMO_API_SECRET: ''
+  });
+  assert.equal(missingSecret.allowed, false);
+  assert.equal(missingSecret.demoApiKeyConfigured, true);
+  assert.equal(missingSecret.demoApiSecretConfigured, false);
+  assert.equal(missingSecret.credentialsConfigured, false);
+  assert.match(missingSecret.reason, /DELTA_DEMO_API_KEY and DELTA_DEMO_API_SECRET/);
+
+  const wrongEndpoint = getOptionsExecutionGate({
+    ...demoEnv,
+    DELTA_TESTNET_REST_BASE: 'https://api.india.delta.exchange'
+  });
+  assert.equal(wrongEndpoint.restBaseMatched, false);
+  assert.match(wrongEndpoint.reason, /pinned to the Delta India Testnet REST endpoint/);
+
+  const monitorOff = getOptionsExecutionGate({
+    ...demoEnv,
+    OPTIONS_EXIT_MONITOR_ENABLED: 'false'
+  });
+  assert.equal(monitorOff.exitMonitorEnabled, false);
+  assert.match(monitorOff.reason, /OPTIONS_EXIT_MONITOR_ENABLED=true/);
+});
