@@ -880,7 +880,8 @@ export function createDeltaOptionsExecution({
   }
 
   async function verifyExchangeSideBracket(order, product, side, qty, {
-    stop, takeProfit, strategy, maxLossUsd, executionKey, manualTestOverride = false
+    stop, takeProfit, strategy, maxLossUsd, executionKey, manualTestOverride = false,
+    afterUnwind = null
   } = {}) {
     // Delta accepts bracket fields on CreateOrderRequest, but those fields
     // are not guaranteed to be echoed by the parent order response. Prefer
@@ -997,6 +998,16 @@ export function createDeltaOptionsExecution({
       const closeFill = await waitForProtectiveFill(closeOrder, cancellation.filledQty);
       if (closeFill?.fullyFilled !== true || Number(closeFill.filledQty) !== cancellation.filledQty) {
         const error = new Error('Options bracket was not verified and reduce-only exposure unwind is not fully confirmed');
+        error.ambiguous = true;
+        throw error;
+      }
+    }
+    if (typeof afterUnwind === 'function') {
+      try {
+        await afterUnwind();
+      } catch (cause) {
+        const error = new Error('Unprotected Options entry unwind completed but the protective hedge leg could not be closed: ' +
+          String(cause?.message || cause).slice(0, 180));
         error.ambiguous = true;
         throw error;
       }
@@ -1461,7 +1472,36 @@ export function createDeltaOptionsExecution({
             strategy: preview.strategy,
             maxLossUsd: preview.maxLossUsd,
             executionKey,
-            manualTestOverride: preview.manualTestOverride === true
+            manualTestOverride: preview.manualTestOverride === true,
+            afterUnwind: async () => {
+              const hedgeClose = await submitLeg(hedgeProduct, 'SELL', preview.qty, null, {
+                strategy: 'OPTIONS_SELL',
+                role: 'HEDGE_UNWIND',
+                maxLossUsd: 0,
+                hedgeOrderId: lifecycle.hedgeOrder?.id ?? null,
+                reduceOnly: true,
+                executionKey,
+                manualTestOverride: preview.manualTestOverride === true
+              });
+              const hedgeCloseFill = await waitForProtectiveFill(hedgeClose, preview.qty);
+              if (hedgeCloseFill?.fullyFilled !== true ||
+                  Number(hedgeCloseFill.filledQty) !== preview.qty ||
+                  !positive(hedgeCloseFill.averageFillPrice)) {
+                const error = new Error('Protective BUY hedge reduce-only close is not fully confirmed');
+                error.ambiguous = true;
+                throw error;
+              }
+              await logExecutor('WARN', '[OptionsExecutor] Delta India Demo protective hedge closed after unverified short-entry bracket', {
+                environment: 'DELTA_DEMO',
+                symbol: hedgeProduct.symbol,
+                side: 'SELL',
+                size: preview.qty,
+                entry: hedgeCloseFill.averageFillPrice,
+                hedgeEntryOrderId: lifecycle.hedgeOrder?.id ?? null,
+                hedgeCloseOrderId: hedgeClose.id ?? null,
+                status: hedgeCloseFill.state
+              });
+            }
           });
           positionRecorded = true;
           await recordOptionPosition({ executionKey, preview, candidate, product, hedgeProduct,
