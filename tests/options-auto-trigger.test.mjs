@@ -359,7 +359,7 @@ test('Demo full-auto passes the isolated Demo credentials and manual quality ove
 
 
 test('Demo exact one-shot startup performs one scan without creating a recurring timer', async () => {
-  const { worker, timers, logs } = harness({
+  const { worker, timers, logs, calls } = harness({
     envPatch: {
       OPTIONS_EXECUTION_MODE: 'demo',
       OPTIONS_EXIT_MONITOR_ENABLED: 'true',
@@ -374,6 +374,10 @@ test('Demo exact one-shot startup performs one scan without creating a recurring
   assert.equal(result.status, 'DEMO_ONE_SHOT_SYMBOL_NOT_READY');
   assert.equal(timers.length, 0);
   assert.ok(logs.some(args => String(args[1]).includes('Exact Demo one-shot mode is active')));
+  assert.ok(calls.some(call => call.kind === 'fetch' && call.url === 'https://deltascanner-api-v2.hostless.app/api/options/diagnostics'));
+  const apiDiagnosticCall = calls.find(call => call.kind === 'fetch' && call.url.endsWith('/api/options/diagnostics'));
+  assert.equal(apiDiagnosticCall?.init?.method, 'POST');
+  assert.equal(apiDiagnosticCall?.init?.headers?.['x-engine-secret'], 'worker-secret');
 });
 
 test('Options auto-trigger requires both the Testnet execution mode and TESTNET environment', async () => {
