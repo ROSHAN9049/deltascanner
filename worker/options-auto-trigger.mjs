@@ -648,18 +648,37 @@ if (fullAutoExecute) {
     }
   }
 
+  async function runPollCycle() {
+    const result = await runOnce();
+    const timestamp = new Date(now()).toISOString();
+    const candidates = Number.isFinite(Number(result?.candidateCount))
+      ? Number(result.candidateCount)
+      : (result?.candidate ? 1 : 0);
+    const status = result?.status === 'ERROR' || result?.status === 'EXECUTION_ERROR'
+      ? 'ERROR'
+      : 'OK';
+    await logger(status === 'OK' ? 'INFO' : 'ERROR',
+      `options_poller_tick timestamp=${timestamp} candidates=${candidates} status=${status}`,
+      { timestamp, candidates, status, resultStatus: result?.status || 'UNKNOWN' });
+    return result;
+  }
+
   async function start() {
     if (started) return;
     started = true;
     if (demoExecutionConfigured) {
-      const diagnosticGate = await ensureDemoCredentialDiagnostics();
-      if (executionAutoExecuteConfigured && !diagnosticGate.passed) {
-        return runOnce();
-      }
+      // Credential failures must block order routing, never the poller's
+      // recurring heartbeat. Keep the loop alive so the exact gate reason
+      // remains observable and can recover after an environment correction.
+      await ensureDemoCredentialDiagnostics();
     }
     if (enabled && !oneShotSymbol) {
       timer = setIntervalFn(() => {
-        void runOnce();
+        void runPollCycle().catch(error => {
+          void logger('ERROR', '[AUTO-TRIGGER] Poll cycle failed', {
+            error: safeError(error, clean(env.DELTA_DEMO_API_SECRET))
+          });
+        });
       }, OPTIONS_AUTO_TRIGGER_INTERVAL_MS);
       timer?.unref?.();
     } else if (enabled && oneShotSymbol) {
@@ -669,7 +688,7 @@ if (fullAutoExecute) {
         recurringTimerEnabled: false
       });
     }
-    return runOnce();
+    return runPollCycle();
   }
 
   async function stop() {
