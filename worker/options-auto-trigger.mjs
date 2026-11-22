@@ -648,8 +648,7 @@ if (fullAutoExecute) {
         // A live-quote spread rejection is an expected pre-trade safety block,
         // not a failed poller/infrastructure cycle. Keep the hard spread gate
         // intact and expose the distinction to dashboard health consumers.
-        const marketQualityBlocked =
-          /live Demo quote spread exceeds the unchanged \\d+(?:\\.\\d+)?% maximum/i.test(message);
+        const marketQualityBlocked = message.includes('live Demo quote spread exceeds the unchanged');
         const status = marketQualityBlocked ? 'BLOCKED_PREVIEW_MARKET_QUALITY' : 'ERROR';
         await logger(marketQualityBlocked ? 'WARN' : 'ERROR',
           marketQualityBlocked
