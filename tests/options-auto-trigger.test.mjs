@@ -250,6 +250,21 @@ test('Options auto-trigger health only reports fresh, enabled preview-only heart
   }], { now: NOW });
   assert.equal(autoExecute.mode, 'AUTO_EXECUTE');
   assert.equal(autoExecute.fullAutoExecute, true);
+
+  const demoAutoExecute = summarizeOptionsAutoTriggerHealth([{
+    ...row,
+    data: {
+      ...row.data,
+      mode: 'DEMO_AUTO_EXECUTE',
+      fullAutoExecute: false,
+      optionsDemoAutoExecuteEnabled: true,
+      executionAutoEnabled: true
+    }
+  }], { now: NOW });
+  assert.equal(demoAutoExecute.mode, 'DEMO_AUTO_EXECUTE');
+  assert.equal(demoAutoExecute.fullAutoExecute, false);
+  assert.equal(demoAutoExecute.optionsDemoAutoExecuteEnabled, true);
+  assert.equal(demoAutoExecute.executionAutoEnabled, true);
 });
 test('Demo Options execution does not inherit the global Futures FULL_AUTO_EXECUTE flag', async () => {
   const { worker, calls } = harness({
