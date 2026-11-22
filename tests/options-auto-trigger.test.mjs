@@ -603,3 +603,48 @@ test('Demo execution block reports exact non-secret interlocks and never request
   assert.match(data.executionGateReason, /DELTA_DEMO_API_KEY and DELTA_DEMO_API_SECRET/);
   assert.equal(JSON.stringify(data).includes('demo-secret'), false);
 });
+
+
+test('Demo credential failures keep recurring poller ticks alive without preview or execution', async () => {
+  const { worker, calls, logs, timers, cleared } = harness({
+    envPatch: {
+      OPTIONS_EXECUTION_MODE: 'demo',
+      OPTIONS_DEMO_AUTO_EXECUTE: 'true',
+      OPTIONS_EXIT_MONITOR_ENABLED: 'true',
+      OPTIONS_DEMO_LOG_ONLY_QUALITY_FILTERS: 'true',
+      DELTA_DEMO_API_KEY: 'demo-key',
+      DELTA_DEMO_API_SECRET: 'demo-secret',
+      DELTA_TESTNET_REST_BASE: 'https://cdn-ind.testnet.deltaex.org'
+    },
+    apiDiagnosticPayload: {
+      success: false,
+      diagnostic: {
+        environment: 'DELTA_DEMO_API_APP',
+        demoApiKeyConfigured: true,
+        demoApiSecretConfigured: true,
+        signedAuthPassed: false,
+        signedAuthHttpStatus: 401,
+        deltaErrorCode: 'ip_not_whitelisted_for_api_key',
+        outboundIp: '203.0.113.11'
+      }
+    },
+    cacheRows: []
+  });
+
+  const initial = await worker.start();
+  assert.equal(initial.status, 'BLOCKED_DEMO_CREDENTIAL_DIAGNOSTIC');
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].delay, OPTIONS_AUTO_TRIGGER_INTERVAL_MS);
+  assert.equal(timers[0].unrefCalled, true);
+  assert.equal(logs.filter(args => String(args[1]).startsWith('options_poller_tick ')).length, 1);
+
+  // Simulate the next 60-second interval without waiting for wall-clock time.
+  timers[0].callback();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(logs.filter(args => String(args[1]).startsWith('options_poller_tick ')).length, 2);
+  assert.equal(calls.some(call => call.kind === 'fetch' &&
+    (call.url.endsWith('/api/options/preview') || call.url.endsWith('/api/options/execute'))), false);
+
+  await worker.stop();
+  assert.deepEqual(cleared, timers);
+});
