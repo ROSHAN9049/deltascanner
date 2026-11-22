@@ -139,7 +139,7 @@ export async function runOptionsDemoCredentialDiagnostic({
         ? errorMessage.split(apiKey).join('[REDACTED]')
           .split(apiSecret).join('[REDACTED]').slice(0, 240)
         : (!value && raw ? 'non_json_response' : null);
-      report.signedAuthPassed = Boolean(response.ok && value?.success !== false);
+      report.signedAuthPassed = Boolean(response.ok && value && value.success !== false);
       if (report.signedAuthPassed) report.deltaErrorCode = null;
       else if (!report.deltaErrorCode) {
         report.deltaErrorCode = response.status === 401
