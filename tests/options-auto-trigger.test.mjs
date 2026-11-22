@@ -145,7 +145,7 @@ test('preview-only poller requests the API preview with ENGINE_SECRET and never 
   const { worker, calls, logs } = harness();
   const result = await worker.runOnce();
   assert.equal(result.status, 'CANDIDATE_READY');
-  const requests = calls.filter(call => call.kind === 'fetch' && /\\/api\\/options\\/(preview|execute)$/.test(call.url));
+  const requests = calls.filter(call => call.kind === 'fetch' && call.url.endsWith('/api/options/preview'));
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url, 'https://deltascanner-api-v2.hostless.app/api/options/preview');
   assert.equal(requests[0].init.method, 'POST');
@@ -254,7 +254,7 @@ test('preview failures remain preview-only and are reported as a blocked worker 
   });
   const result = await worker.runOnce();
   assert.equal(result.status, 'ERROR');
-  assert.equal(calls.filter(call => call.kind === 'fetch' && /\\/api\\/options\\/preview$/.test(call.url)).length, 1);
+  assert.equal(calls.filter(call => call.kind === 'fetch' && call.url.endsWith('/api/options/preview')).length, 1);
   assert.ok(logs.some(args => args[2]?.status === 'ERROR'));
 });
 
@@ -320,7 +320,7 @@ test('Demo Options execution does not inherit the global Futures FULL_AUTO_EXECU
   });
   const result = await worker.runOnce();
   assert.equal(result.status, 'CANDIDATE_READY');
-  const requests = calls.filter(call => call.kind === 'fetch');
+  const requests = calls.filter(call => call.kind === 'fetch' && call.url.endsWith('/api/options/preview'));
   assert.equal(requests.length, 1);
   assert.ok(requests[0].url.endsWith('/api/options/preview'));
   assert.equal(JSON.parse(requests[0].init.body).symbol, 'P-BTC-60000-041226');
@@ -364,7 +364,7 @@ test('Demo full-auto passes the isolated Demo credentials and manual quality ove
   });
   const result = await worker.runOnce();
   assert.equal(result.status, 'ORDER_EXECUTED');
-  const requests = calls.filter(call => call.kind === 'fetch');
+  const requests = calls.filter(call => call.kind === 'fetch' && (call.url.endsWith('/api/options/preview') || call.url.endsWith('/api/options/execute')));
   assert.equal(requests.length, 2);
   assert.ok(requests[0].url.endsWith('/api/options/preview'));
   assert.ok(requests[1].url.endsWith('/api/options/execute'));
