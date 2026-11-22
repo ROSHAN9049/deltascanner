@@ -489,7 +489,7 @@ test('manual Testnet override remains blocked when the dedicated flag is off', a
     executor.previewOptionsOrder({
       symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1, manualTestOverride: true
     }),
-    /ALLOW_MANUAL_OVERRIDE_FOR_TEST=true/
+    /OPTIONS_DEMO_LOG_ONLY_QUALITY_FILTERS=true/
   );
   assert.equal(apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
 });
@@ -677,6 +677,6 @@ test('Demo manual quality override logs missing daily IV Percentile but keeps th
     symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1, manualTestOverride: true
   });
   assert.equal(preview.executionAllowed, true);
-  assert.ok(logs.some(args => args[2]?.qualityFiltersObserved?.includes('IV_PERCENTILE_FILTER')));
+  assert.ok(logs.some(args => args[2]?.qualityFiltersObserved?.some(filter => filter.code === 'IV_PCTL_UNAVAILABLE_DEMO_LOG_ONLY')));
   assert.equal(apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
 });
