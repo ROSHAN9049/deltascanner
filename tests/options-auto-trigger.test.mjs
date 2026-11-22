@@ -324,7 +324,7 @@ test('Demo Options execution does not inherit the global Futures FULL_AUTO_EXECU
   const requests = calls.filter(call => call.kind === 'fetch' && call.url.endsWith('/api/options/preview'));
   assert.equal(requests.length, 1);
   assert.ok(requests[0].url.endsWith('/api/options/preview'));
-  assert.equal(JSON.parse(requests[0].init.body).symbol, 'P-BTC-60000-041226');
+  assert.equal(JSON.parse(requests[0].init.body).symbol, CANDIDATE.symbol);
   assert.equal(calls.some(call => call.kind === 'fetch' && call.url.endsWith('/api/options/execute')), false);
 });
 
