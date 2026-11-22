@@ -100,28 +100,32 @@ export function assertOptionsExecutionAllowed(env = process.env) {
 }
 
 /**
- * Relaxed candidate-quality qualification is available only in the explicit
- * Delta Demo profile and requires a second, intentional test override switch.
- * It never bypasses the hard score, loss, size, DTE, position, E-STOP, quote,
- * bracket, hedge, or exchange reconciliation checks.
+ * Demo-only log-only quality policy. The explicit flag relaxes only candidate
+ * quality filters; execution, product, quote, exposure, E-STOP, risk, size,
+ * expiry, spread, hedge, bracket and exchange-reconciliation gates remain hard.
+ * The legacy ALLOW_MANUAL_OVERRIDE_FOR_TEST switch remains compatible.
  */
 export const OPTIONS_MANUAL_TEST_OVERRIDE_LOCK_REASON =
-  'Manual Options Demo override requires OPTIONS_EXECUTION_MODE=demo, the explicit Delta Testnet profile, ALLOW_MANUAL_OVERRIDE_FOR_TEST=true and demo credentials.';
+  'Demo quality log-only mode requires OPTIONS_EXECUTION_MODE=demo, the explicit Delta Testnet profile, OPTIONS_DEMO_LOG_ONLY_QUALITY_FILTERS=true and Demo credentials.';
 
 export function getOptionsManualTestOverrideGate(env = process.env) {
   const mode = getOptionsExecutionMode(env);
   const deltaMode = String(env?.DELTA_EXECUTION_MODE ?? '').trim().toLowerCase();
   const environment = String(env?.DELTA_ENVIRONMENT ?? '').trim().toUpperCase();
-  const flag = String(env?.ALLOW_MANUAL_OVERRIDE_FOR_TEST ?? '').trim().toLowerCase();
+  const logOnlyFlag = String(env?.OPTIONS_DEMO_LOG_ONLY_QUALITY_FILTERS ?? '').trim().toLowerCase();
+  const legacyFlag = String(env?.ALLOW_MANUAL_OVERRIDE_FOR_TEST ?? '').trim().toLowerCase();
+  const flagEnabled = logOnlyFlag === 'true' || legacyFlag === 'true';
   const credentials = getOptionsDemoCredentialsGate(env);
   const allowed = mode === 'demo' && deltaMode === 'testnet' &&
-    environment === 'TESTNET' && flag === 'true' && credentials.allowed;
+    environment === 'TESTNET' && flagEnabled && credentials.allowed;
   return Object.freeze({
     allowed,
     mode,
     deltaMode,
     environment,
-    flagEnabled: flag === 'true',
+    flagEnabled,
+    logOnlyFlagEnabled: logOnlyFlag === 'true',
+    legacyFlagEnabled: legacyFlag === 'true',
     reason: allowed ? null : OPTIONS_MANUAL_TEST_OVERRIDE_LOCK_REASON
   });
 }
