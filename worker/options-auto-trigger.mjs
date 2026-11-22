@@ -56,6 +56,7 @@ function safeError(error, secret) {
 export function createOptionsAutoTrigger({
   env = process.env,
   database,
+  optionsExecutor,
   fetchImpl = (...args) => fetch(...args),
   logger = async () => {},
   now = () => Date.now(),
@@ -656,8 +657,84 @@ if (fullAutoExecute) {
     }
   }
 
+  async function processManualQueueOnce() {
+    if (!optionsExecutor || typeof database?.updateReturning !== 'function') return { status: 'UNAVAILABLE' };
+    if (getOptionsExecutionMode(env) !== 'demo' ||
+        !getOptionsExecutionGate(env).allowed ||
+        !getOptionsManualTestOverrideGate(env).allowed) {
+      return { status: 'LOCKED' };
+    }
+    const pending = await database.select(
+      'dd_manual_option_order_queue',
+      'status=eq.pending&select=id,contract,side,size&order=created_at.asc&limit=1'
+    );
+    if (!Array.isArray(pending) || !pending.length) return { status: 'EMPTY' };
+    const row = pending[0];
+    const claimed = await database.updateReturning(
+      'dd_manual_option_order_queue',
+      'id=eq.' + encodeURIComponent(row.id) + '&status=eq.pending',
+      { status: 'claimed', claimed_at: new Date(now()).toISOString(), updated_at: new Date(now()).toISOString() }
+    );
+    if (!Array.isArray(claimed) || claimed.length !== 1) return { status: 'CLAIM_RACE' };
+
+    try {
+      const contract = upper(row.contract);
+      const side = upper(row.side);
+      const size = Number(row.size);
+      if (!/^([CP])-(BTC|ETH)-/.test(contract) || !['BUY', 'SELL'].includes(side) ||
+          !Number.isSafeInteger(size) || size < 1 || size > 20) {
+        throw new Error('Manual queue row has invalid contract, side or size');
+      }
+      const strategy = side === 'BUY' ? 'OPTIONS_BUY' : 'OPTIONS_SELL';
+      const preview = await optionsExecutor.previewOptionsOrder({
+        symbol: contract, strategy, qty: size, manualTestOverride: true
+      });
+      if (preview?.executionAllowed !== true || !preview?.quoteToken) {
+        throw new Error(preview?.executionLockReason || 'Manual Options preview is not execution-eligible');
+      }
+      const result = await optionsExecutor.placeOptionsOrder({
+        symbol: contract, strategy, qty: size,
+        quoteToken: preview.quoteToken, manualTestOverride: true
+      });
+      const fill = result?.fill || {};
+      const order = result?.order || {};
+      const finalStatus = result?.success === true ? 'filled' : 'failed';
+      await database.update('dd_manual_option_order_queue', 'id=eq.' + encodeURIComponent(row.id), {
+        status: finalStatus,
+        order_id: result?.order_id == null ? null : String(result.order_id),
+        fill_price: finite(result?.entry ?? fill?.averageFillPrice),
+        filled_size: finite(fill?.filledQty ?? result?.size),
+        sl_order_id: result?.sl_order_id ?? result?.stop_order_id ?? order?.stop_order_id ?? null,
+        tp_order_id: result?.tp_order_id ?? result?.take_profit_order_id ?? order?.take_profit_order_id ?? null,
+        error: result?.success === true ? null : 'Exchange order result requires reconciliation',
+        updated_at: new Date(now()).toISOString()
+      });
+      await logger(result?.success === true ? 'INFO' : 'ERROR',
+        '[MANUAL-OPTIONS-QUEUE] execution result', {
+          queueId: row.id, contract, side, status: finalStatus,
+          orderId: result?.order_id ?? null,
+          fillPrice: finite(result?.entry ?? fill?.averageFillPrice),
+          filledSize: finite(fill?.filledQty ?? result?.size)
+        });
+      return { status: finalStatus, queueId: row.id };
+    } catch (error) {
+      const message = safeError(error, clean(env.DELTA_DEMO_API_SECRET));
+      await database.update('dd_manual_option_order_queue', 'id=eq.' + encodeURIComponent(row.id), {
+        status: 'failed', error: message, updated_at: new Date(now()).toISOString()
+      });
+      await logger('ERROR', '[MANUAL-OPTIONS-QUEUE] execution failed', {
+        queueId: row.id, httpStatus: finite(error?.status), deltaErrorCode: clean(error?.code) || null,
+        error: message
+      });
+      return { status: 'failed', queueId: row.id, error: message };
+    }
+  }
+
   async function runPollCycle() {
     const result = await runOnce();
+    let manualQueueResult = { status: 'SKIPPED' };
+    try { manualQueueResult = await processManualQueueOnce(); }
+    catch (error) { manualQueueResult = { status: 'ERROR', error: safeError(error, clean(env.DELTA_DEMO_API_SECRET)) }; }
     const timestamp = new Date(now()).toISOString();
     const tickNumber = ++pollTickNumber;
     const candidates = Number.isFinite(Number(result?.candidateCount))
@@ -668,7 +745,7 @@ if (fullAutoExecute) {
       : 'OK';
     await logger(status === 'OK' ? 'INFO' : 'ERROR',
       `options_poller_tick timestamp=${timestamp} candidates=${candidates} tick#=${tickNumber} status=${status}`,
-      { timestamp, candidates, tickNumber, status, resultStatus: result?.status || 'UNKNOWN' });
+      { timestamp, candidates, tickNumber, status, resultStatus: result?.status || 'UNKNOWN', manualQueueStatus: manualQueueResult.status });
     return result;
   }
 
@@ -689,7 +766,7 @@ if (fullAutoExecute) {
     timer?.unref?.();
 
     const deploymentSha = clean(
-      env.HOSTLESS_DEPLOYMENT_SHA || env.GIT_SHA || env.COMMIT_SHA || env.SOURCE_VERSION || 'unknown'
+      env.HOSTLESS_COMMIT_SHA || env.HOSTLESS_DEPLOYMENT_SHA || env.GIT_SHA || env.COMMIT_SHA || env.SOURCE_VERSION || 'unknown'
     ).replace(/[^a-zA-Z0-9._-]/g, '').slice(0, 40) || 'unknown';
     await logger('INFO',
       `OPTIONS_POLLER_STARTED recurring=true interval=${OPTIONS_AUTO_TRIGGER_INTERVAL_MS / 1000}s sha=${deploymentSha}`,

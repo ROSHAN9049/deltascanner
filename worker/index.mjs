@@ -15,6 +15,19 @@ import { canStartWorkerInExecutionProfile } from './execution/execution-route-po
 
 const githubActionsPublicScanOnly = isGithubActionsPublicScanOnly();
 
+const workerShaEnv = [
+  'HOSTLESS_COMMIT_SHA',
+  'HOSTLESS_DEPLOYMENT_SHA',
+  'GIT_SHA',
+  'COMMIT_SHA',
+  'SOURCE_VERSION'
+];
+const workerShaSource = workerShaEnv.find(key => String(process.env[key] || '').trim()) || 'unknown';
+const workerSha = String(process.env[workerShaSource] || 'unknown')
+  .trim().replace(/[^a-zA-Z0-9._-]/g, '').slice(0, 40) || 'unknown';
+console.log('[DeltaScanner] worker_started sha=' + workerSha + ' source=' + workerShaSource);
+
+
 if (!canStartWorkerInExecutionProfile({
   environment: CONFIG.environment,
   deltaExecutionMode: CONFIG.deltaExecutionMode,
@@ -433,6 +446,7 @@ void optionsExitMonitorWorker.start().catch(error => {
 optionsAutoTriggerWorker = createOptionsAutoTrigger({
   env: process.env,
   database: db,
+  optionsExecutor: deltaExecutor,
   logger: log
 });
 void optionsAutoTriggerWorker.start().catch(error => {
