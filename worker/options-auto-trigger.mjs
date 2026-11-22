@@ -86,6 +86,7 @@ export function createOptionsAutoTrigger({
   let started = false;
   let inFlight = null;
   let demoCredentialDiagnostics = null;
+  let pollTickNumber = 0;
 
   async function writeHeartbeat(status, extra = {}) {
     await logger('INFO', '[AUTO-TRIGGER] Worker heartbeat', {
@@ -651,6 +652,7 @@ if (fullAutoExecute) {
   async function runPollCycle() {
     const result = await runOnce();
     const timestamp = new Date(now()).toISOString();
+    const tickNumber = ++pollTickNumber;
     const candidates = Number.isFinite(Number(result?.candidateCount))
       ? Number(result.candidateCount)
       : (result?.candidate ? 1 : 0);
@@ -658,35 +660,45 @@ if (fullAutoExecute) {
       ? 'ERROR'
       : 'OK';
     await logger(status === 'OK' ? 'INFO' : 'ERROR',
-      `options_poller_tick timestamp=${timestamp} candidates=${candidates} status=${status}`,
-      { timestamp, candidates, status, resultStatus: result?.status || 'UNKNOWN' });
+      `options_poller_tick timestamp=${timestamp} candidates=${candidates} tick#=${tickNumber} status=${status}`,
+      { timestamp, candidates, tickNumber, status, resultStatus: result?.status || 'UNKNOWN' });
     return result;
   }
 
   async function start() {
     if (started) return;
     started = true;
-    if (demoExecutionConfigured) {
-      // Credential failures must block order routing, never the poller's
-      // recurring heartbeat. Keep the loop alive so the exact gate reason
-      // remains observable and can recover after an environment correction.
-      await ensureDemoCredentialDiagnostics();
-    }
-    if (enabled && !oneShotSymbol) {
-      timer = setIntervalFn(() => {
-        void runPollCycle().catch(error => {
-          void logger('ERROR', '[AUTO-TRIGGER] Poll cycle failed', {
-            error: safeError(error, clean(env.DELTA_DEMO_API_SECRET))
-          });
+
+    // The poller heartbeat is independent of order-routing configuration.
+    // Even when automation is disabled or Demo credentials fail, the recurring
+    // cycle remains observable; runOnce() keeps all execution gates fail-closed.
+    timer = setIntervalFn(() => {
+      void runPollCycle().catch(error => {
+        void logger('ERROR', '[AUTO-TRIGGER] Poll cycle failed', {
+          error: safeError(error, clean(env.DELTA_DEMO_API_SECRET))
         });
-      }, OPTIONS_AUTO_TRIGGER_INTERVAL_MS);
-      timer?.unref?.();
-    } else if (enabled && oneShotSymbol) {
-      await logger('INFO', '[AUTO-TRIGGER] Exact Demo one-shot mode is active; no recurring execution timer will be created', {
-        environment: 'DELTA_DEMO',
-        symbol: oneShotSymbol,
-        recurringTimerEnabled: false
       });
+    }, OPTIONS_AUTO_TRIGGER_INTERVAL_MS);
+    timer?.unref?.();
+
+    const deploymentSha = clean(
+      env.HOSTLESS_DEPLOYMENT_SHA || env.GIT_SHA || env.COMMIT_SHA || env.SOURCE_VERSION || 'unknown'
+    ).replace(/[^a-zA-Z0-9._-]/g, '').slice(0, 40) || 'unknown';
+    await logger('INFO',
+      `OPTIONS_POLLER_STARTED recurring=true interval=${OPTIONS_AUTO_TRIGGER_INTERVAL_MS / 1000}s sha=${deploymentSha}`,
+      {
+        recurring: true,
+        intervalSeconds: OPTIONS_AUTO_TRIGGER_INTERVAL_MS / 1000,
+        deploymentSha,
+        enabled,
+        oneShotSymbol: oneShotSymbol || null,
+        executionAutoEnabled: executionAutoExecuteConfigured
+      }
+    );
+    if (demoExecutionConfigured) {
+      // Diagnostics may block order routing, but the recurring timer is already
+      // live before this check starts and continues ticking independently.
+      await ensureDemoCredentialDiagnostics();
     }
     return runPollCycle();
   }
