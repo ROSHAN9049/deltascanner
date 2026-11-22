@@ -489,7 +489,7 @@ function App() {
       <div className="confirmDialog" role="dialog" aria-modal="true" aria-labelledby="optionsConfirmTitle">
         <h3 id="optionsConfirmTitle">Confirm Options Trade · Delta Testnet</h3>
         <p><b>{optionsPreview.side} {optionsPreview.qty} · {optionsPreview.symbol}</b></p>
-        {optionsPreview.manualTestOverride === true ? <p role="alert" className="warn">TEST OVERRIDE: Worker confirmation, score and liquidity qualification are bypassed for this one fresh cached contract. Delta band, DTE, exact Testnet product and live quote checks, verified balance, configured Options risk budget, the 0.5% hard maximum-loss cap, E-STOP, fresh tick, duplicate/position limits, and the SELL protective-hedge lifecycle still apply.</p> : null}
+        {optionsPreview.manualTestOverride === true ? <p role="alert" className="warn">TEST OVERRIDE: Stage/analysis readiness, IV rank/percentile/regime and OI/volume quality checks are log-only for this fresh cached contract. Score ≥80, configured Delta/DTE bands, exact Testnet product and live quote, the 1.50% spread ceiling, verified balance, configured Options risk budget, the 0.5% hard maximum-loss cap, E-STOP, fresh tick, duplicate/position limits, and the SELL protective-hedge lifecycle still apply.</p> : null}
         <p>Limit premium: USD {Number(optionsPreview.premium).toFixed(8)}</p>
         {optionsPreview.hedgeSymbol ? <p>Protective BUY first: {optionsPreview.hedgeSymbol} at USD {Number(optionsPreview.hedgePremium).toFixed(8)}. The short leg is not submitted unless the protective leg is fully filled.</p> : null}
         <p>Maximum loss (including fee allowance): <b>USD {Number(optionsPreview.maxLossUsd).toFixed(6)}</b></p>
@@ -921,7 +921,7 @@ function OptionsView({
             : 'API Options execution gate: STATUS UNKNOWN — /api/health has not confirmed allowed=true; final confirmation must remain disabled.'}
         {' '}Production/live order routing is not supported.
       </p>
-      {manualOverrideAllowed ? <p className="warn" role="status"><b>TEST-ONLY MANUAL OVERRIDE ENABLED.</b> TEST EXECUTE bypasses Worker confirmation, score and liquidity qualification only. It still enforces the configured Delta/DTE bands, live Testnet product/quote, account checks, existing risk budgets, the 0.5% hard loss cap, E-STOP, duplicate/position caps and the protected SELL hedge. Turn ALLOW_MANUAL_OVERRIDE_FOR_TEST off immediately after the planned test.</p> : null}
+      {manualOverrideAllowed ? <p className="warn" role="status"><b>TEST-ONLY MANUAL OVERRIDE ENABLED.</b> TEST EXECUTE makes stage/analysis readiness, IV rank/percentile/regime and OI/volume quality checks log-only. Score ≥80, configured Delta/DTE bands, live Testnet product/quote and 1.50% spread ceiling, verified account balance, risk budgets, the 0.5% hard loss cap, E-STOP, duplicate/position caps and the protected SELL hedge remain mandatory. Turn ALLOW_MANUAL_OVERRIDE_FOR_TEST off immediately after the planned test.</p> : null}
     </div>
     <Panel title="Options BUY · Testnet Candidate Review">
       <OptionTable rows={buys} type="BUY" deltaMin={buyMinDelta} deltaMax={buyMaxDelta}
