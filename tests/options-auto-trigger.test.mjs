@@ -453,7 +453,7 @@ test('Demo auto execution is blocked when API App signed authentication fails', 
   assert.equal(heartbeat?.[2]?.credentialDiagnosticsPassed, false);
 });
 
-test('Demo exact one-shot startup performs one scan without creating a recurring timer', async () => {
+test('Demo exact one-shot symbol filter still keeps the recurring poller alive', async () => {
   const { worker, timers, logs, calls } = harness({
     envPatch: {
       OPTIONS_EXECUTION_MODE: 'demo',
@@ -467,8 +467,9 @@ test('Demo exact one-shot startup performs one scan without creating a recurring
   });
   const result = await worker.start();
   assert.equal(result.status, 'DEMO_ONE_SHOT_SYMBOL_NOT_READY');
-  assert.equal(timers.length, 0);
-  assert.ok(logs.some(args => String(args[1]).includes('Exact Demo one-shot mode is active')));
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].delay, OPTIONS_AUTO_TRIGGER_INTERVAL_MS);
+  assert.ok(logs.some(args => String(args[1]).includes('OPTIONS_POLLER_STARTED recurring=true interval=60s sha=unknown')));
   assert.ok(calls.some(call => call.kind === 'fetch' && call.url === 'https://deltascanner-api-v2.hostless.app/api/options/diagnostics'));
   const apiDiagnosticCall = calls.find(call => call.kind === 'fetch' && call.url.endsWith('/api/options/diagnostics'));
   assert.equal(apiDiagnosticCall?.init?.method, 'POST');
