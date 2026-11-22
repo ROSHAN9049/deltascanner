@@ -357,6 +357,25 @@ test('Demo full-auto passes the isolated Demo credentials and manual quality ove
   assert.ok(logs.every(args => args[1] !== '[AUTO-TRIGGER] Candidate ready for execution. Token acquired. Waiting for manual execution.'));
 });
 
+
+test('Demo exact one-shot startup performs one scan without creating a recurring timer', async () => {
+  const { worker, timers, logs } = harness({
+    envPatch: {
+      OPTIONS_EXECUTION_MODE: 'demo',
+      OPTIONS_EXIT_MONITOR_ENABLED: 'true',
+      OPTIONS_DEMO_LOG_ONLY_QUALITY_FILTERS: 'true',
+      OPTIONS_DEMO_ONE_SHOT_SYMBOL: 'P-BTC-60000-041226',
+      DELTA_DEMO_API_KEY: 'demo-key',
+      DELTA_DEMO_API_SECRET: 'demo-secret'
+    },
+    cacheRows: []
+  });
+  const result = await worker.start();
+  assert.equal(result.status, 'DEMO_ONE_SHOT_SYMBOL_NOT_READY');
+  assert.equal(timers.length, 0);
+  assert.ok(logs.some(args => String(args[1]).includes('Exact Demo one-shot mode is active')));
+});
+
 test('Options auto-trigger requires both the Testnet execution mode and TESTNET environment', async () => {
   for (const envPatch of [
     { DELTA_ENVIRONMENT: 'SIGNAL_ONLY' },
