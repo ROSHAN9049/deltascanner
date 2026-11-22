@@ -353,7 +353,7 @@ test('Demo full-auto passes the isolated Demo credentials and manual quality ove
   assert.equal(heartbeat?.[2]?.optionsDemoAutoExecuteEnabled, true);
   assert.equal(heartbeat?.[2]?.executionAutoEnabled, true);
   assert.equal(heartbeat?.[2]?.mode, 'DEMO_AUTO_EXECUTE');
-  assert.equal(heartbeat?.[2]?.optionsDemoOneShotSymbol, 'P-BTC-59600-171126');
+  assert.equal(heartbeat?.[2]?.optionsDemoOneShotSymbol, 'P-BTC-60000-041226');
   assert.ok(logs.every(args => args[1] !== '[AUTO-TRIGGER] Candidate ready for execution. Token acquired. Waiting for manual execution.'));
 });
 
