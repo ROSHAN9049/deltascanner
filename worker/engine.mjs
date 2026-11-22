@@ -2800,7 +2800,7 @@ export class DeltaEngine {
                   } catch (error) {
                     rpcError = error;
                     const message = String(error?.message || error);
-                    const transient = /57014|statement timeout|timeout|temporar|\\b502\\b|\\b503\\b/i.test(message);
+                    const transient = /57014|statement timeout|timeout|temporar|502|503/i.test(message);
                     if (!transient || attempt === 1) break;
                     await sleep(350);
                   }
