@@ -649,7 +649,10 @@ if (fullAutoExecute) {
     if (started) return;
     started = true;
     if (demoExecutionConfigured) {
-      await ensureDemoCredentialDiagnostics();
+      const diagnosticGate = await ensureDemoCredentialDiagnostics();
+      if (executionAutoExecuteConfigured && !diagnosticGate.passed) {
+        return runOnce();
+      }
     }
     if (enabled && !oneShotSymbol) {
       timer = setIntervalFn(() => {
