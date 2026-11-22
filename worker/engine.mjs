@@ -2783,14 +2783,29 @@ export class DeltaEngine {
               }
 
               try {
-                const response = await db.rpc('get_options_iv_group_metrics', {
-                  p_underlying: underlying,
-                  p_option_type: group.option_type,
-                  p_delta_bucket: group.delta_bucket,
-                  p_dte_bucket: group.dte_bucket,
-                  p_since: cutoff,
-                  p_now: new Date(now).toISOString()
-                });
+                let response;
+                let rpcError = null;
+                for (let attempt = 0; attempt < 2; attempt += 1) {
+                  try {
+                    response = await db.rpc('get_options_iv_group_metrics', {
+                      p_underlying: underlying,
+                      p_option_type: group.option_type,
+                      p_delta_bucket: group.delta_bucket,
+                      p_dte_bucket: group.dte_bucket,
+                      p_since: cutoff,
+                      p_now: new Date(now).toISOString()
+                    });
+                    rpcError = null;
+                    break;
+                  } catch (error) {
+                    rpcError = error;
+                    const message = String(error?.message || error);
+                    const transient = /57014|statement timeout|timeout|temporar|502|503/i.test(message);
+                    if (!transient || attempt === 1) break;
+                    await sleep(350);
+                  }
+                }
+                if (rpcError) throw rpcError;
                 const summary = Array.isArray(response) ? response[0] : response;
                 if (!summary || typeof summary !== 'object') {
                   throw new Error('IV group aggregate returned no summary for ' + key);
