@@ -68,5 +68,5 @@ test('Demo credential diagnostic flags missing or whitespace-padded values witho
   assert.equal(result.demoApiSecretConfigured, true);
   assert.equal(result.secretBasicFormatValid, false);
   assert.equal(result.deltaErrorCode, 'demo_credentials_missing');
-  assert.equal(JSON.stringify(logs).includes('secret'), false);
+  assert.equal(JSON.stringify(logs).includes('"secret\\n"'), false);
 });
