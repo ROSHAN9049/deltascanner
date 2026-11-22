@@ -5,6 +5,7 @@ import marketHandler from '../api/market.js';
 import engineStateHandler from '../api/engine/state.js';
 import engineSessionHandler from '../api/engine/session.js';
 import engineToggleHandler from '../api/engine/toggle.js';
+import optionsDiagnosticsHandler from '../api/options/diagnostics.js';
 import optionsPreviewHandler from '../api/options/preview.js';
 import optionsExecuteHandler from '../api/options/execute.js';
 
@@ -14,6 +15,7 @@ export const HOSTLESS_API_ROUTES = Object.freeze({
   '/api/engine/state': engineStateHandler,
   '/api/engine/session': engineSessionHandler,
   '/api/engine/toggle': engineToggleHandler,
+  '/api/options/diagnostics': optionsDiagnosticsHandler,
   '/api/options/preview': optionsPreviewHandler,
   '/api/options/execute': optionsExecuteHandler
 });

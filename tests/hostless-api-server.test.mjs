@@ -76,3 +76,26 @@ test('Hostless API answers credentialed CORS preflight', async () => {
     assert.equal(response.headers.get('access-control-allow-methods'), 'GET, POST, DELETE, OPTIONS');
   });
 });
+
+
+test('Hostless API registers the protected Options diagnostics endpoint', async () => {
+  const server = createHostlessApiServer({
+    allowedOrigins: ['https://dashboard.example']
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const base = 'http://127.0.0.1:' + server.address().port;
+  try {
+    // GET is deliberately rejected by the handler before authentication or
+    // any outbound Delta request. 405 proves the route exists; 404 means it
+    // is missing from the Hostless server's route registry.
+    const response = await fetch(base + '/api/options/diagnostics');
+    const body = await response.json();
+    assert.equal(response.status, 405);
+    assert.deepEqual(body, { success: false, error: 'POST only' });
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
