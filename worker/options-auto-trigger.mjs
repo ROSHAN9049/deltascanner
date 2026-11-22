@@ -104,6 +104,65 @@ export function createOptionsAutoTrigger({
     });
   }
 
+  async function runApiAppDemoCredentialDiagnostic() {
+    const engineSecret = clean(env.ENGINE_SECRET);
+    if (!engineSecret) {
+      await logger('WARN', '[OptionsDemoDiagnostics] API App signed-auth diagnostic skipped', {
+        target: 'API_APP',
+        deltaErrorCode: 'engine_secret_missing'
+      });
+      return;
+    }
+    let diagnosticUrl;
+    try {
+      diagnosticUrl = resolvePreviewUrl(env.OPTIONS_AUTO_TRIGGER_API_URL)
+        .replace('/api/options/preview', '/api/options/diagnostics');
+    } catch (error) {
+      await logger('WARN', '[OptionsDemoDiagnostics] API App signed-auth diagnostic URL invalid', {
+        target: 'API_APP',
+        deltaErrorCode: 'diagnostic_url_invalid',
+        error: safeError(error, engineSecret)
+      });
+      return;
+    }
+    try {
+      const response = await fetchImpl(diagnosticUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-engine-secret': engineSecret
+        },
+        body: '{}'
+      });
+      let payload = null;
+      try { payload = await response.json(); } catch {}
+      const report = payload?.diagnostic && typeof payload.diagnostic === 'object'
+        ? payload.diagnostic
+        : {
+            environment: 'DELTA_DEMO_API_APP',
+            signedAuthPassed: false,
+            signedAuthHttpStatus: null,
+            deltaErrorCode: response.status === 401 ? 'api_app_engine_auth_unauthorized' :
+              response.status === 404 ? 'api_app_diagnostic_route_missing' : 'api_app_diagnostic_failed'
+          };
+      await logger(
+        report.signedAuthPassed === true ? 'INFO' : 'WARN',
+        '[OptionsDemoDiagnostics] API App execution credentials and signed-auth diagnostic',
+        {
+          target: 'API_APP',
+          apiDiagnosticHttpStatus: Number(response.status) || null,
+          ...report
+        }
+      );
+    } catch (error) {
+      await logger('WARN', '[OptionsDemoDiagnostics] API App signed-auth diagnostic request failed', {
+        target: 'API_APP',
+        deltaErrorCode: 'api_app_diagnostic_network_error',
+        error: safeError(error, engineSecret)
+      });
+    }
+  }
+
   async function runOnce() {
     if (inFlight) return inFlight;
     inFlight = (async () => {
@@ -511,10 +570,13 @@ if (fullAutoExecute) {
       try {
         await runOptionsDemoCredentialDiagnostic({ env, fetchImpl, logger, now });
       } catch (error) {
-        await logger('ERROR', '[OptionsDemoDiagnostics] Startup diagnostic failed safely', {
+        await logger('ERROR', '[OptionsDemoDiagnostics] Worker startup diagnostic failed safely', {
+          target: 'WORKER',
+          deltaErrorCode: 'worker_diagnostic_failed',
           error: safeError(error, clean(env.DELTA_DEMO_API_SECRET))
         });
       }
+      await runApiAppDemoCredentialDiagnostic();
     }
     if (enabled && !oneShotSymbol) {
       timer = setIntervalFn(() => {
