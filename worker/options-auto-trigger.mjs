@@ -6,6 +6,7 @@ import {
   OPTIONS_DATABASE_EXECUTION_LOCK_REASON,
   OPTIONS_EXECUTION_LOCK_REASON
 } from './options-execution-lock.mjs';
+import { runOptionsDemoCredentialDiagnostic } from './options-demo-diagnostics.mjs';
 
 const DEFAULT_API_ORIGIN = 'https://deltascanner-api-v2.hostless.app';
 export const OPTIONS_AUTO_TRIGGER_INTERVAL_MS = 60_000;
@@ -69,26 +70,163 @@ export function createOptionsAutoTrigger({
   }
 
   const enabled = isEnabled(env.AUTO_EXECUTE_OPTIONS);
-  // Demo Options automation has its own opt-in and never toggles the global
-  // Futures FULL_AUTO_EXECUTE switch.
+  // Demo Options automation has a separate opt-in. Keep the global Futures
+  // FULL_AUTO_EXECUTE telemetry truthful even when Demo Options auto execution is enabled.
   const demoExecutionConfigured = getOptionsExecutionMode(env) === 'demo';
-  const fullAutoExecuteConfigured = demoExecutionConfigured
-    ? isEnabled(env.OPTIONS_DEMO_AUTO_EXECUTE)
-    : isEnabled(env.FULL_AUTO_EXECUTE);
+  const fullAutoExecuteConfigured = isEnabled(env.FULL_AUTO_EXECUTE);
+  const optionsDemoAutoExecuteConfigured =
+    demoExecutionConfigured && isEnabled(env.OPTIONS_DEMO_AUTO_EXECUTE);
+  const executionAutoExecuteConfigured = demoExecutionConfigured
+    ? optionsDemoAutoExecuteConfigured
+    : fullAutoExecuteConfigured;
+  const oneShotSymbol = demoExecutionConfigured
+    ? upper(env.OPTIONS_DEMO_ONE_SHOT_SYMBOL)
+    : '';
   let timer = null;
   let started = false;
   let inFlight = null;
+  let demoCredentialDiagnostics = null;
 
   async function writeHeartbeat(status, extra = {}) {
     await logger('INFO', '[AUTO-TRIGGER] Worker heartbeat', {
       enabled,
-      mode: fullAutoExecuteConfigured ? 'AUTO_EXECUTE' : 'PREVIEW_ONLY',
+      mode: executionAutoExecuteConfigured
+        ? (demoExecutionConfigured ? 'DEMO_AUTO_EXECUTE' : 'AUTO_EXECUTE')
+        : 'PREVIEW_ONLY',
       fullAutoExecute: fullAutoExecuteConfigured,
+      optionsDemoAutoExecuteEnabled: optionsDemoAutoExecuteConfigured,
+      optionsDemoOneShotSymbol: oneShotSymbol || null,
+      executionAutoEnabled: executionAutoExecuteConfigured,
+      executionAutoSource: demoExecutionConfigured ? 'OPTIONS_DEMO_AUTO_EXECUTE' : 'FULL_AUTO_EXECUTE',
+      manualOverrideEnabled: getOptionsManualTestOverrideGate(env).allowed,
+      demoLogOnlyQualityFiltersEnabled: isEnabled(env.OPTIONS_DEMO_LOG_ONLY_QUALITY_FILTERS),
+      credentialDiagnosticsPassed: demoCredentialDiagnostics?.passed === true,
       status,
       candidateReady: false,
       lastScanAt: new Date(now()).toISOString(),
       ...extra
     });
+  }
+
+  async function runApiAppDemoCredentialDiagnostic() {
+    const engineSecret = clean(env.ENGINE_SECRET);
+    if (!engineSecret) {
+      const report = {
+        environment: 'DELTA_DEMO_API_APP',
+        signedAuthPassed: false,
+        signedAuthHttpStatus: null,
+        deltaErrorCode: 'engine_secret_missing',
+        outboundIp: null
+      };
+      await logger('WARN', '[OptionsDemoDiagnostics] API App signed-auth diagnostic skipped', {
+        target: 'API_APP', ...report
+      });
+      return report;
+    }
+    let diagnosticUrl;
+    try {
+      diagnosticUrl = resolvePreviewUrl(env.OPTIONS_AUTO_TRIGGER_API_URL)
+        .replace('/api/options/preview', '/api/options/diagnostics');
+    } catch (error) {
+      const report = {
+        environment: 'DELTA_DEMO_API_APP',
+        signedAuthPassed: false,
+        signedAuthHttpStatus: null,
+        deltaErrorCode: 'diagnostic_url_invalid',
+        outboundIp: null
+      };
+      await logger('WARN', '[OptionsDemoDiagnostics] API App signed-auth diagnostic URL invalid', {
+        target: 'API_APP', ...report, error: safeError(error, engineSecret)
+      });
+      return report;
+    }
+    try {
+      const response = await fetchImpl(diagnosticUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-engine-secret': engineSecret
+        },
+        body: '{}'
+      });
+      let payload = null;
+      try { payload = await response.json(); } catch {}
+      const report = payload?.diagnostic && typeof payload.diagnostic === 'object'
+        ? payload.diagnostic
+        : {
+            environment: 'DELTA_DEMO_API_APP',
+            signedAuthPassed: false,
+            signedAuthHttpStatus: null,
+            deltaErrorCode: response.status === 401 ? 'api_app_engine_auth_unauthorized' :
+              response.status === 404 ? 'api_app_diagnostic_route_missing' : 'api_app_diagnostic_failed',
+            outboundIp: null
+          };
+      await logger(
+        report.signedAuthPassed === true ? 'INFO' : 'WARN',
+        '[OptionsDemoDiagnostics] API App execution credentials and signed-auth diagnostic',
+        {
+          target: 'API_APP',
+          apiDiagnosticHttpStatus: Number(response.status) || null,
+          ...report
+        }
+      );
+      return report;
+    } catch (error) {
+      const report = {
+        environment: 'DELTA_DEMO_API_APP',
+        signedAuthPassed: false,
+        signedAuthHttpStatus: null,
+        deltaErrorCode: 'api_app_diagnostic_network_error',
+        outboundIp: null
+      };
+      await logger('WARN', '[OptionsDemoDiagnostics] API App signed-auth diagnostic request failed', {
+        target: 'API_APP', ...report, error: safeError(error, engineSecret)
+      });
+      return report;
+    }
+  }
+
+  async function ensureDemoCredentialDiagnostics() {
+    if (demoCredentialDiagnostics) return demoCredentialDiagnostics;
+    let workerReport;
+    try {
+      workerReport = await runOptionsDemoCredentialDiagnostic({ env, fetchImpl, logger, now });
+    } catch (error) {
+      workerReport = {
+        environment: 'DELTA_DEMO_WORKER',
+        signedAuthPassed: false,
+        signedAuthHttpStatus: null,
+        deltaErrorCode: 'worker_diagnostic_failed',
+        outboundIp: null
+      };
+      await logger('ERROR', '[OptionsDemoDiagnostics] Worker startup diagnostic failed safely', {
+        target: 'WORKER',
+        ...workerReport,
+        error: safeError(error, clean(env.DELTA_DEMO_API_SECRET))
+      });
+    }
+    const apiAppReport = await runApiAppDemoCredentialDiagnostic();
+    demoCredentialDiagnostics = {
+      worker: workerReport,
+      apiApp: apiAppReport,
+      passed: workerReport?.signedAuthPassed === true && apiAppReport?.signedAuthPassed === true
+    };
+    await logger(
+      demoCredentialDiagnostics.passed ? 'INFO' : 'WARN',
+      '[OptionsDemoDiagnostics] Both execution processes credential gate',
+      {
+        workerSignedAuthPassed: workerReport?.signedAuthPassed === true,
+        workerHttpStatus: workerReport?.signedAuthHttpStatus ?? null,
+        workerDeltaErrorCode: workerReport?.deltaErrorCode ?? null,
+        workerOutboundIp: workerReport?.outboundIp ?? null,
+        apiAppSignedAuthPassed: apiAppReport?.signedAuthPassed === true,
+        apiAppHttpStatus: apiAppReport?.signedAuthHttpStatus ?? null,
+        apiAppDeltaErrorCode: apiAppReport?.deltaErrorCode ?? null,
+        apiAppOutboundIp: apiAppReport?.outboundIp ?? null,
+        credentialsGatePassed: demoCredentialDiagnostics.passed
+      }
+    );
+    return demoCredentialDiagnostics;
   }
 
   async function runOnce() {
@@ -112,7 +250,7 @@ export function createOptionsAutoTrigger({
           });
           return { status: 'BLOCKED_NOT_TESTNET', previewRequested: false };
         }
-        if (fullAutoExecuteConfigured) {
+        if (executionAutoExecuteConfigured) {
           if (!executionGate.allowed) {
             await writeHeartbeat('BLOCKED_OPTIONS_ENV_EXECUTION_DISABLED', {
               executionGateReason: executionGate.reason || OPTIONS_EXECUTION_LOCK_REASON,
@@ -127,7 +265,7 @@ export function createOptionsAutoTrigger({
               exitMonitorEnabled: executionGate.exitMonitorEnabled,
               manualTestOverrideAllowed: demoOverrideGate.allowed,
               manualTestOverrideReason: demoOverrideGate.reason,
-              optionsDemoAutoExecuteEnabled: isEnabled(env.OPTIONS_DEMO_AUTO_EXECUTE),
+              optionsDemoAutoExecuteEnabled: optionsDemoAutoExecuteConfigured,
               optionsExitMonitorEnvEnabled: isEnabled(env.OPTIONS_EXIT_MONITOR_ENABLED),
               optionsRegimeStrategyEnvEnabled: isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED)
             });
@@ -184,6 +322,25 @@ export function createOptionsAutoTrigger({
             reason: OPTIONS_DATABASE_EXECUTION_LOCK_REASON
           });
           return { status: 'BLOCKED_OPTIONS_EXECUTION_DISABLED', previewRequested: false };
+        }
+
+        if (demoMode && executionAutoExecuteConfigured) {
+          const diagnosticGate = await ensureDemoCredentialDiagnostics();
+          if (!diagnosticGate.passed) {
+            await writeHeartbeat('BLOCKED_DEMO_CREDENTIAL_DIAGNOSTIC', {
+              candidateReady: false,
+              credentialDiagnosticPassed: false,
+              workerSignedAuthPassed: diagnosticGate.worker?.signedAuthPassed === true,
+              workerHttpStatus: diagnosticGate.worker?.signedAuthHttpStatus ?? null,
+              workerDeltaErrorCode: diagnosticGate.worker?.deltaErrorCode ?? null,
+              workerOutboundIp: diagnosticGate.worker?.outboundIp ?? null,
+              apiAppSignedAuthPassed: diagnosticGate.apiApp?.signedAuthPassed === true,
+              apiAppHttpStatus: diagnosticGate.apiApp?.signedAuthHttpStatus ?? null,
+              apiAppDeltaErrorCode: diagnosticGate.apiApp?.deltaErrorCode ?? null,
+              apiAppOutboundIp: diagnosticGate.apiApp?.outboundIp ?? null
+            });
+            return { status: 'BLOCKED_DEMO_CREDENTIAL_DIAGNOSTIC', previewRequested: false };
+          }
         }
 
         const globalMaxPositions = finite(settings.max_options_positions);
@@ -246,6 +403,7 @@ export function createOptionsAutoTrigger({
         const candidates = cacheRows.filter(row => {
           const symbol = upper(row?.symbol);
           const strategy = upper(row?.strategy);
+          if (oneShotSymbol && symbol !== oneShotSymbol) return false;
           if (strategy === 'OPTIONS_BUY' && settings.options_buy_enabled !== true) return false;
           if (strategy === 'OPTIONS_SELL' && settings.options_sell_enabled !== true) return false;
           const cachedAt = Date.parse(row?.cached_at || '');
@@ -283,13 +441,42 @@ export function createOptionsAutoTrigger({
           if (demoMode && demoQualityOverride) {
             if (!hardDemoChecks || !baseChecks) return false;
             const observed = [];
-            if (upper(row?.stage) !== 'CONFIRMED') observed.push('UNDERLYING_NOT_CONFIRMED');
-            if (details.analysisReady !== true) observed.push('ANALYSIS_NOT_READY');
-            if (oi === null || oi < configuredMinOi) observed.push('OI_BELOW_MINIMUM');
-            if (volume === null || volume < configuredMinVolume) observed.push('VOLUME_BELOW_MINIMUM');
-            if (!ivRankOk) observed.push('IV_RANK_FILTER');
-            if (!ivPercentileOk) observed.push('IV_PERCENTILE_FILTER');
-            if (!regimeRouteOk) observed.push('MARKET_REGIME_FILTER');
+            const stage = upper(row?.stage);
+            const ivHistoryDays = finite(details.ivHistoryDays ?? details.ivPercentileDays);
+            const ivPercentileDays = finite(details.ivPercentileDays);
+            if (oi === null || oi < configuredMinOi) observed.push({
+              code: 'OI_BELOW_MIN_DEMO_LOG_ONLY', actual: oi, expected: '>=' + configuredMinOi
+            });
+            if (stage !== 'CONFIRMED') observed.push({
+              code: 'STAGE_NOT_CONFIRMED_DEMO_LOG_ONLY', actual: stage || null, expected: 'CONFIRMED'
+            });
+            if (ivPercentile === null) observed.push({
+              code: 'IV_PCTL_UNAVAILABLE_DEMO_LOG_ONLY', actual: null, expected: 'strategy-qualified IV percentile'
+            });
+            if (ivHistoryDays === null || ivHistoryDays < 20) observed.push({
+              code: 'IV_HISTORY_SHORT_DEMO_LOG_ONLY', actual: ivHistoryDays, expected: '>=20 completed days',
+              ivPercentileDays
+            });
+            if (marketRegime === 'UNKNOWN' || !marketRegime) observed.push({
+              code: 'REGIME_UNKNOWN_DEMO_LOG_ONLY', actual: marketRegime || null, expected: strategy === 'OPTIONS_BUY' ? 'TRENDING' : 'SIDEWAYS'
+            });
+            else if (!regimeRouteOk) observed.push({
+              code: 'REGIME_STRATEGY_MISMATCH_DEMO_LOG_ONLY', actual: marketRegime, expected: strategy === 'OPTIONS_BUY' ? 'TRENDING' : 'SIDEWAYS'
+            });
+            if (details.analysisReady !== true) observed.push({
+              code: 'ANALYSIS_NOT_READY_DEMO_LOG_ONLY', actual: details.analysisReady ?? false, expected: true
+            });
+            if (volume === null || volume < configuredMinVolume) observed.push({
+              code: 'VOLUME_BELOW_MIN_DEMO_LOG_ONLY', actual: volume, expected: '>=' + configuredMinVolume
+            });
+            if (!ivRankOk) observed.push({
+              code: 'IV_RANK_QUALITY_FILTER_DEMO_LOG_ONLY', actual: ivRank,
+              expected: strategy === 'OPTIONS_BUY' ? '<40' : '>50'
+            });
+            if (ivPercentile !== null && !ivPercentileOk) observed.push({
+              code: 'IV_PERCENTILE_STRATEGY_FILTER_DEMO_LOG_ONLY', actual: ivPercentile,
+              expected: strategy === 'OPTIONS_BUY' ? '<20' : '>80'
+            });
             const buyMin = finite(settings.options_buy_min_delta) ?? 0.45;
             const buyMax = finite(settings.options_buy_max_delta) ?? 0.65;
             const sellMin = finite(settings.options_sell_min_delta) ?? 0.20;
@@ -297,15 +484,21 @@ export function createOptionsAutoTrigger({
             const targetDelta = strategy === 'OPTIONS_BUY'
               ? Math.abs(delta) >= buyMin && Math.abs(delta) <= buyMax
               : Math.abs(delta) >= sellMin && Math.abs(delta) <= sellMax;
-            if (!targetDelta) observed.push('DELTA_TARGET_BAND');
+            if (!targetDelta) observed.push({
+              code: 'DELTA_TARGET_BAND_DEMO_LOG_ONLY', actual: delta,
+              expected: strategy === 'OPTIONS_BUY' ? buyMin + '–' + buyMax : sellMin + '–' + sellMax
+            });
             if (observed.length) {
-              void logger('WARN', '[AUTO-TRIGGER] Demo-only candidate quality filters observed; only approved quality filters may be relaxed', {
+              void logger('WARN', '[AUTO-TRIGGER] Demo-only quality filters are LOG-ONLY; hard safety checks remain blocking', {
                 environment: 'DELTA_DEMO',
                 symbol,
                 strategy,
                 score: finite(row?.score),
-                stage: upper(row?.stage),
+                stage,
                 oi, volume, spreadPct, delta, ivRank, ivPercentile,
+                ivHistoryDays,
+                ivPercentileDays,
+                analysisReady: details.analysisReady === true,
                 marketRegime,
                 relaxedFilters: observed
               });
@@ -321,12 +514,14 @@ export function createOptionsAutoTrigger({
 
         const candidate = candidates.find(row => !occupied.has(upper(row.symbol)));
         if (!candidate) {
-          await writeHeartbeat('READY', {
+          const status = oneShotSymbol ? 'DEMO_ONE_SHOT_SYMBOL_NOT_READY' : 'READY';
+          await writeHeartbeat(status, {
             candidateReady: false,
             candidateCount: candidates.length,
-            duplicateCount: candidates.length
+            duplicateCount: candidates.length,
+            ...(oneShotSymbol ? { targetSymbol: oneShotSymbol, reason: 'Exact one-shot target is not present as a fresh, hard-check-passing candidate or is already occupied' } : {})
           });
-          return { status: 'READY', previewRequested: false, candidateCount: candidates.length };
+          return { status, previewRequested: false, candidateCount: candidates.length };
         }
 
         const response = await fetchImpl(previewUrl, {
@@ -365,9 +560,7 @@ export function createOptionsAutoTrigger({
           return { status: 'BLOCKED_PREVIEW', previewRequested: true, candidate: upper(candidate.symbol) };
         }
 
-        const fullAutoExecute = demoMode
-          ? isEnabled(env.OPTIONS_DEMO_AUTO_EXECUTE)
-          : isEnabled(env.FULL_AUTO_EXECUTE);
+        const fullAutoExecute = executionAutoExecuteConfigured;
         await logger(
           'INFO',
           fullAutoExecute
@@ -455,14 +648,26 @@ if (fullAutoExecute) {
     }
   }
 
-  function start() {
-    if (started) return Promise.resolve();
+  async function start() {
+    if (started) return;
     started = true;
-    if (enabled) {
+    if (demoExecutionConfigured) {
+      const diagnosticGate = await ensureDemoCredentialDiagnostics();
+      if (executionAutoExecuteConfigured && !diagnosticGate.passed) {
+        return runOnce();
+      }
+    }
+    if (enabled && !oneShotSymbol) {
       timer = setIntervalFn(() => {
         void runOnce();
       }, OPTIONS_AUTO_TRIGGER_INTERVAL_MS);
       timer?.unref?.();
+    } else if (enabled && oneShotSymbol) {
+      await logger('INFO', '[AUTO-TRIGGER] Exact Demo one-shot mode is active; no recurring execution timer will be created', {
+        environment: 'DELTA_DEMO',
+        symbol: oneShotSymbol,
+        recurringTimerEnabled: false
+      });
     }
     return runOnce();
   }

@@ -139,3 +139,20 @@ test('Options Demo gate exposes only safe booleans and the precise failing inter
   assert.equal(monitorOff.exitMonitorEnabled, false);
   assert.match(monitorOff.reason, /OPTIONS_EXIT_MONITOR_ENABLED=true/);
 });
+
+
+test('Demo log-only quality flag is explicit and cannot enable override outside Testnet Demo', () => {
+  const logOnly = {
+    OPTIONS_EXECUTION_MODE: 'demo',
+    DELTA_EXECUTION_MODE: 'testnet',
+    DELTA_ENVIRONMENT: 'TESTNET',
+    DELTA_DEMO_API_KEY: 'demo-key',
+    DELTA_DEMO_API_SECRET: 'demo-secret',
+    OPTIONS_DEMO_LOG_ONLY_QUALITY_FILTERS: 'true'
+  };
+  assert.equal(getOptionsManualTestOverrideGate(logOnly).allowed, true);
+  assert.equal(getOptionsManualTestOverrideGate({ ...logOnly, OPTIONS_EXECUTION_MODE: 'live' }).allowed, false);
+  assert.equal(getOptionsManualTestOverrideGate({ ...logOnly, DELTA_EXECUTION_MODE: 'live' }).allowed, false);
+  assert.equal(getOptionsManualTestOverrideGate({ ...logOnly, DELTA_ENVIRONMENT: 'PRODUCTION' }).allowed, false);
+  assert.equal(getOptionsManualTestOverrideGate({ ...logOnly, DELTA_DEMO_API_SECRET: '' }).allowed, false);
+});

@@ -32,6 +32,18 @@ function harness({
   activeOrders = [],
   recentFilledOrders = [],
   previewPayload = { success: true, preview: { executionAllowed: true, quoteToken: 'short-lived-token' } },
+  apiDiagnosticPayload = {
+    success: true,
+    diagnostic: {
+      environment: 'DELTA_DEMO_API_APP',
+      demoApiKeyConfigured: true,
+      demoApiSecretConfigured: true,
+      signedAuthPassed: true,
+      signedAuthHttpStatus: 200,
+      deltaErrorCode: null,
+      outboundIp: '203.0.113.11'
+    }
+  },
   responseOk = true
 } = {}) {
   const calls = [];
@@ -83,9 +95,31 @@ function harness({
     }
   };
   const fetchImpl = async (url, init) => {
-    calls.push({ kind: 'fetch', url: String(url), init });
+    const requestUrl = String(url);
+    calls.push({ kind: 'fetch', url: requestUrl, init });
+    if (requestUrl.includes('api.ipify.org')) {
+      return {
+        ok: true, status: 200,
+        async text() { return JSON.stringify({ ip: '203.0.113.10' }); }
+      };
+    }
+    if (requestUrl.endsWith('/v2/wallet/balances')) {
+      return {
+        ok: true, status: 200,
+        async text() { return JSON.stringify({ success: true, result: [] }); }
+      };
+    }
+    if (requestUrl.endsWith('/api/options/diagnostics')) {
+      return {
+        ok: true, status: 200,
+        async json() {
+          return apiDiagnosticPayload;
+        }
+      };
+    }
     return {
       ok: responseOk,
+      status: responseOk ? 200 : 409,
       async json() { return previewPayload; }
     };
   };
@@ -112,7 +146,7 @@ test('preview-only poller requests the API preview with ENGINE_SECRET and never 
   const { worker, calls, logs } = harness();
   const result = await worker.runOnce();
   assert.equal(result.status, 'CANDIDATE_READY');
-  const requests = calls.filter(call => call.kind === 'fetch');
+  const requests = calls.filter(call => call.kind === 'fetch' && call.url.endsWith('/api/options/preview'));
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url, 'https://deltascanner-api-v2.hostless.app/api/options/preview');
   assert.equal(requests[0].init.method, 'POST');
@@ -221,7 +255,7 @@ test('preview failures remain preview-only and are reported as a blocked worker 
   });
   const result = await worker.runOnce();
   assert.equal(result.status, 'ERROR');
-  assert.equal(calls.filter(call => call.kind === 'fetch').length, 1);
+  assert.equal(calls.filter(call => call.kind === 'fetch' && call.url.endsWith('/api/options/preview')).length, 1);
   assert.ok(logs.some(args => args[2]?.status === 'ERROR'));
 });
 
@@ -250,6 +284,21 @@ test('Options auto-trigger health only reports fresh, enabled preview-only heart
   }], { now: NOW });
   assert.equal(autoExecute.mode, 'AUTO_EXECUTE');
   assert.equal(autoExecute.fullAutoExecute, true);
+
+  const demoAutoExecute = summarizeOptionsAutoTriggerHealth([{
+    ...row,
+    data: {
+      ...row.data,
+      mode: 'DEMO_AUTO_EXECUTE',
+      fullAutoExecute: false,
+      optionsDemoAutoExecuteEnabled: true,
+      executionAutoEnabled: true
+    }
+  }], { now: NOW });
+  assert.equal(demoAutoExecute.mode, 'DEMO_AUTO_EXECUTE');
+  assert.equal(demoAutoExecute.fullAutoExecute, false);
+  assert.equal(demoAutoExecute.optionsDemoAutoExecuteEnabled, true);
+  assert.equal(demoAutoExecute.executionAutoEnabled, true);
 });
 test('Demo Options execution does not inherit the global Futures FULL_AUTO_EXECUTE flag', async () => {
   const { worker, calls } = harness({
@@ -272,29 +321,31 @@ test('Demo Options execution does not inherit the global Futures FULL_AUTO_EXECU
   });
   const result = await worker.runOnce();
   assert.equal(result.status, 'CANDIDATE_READY');
-  const requests = calls.filter(call => call.kind === 'fetch');
+  const requests = calls.filter(call => call.kind === 'fetch' && call.url.endsWith('/api/options/preview'));
   assert.equal(requests.length, 1);
   assert.ok(requests[0].url.endsWith('/api/options/preview'));
+  assert.equal(JSON.parse(requests[0].init.body).symbol, CANDIDATE.symbol);
   assert.equal(calls.some(call => call.kind === 'fetch' && call.url.endsWith('/api/options/execute')), false);
 });
 
 test('Demo full-auto passes the isolated Demo credentials and manual quality override only in Testnet', async () => {
   const demoCandidate = {
-    symbol: 'P-BTC-59600-171126',
+    symbol: 'P-BTC-60000-041226',
     strategy: 'OPTIONS_BUY',
     score: 87,
     stage: 'SETUP',
     market_regime: 'UNKNOWN',
-    iv_rank: 48.29,
+    iv_rank: 89.0934,
     iv_percentile: null,
-    oi: 0.485,
-    volume: 3.968,
-    spread_pct: 0.3935,
+    oi: 1.874,
+    volume: 32.988,
+    spread_pct: 0.3948,
     cached_at: new Date(NOW).toISOString(),
     details: {
-      analysisReady: false, dte: 12.5, delta: -0.5837,
-      optionType: 'PUT', strike: 59600, underlyingSymbol: 'BTCUSD',
-      ivRank: 48.29, ivPercentile: null, openInterest: 0.485, volume: 3.968
+      analysisReady: false, dte: 12.2957, delta: -0.5247,
+      optionType: 'PUT', strike: 60000, underlyingSymbol: 'BTCUSD',
+      ivRank: 89.0934, ivPercentile: null, openInterest: 1.874, volume: 32.988,
+      ivHistoryDays: 12.151, ivPercentileDays: 3
     }
   };
   const { worker, calls, logs } = harness({
@@ -306,22 +357,122 @@ test('Demo full-auto passes the isolated Demo credentials and manual quality ove
       OPTIONS_REGIME_STRATEGY_ENABLED: 'false',
       DELTA_DEMO_API_KEY: 'demo-key',
       DELTA_DEMO_API_SECRET: 'demo-secret',
-      ALLOW_MANUAL_OVERRIDE_FOR_TEST: 'true',
+      OPTIONS_DEMO_LOG_ONLY_QUALITY_FILTERS: 'true',
+      OPTIONS_DEMO_ONE_SHOT_SYMBOL: 'P-BTC-60000-041226',
       DELTA_TESTNET_REST_BASE: 'https://cdn-ind.testnet.deltaex.org'
     },
-    cacheRows: [demoCandidate]
+    cacheRows: [{ ...CANDIDATE, score: 99 }, demoCandidate]
   });
   const result = await worker.runOnce();
   assert.equal(result.status, 'ORDER_EXECUTED');
-  const requests = calls.filter(call => call.kind === 'fetch');
+  const requests = calls.filter(call => call.kind === 'fetch' && (call.url.endsWith('/api/options/preview') || call.url.endsWith('/api/options/execute')));
   assert.equal(requests.length, 2);
   assert.ok(requests[0].url.endsWith('/api/options/preview'));
   assert.ok(requests[1].url.endsWith('/api/options/execute'));
   assert.equal(JSON.parse(requests[0].init.body).manualOverride, true);
   assert.equal(JSON.parse(requests[1].init.body).manualOverride, true);
   assert.ok(logs.some(args => args[1] === '[AUTO-TRIGGER] Executing automatically...'));
-  assert.ok(logs.some(args => String(args[1]).includes('Demo-only candidate quality filters observed')));
+  assert.ok(logs.some(args => String(args[1]).includes('Demo-only quality filters are LOG-ONLY')));
+  const qualityLog = logs.find(args => String(args[1]).includes('Demo-only quality filters are LOG-ONLY'))?.[2] || {};
+  const qualityCodes = (qualityLog.relaxedFilters || []).map(row => row.code);
+  assert.ok(qualityCodes.includes('OI_BELOW_MIN_DEMO_LOG_ONLY'));
+  assert.ok(qualityCodes.includes('STAGE_NOT_CONFIRMED_DEMO_LOG_ONLY'));
+  assert.ok(qualityCodes.includes('IV_PCTL_UNAVAILABLE_DEMO_LOG_ONLY'));
+  assert.ok(qualityCodes.includes('IV_HISTORY_SHORT_DEMO_LOG_ONLY'));
+  assert.ok(qualityCodes.includes('IV_RANK_QUALITY_FILTER_DEMO_LOG_ONLY'));
+  assert.ok(qualityCodes.includes('REGIME_UNKNOWN_DEMO_LOG_ONLY'));
+  assert.ok(qualityCodes.includes('ANALYSIS_NOT_READY_DEMO_LOG_ONLY'));
+  const heartbeat = logs.find(args => args[1] === '[AUTO-TRIGGER] Worker heartbeat');
+  assert.equal(heartbeat?.[2]?.fullAutoExecute, false);
+  assert.equal(heartbeat?.[2]?.optionsDemoAutoExecuteEnabled, true);
+  assert.equal(heartbeat?.[2]?.executionAutoEnabled, true);
+  assert.equal(heartbeat?.[2]?.mode, 'DEMO_AUTO_EXECUTE');
+  assert.equal(heartbeat?.[2]?.optionsDemoOneShotSymbol, 'P-BTC-60000-041226');
+  assert.equal(heartbeat?.[2]?.manualOverrideEnabled, true);
+  assert.equal(heartbeat?.[2]?.demoLogOnlyQualityFiltersEnabled, true);
+  assert.equal(heartbeat?.[2]?.credentialDiagnosticsPassed, true);
   assert.ok(logs.every(args => args[1] !== '[AUTO-TRIGGER] Candidate ready for execution. Token acquired. Waiting for manual execution.'));
+});
+
+
+test('Demo auto execution is blocked when API App signed authentication fails', async () => {
+  const demoCandidate = {
+    symbol: 'P-BTC-60000-041226',
+    strategy: 'OPTIONS_BUY',
+    score: 87,
+    stage: 'SETUP',
+    market_regime: 'UNKNOWN',
+    iv_rank: 89.0934,
+    iv_percentile: null,
+    oi: 1.874,
+    volume: 32.988,
+    spread_pct: 0.3948,
+    cached_at: new Date(NOW).toISOString(),
+    details: {
+      analysisReady: false, dte: 12.2957, delta: -0.5247,
+      optionType: 'PUT', strike: 60000, underlyingSymbol: 'BTCUSD',
+      ivRank: 89.0934, ivPercentile: null, openInterest: 1.874, volume: 32.988,
+      ivHistoryDays: 12.151, ivPercentileDays: 3
+    }
+  };
+  const { worker, calls, logs } = harness({
+    envPatch: {
+      FULL_AUTO_EXECUTE: 'false',
+      OPTIONS_DEMO_AUTO_EXECUTE: 'true',
+      OPTIONS_EXECUTION_MODE: 'demo',
+      OPTIONS_EXIT_MONITOR_ENABLED: 'true',
+      OPTIONS_REGIME_STRATEGY_ENABLED: 'false',
+      DELTA_DEMO_API_KEY: 'demo-key',
+      DELTA_DEMO_API_SECRET: 'demo-secret',
+      OPTIONS_DEMO_LOG_ONLY_QUALITY_FILTERS: 'true',
+      OPTIONS_DEMO_ONE_SHOT_SYMBOL: 'P-BTC-60000-041226',
+      DELTA_TESTNET_REST_BASE: 'https://cdn-ind.testnet.deltaex.org'
+    },
+    apiDiagnosticPayload: {
+      success: false,
+      diagnostic: {
+        environment: 'DELTA_DEMO_API_APP',
+        demoApiKeyConfigured: false,
+        demoApiSecretConfigured: false,
+        signedAuthPassed: false,
+        signedAuthHttpStatus: 401,
+        deltaErrorCode: 'invalid_api_key',
+        outboundIp: '203.0.113.11'
+      }
+    },
+    cacheRows: [demoCandidate]
+  });
+  const result = await worker.runOnce();
+  assert.equal(result.status, 'BLOCKED_DEMO_CREDENTIAL_DIAGNOSTIC');
+  assert.equal(calls.some(call => call.kind === 'fetch' && call.url.endsWith('/api/options/preview')), false);
+  assert.equal(calls.some(call => call.kind === 'fetch' && call.url.endsWith('/api/options/execute')), false);
+  const heartbeat = logs.find(args => args[1] === '[AUTO-TRIGGER] Worker heartbeat');
+  assert.equal(heartbeat?.[2]?.apiAppSignedAuthPassed, false);
+  assert.equal(heartbeat?.[2]?.apiAppHttpStatus, 401);
+  assert.equal(heartbeat?.[2]?.apiAppDeltaErrorCode, 'invalid_api_key');
+  assert.equal(heartbeat?.[2]?.credentialDiagnosticsPassed, false);
+});
+
+test('Demo exact one-shot startup performs one scan without creating a recurring timer', async () => {
+  const { worker, timers, logs, calls } = harness({
+    envPatch: {
+      OPTIONS_EXECUTION_MODE: 'demo',
+      OPTIONS_EXIT_MONITOR_ENABLED: 'true',
+      OPTIONS_DEMO_LOG_ONLY_QUALITY_FILTERS: 'true',
+      OPTIONS_DEMO_ONE_SHOT_SYMBOL: 'P-BTC-60000-041226',
+      DELTA_DEMO_API_KEY: 'demo-key',
+      DELTA_DEMO_API_SECRET: 'demo-secret'
+    },
+    cacheRows: []
+  });
+  const result = await worker.start();
+  assert.equal(result.status, 'DEMO_ONE_SHOT_SYMBOL_NOT_READY');
+  assert.equal(timers.length, 0);
+  assert.ok(logs.some(args => String(args[1]).includes('Exact Demo one-shot mode is active')));
+  assert.ok(calls.some(call => call.kind === 'fetch' && call.url === 'https://deltascanner-api-v2.hostless.app/api/options/diagnostics'));
+  const apiDiagnosticCall = calls.find(call => call.kind === 'fetch' && call.url.endsWith('/api/options/diagnostics'));
+  assert.equal(apiDiagnosticCall?.init?.method, 'POST');
+  assert.equal(apiDiagnosticCall?.init?.headers?.['x-engine-secret'], 'worker-secret');
 });
 
 test('Options auto-trigger requires both the Testnet execution mode and TESTNET environment', async () => {
@@ -439,7 +590,9 @@ test('Demo execution block reports exact non-secret interlocks and never request
   assert.equal(calls.some(call => call.kind === 'fetch'), false);
   const heartbeat = logs.find(args => args[1] === '[AUTO-TRIGGER] Worker heartbeat');
   const data = heartbeat?.[2] || {};
-  assert.equal(data.mode, 'AUTO_EXECUTE');
+  assert.equal(data.mode, 'DEMO_AUTO_EXECUTE');
+  assert.equal(data.fullAutoExecute, false);
+  assert.equal(data.optionsDemoAutoExecuteEnabled, true);
   assert.equal(data.optionsExecutionMode, 'demo');
   assert.equal(data.credentialsConfigured, false);
   assert.equal(data.demoApiKeyConfigured, true);

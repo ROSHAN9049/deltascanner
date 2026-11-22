@@ -221,13 +221,11 @@ export function createDeltaOptionsExecution({
     }
     if (demoQualityOverride) {
       const delta = number(details.delta ?? row.delta);
-      const reasons = [];
-      if (clean(row.stage).toUpperCase() !== 'CONFIRMED') reasons.push('UNDERLYING_NOT_CONFIRMED');
-      if (details.analysisReady !== true) reasons.push('UNDERLYING_ANALYSIS_NOT_READY');
-      if (ivRank === null || (strategy === 'OPTIONS_BUY' ? ivRank >= 40 : ivRank <= 50)) reasons.push('IV_RANK_FILTER');
-      if (ivPercentile === null || (strategy === 'OPTIONS_BUY' ? ivPercentile >= 20 : ivPercentile <= 80)) reasons.push('IV_PERCENTILE_FILTER');
+      const stage = clean(row.stage).toUpperCase();
       const openInterest = number(row.oi ?? details.openInterest);
       const volume = number(row.volume ?? details.volume);
+      const ivHistoryDays = number(details.ivHistoryDays ?? details.ivPercentileDays);
+      const ivPercentileDays = number(details.ivPercentileDays);
       const qualitySettingsRows = await database.select(
         'dd_settings',
         'id=eq.1&select=options_min_oi,options_min_volume'
@@ -238,22 +236,67 @@ export function createDeltaOptionsExecution({
       const qualitySettings = qualitySettingsRows[0];
       const minimumOi = number(qualitySettings.options_min_oi);
       const minimumVolume = number(qualitySettings.options_min_volume);
-      if (openInterest === null || (minimumOi !== null && openInterest < minimumOi)) reasons.push('OI_BELOW_MINIMUM');
-      if (volume === null || (minimumVolume !== null && volume < minimumVolume)) reasons.push('VOLUME_BELOW_MINIMUM');
-      if (delta === null) reasons.push('DELTA_UNAVAILABLE');
-      await logExecutor('WARN', '[OptionsExecutor] Demo-only candidate quality filters observed; mandatory score/risk/size/expiry/spread/hedge checks remain active', {
+      const ivRankOk = ivRank !== null && ivRank >= 0 && ivRank <= 100 &&
+        (strategy === 'OPTIONS_BUY' ? ivRank < 40 : ivRank > 50);
+      const ivPercentileOk = ivPercentile !== null && ivPercentile >= 0 && ivPercentile <= 100 &&
+        (strategy === 'OPTIONS_BUY' ? ivPercentile < 20 : ivPercentile > 80);
+      const expectedRegime = strategy === 'OPTIONS_BUY' ? 'TRENDING' : 'SIDEWAYS';
+      const observations = [];
+      if (openInterest === null || (minimumOi !== null && openInterest < minimumOi)) observations.push({
+        code: 'OI_BELOW_MIN_DEMO_LOG_ONLY', actual: openInterest, expected: minimumOi === null ? 'configured minimum unavailable' : '>=' + minimumOi
+      });
+      if (stage !== 'CONFIRMED') observations.push({
+        code: 'STAGE_NOT_CONFIRMED_DEMO_LOG_ONLY', actual: stage || null, expected: 'CONFIRMED'
+      });
+      if (ivPercentile === null) observations.push({
+        code: 'IV_PCTL_UNAVAILABLE_DEMO_LOG_ONLY', actual: null, expected: 'strategy-qualified IV percentile'
+      });
+      if (ivHistoryDays === null || ivHistoryDays < 20) observations.push({
+        code: 'IV_HISTORY_SHORT_DEMO_LOG_ONLY', actual: ivHistoryDays, expected: '>=20 completed days',
+        ivPercentileDays
+      });
+      if (marketRegime === 'UNKNOWN' || !marketRegime) observations.push({
+        code: 'REGIME_UNKNOWN_DEMO_LOG_ONLY', actual: marketRegime || null, expected: expectedRegime
+      });
+      else if (marketRegime !== expectedRegime) observations.push({
+        code: 'REGIME_STRATEGY_MISMATCH_DEMO_LOG_ONLY', actual: marketRegime, expected: expectedRegime
+      });
+      if (details.analysisReady !== true) observations.push({
+        code: 'ANALYSIS_NOT_READY_DEMO_LOG_ONLY', actual: details.analysisReady ?? false, expected: true
+      });
+      if (!ivRankOk) observations.push({
+        code: 'IV_RANK_QUALITY_FILTER_DEMO_LOG_ONLY', actual: ivRank,
+        expected: strategy === 'OPTIONS_BUY' ? '<40' : '>50'
+      });
+      if (ivPercentile !== null && !ivPercentileOk) observations.push({
+        code: 'IV_PERCENTILE_STRATEGY_FILTER_DEMO_LOG_ONLY', actual: ivPercentile,
+        expected: strategy === 'OPTIONS_BUY' ? '<20' : '>80'
+      });
+      if (volume === null || (minimumVolume !== null && volume < minimumVolume)) observations.push({
+        code: 'VOLUME_BELOW_MIN_DEMO_LOG_ONLY', actual: volume,
+        expected: minimumVolume === null ? 'configured minimum unavailable' : '>=' + minimumVolume
+      });
+      if (delta === null) observations.push({
+        code: 'DELTA_UNAVAILABLE_DEMO_LOG_ONLY', actual: null, expected: 'finite non-zero Delta within hard validity range'
+      });
+      await logExecutor('WARN', '[OptionsExecutor] Demo-only quality filters are LOG-ONLY; hard score/risk/size/expiry/spread/product/E-STOP/hedge checks remain blocking', {
         environment: 'DELTA_DEMO',
         symbol: clean(row.symbol).toUpperCase(),
         strategy,
         score: normalizedScore,
-        stage: clean(row.stage).toUpperCase(),
-        openInterest: number(row.oi ?? details.openInterest),
-        volume: number(row.volume ?? details.volume),
+        stage,
+        openInterest,
+        minimumOi,
+        volume,
+        minimumVolume,
         ivRank,
         ivPercentile,
+        ivHistoryDays,
+        ivPercentileDays,
         delta,
         marketRegime,
-        qualityFiltersObserved: reasons
+        analysisReady: details.analysisReady === true,
+        qualityFiltersObserved: observations
       });
     }
     return {
