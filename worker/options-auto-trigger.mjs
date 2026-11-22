@@ -516,11 +516,17 @@ if (fullAutoExecute) {
         });
       }
     }
-    if (enabled) {
+    if (enabled && !oneShotSymbol) {
       timer = setIntervalFn(() => {
         void runOnce();
       }, OPTIONS_AUTO_TRIGGER_INTERVAL_MS);
       timer?.unref?.();
+    } else if (enabled && oneShotSymbol) {
+      await logger('INFO', '[AUTO-TRIGGER] Exact Demo one-shot mode is active; no recurring execution timer will be created', {
+        environment: 'DELTA_DEMO',
+        symbol: oneShotSymbol,
+        recurringTimerEnabled: false
+      });
     }
     return runOnce();
   }
