@@ -645,8 +645,19 @@ if (fullAutoExecute) {
         return { status: 'CANDIDATE_READY', previewRequested: true, candidate: upper(candidate.symbol) };
       } catch (error) {
         const message = safeError(error, engineSecret);
-        await writeHeartbeat('ERROR', { error: message });
-        return { status: 'ERROR', previewRequested: false, error: message };
+        // A live-quote spread rejection is an expected pre-trade safety block,
+        // not a failed poller/infrastructure cycle. Keep the hard spread gate
+        // intact and expose the distinction to dashboard health consumers.
+        const marketQualityBlocked =
+          /live Demo quote spread exceeds the unchanged \\d+(?:\\.\\d+)?% maximum/i.test(message);
+        const status = marketQualityBlocked ? 'BLOCKED_PREVIEW_MARKET_QUALITY' : 'ERROR';
+        await logger(marketQualityBlocked ? 'WARN' : 'ERROR',
+          marketQualityBlocked
+            ? '[AUTO-TRIGGER] Preview blocked by the live market-quality safety gate'
+            : '[AUTO-TRIGGER] Preview cycle failed',
+          { status, error: message, orderSubmitted: false });
+        await writeHeartbeat(status, { error: message, orderSubmitted: false });
+        return { status, previewRequested: true, orderSubmitted: false, error: message };
       }
     })();
 
