@@ -306,7 +306,8 @@ test('Demo full-auto passes the isolated Demo credentials and manual quality ove
       OPTIONS_REGIME_STRATEGY_ENABLED: 'false',
       DELTA_DEMO_API_KEY: 'demo-key',
       DELTA_DEMO_API_SECRET: 'demo-secret',
-      ALLOW_MANUAL_OVERRIDE_FOR_TEST: 'true',
+      OPTIONS_DEMO_LOG_ONLY_QUALITY_FILTERS: 'true',
+      OPTIONS_DEMO_ONE_SHOT_SYMBOL: 'P-BTC-59600-171126',
       DELTA_TESTNET_REST_BASE: 'https://cdn-ind.testnet.deltaex.org'
     },
     cacheRows: [demoCandidate]
@@ -320,7 +321,20 @@ test('Demo full-auto passes the isolated Demo credentials and manual quality ove
   assert.equal(JSON.parse(requests[0].init.body).manualOverride, true);
   assert.equal(JSON.parse(requests[1].init.body).manualOverride, true);
   assert.ok(logs.some(args => args[1] === '[AUTO-TRIGGER] Executing automatically...'));
-  assert.ok(logs.some(args => String(args[1]).includes('Demo-only candidate quality filters observed')));
+  assert.ok(logs.some(args => String(args[1]).includes('Demo-only quality filters are LOG-ONLY')));
+  const qualityLog = logs.find(args => String(args[1]).includes('Demo-only quality filters are LOG-ONLY'))?.[2] || {};
+  const qualityCodes = (qualityLog.relaxedFilters || []).map(row => row.code);
+  assert.ok(qualityCodes.includes('OI_BELOW_MIN_DEMO_LOG_ONLY'));
+  assert.ok(qualityCodes.includes('STAGE_NOT_CONFIRMED_DEMO_LOG_ONLY'));
+  assert.ok(qualityCodes.includes('IV_PCTL_UNAVAILABLE_DEMO_LOG_ONLY'));
+  assert.ok(qualityCodes.includes('REGIME_UNKNOWN_DEMO_LOG_ONLY'));
+  assert.ok(qualityCodes.includes('ANALYSIS_NOT_READY_DEMO_LOG_ONLY'));
+  const heartbeat = logs.find(args => args[1] === '[AUTO-TRIGGER] Worker heartbeat');
+  assert.equal(heartbeat?.[2]?.fullAutoExecute, false);
+  assert.equal(heartbeat?.[2]?.optionsDemoAutoExecuteEnabled, true);
+  assert.equal(heartbeat?.[2]?.executionAutoEnabled, true);
+  assert.equal(heartbeat?.[2]?.mode, 'DEMO_AUTO_EXECUTE');
+  assert.equal(heartbeat?.[2]?.optionsDemoOneShotSymbol, 'P-BTC-59600-171126');
   assert.ok(logs.every(args => args[1] !== '[AUTO-TRIGGER] Candidate ready for execution. Token acquired. Waiting for manual execution.'));
 });
 
@@ -439,7 +453,9 @@ test('Demo execution block reports exact non-secret interlocks and never request
   assert.equal(calls.some(call => call.kind === 'fetch'), false);
   const heartbeat = logs.find(args => args[1] === '[AUTO-TRIGGER] Worker heartbeat');
   const data = heartbeat?.[2] || {};
-  assert.equal(data.mode, 'AUTO_EXECUTE');
+  assert.equal(data.mode, 'DEMO_AUTO_EXECUTE');
+  assert.equal(data.fullAutoExecute, false);
+  assert.equal(data.optionsDemoAutoExecuteEnabled, true);
   assert.equal(data.optionsExecutionMode, 'demo');
   assert.equal(data.credentialsConfigured, false);
   assert.equal(data.demoApiKeyConfigured, true);
