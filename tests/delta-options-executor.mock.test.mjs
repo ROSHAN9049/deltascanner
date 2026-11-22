@@ -498,7 +498,8 @@ test('manual Testnet override keeps Delta and expiry qualification mandatory', a
   const deltaCase = harness({
     strategy: 'OPTIONS_BUY',
     manualOverrideEnabled: true,
-    candidatePatch: { stage: 'SETUP', score: 95, details: { analysisReady: false, delta: 0.99 } }
+    candidatePatch: { stage: 'SETUP', score: 95, details: { analysisReady: false, delta: 0.99 } },
+    settingsPatch: { options_buy_min_delta: 0.01, options_buy_max_delta: 0.99 }
   });
   await assert.rejects(
     deltaCase.executor.previewOptionsOrder({
