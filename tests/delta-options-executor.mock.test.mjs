@@ -498,13 +498,25 @@ test('manual Testnet override keeps Delta and expiry qualification mandatory', a
   const deltaCase = harness({
     strategy: 'OPTIONS_BUY',
     manualOverrideEnabled: true,
-    candidatePatch: { stage: 'SETUP', score: 95, details: { analysisReady: false, delta: 0.99 } }
+    candidatePatch: { stage: 'SETUP', score: 95, details: { analysisReady: false, delta: 0.99 } },
+    settingsPatch: { options_buy_min_delta: 0.01, options_buy_max_delta: 0.99 }
   });
   await assert.rejects(
     deltaCase.executor.previewOptionsOrder({
       symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1, manualTestOverride: true
     }),
     /hard 0.05–0.95 validity band/
+  );
+  const configuredDeltaCase = harness({
+    strategy: 'OPTIONS_BUY',
+    manualOverrideEnabled: true,
+    candidatePatch: { stage: 'SETUP', score: 95, details: { analysisReady: false, delta: 0.80 } }
+  });
+  await assert.rejects(
+    configuredDeltaCase.executor.previewOptionsOrder({
+      symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1, manualTestOverride: true
+    }),
+    /outside the configured BUY band/
   );
   const dteCase = harness({
     strategy: 'OPTIONS_BUY',
@@ -519,6 +531,7 @@ test('manual Testnet override keeps Delta and expiry qualification mandatory', a
     /expiry is outside the configured DTE range/
   );
   assert.equal(deltaCase.apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
+  assert.equal(configuredDeltaCase.apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
   assert.equal(dteCase.apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
 });
 

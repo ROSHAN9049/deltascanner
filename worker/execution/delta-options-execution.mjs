@@ -325,9 +325,8 @@ export function createDeltaOptionsExecution({
     const deltaMin = number(isBuy ? settings.options_buy_min_delta : settings.options_sell_min_delta);
     const deltaMax = number(isBuy ? settings.options_buy_max_delta : settings.options_sell_max_delta);
     const demoQualityOverride = isOptionsDemoExecution(env);
-    if (!demoQualityOverride &&
-        (deltaMin === null || deltaMax === null || deltaMin <= 0 || deltaMax < deltaMin ||
-         Math.abs(delta) < deltaMin || Math.abs(delta) > deltaMax)) {
+    if (deltaMin === null || deltaMax === null || deltaMin <= 0 || deltaMax < deltaMin ||
+        Math.abs(delta) < deltaMin || Math.abs(delta) > deltaMax) {
       throw new Error('Manual test override blocked: option Delta is outside the configured ' +
         (isBuy ? 'BUY' : 'SELL') + ' band');
     }
