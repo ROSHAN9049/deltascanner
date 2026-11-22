@@ -32,6 +32,18 @@ function harness({
   activeOrders = [],
   recentFilledOrders = [],
   previewPayload = { success: true, preview: { executionAllowed: true, quoteToken: 'short-lived-token' } },
+  apiDiagnosticPayload = {
+    success: true,
+    diagnostic: {
+      environment: 'DELTA_DEMO_API_APP',
+      demoApiKeyConfigured: true,
+      demoApiSecretConfigured: true,
+      signedAuthPassed: true,
+      signedAuthHttpStatus: 200,
+      deltaErrorCode: null,
+      outboundIp: '203.0.113.11'
+    }
+  },
   responseOk = true
 } = {}) {
   const calls = [];
@@ -101,18 +113,7 @@ function harness({
       return {
         ok: true, status: 200,
         async json() {
-          return {
-            success: true,
-            diagnostic: {
-              environment: 'DELTA_DEMO_API_APP',
-              demoApiKeyConfigured: true,
-              demoApiSecretConfigured: true,
-              signedAuthPassed: true,
-              signedAuthHttpStatus: 200,
-              deltaErrorCode: null,
-              outboundIp: '203.0.113.11'
-            }
-          };
+          return apiDiagnosticPayload;
         }
       };
     }
@@ -390,6 +391,63 @@ test('Demo full-auto passes the isolated Demo credentials and manual quality ove
   assert.ok(logs.every(args => args[1] !== '[AUTO-TRIGGER] Candidate ready for execution. Token acquired. Waiting for manual execution.'));
 });
 
+
+test('Demo auto execution is blocked when API App signed authentication fails', async () => {
+  const demoCandidate = {
+    symbol: 'P-BTC-60000-041226',
+    strategy: 'OPTIONS_BUY',
+    score: 87,
+    stage: 'SETUP',
+    market_regime: 'UNKNOWN',
+    iv_rank: 89.0934,
+    iv_percentile: null,
+    oi: 1.874,
+    volume: 32.988,
+    spread_pct: 0.3948,
+    cached_at: new Date(NOW).toISOString(),
+    details: {
+      analysisReady: false, dte: 12.2957, delta: -0.5247,
+      optionType: 'PUT', strike: 60000, underlyingSymbol: 'BTCUSD',
+      ivRank: 89.0934, ivPercentile: null, openInterest: 1.874, volume: 32.988,
+      ivHistoryDays: 12.151, ivPercentileDays: 3
+    }
+  };
+  const { worker, calls, logs } = harness({
+    envPatch: {
+      FULL_AUTO_EXECUTE: 'false',
+      OPTIONS_DEMO_AUTO_EXECUTE: 'true',
+      OPTIONS_EXECUTION_MODE: 'demo',
+      OPTIONS_EXIT_MONITOR_ENABLED: 'true',
+      OPTIONS_REGIME_STRATEGY_ENABLED: 'false',
+      DELTA_DEMO_API_KEY: 'demo-key',
+      DELTA_DEMO_API_SECRET: 'demo-secret',
+      OPTIONS_DEMO_LOG_ONLY_QUALITY_FILTERS: 'true',
+      OPTIONS_DEMO_ONE_SHOT_SYMBOL: 'P-BTC-60000-041226',
+      DELTA_TESTNET_REST_BASE: 'https://cdn-ind.testnet.deltaex.org'
+    },
+    apiDiagnosticPayload: {
+      success: false,
+      diagnostic: {
+        environment: 'DELTA_DEMO_API_APP',
+        demoApiKeyConfigured: false,
+        demoApiSecretConfigured: false,
+        signedAuthPassed: false,
+        signedAuthHttpStatus: 401,
+        deltaErrorCode: 'invalid_api_key',
+        outboundIp: '203.0.113.11'
+      }
+    },
+    cacheRows: [demoCandidate]
+  });
+  const result = await worker.runOnce();
+  assert.equal(result.status, 'BLOCKED_DEMO_CREDENTIAL_DIAGNOSTIC');
+  assert.equal(calls.some(call => call.kind === 'fetch' && call.url.endsWith('/api/options/preview')), false);
+  assert.equal(calls.some(call => call.kind === 'fetch' && call.url.endsWith('/api/options/execute')), false);
+  const heartbeat = logs.find(args => args[1] === '[AUTO-TRIGGER] Worker heartbeat');
+  assert.equal(heartbeat?.[2]?.apiAppSignedAuthPassed, false);
+  assert.equal(heartbeat?.[2]?.apiAppHttpStatus, 401);
+  assert.equal(heartbeat?.[2]?.apiAppDeltaErrorCode, 'invalid_api_key');
+});
 
 test('Demo exact one-shot startup performs one scan without creating a recurring timer', async () => {
   const { worker, timers, logs, calls } = harness({
