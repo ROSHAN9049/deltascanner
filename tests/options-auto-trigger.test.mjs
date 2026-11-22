@@ -388,6 +388,9 @@ test('Demo full-auto passes the isolated Demo credentials and manual quality ove
   assert.equal(heartbeat?.[2]?.executionAutoEnabled, true);
   assert.equal(heartbeat?.[2]?.mode, 'DEMO_AUTO_EXECUTE');
   assert.equal(heartbeat?.[2]?.optionsDemoOneShotSymbol, 'P-BTC-60000-041226');
+  assert.equal(heartbeat?.[2]?.manualOverrideEnabled, true);
+  assert.equal(heartbeat?.[2]?.demoLogOnlyQualityFiltersEnabled, true);
+  assert.equal(heartbeat?.[2]?.credentialDiagnosticsPassed, true);
   assert.ok(logs.every(args => args[1] !== '[AUTO-TRIGGER] Candidate ready for execution. Token acquired. Waiting for manual execution.'));
 });
 
@@ -447,6 +450,7 @@ test('Demo auto execution is blocked when API App signed authentication fails', 
   assert.equal(heartbeat?.[2]?.apiAppSignedAuthPassed, false);
   assert.equal(heartbeat?.[2]?.apiAppHttpStatus, 401);
   assert.equal(heartbeat?.[2]?.apiAppDeltaErrorCode, 'invalid_api_key');
+  assert.equal(heartbeat?.[2]?.credentialDiagnosticsPassed, false);
 });
 
 test('Demo exact one-shot startup performs one scan without creating a recurring timer', async () => {
