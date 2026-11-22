@@ -840,17 +840,17 @@ function OptionsView({
   const optionsAutoTriggerReadyStatus = ['READY', 'CANDIDATE_READY'].includes(optionsAutoTriggerStatus);
   const optionsAutoTriggerBlocked = optionsAutoTriggerStatus.startsWith('BLOCKED') ||
     ['ERROR', 'EXECUTION_ERROR'].includes(optionsAutoTriggerStatus);
-  const optionsFullAutoExecuteEnabled = optionsAutoTriggerEnabled && optionsAutoTrigger?.fullAutoExecute === true;
+  const optionsAutomaticExecutionEnabled = optionsAutoTriggerEnabled && optionsAutoTrigger?.executionAutoEnabled === true;
   const optionsAutoTriggerReady = testnetMode &&
     settings.auto_trade === true && settings.emergency_stop === false &&
-    optionsAutoTriggerEnabled && optionsAutoTrigger?.fullAutoExecute === false &&
+    optionsAutoTriggerEnabled && optionsAutoTrigger?.executionAutoEnabled === false &&
     optionsAutoTrigger?.mode === 'PREVIEW_ONLY' && optionsAutoTriggerReadyStatus;
   const manualOverrideAllowed = isManualOverrideAllowed(apiHealth);
   const optionsEngineStatus = !testnetMode ? 'ANALYSIS ONLY'
     : !optionsAutoTriggerFresh ? 'AUTO-TRIGGER HEARTBEAT STALE'
       : !optionsAutoTriggerEnabled ? 'AUTO-TRIGGER DISABLED'
-        : optionsFullAutoExecuteEnabled ? 'FULL AUTO-EXECUTE CONFIGURED (TESTNET)'
-          : optionsAutoTrigger?.fullAutoExecute === false
+        : optionsAutomaticExecutionEnabled ? 'OPTIONS AUTO-SUBMIT ENABLED (TESTNET)'
+          : optionsAutoTrigger?.executionAutoEnabled === false && optionsAutoTrigger?.mode === 'PREVIEW_ONLY'
             ? optionsAutoTriggerReady ? 'AUTO-TRIGGER READY (PREVIEW ONLY)'
               : optionsAutoTriggerBlocked ? 'PREVIEW POLLER BLOCKED' : 'PREVIEW POLLER ACTIVE'
             : 'EXECUTION MODE UNKNOWN';
@@ -868,22 +868,22 @@ function OptionsView({
       ? 'No Options Auto-Trigger heartbeat is fresh within the 150-second health window. A live Futures scan or lease does not prove that the Options poller started.'
       : !optionsAutoTriggerEnabled
         ? 'The latest Worker heartbeat reports enabled=false. AUTO_EXECUTE_OPTIONS must be true in the Hostless Worker environment; this flag is sampled when the Worker starts.'
-        : optionsFullAutoExecuteEnabled
-          ? 'FULL_AUTO_EXECUTE=true is reported by the fresh Worker heartbeat. The Worker may submit Delta Testnet Options orders without an in-dashboard confirmation when candidate, account, E-STOP, quote and API risk gates all pass. Latest poller status: ' + optionsAutoTriggerStatus + '.'
-          : optionsAutoTrigger?.fullAutoExecute === false
+        : optionsAutomaticExecutionEnabled
+          ? 'Effective Options auto-submit is ON (' + optionsAutoTrigger.mode + '). The Worker may submit Delta Testnet Options orders without an in-dashboard confirmation when candidate, account, E-STOP, quote and API risk gates all pass. FULL_AUTO_EXECUTE=' + String(optionsAutoTrigger.fullAutoExecute) + '; OPTIONS_DEMO_AUTO_EXECUTE=' + String(optionsAutoTrigger.optionsDemoAutoExecuteEnabled) + '. Latest poller status: ' + optionsAutoTriggerStatus + '.'
+          : optionsAutoTrigger?.executionAutoEnabled === false && optionsAutoTrigger?.mode === 'PREVIEW_ONLY'
             ? optionsAutoTriggerReady
-              ? 'The fresh Worker heartbeat confirms preview-only mode. It polls candidates every 60 seconds and obtains a read-only quote token; you must still review and execute manually. The Worker does not submit orders.'
-              : 'FULL_AUTO_EXECUTE=false. The Worker cannot submit orders automatically; the preview poller is not currently in a ready state. Latest poller status: ' + optionsAutoTriggerStatus + '.'
-            : 'The heartbeat is fresh, but FULL_AUTO_EXECUTE was not reported. Execution mode is unknown; do not treat the Options worker as verified preview-only or automated.';
+              ? 'The fresh Worker heartbeat confirms effective preview-only mode. It polls candidates every 60 seconds and obtains a read-only quote token; you must still review and execute manually. The Worker does not submit orders.'
+              : 'Effective Options auto-submit is OFF (PREVIEW_ONLY). The Worker cannot submit Options orders automatically; the preview poller is not currently in a ready state. Latest poller status: ' + optionsAutoTriggerStatus + '.'
+            : 'The heartbeat is fresh, but effective executionAutoEnabled was not reported. Execution mode is unknown; do not treat the Options worker as verified preview-only or automated.';
   const optionsAutomationBanner = !testnetMode
     ? '⚠ OPTIONS EXECUTION · DELTA TESTNET ONLY'
     : !optionsAutoTriggerFresh
       ? '⚠ OPTIONS AUTO-TRIGGER STATUS UNKNOWN · NO FRESH HEARTBEAT'
       : !optionsAutoTriggerEnabled
         ? '⚠ OPTIONS AUTO-TRIGGER DISABLED · MANUAL CONFIRMATION ONLY'
-        : optionsFullAutoExecuteEnabled
-          ? '⚠ FULL AUTO-EXECUTE ENABLED · TESTNET ORDERS MAY BE SUBMITTED AUTOMATICALLY'
-          : optionsAutoTrigger?.fullAutoExecute === false
+        : optionsAutomaticExecutionEnabled
+          ? '⚠ OPTIONS AUTO-SUBMIT ENABLED · TESTNET ORDERS MAY BE SUBMITTED AUTOMATICALLY'
+          : optionsAutoTrigger?.executionAutoEnabled === false && optionsAutoTrigger?.mode === 'PREVIEW_ONLY'
             ? '⚠ OPTIONS TESTNET ROUTE · MANUAL CONFIRMATION ONLY'
             : '⚠ OPTIONS EXECUTION MODE UNKNOWN · MANUAL CONFIRMATION REQUIRED';
   const buyMinDelta = safeNum(settings.options_buy_min_delta) || 0.45;

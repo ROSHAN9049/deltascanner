@@ -248,15 +248,31 @@ test('worker polls at a 60-second cadence and can be stopped cleanly', async () 
   assert.deepEqual(cleared, timers);
 });
 
-test('preview failures remain preview-only and are reported as a blocked worker state', async () => {
+test('live quote spread rejection is a market-quality block, not a poller infrastructure error', async () => {
+  const { worker, calls, logs } = harness({
+    responseOk: false,
+    previewPayload: {
+      success: false,
+      error: 'Options order blocked: live Demo quote spread exceeds the unchanged 1.50% maximum'
+    }
+  });
+  const result = await worker.runOnce();
+  assert.equal(result.status, 'BLOCKED_PREVIEW_MARKET_QUALITY');
+  assert.equal(result.orderSubmitted, false);
+  assert.equal(calls.filter(call => call.kind === 'fetch' && call.url.endsWith('/api/options/preview')).length, 1);
+  assert.ok(logs.some(args => args[0] === 'WARN' && args[2]?.status === 'BLOCKED_PREVIEW_MARKET_QUALITY'));
+});
+
+test('unexpected preview API failures remain ERROR and never submit an order', async () => {
   const { worker, calls, logs } = harness({
     responseOk: false,
     previewPayload: { success: false, error: 'Preview endpoint unavailable' }
   });
   const result = await worker.runOnce();
   assert.equal(result.status, 'ERROR');
+  assert.equal(result.orderSubmitted, false);
   assert.equal(calls.filter(call => call.kind === 'fetch' && call.url.endsWith('/api/options/preview')).length, 1);
-  assert.ok(logs.some(args => args[2]?.status === 'ERROR'));
+  assert.ok(logs.some(args => args[0] === 'ERROR' && args[2]?.status === 'ERROR'));
 });
 
 test('Options auto-trigger health only reports fresh, enabled preview-only heartbeats as ready', () => {
@@ -651,4 +667,39 @@ test('Demo credential failures keep recurring poller ticks alive without preview
 
   await worker.stop();
   assert.deepEqual(cleared, timers);
+});
+
+
+test('effective Demo auto-submit health is distinct from FULL_AUTO_EXECUTE', () => {
+  const demoAuto = summarizeOptionsAutoTriggerHealth([{
+    created_at: new Date(NOW).toISOString(),
+    data: {
+      enabled: true,
+      mode: 'DEMO_AUTO_EXECUTE',
+      fullAutoExecute: false,
+      optionsDemoAutoExecuteEnabled: true,
+      executionAutoEnabled: true,
+      status: 'CANDIDATE_READY'
+    }
+  }], { now: NOW });
+  assert.equal(demoAuto.fullAutoExecute, false);
+  assert.equal(demoAuto.optionsDemoAutoExecuteEnabled, true);
+  assert.equal(demoAuto.executionAutoEnabled, true);
+  assert.equal(demoAuto.mode, 'DEMO_AUTO_EXECUTE');
+
+  const demoPreview = summarizeOptionsAutoTriggerHealth([{
+    created_at: new Date(NOW).toISOString(),
+    data: {
+      enabled: true,
+      mode: 'PREVIEW_ONLY',
+      fullAutoExecute: true,
+      optionsDemoAutoExecuteEnabled: false,
+      executionAutoEnabled: false,
+      status: 'CANDIDATE_READY'
+    }
+  }], { now: NOW });
+  assert.equal(demoPreview.fullAutoExecute, true);
+  assert.equal(demoPreview.optionsDemoAutoExecuteEnabled, false);
+  assert.equal(demoPreview.executionAutoEnabled, false);
+  assert.equal(demoPreview.mode, 'PREVIEW_ONLY');
 });
