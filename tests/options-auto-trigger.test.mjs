@@ -668,3 +668,38 @@ test('Demo credential failures keep recurring poller ticks alive without preview
   await worker.stop();
   assert.deepEqual(cleared, timers);
 });
+
+
+test('effective Demo auto-submit health is distinct from FULL_AUTO_EXECUTE', () => {
+  const demoAuto = summarizeOptionsAutoTriggerHealth([{
+    created_at: new Date(NOW).toISOString(),
+    data: {
+      enabled: true,
+      mode: 'DEMO_AUTO_EXECUTE',
+      fullAutoExecute: false,
+      optionsDemoAutoExecuteEnabled: true,
+      executionAutoEnabled: true,
+      status: 'CANDIDATE_READY'
+    }
+  }], { now: NOW });
+  assert.equal(demoAuto.fullAutoExecute, false);
+  assert.equal(demoAuto.optionsDemoAutoExecuteEnabled, true);
+  assert.equal(demoAuto.executionAutoEnabled, true);
+  assert.equal(demoAuto.mode, 'DEMO_AUTO_EXECUTE');
+
+  const demoPreview = summarizeOptionsAutoTriggerHealth([{
+    created_at: new Date(NOW).toISOString(),
+    data: {
+      enabled: true,
+      mode: 'PREVIEW_ONLY',
+      fullAutoExecute: true,
+      optionsDemoAutoExecuteEnabled: false,
+      executionAutoEnabled: false,
+      status: 'CANDIDATE_READY'
+    }
+  }], { now: NOW });
+  assert.equal(demoPreview.fullAutoExecute, true);
+  assert.equal(demoPreview.optionsDemoAutoExecuteEnabled, false);
+  assert.equal(demoPreview.executionAutoEnabled, false);
+  assert.equal(demoPreview.mode, 'PREVIEW_ONLY');
+});
