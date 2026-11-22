@@ -65,7 +65,7 @@ test('manual Options override is default-off and requires an explicit Testnet-on
     ALLOW_MANUAL_OVERRIDE_FOR_TEST: 'true'
   }).allowed, false);
   assert.equal(getOptionsManualTestOverrideGate(DEMO_PROFILE).allowed, true);
-  assert.throws(() => assertOptionsManualTestOverrideAllowed({}), /ALLOW_MANUAL_OVERRIDE_FOR_TEST=true/);
+  assert.throws(() => assertOptionsManualTestOverrideAllowed({}), /OPTIONS_DEMO_LOG_ONLY_QUALITY_FILTERS=true/);
 });
 
 test('long-option maximum loss includes full premium and conservative fees', () => {
