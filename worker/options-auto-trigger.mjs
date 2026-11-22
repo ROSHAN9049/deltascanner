@@ -695,6 +695,11 @@ if (fullAutoExecute) {
         executionAutoEnabled: executionAutoExecuteConfigured
       }
     );
+    if (demoExecutionConfigured) {
+      // Diagnostics may block order routing, but the recurring timer is already
+      // live before this check starts and continues ticking independently.
+      await ensureDemoCredentialDiagnostics();
+    }
     return runPollCycle();
   }
 
