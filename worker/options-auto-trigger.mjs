@@ -325,25 +325,6 @@ export function createOptionsAutoTrigger({
           return { status: 'BLOCKED_OPTIONS_EXECUTION_DISABLED', previewRequested: false };
         }
 
-        if (demoMode && executionAutoExecuteConfigured) {
-          const diagnosticGate = await ensureDemoCredentialDiagnostics();
-          if (!diagnosticGate.passed) {
-            await writeHeartbeat('BLOCKED_DEMO_CREDENTIAL_DIAGNOSTIC', {
-              candidateReady: false,
-              credentialDiagnosticPassed: false,
-              workerSignedAuthPassed: diagnosticGate.worker?.signedAuthPassed === true,
-              workerHttpStatus: diagnosticGate.worker?.signedAuthHttpStatus ?? null,
-              workerDeltaErrorCode: diagnosticGate.worker?.deltaErrorCode ?? null,
-              workerOutboundIp: diagnosticGate.worker?.outboundIp ?? null,
-              apiAppSignedAuthPassed: diagnosticGate.apiApp?.signedAuthPassed === true,
-              apiAppHttpStatus: diagnosticGate.apiApp?.signedAuthHttpStatus ?? null,
-              apiAppDeltaErrorCode: diagnosticGate.apiApp?.deltaErrorCode ?? null,
-              apiAppOutboundIp: diagnosticGate.apiApp?.outboundIp ?? null
-            });
-            return { status: 'BLOCKED_DEMO_CREDENTIAL_DIAGNOSTIC', previewRequested: false };
-          }
-        }
-
         const globalMaxPositions = finite(settings.max_options_positions);
         const strategyMaxPositions = finite(settings.options_max_open_positions);
         if (!Number.isSafeInteger(globalMaxPositions) || globalMaxPositions < 1 ||
@@ -523,6 +504,32 @@ export function createOptionsAutoTrigger({
             ...(oneShotSymbol ? { targetSymbol: oneShotSymbol, reason: 'Exact one-shot target is not present as a fresh, hard-check-passing candidate or is already occupied' } : {})
           });
           return { status, previewRequested: false, candidateCount: candidates.length };
+        }
+
+        if (demoMode && executionAutoExecuteConfigured) {
+          const diagnosticGate = await ensureDemoCredentialDiagnostics();
+          if (!diagnosticGate.passed) {
+            await writeHeartbeat('BLOCKED_DEMO_CREDENTIAL_DIAGNOSTIC', {
+              candidateReady: false,
+              candidateCount: candidates.length,
+              candidateSymbol: upper(candidate.symbol),
+              credentialDiagnosticPassed: false,
+              workerSignedAuthPassed: diagnosticGate.worker?.signedAuthPassed === true,
+              workerHttpStatus: diagnosticGate.worker?.signedAuthHttpStatus ?? null,
+              workerDeltaErrorCode: diagnosticGate.worker?.deltaErrorCode ?? null,
+              workerOutboundIp: diagnosticGate.worker?.outboundIp ?? null,
+              apiAppSignedAuthPassed: diagnosticGate.apiApp?.signedAuthPassed === true,
+              apiAppHttpStatus: diagnosticGate.apiApp?.signedAuthHttpStatus ?? null,
+              apiAppDeltaErrorCode: diagnosticGate.apiApp?.deltaErrorCode ?? null,
+              apiAppOutboundIp: diagnosticGate.apiApp?.outboundIp ?? null
+            });
+            return {
+              status: 'BLOCKED_DEMO_CREDENTIAL_DIAGNOSTIC',
+              previewRequested: false,
+              candidateCount: candidates.length,
+              candidate: upper(candidate.symbol)
+            };
+          }
         }
 
         const response = await fetchImpl(previewUrl, {

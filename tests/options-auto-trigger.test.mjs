@@ -444,6 +444,8 @@ test('Demo auto execution is blocked when API App signed authentication fails', 
   });
   const result = await worker.runOnce();
   assert.equal(result.status, 'BLOCKED_DEMO_CREDENTIAL_DIAGNOSTIC');
+  assert.equal(result.candidateCount, 1);
+  assert.equal(result.candidate, 'P-BTC-60000-041226');
   assert.equal(calls.some(call => call.kind === 'fetch' && call.url.endsWith('/api/options/preview')), false);
   assert.equal(calls.some(call => call.kind === 'fetch' && call.url.endsWith('/api/options/execute')), false);
   const heartbeat = logs.find(args => args[1] === '[AUTO-TRIGGER] Worker heartbeat');
@@ -633,7 +635,8 @@ test('Demo credential failures keep recurring poller ticks alive without preview
   });
 
   const initial = await worker.start();
-  assert.equal(initial.status, 'BLOCKED_DEMO_CREDENTIAL_DIAGNOSTIC');
+  assert.equal(initial.status, 'READY');
+  assert.equal(initial.candidateCount, 0);
   assert.equal(timers.length, 1);
   assert.equal(timers[0].delay, OPTIONS_AUTO_TRIGGER_INTERVAL_MS);
   assert.equal(timers[0].unrefCalled, true);
