@@ -275,26 +275,28 @@ test('Demo Options execution does not inherit the global Futures FULL_AUTO_EXECU
   const requests = calls.filter(call => call.kind === 'fetch');
   assert.equal(requests.length, 1);
   assert.ok(requests[0].url.endsWith('/api/options/preview'));
+  assert.equal(JSON.parse(requests[0].init.body).symbol, 'P-BTC-60000-041226');
   assert.equal(calls.some(call => call.kind === 'fetch' && call.url.endsWith('/api/options/execute')), false);
 });
 
 test('Demo full-auto passes the isolated Demo credentials and manual quality override only in Testnet', async () => {
   const demoCandidate = {
-    symbol: 'P-BTC-59600-171126',
+    symbol: 'P-BTC-60000-041226',
     strategy: 'OPTIONS_BUY',
     score: 87,
     stage: 'SETUP',
     market_regime: 'UNKNOWN',
-    iv_rank: 48.29,
+    iv_rank: 89.0934,
     iv_percentile: null,
-    oi: 0.485,
-    volume: 3.968,
-    spread_pct: 0.3935,
+    oi: 1.874,
+    volume: 32.988,
+    spread_pct: 0.3948,
     cached_at: new Date(NOW).toISOString(),
     details: {
-      analysisReady: false, dte: 12.5, delta: -0.5837,
-      optionType: 'PUT', strike: 59600, underlyingSymbol: 'BTCUSD',
-      ivRank: 48.29, ivPercentile: null, openInterest: 0.485, volume: 3.968
+      analysisReady: false, dte: 12.2957, delta: -0.5247,
+      optionType: 'PUT', strike: 60000, underlyingSymbol: 'BTCUSD',
+      ivRank: 89.0934, ivPercentile: null, openInterest: 1.874, volume: 32.988,
+      ivHistoryDays: 12.151, ivPercentileDays: 3
     }
   };
   const { worker, calls, logs } = harness({
@@ -307,10 +309,10 @@ test('Demo full-auto passes the isolated Demo credentials and manual quality ove
       DELTA_DEMO_API_KEY: 'demo-key',
       DELTA_DEMO_API_SECRET: 'demo-secret',
       OPTIONS_DEMO_LOG_ONLY_QUALITY_FILTERS: 'true',
-      OPTIONS_DEMO_ONE_SHOT_SYMBOL: 'P-BTC-59600-171126',
+      OPTIONS_DEMO_ONE_SHOT_SYMBOL: 'P-BTC-60000-041226',
       DELTA_TESTNET_REST_BASE: 'https://cdn-ind.testnet.deltaex.org'
     },
-    cacheRows: [demoCandidate]
+    cacheRows: [{ ...CANDIDATE, score: 99 }, demoCandidate]
   });
   const result = await worker.runOnce();
   assert.equal(result.status, 'ORDER_EXECUTED');
@@ -327,6 +329,8 @@ test('Demo full-auto passes the isolated Demo credentials and manual quality ove
   assert.ok(qualityCodes.includes('OI_BELOW_MIN_DEMO_LOG_ONLY'));
   assert.ok(qualityCodes.includes('STAGE_NOT_CONFIRMED_DEMO_LOG_ONLY'));
   assert.ok(qualityCodes.includes('IV_PCTL_UNAVAILABLE_DEMO_LOG_ONLY'));
+  assert.ok(qualityCodes.includes('IV_HISTORY_SHORT_DEMO_LOG_ONLY'));
+  assert.ok(qualityCodes.includes('IV_RANK_QUALITY_FILTER_DEMO_LOG_ONLY'));
   assert.ok(qualityCodes.includes('REGIME_UNKNOWN_DEMO_LOG_ONLY'));
   assert.ok(qualityCodes.includes('ANALYSIS_NOT_READY_DEMO_LOG_ONLY'));
   const heartbeat = logs.find(args => args[1] === '[AUTO-TRIGGER] Worker heartbeat');
