@@ -83,9 +83,42 @@ function harness({
     }
   };
   const fetchImpl = async (url, init) => {
-    calls.push({ kind: 'fetch', url: String(url), init });
+    const requestUrl = String(url);
+    calls.push({ kind: 'fetch', url: requestUrl, init });
+    if (requestUrl.includes('api.ipify.org')) {
+      return {
+        ok: true, status: 200,
+        async text() { return JSON.stringify({ ip: '203.0.113.10' }); }
+      };
+    }
+    if (requestUrl.endsWith('/v2/wallet/balances')) {
+      return {
+        ok: true, status: 200,
+        async text() { return JSON.stringify({ success: true, result: [] }); }
+      };
+    }
+    if (requestUrl.endsWith('/api/options/diagnostics')) {
+      return {
+        ok: true, status: 200,
+        async json() {
+          return {
+            success: true,
+            diagnostic: {
+              environment: 'DELTA_DEMO_API_APP',
+              demoApiKeyConfigured: true,
+              demoApiSecretConfigured: true,
+              signedAuthPassed: true,
+              signedAuthHttpStatus: 200,
+              deltaErrorCode: null,
+              outboundIp: '203.0.113.11'
+            }
+          };
+        }
+      };
+    }
     return {
       ok: responseOk,
+      status: responseOk ? 200 : 409,
       async json() { return previewPayload; }
     };
   };
@@ -112,7 +145,7 @@ test('preview-only poller requests the API preview with ENGINE_SECRET and never 
   const { worker, calls, logs } = harness();
   const result = await worker.runOnce();
   assert.equal(result.status, 'CANDIDATE_READY');
-  const requests = calls.filter(call => call.kind === 'fetch');
+  const requests = calls.filter(call => call.kind === 'fetch' && /\\/api\\/options\\/(preview|execute)$/.test(call.url));
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url, 'https://deltascanner-api-v2.hostless.app/api/options/preview');
   assert.equal(requests[0].init.method, 'POST');
@@ -221,7 +254,7 @@ test('preview failures remain preview-only and are reported as a blocked worker 
   });
   const result = await worker.runOnce();
   assert.equal(result.status, 'ERROR');
-  assert.equal(calls.filter(call => call.kind === 'fetch').length, 1);
+  assert.equal(calls.filter(call => call.kind === 'fetch' && /\\/api\\/options\\/preview$/.test(call.url)).length, 1);
   assert.ok(logs.some(args => args[2]?.status === 'ERROR'));
 });
 
