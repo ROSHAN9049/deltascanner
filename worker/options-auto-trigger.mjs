@@ -85,6 +85,7 @@ export function createOptionsAutoTrigger({
   let timer = null;
   let started = false;
   let inFlight = null;
+  let demoCredentialDiagnostics = null;
 
   async function writeHeartbeat(status, extra = {}) {
     await logger('INFO', '[AUTO-TRIGGER] Worker heartbeat', {
@@ -107,23 +108,34 @@ export function createOptionsAutoTrigger({
   async function runApiAppDemoCredentialDiagnostic() {
     const engineSecret = clean(env.ENGINE_SECRET);
     if (!engineSecret) {
+      const report = {
+        environment: 'DELTA_DEMO_API_APP',
+        signedAuthPassed: false,
+        signedAuthHttpStatus: null,
+        deltaErrorCode: 'engine_secret_missing',
+        outboundIp: null
+      };
       await logger('WARN', '[OptionsDemoDiagnostics] API App signed-auth diagnostic skipped', {
-        target: 'API_APP',
-        deltaErrorCode: 'engine_secret_missing'
+        target: 'API_APP', ...report
       });
-      return;
+      return report;
     }
     let diagnosticUrl;
     try {
       diagnosticUrl = resolvePreviewUrl(env.OPTIONS_AUTO_TRIGGER_API_URL)
         .replace('/api/options/preview', '/api/options/diagnostics');
     } catch (error) {
-      await logger('WARN', '[OptionsDemoDiagnostics] API App signed-auth diagnostic URL invalid', {
-        target: 'API_APP',
+      const report = {
+        environment: 'DELTA_DEMO_API_APP',
+        signedAuthPassed: false,
+        signedAuthHttpStatus: null,
         deltaErrorCode: 'diagnostic_url_invalid',
-        error: safeError(error, engineSecret)
+        outboundIp: null
+      };
+      await logger('WARN', '[OptionsDemoDiagnostics] API App signed-auth diagnostic URL invalid', {
+        target: 'API_APP', ...report, error: safeError(error, engineSecret)
       });
-      return;
+      return report;
     }
     try {
       const response = await fetchImpl(diagnosticUrl, {
@@ -143,7 +155,8 @@ export function createOptionsAutoTrigger({
             signedAuthPassed: false,
             signedAuthHttpStatus: null,
             deltaErrorCode: response.status === 401 ? 'api_app_engine_auth_unauthorized' :
-              response.status === 404 ? 'api_app_diagnostic_route_missing' : 'api_app_diagnostic_failed'
+              response.status === 404 ? 'api_app_diagnostic_route_missing' : 'api_app_diagnostic_failed',
+            outboundIp: null
           };
       await logger(
         report.signedAuthPassed === true ? 'INFO' : 'WARN',
@@ -154,13 +167,63 @@ export function createOptionsAutoTrigger({
           ...report
         }
       );
+      return report;
     } catch (error) {
-      await logger('WARN', '[OptionsDemoDiagnostics] API App signed-auth diagnostic request failed', {
-        target: 'API_APP',
+      const report = {
+        environment: 'DELTA_DEMO_API_APP',
+        signedAuthPassed: false,
+        signedAuthHttpStatus: null,
         deltaErrorCode: 'api_app_diagnostic_network_error',
-        error: safeError(error, engineSecret)
+        outboundIp: null
+      };
+      await logger('WARN', '[OptionsDemoDiagnostics] API App signed-auth diagnostic request failed', {
+        target: 'API_APP', ...report, error: safeError(error, engineSecret)
+      });
+      return report;
+    }
+  }
+
+  async function ensureDemoCredentialDiagnostics() {
+    if (demoCredentialDiagnostics) return demoCredentialDiagnostics;
+    let workerReport;
+    try {
+      workerReport = await runOptionsDemoCredentialDiagnostic({ env, fetchImpl, logger, now });
+    } catch (error) {
+      workerReport = {
+        environment: 'DELTA_DEMO_WORKER',
+        signedAuthPassed: false,
+        signedAuthHttpStatus: null,
+        deltaErrorCode: 'worker_diagnostic_failed',
+        outboundIp: null
+      };
+      await logger('ERROR', '[OptionsDemoDiagnostics] Worker startup diagnostic failed safely', {
+        target: 'WORKER',
+        ...workerReport,
+        error: safeError(error, clean(env.DELTA_DEMO_API_SECRET))
       });
     }
+    const apiAppReport = await runApiAppDemoCredentialDiagnostic();
+    demoCredentialDiagnostics = {
+      worker: workerReport,
+      apiApp: apiAppReport,
+      passed: workerReport?.signedAuthPassed === true && apiAppReport?.signedAuthPassed === true
+    };
+    await logger(
+      demoCredentialDiagnostics.passed ? 'INFO' : 'WARN',
+      '[OptionsDemoDiagnostics] Both execution processes credential gate',
+      {
+        workerSignedAuthPassed: workerReport?.signedAuthPassed === true,
+        workerHttpStatus: workerReport?.signedAuthHttpStatus ?? null,
+        workerDeltaErrorCode: workerReport?.deltaErrorCode ?? null,
+        workerOutboundIp: workerReport?.outboundIp ?? null,
+        apiAppSignedAuthPassed: apiAppReport?.signedAuthPassed === true,
+        apiAppHttpStatus: apiAppReport?.signedAuthHttpStatus ?? null,
+        apiAppDeltaErrorCode: apiAppReport?.deltaErrorCode ?? null,
+        apiAppOutboundIp: apiAppReport?.outboundIp ?? null,
+        credentialsGatePassed: demoCredentialDiagnostics.passed
+      }
+    );
+    return demoCredentialDiagnostics;
   }
 
   async function runOnce() {
@@ -256,6 +319,25 @@ export function createOptionsAutoTrigger({
             reason: OPTIONS_DATABASE_EXECUTION_LOCK_REASON
           });
           return { status: 'BLOCKED_OPTIONS_EXECUTION_DISABLED', previewRequested: false };
+        }
+
+        if (demoMode && executionAutoExecuteConfigured) {
+          const diagnosticGate = await ensureDemoCredentialDiagnostics();
+          if (!diagnosticGate.passed) {
+            await writeHeartbeat('BLOCKED_DEMO_CREDENTIAL_DIAGNOSTIC', {
+              candidateReady: false,
+              credentialDiagnosticPassed: false,
+              workerSignedAuthPassed: diagnosticGate.worker?.signedAuthPassed === true,
+              workerHttpStatus: diagnosticGate.worker?.signedAuthHttpStatus ?? null,
+              workerDeltaErrorCode: diagnosticGate.worker?.deltaErrorCode ?? null,
+              workerOutboundIp: diagnosticGate.worker?.outboundIp ?? null,
+              apiAppSignedAuthPassed: diagnosticGate.apiApp?.signedAuthPassed === true,
+              apiAppHttpStatus: diagnosticGate.apiApp?.signedAuthHttpStatus ?? null,
+              apiAppDeltaErrorCode: diagnosticGate.apiApp?.deltaErrorCode ?? null,
+              apiAppOutboundIp: diagnosticGate.apiApp?.outboundIp ?? null
+            });
+            return { status: 'BLOCKED_DEMO_CREDENTIAL_DIAGNOSTIC', previewRequested: false };
+          }
         }
 
         const globalMaxPositions = finite(settings.max_options_positions);
@@ -567,16 +649,7 @@ if (fullAutoExecute) {
     if (started) return;
     started = true;
     if (demoExecutionConfigured) {
-      try {
-        await runOptionsDemoCredentialDiagnostic({ env, fetchImpl, logger, now });
-      } catch (error) {
-        await logger('ERROR', '[OptionsDemoDiagnostics] Worker startup diagnostic failed safely', {
-          target: 'WORKER',
-          deltaErrorCode: 'worker_diagnostic_failed',
-          error: safeError(error, clean(env.DELTA_DEMO_API_SECRET))
-        });
-      }
-      await runApiAppDemoCredentialDiagnostic();
+      await ensureDemoCredentialDiagnostics();
     }
     if (enabled && !oneShotSymbol) {
       timer = setIntervalFn(() => {
