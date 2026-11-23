@@ -21,7 +21,9 @@ function runtime({ openRows = [], exchangePositions = [], envMode = 'testnet', a
         return rows.filter(row => row.status === 'OPEN' && row.symbol === symbol).map(row => ({ ...row }));
       }
       if (query.includes('status=eq.OPEN')) {
-        return rows.filter(row => row.status === 'OPEN').map(row => ({ ...row }));
+        return rows.filter(row => row.status === 'OPEN' &&
+          (!query.includes('strategy=not.in') || !['OPTIONS_BUY', 'OPTIONS_SELL'].includes(String(row.strategy || '').toUpperCase())))
+          .map(row => ({ ...row }));
       }
       return [];
     },
@@ -481,4 +483,21 @@ test('engine position management reads canonical Delta bracket projection before
   assert.match(method, /projectCanonicalDeltaBrackets\(row, canonicalRows\)/);
   assert.ok(method.indexOf('projectCanonicalDeltaBrackets') < method.indexOf('const originalRisk'));
   assert.match(method, /stale engine position levels were not used/);
+});
+
+test('perpetual reconciler never reads or mutates Options strategy ledger rows', async () => {
+  const rt = runtime({
+    openRows: [
+      { id: 21, symbol: 'P-BTC-61500-041226', qty: 1, side: 'BUY', strategy: 'OPTIONS_BUY' },
+      { id: 22, symbol: 'C-BTC-62000-041226', qty: 1, side: 'SELL', strategy: 'OPTIONS_SELL' }
+    ],
+    exchangePositions: []
+  });
+  const reconciler = createDeltaPositionReconciler({
+    env: rt.env, database: rt.database, executor: rt.executor, now: fixedNow
+  });
+  const result = await reconciler.reconcile();
+  assert.equal(result.databaseOpenPositions, 0);
+  assert.equal(rt.updates.length, 0);
+  assert.equal(rt.rows.every(row => row.status === 'OPEN'), true);
 });
