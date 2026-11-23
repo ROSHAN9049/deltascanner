@@ -293,14 +293,9 @@ export function createOptionsAutoTrigger({
           });
           return { status: 'BLOCKED_REGIME_OR_EXIT_MONITOR_DISABLED', previewRequested: false };
         }
-        if (demoMode && !demoOverrideGate.allowed) {
-          await writeHeartbeat('BLOCKED_DEMO_QUALITY_OVERRIDE_DISABLED', {
-            reason: demoOverrideGate.reason,
-            demoMode: true,
-            manualOverrideEnabled: false
-          });
-          return { status: 'BLOCKED_DEMO_QUALITY_OVERRIDE_DISABLED', previewRequested: false };
-        }
+        // The manual test override is optional and only relaxes Demo quality
+        // filters when explicitly enabled. Turning it OFF must not disable the
+        // ordinary fully automatic path; normal candidate qualification applies.
         if (settings.enabled !== true) {
           await writeHeartbeat('BLOCKED_ENGINE_DISABLED');
           return { status: 'BLOCKED_ENGINE_DISABLED', previewRequested: false };

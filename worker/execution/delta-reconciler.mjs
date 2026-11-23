@@ -199,7 +199,7 @@ export function createDeltaPositionReconciler({
 
       const openRows = await database.select(
         'dd_delta_positions',
-        'status=eq.OPEN&select=id,symbol,qty,side,opened_at,realized_pnl,entry_order_id,client_order_id,requested_exit_reason,exit_reason,close_reason&limit=1000'
+        'status=eq.OPEN&strategy=not.in.(OPTIONS_BUY,OPTIONS_SELL)&select=id,symbol,product_id,qty,side,opened_at,realized_pnl,entry_order_id,client_order_id,requested_exit_reason,exit_reason,close_reason&limit=1000'
       );
       if (!Array.isArray(openRows)) {
         throw new Error('Could not read dd_delta_positions OPEN rows; DB state left unchanged');
