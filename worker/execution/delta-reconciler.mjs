@@ -6,6 +6,9 @@ export const DELTA_POSITION_RECONCILE_INTERVAL_MS = 5 * 60 * 1000;
 const QTY_EPSILON = 1e-8;
 
 const stringValue = value => String(value ?? '').trim();
+// Option contracts use P-/C- contract symbols and belong to dd_option_positions.
+// Keep this guard even if a malformed legacy row has a perpetual strategy label.
+const isOptionContractSymbol = value => /^[PC]-[A-Z0-9]+-/i.test(stringValue(value));
 const numberOrNull = value => {
   if (value === undefined || value === null || value === '') return null;
   const number = Number(value);
@@ -194,7 +197,9 @@ export function createDeltaPositionReconciler({
       if (!Array.isArray(exchangeRows)) {
         throw new Error('Delta Testnet positions snapshot was not an array; DB state left unchanged');
       }
-      const exchangePositions = exchangeRows.map(normalizeExchangePosition).filter(position => position.qty > 0);
+      const normalizedExchangePositions = exchangeRows.map(normalizeExchangePosition).filter(position => position.qty > 0);
+      const exchangePositions = normalizedExchangePositions.filter(position => !isOptionContractSymbol(position.symbol));
+      const skippedExchangeOptionRows = normalizedExchangePositions.length - exchangePositions.length;
       const exchangeBySymbol = new Map(exchangePositions.map(position => [position.symbol, position]));
 
       const openRows = await database.select(
@@ -212,8 +217,13 @@ export function createDeltaPositionReconciler({
       let quantityMismatches = 0;
       let hydratedPositions = 0;
 
+      let skippedDatabaseOptionRows = 0;
       for (const row of openRows) {
         const symbol = stringValue(row?.symbol).toUpperCase();
+        if (isOptionContractSymbol(symbol) || /^OPTIONS_(BUY|SELL)$/i.test(stringValue(row?.strategy))) {
+          skippedDatabaseOptionRows += 1;
+          continue;
+        }
         if (!symbol || row?.id === undefined || row?.id === null) {
           throw new Error('An OPEN dd_delta_positions row is missing its symbol or id; reconciliation aborted safely');
         }
@@ -323,6 +333,8 @@ export function createDeltaPositionReconciler({
         hydratedPositions,
         exchangeOpenPositions: exchangePositions.length,
         databaseOpenPositions: openRows.length,
+        skippedDatabaseOptionRows,
+        skippedExchangeOptionRows,
         reconciledAt: timestamp
       };
       const message = '[Reconciler] Found ' + zombiePositions +
@@ -331,7 +343,9 @@ export function createDeltaPositionReconciler({
         quantityMismatches,
         hydratedPositions,
         exchangeOpenPositions: exchangePositions.length,
-        databaseOpenPositions: openRows.length
+        databaseOpenPositions: openRows.length,
+        skippedDatabaseOptionRows,
+        skippedExchangeOptionRows
       }));
       await writeLog('INFO', message, summary);
       return summary;
