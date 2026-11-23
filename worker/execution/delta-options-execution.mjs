@@ -29,6 +29,13 @@ const positive = value => {
   return parsed !== null && parsed > 0 ? parsed : null;
 };
 const lower = value => clean(value).toLowerCase();
+export const normalizeOptionsExitStatus = value => clean(value).toUpperCase();
+export function resolveOptionsMaxSpreadPct(settings) {
+  const configured = number(settings?.options_max_spread_pct);
+  if (configured === null) return 1.5;
+  if (configured < 0) throw new Error('Options max spread setting is invalid; preview blocked');
+  return configured;
+}
 const isEnabled = value => lower(value) === 'true';
 const terminalOrderStates = new Set(['filled','closed','cancelled','canceled','rejected','expired','failed']);
 
@@ -454,10 +461,10 @@ export function createDeltaOptionsExecution({
       throw new Error('Verified Delta Testnet available balance is unavailable; Options preview blocked');
     }
     const spreadPct = ((quote.ask - quote.bid) / ((quote.ask + quote.bid) / 2)) * 100;
-    const configuredMaxSpreadPct = number(settings.options_max_spread_pct) ?? 1.5;
+    const configuredMaxSpreadPct = resolveOptionsMaxSpreadPct(settings);
     if (!Number.isFinite(spreadPct) || spreadPct < 0 || spreadPct > configuredMaxSpreadPct) {
-      throw new Error('Options order blocked: live Demo quote spread exceeds the unchanged ' +
-        configuredMaxSpreadPct.toFixed(2) + '% maximum');
+      throw new Error('Options order blocked: live Demo quote spread ' + spreadPct.toFixed(4) +
+        '% exceeds configured ' + configuredMaxSpreadPct.toFixed(2) + '% maximum');
     }
     const optionsRiskPct = number(settings.options_max_risk_pct);
     if (optionsRiskPct === null || optionsRiskPct <= 0) {
@@ -1787,7 +1794,7 @@ export function createDeltaOptionsExecution({
     let exits = 0;
     for (const position of rows) {
       try {
-        if (upper(position.status) === 'HEDGE_CLOSE_PENDING') {
+        if (normalizeOptionsExitStatus(position.status) === 'HEDGE_CLOSE_PENDING') {
           const result = await closeSellHedge(position, position.exit_reason || 'OPTIONS_SELL_EXIT');
           if (result.closed) exits += 1;
           continue;
@@ -1798,7 +1805,7 @@ export function createDeltaOptionsExecution({
         const bid = positive(ticker?.quotes?.best_bid ?? ticker?.best_bid ?? ticker?.bid);
         const ask = positive(ticker?.quotes?.best_ask ?? ticker?.best_ask ?? ticker?.ask);
         if (!bid || !ask || ask < bid) throw new Error('Options exit bid/ask is unavailable');
-        const isBuy = upper(position.strategy) === 'OPTIONS_BUY';
+        const isBuy = normalizeOptionsExitStatus(position.strategy) === 'OPTIONS_BUY';
         const currentPremium = isBuy ? bid : ask;
         const dte = (Number(position.expiry_ms) - now()) / 86_400_000;
         const decision = evaluateOptionsExit({

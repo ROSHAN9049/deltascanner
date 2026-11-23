@@ -21,6 +21,8 @@ const DEMO_PROFILE = {
   ALLOW_MANUAL_OVERRIDE_FOR_TEST: 'true'
 };
 
+import { normalizeOptionsExitStatus, resolveOptionsMaxSpreadPct } from '../worker/execution/delta-options-execution.mjs';
+
 import {
   calculateLongOptionMaxLoss,
   calculateDefinedRiskSpreadMaxLoss,
@@ -178,4 +180,17 @@ test('definitive short rejection attempts reduce-only protective-leg unwind', as
   });
   assert.deepEqual(events, ['unwind:1']);
   assert.equal(result.state, 'SHORT_REJECTED_HEDGE_UNWOUND');
+});
+
+
+test('Options preview uses the live DB max spread setting with a 1.5% fallback only when unset', () => {
+  assert.equal(resolveOptionsMaxSpreadPct({ options_max_spread_pct: '5.0' }), 5);
+  assert.equal(resolveOptionsMaxSpreadPct({ options_max_spread_pct: null }), 1.5);
+  assert.equal(resolveOptionsMaxSpreadPct({}), 1.5);
+  assert.throws(() => resolveOptionsMaxSpreadPct({ options_max_spread_pct: '-1' }), /setting is invalid/);
+});
+
+test('Options exit monitor status normalization is defined and case-insensitive', () => {
+  assert.equal(normalizeOptionsExitStatus('hedge_close_pending'), 'HEDGE_CLOSE_PENDING');
+  assert.equal(normalizeOptionsExitStatus('options_buy'), 'OPTIONS_BUY');
 });
