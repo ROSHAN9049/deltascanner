@@ -21,7 +21,9 @@ function runtime({ openRows = [], exchangePositions = [], envMode = 'testnet', a
         return rows.filter(row => row.status === 'OPEN' && row.symbol === symbol).map(row => ({ ...row }));
       }
       if (query.includes('status=eq.OPEN')) {
-        return rows.filter(row => row.status === 'OPEN').map(row => ({ ...row }));
+        return rows.filter(row => row.status === 'OPEN' &&
+          (!query.includes('strategy=not.in') || !['OPTIONS_BUY', 'OPTIONS_SELL'].includes(String(row.strategy || '').toUpperCase())))
+          .map(row => ({ ...row }));
       }
       return [];
     },
