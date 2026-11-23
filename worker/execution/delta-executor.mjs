@@ -503,7 +503,15 @@ export function createDeltaExecutor({
 
   async function getRecentCloseDetails(symbol, openedAt = null, position = {}) {
     const normalizedSymbol = stringOrEmpty(symbol).toUpperCase();
-    const product = await resolveProduct(normalizedSymbol, { entryOnly: false });
+    // Option contracts use their own product catalogue and authenticated Demo
+    // transport. Never send an option symbol through the perpetual resolver.
+    const isOptionContract = /^[CP]-(BTC|ETH)-\\d+-\\d{6}$/.test(normalizedSymbol);
+    const optionProductId = numberOrNull(position?.product_id ?? position?.raw?.product_id);
+    const product = isOptionContract
+      ? (Number.isSafeInteger(optionProductId) && optionProductId > 0
+          ? { id: optionProductId }
+          : (() => { throw new Error('Option close-fill lookup requires the canonical option product_id: ' + normalizedSymbol); })())
+      : await resolveProduct(normalizedSymbol, { entryOnly: false });
     const clockMs = now();
     const openedMs = timestampMs(openedAt ?? position?.opened_at);
     const entryOrderLookupTooOld = () =>
@@ -525,13 +533,15 @@ export function createDeltaExecutor({
       for (let page = 0; page < 10; page += 1) {
         const params = {
           product_ids: String(product.id),
-          contract_types: 'perpetual_futures',
+          contract_types: isOptionContract ? 'call_options,put_options' : 'perpetual_futures',
           start_time: startTime,
           end_time: endTime,
           page_size: 50
         };
         if (after) params.after = after;
-        const response = await request('GET', path, params);
+        const response = isOptionContract
+          ? await requestDemoOptions('GET', path, params)
+          : await request('GET', path, params);
         if (!Array.isArray(response?.result)) {
           throw new Error('Delta Testnet history response is malformed for ' + path);
         }
@@ -602,7 +612,7 @@ export function createDeltaExecutor({
     // Never fall back to symbol/time-only guesses. Delta's client-order endpoint
     // is only useful for recent backfills; older IDs may have expired from the API.
     let historicalOrderNotFound = false;
-    if (!entryOrderId && !matchingEntryFills.length && entryClientOrderId && !entryOrderLookupTooOld()) {
+    if (!isOptionContract && !entryOrderId && !matchingEntryFills.length && entryClientOrderId && !entryOrderLookupTooOld()) {
       try {
         const entryOrder = await getOrderByClientOrderId(entryClientOrderId);
         const lookupProductId = numberOrNull(entryOrder?.product_id);
