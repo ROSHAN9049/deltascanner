@@ -505,7 +505,7 @@ export function createDeltaExecutor({
     const normalizedSymbol = stringOrEmpty(symbol).toUpperCase();
     // Option contracts use their own product catalogue and authenticated Demo
     // transport. Never send an option symbol through the perpetual resolver.
-    const isOptionContract = /^[CP]-(BTC|ETH)-\\d+-\\d{6}$/.test(normalizedSymbol);
+    const isOptionContract = /^[CP]-(BTC|ETH)-\d+-\d{6}$/.test(normalizedSymbol);
     const optionProductId = numberOrNull(position?.product_id ?? position?.raw?.product_id);
     const product = isOptionContract
       ? (Number.isSafeInteger(optionProductId) && optionProductId > 0
