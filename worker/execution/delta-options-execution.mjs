@@ -625,6 +625,12 @@ export function createDeltaOptionsExecution({
       minSize: product.minSize,
       sizeStep: product.sizeStep,
       spreadPct,
+      liveQuoteMid: (liveQuote.bid + liveQuote.ask) / 2,
+      demoQuoteMid: (quote.bid + quote.ask) / 2,
+      liveDemoMismatchPct,
+      hedgeLiveQuoteMid: hedgeLiveQuote ? (hedgeLiveQuote.bid + hedgeLiveQuote.ask) / 2 : null,
+      hedgeDemoQuoteMid: hedgeQuote ? (hedgeQuote.bid + hedgeQuote.ask) / 2 : null,
+      hedgeLiveDemoMismatchPct,
       stopPremium,
       takeProfitPremium,
       maxLossUsd: loss.maxLossUsd,
@@ -1438,6 +1444,9 @@ export function createDeltaOptionsExecution({
           Math.abs(Number(expected.stopPremium) - preview.stopPremium) > tolerance ||
           Math.abs(Number(expected.takeProfitPremium) - preview.takeProfitPremium) > tolerance ||
           Math.abs(Number(expected.spreadPct) - preview.spreadPct) > 0.01 ||
+          Math.abs(Number(expected.liveDemoMismatchPct) - preview.liveDemoMismatchPct) > 0.01 ||
+          (preview.hedgeLiveDemoMismatchPct !== null &&
+            Math.abs(Number(expected.hedgeLiveDemoMismatchPct) - preview.hedgeLiveDemoMismatchPct) > 0.01) ||
           (preview.hedgeSpreadPct !== null &&
             Math.abs(Number(expected.hedgeSpreadPct) - preview.hedgeSpreadPct) > 0.01) ||
           Number(expected.equity) > preview.equity + 1e-8) {
