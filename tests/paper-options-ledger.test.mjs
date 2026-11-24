@@ -69,8 +69,8 @@ test('paper trade monitor updates premium points and closes only on SL/TP/expiry
   const database = {
     async select() {
       return [
-        { id: 1, symbol: 'C-BTC-90000-311226', qty: 1, entry_price: 100, stop_price: 80, take_profit_price: 130, expiry_at: null },
-        { id: 2, symbol: 'P-BTC-80000-311226', qty: 2, entry_price: 50, stop_price: 40, take_profit_price: 70, expiry_at: null }
+        { id: 1, symbol: 'C-BTC-90000-311226', strategy: 'OPTIONS_BUY', option_type: 'CALL', strike: 90000, qty: 1, entry_price: 100, stop_price: 80, take_profit_price: 130, expiry_at: null },
+        { id: 2, symbol: 'P-BTC-80000-311226', strategy: 'OPTIONS_BUY', option_type: 'PUT', strike: 80000, qty: 2, entry_price: 50, stop_price: 40, take_profit_price: 70, expiry_at: null }
       ];
     },
     async update(table, query, patch) { updates.push({ table, query, patch }); }
