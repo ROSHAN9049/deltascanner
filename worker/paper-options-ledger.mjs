@@ -198,7 +198,8 @@ export async function refreshPaperOptionTrades({
         const intrinsic = spot === null ? null : optionIntrinsic(
           clean(row.option_type).toUpperCase(), Number(row.strike), spot
         );
-        if (intrinsic !== null) currentPrice = intrinsic;
+        if (intrinsic === null) continue;
+        currentPrice = intrinsic;
         exitReason = 'EXPIRY';
       } else {
         const stop = positive(row.stop_price);
