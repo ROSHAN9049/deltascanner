@@ -82,6 +82,7 @@ export default async function handler(req, res) {
       signalCache: signalCacheResult.available,
       marketCache: marketCacheResult.available,
       optionCache: optionCacheResult.available,
+      paperOptionsLedger: privateDataAuthorized === true && paperTradeResult?.available === true,
       workerHeartbeat: heartbeatResult.available && heartbeatResult.rows.some(row =>
         String(row?.message || '').startsWith('Worker heartbeat scan')
       ),
@@ -115,6 +116,7 @@ export default async function handler(req, res) {
       deltaTestnetPositionRows,
       optionsPositionResult,
       optionsOrderResult,
+      paperTradeResult,
       deltaTestnetOpenPositionCount,
       deltaTestnetOrderRows,
       deltaTestnetOrderCount,
@@ -131,6 +133,7 @@ export default async function handler(req, res) {
           select('dd_delta_positions', 'order=opened_at.desc&limit=500').catch(() => []),
           readDashboardRows('dd_option_positions', 'order=opened_at.desc&limit=1000'),
           readDashboardRows('dd_orders', 'strategy=in.(OPTIONS_BUY,OPTIONS_SELL)&order=created_at.desc&limit=2000'),
+          readDashboardRows('dd_paper_trades', 'order=opened_at.desc&limit=1000'),
           count('dd_delta_positions', 'status=eq.OPEN&select=id').catch(() => null),
           select('dd_orders', 'order_type=eq.delta_testnet_order&order=created_at.desc&limit=1000').catch(() => []),
           count('dd_orders', 'order_type=eq.delta_testnet_order&select=id').catch(() => null),
@@ -143,7 +146,7 @@ export default async function handler(req, res) {
           select('dd_wallet_transaction_sync_state', 'id=eq.1&limit=1').catch(() => []),
           count('dd_wallet_transactions', 'select=id').catch(() => null)
         ])
-      : [[], { rows: [], available: false }, { rows: [], available: false }, null, [], null, [], null, [], null, [], null, [], null];
+      : [[], { rows: [], available: false }, { rows: [], available: false }, { rows: [], available: false }, null, [], null, [], null, [], null, [], null, [], null];
 
     const [lastConfirmedSignalResult, signalsTodayCount] = await Promise.all([
       select(
@@ -231,9 +234,27 @@ export default async function handler(req, res) {
       ledger: ledger || [],
       ledgerRowCount: ledgerRowCount == null ? null : Number(ledgerRowCount),
       deltaTestnetPositions,
-      optionsTradePositions: optionsPositionResult?.rows || [],
+      optionsTradePositions: [
+        ...(optionsPositionResult?.rows || []),
+        ...(paperTradeResult?.rows || []).map(row => ({
+          ...row,
+          position_key: row.trade_key,
+          entry_premium: row.entry_price,
+          short_exit_premium: row.exit_price,
+          realized_pnl_verified: row.status === 'CLOSED' && row.realized_pnl !== null && row.realized_pnl !== undefined,
+          paper_only: true,
+          raw: {
+            ...(row.raw && typeof row.raw === 'object' ? row.raw : {}),
+            paper_only: true,
+            fill_type: row.fill_type || 'SIMULATED_FILL',
+            pnl_unit: 'OPTION_PREMIUM_POINTS'
+          }
+        }))
+      ],
       optionsTradeOrders: optionsOrderResult?.rows || [],
-      optionsTradeHistoryComplete: privateDataAuthorized === true && optionsPositionResult?.available === true && optionsOrderResult?.available === true,
+      optionsTradeHistoryComplete: privateDataAuthorized === true &&
+        optionsPositionResult?.available === true && optionsOrderResult?.available === true &&
+        paperTradeResult?.available === true,
       deltaTestnetOpenPositionCount: deltaTestnetOpenPositionCount == null ? null : Number(deltaTestnetOpenPositionCount),
       deltaTestnetOrders,
       deltaTestnetOrderCount: deltaTestnetOrderCount == null ? null : Number(deltaTestnetOrderCount),
