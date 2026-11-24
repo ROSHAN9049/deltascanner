@@ -28,7 +28,6 @@ function hmac(secret, text) {
 export function resolveDeltaRequestBase({
   method = 'GET',
   auth = false,
-  marketData = false,
   productCatalog = false
 } = {}, {
   base = CONFIG.restBase,
