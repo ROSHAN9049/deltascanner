@@ -76,6 +76,7 @@ function parseDetails(value) {
 export function createDeltaOptionsExecution({
   env = process.env,
   request,
+  requestLive,
   database,
   getAccountSnapshot,
   logExecutor = async () => {},
@@ -84,7 +85,7 @@ export function createDeltaOptionsExecution({
   isMarketTickFresh = () => false,
   getRecentCloseDetails = null
 } = {}) {
-  if (typeof request !== 'function' || typeof database?.select !== 'function' ||
+  if (typeof request !== 'function' || typeof requestLive !== 'function' || typeof database?.select !== 'function' ||
       typeof getAccountSnapshot !== 'function' || typeof buildClientOrderId !== 'function') {
     throw new Error('Delta Options executor dependencies are incomplete');
   }
@@ -185,6 +186,38 @@ export function createDeltaOptionsExecution({
       throw new Error('Delta Testnet Options bid/ask is missing or invalid for ' + symbol);
     }
     return { bid, ask, mark: positive(ticker.mark_price ?? ticker.close) ?? (bid + ask) / 2 };
+  }
+
+  async function getLiveQuote(symbol) {
+    const response = await requestLive('GET', '/v2/tickers/' + encodeURIComponent(symbol));
+    const ticker = Array.isArray(response?.result)
+      ? response.result.find(row => clean(row?.symbol).toUpperCase() === String(symbol).toUpperCase())
+      : response?.result;
+    if (!ticker || clean(ticker.symbol).toUpperCase() !== String(symbol).toUpperCase()) {
+      throw new Error('Delta India Live public Options ticker does not match contract ' + symbol);
+    }
+    const bid = positive(ticker?.quotes?.best_bid ?? ticker?.best_bid ?? ticker?.bid);
+    const ask = positive(ticker?.quotes?.best_ask ?? ticker?.best_ask ?? ticker?.ask);
+    if (!bid || !ask || ask < bid) {
+      throw new Error('Delta India Live public Options bid/ask is missing or invalid for ' + symbol);
+    }
+    return { bid, ask, mark: positive(ticker.mark_price ?? ticker.close) ?? (bid + ask) / 2 };
+  }
+
+  function assertLiveDemoQuoteParity(symbol, liveQuote, demoQuote) {
+    const liveMid = (liveQuote.bid + liveQuote.ask) / 2;
+    const demoMid = (demoQuote.bid + demoQuote.ask) / 2;
+    if (!(liveMid > 0 && demoMid > 0)) {
+      throw new Error('Hybrid Options quote parity unavailable for ' + symbol + '; entry blocked');
+    }
+    const mismatchPct = Math.abs(demoMid - liveMid) / liveMid * 100;
+    const maxMismatchPct = Math.max(0.1, Math.min(10,
+      number(env.OPTIONS_MAX_LIVE_DEMO_PRICE_MISMATCH_PCT) ?? 2.0));
+    if (!Number.isFinite(mismatchPct) || mismatchPct > maxMismatchPct) {
+      throw new Error('Hybrid Options entry blocked: Live/Demo premium mismatch ' +
+        mismatchPct.toFixed(3) + '% exceeds ' + maxMismatchPct.toFixed(2) + '% for ' + symbol);
+    }
+    return Number(mismatchPct.toFixed(4));
   }
 
   async function getCandidate(symbol, strategy, { manualTestOverride = false } = {}) {
@@ -437,15 +470,17 @@ export function createDeltaOptionsExecution({
       throw new Error('Options quantity must be a whole number from 1 to 20');
     }
 
-    const [candidate, product, quote, account, settingsRows] = await Promise.all([
+    const [candidate, product, quote, liveQuote, account, settingsRows] = await Promise.all([
       getCandidate(contract, strategyKey, { manualTestOverride: useManualTestOverride }),
       resolveProduct(contract),
       getQuote(contract),
+      getLiveQuote(contract),
       getAccountSnapshot(),
       database.select('dd_settings', 'id=eq.1&select=options_max_risk_pct,max_options_positions,enabled,emergency_stop,last_tick_at,options_buy_min_delta,options_buy_max_delta,options_sell_min_delta,options_sell_max_delta,options_min_days_to_expiry,options_max_days_to_expiry,options_min_oi,options_min_volume,options_max_spread_pct')
     ]);
     const settings = Array.isArray(settingsRows) && settingsRows.length === 1 ? settingsRows[0] : null;
     if (!settings) throw new Error('Options risk settings are unavailable; preview blocked');
+    const liveDemoMismatchPct = assertLiveDemoQuoteParity(contract, liveQuote, quote);
     if (quantity < product.minSize || (quantity - product.minSize) % product.sizeStep !== 0) {
       throw new Error('Options quantity violates the exact Demo product minimum size or contract-size increment');
     }
@@ -473,6 +508,8 @@ export function createDeltaOptionsExecution({
     }
     let hedgeProduct = null;
     let hedgeQuote = null;
+    let hedgeLiveQuote = null;
+    let hedgeLiveDemoMismatchPct = null;
     let premium;
     let hedgePremium = null;
     let hedgeSpreadPct = null;
@@ -488,9 +525,10 @@ export function createDeltaOptionsExecution({
     } else {
       const hedgeSymbol = clean(candidate.details.hedgeSymbol).toUpperCase();
       if (!hedgeSymbol) throw new Error('SELL candidate is blocked: protective hedge symbol is missing');
-      [hedgeProduct, hedgeQuote] = await Promise.all([
-        resolveProduct(hedgeSymbol), getQuote(hedgeSymbol)
+      [hedgeProduct, hedgeQuote, hedgeLiveQuote] = await Promise.all([
+        resolveProduct(hedgeSymbol), getQuote(hedgeSymbol), getLiveQuote(hedgeSymbol)
       ]);
+      hedgeLiveDemoMismatchPct = assertLiveDemoQuoteParity(hedgeSymbol, hedgeLiveQuote, hedgeQuote);
       if (hedgeProduct.parsed.optionType !== product.parsed.optionType ||
           hedgeProduct.parsed.underlying !== product.parsed.underlying ||
           hedgeProduct.parsed.expiryMs !== product.parsed.expiryMs ||
@@ -559,6 +597,8 @@ export function createDeltaOptionsExecution({
       premium,
       hedgePremium,
       hedgeSpreadPct,
+      liveDemoMismatchPct,
+      hedgeLiveDemoMismatchPct,
       stopPremium,
       takeProfitPremium,
       minSize: product.minSize,
@@ -585,6 +625,12 @@ export function createDeltaOptionsExecution({
       minSize: product.minSize,
       sizeStep: product.sizeStep,
       spreadPct,
+      liveQuoteMid: (liveQuote.bid + liveQuote.ask) / 2,
+      demoQuoteMid: (quote.bid + quote.ask) / 2,
+      liveDemoMismatchPct,
+      hedgeLiveQuoteMid: hedgeLiveQuote ? (hedgeLiveQuote.bid + hedgeLiveQuote.ask) / 2 : null,
+      hedgeDemoQuoteMid: hedgeQuote ? (hedgeQuote.bid + hedgeQuote.ask) / 2 : null,
+      hedgeLiveDemoMismatchPct,
       stopPremium,
       takeProfitPremium,
       maxLossUsd: loss.maxLossUsd,
@@ -742,8 +788,12 @@ export function createDeltaOptionsExecution({
 
   async function submitLeg(product, side, qty, price, {
     strategy, role, maxLossUsd, hedgeOrderId = null, reduceOnly = false, executionKey = null,
-    manualTestOverride = false, bracketStopLossPrice = null, bracketTakeProfitPrice = null
+    manualTestOverride = false, bracketStopLossPrice = null, bracketTakeProfitPrice = null,
+    signalGeneratedAt = null
   } = {}) {
+    const submitStartedAt = now();
+    const signalAt = Number.isFinite(Date.parse(signalGeneratedAt))
+      ? Date.parse(signalGeneratedAt) : submitStartedAt;
     const roleSuffix = role === 'PROTECTIVE_HEDGE' ? 'H' :
       role === 'UNWIND' ? 'U' : role === 'SHORT' ? 'S' :
         role === 'EXIT' ? 'X' : role === 'HEDGE_EXIT' ? 'HX' : 'B';
@@ -825,6 +875,8 @@ export function createDeltaOptionsExecution({
     try {
       const response = await request('POST', '/v2/orders', {}, body);
       const order = response?.result ?? response;
+      const orderAckAt = now();
+      const signalToAckMs = Math.max(0, orderAckAt - signalAt);
       if (!order || typeof order !== 'object' || Array.isArray(order) ||
           !(order.id || order.client_order_id || order.state)) {
         const error = new Error('Delta Testnet Options order acknowledgement is malformed');
@@ -846,7 +898,18 @@ export function createDeltaOptionsExecution({
             exchange_order_id: order.id ?? null,
             exchange_state: state,
             unfilled_size: number(order.unfilled_size),
-            average_fill_price: number(order.average_fill_price)
+            average_fill_price: number(order.average_fill_price),
+            signal_to_order_ack_ms: signalToAckMs,
+            latency_source: signalGeneratedAt ? 'signal_timestamp' : 'submit_start_fallback',
+            signal_generated_at: new Date(signalAt).toISOString(),
+            order_acknowledged_at: new Date(orderAckAt).toISOString(),
+            reference_price: positive(price),
+            slippage_bps: ['FILLED','CLOSED'].includes(state) &&
+              number(order.unfilled_size) === 0 && positive(order.average_fill_price) && positive(price)
+              ? Number((((String(side).toUpperCase() === 'BUY'
+                ? Number(order.average_fill_price) - Number(price)
+                : Number(price) - Number(order.average_fill_price)) / Number(price)) * 10000).toFixed(2))
+              : null
           }
         }
       ).catch(() => {});
@@ -860,6 +923,9 @@ export function createDeltaOptionsExecution({
         orderId: order.id ?? null,
         orderState: state,
         role,
+        signalToOrderAckMs: signalToAckMs,
+        latencySource: signalGeneratedAt ? 'signal_timestamp' : 'submit_start_fallback',
+        referencePrice: positive(price),
         entry_price: price,
         stop_loss_price: bracketStopLossPrice,
         take_profit_price: bracketTakeProfitPrice,
@@ -1398,6 +1464,9 @@ export function createDeltaOptionsExecution({
           Math.abs(Number(expected.stopPremium) - preview.stopPremium) > tolerance ||
           Math.abs(Number(expected.takeProfitPremium) - preview.takeProfitPremium) > tolerance ||
           Math.abs(Number(expected.spreadPct) - preview.spreadPct) > 0.01 ||
+          Math.abs(Number(expected.liveDemoMismatchPct) - preview.liveDemoMismatchPct) > 0.01 ||
+          (preview.hedgeLiveDemoMismatchPct !== null &&
+            Math.abs(Number(expected.hedgeLiveDemoMismatchPct) - preview.hedgeLiveDemoMismatchPct) > 0.01) ||
           (preview.hedgeSpreadPct !== null &&
             Math.abs(Number(expected.hedgeSpreadPct) - preview.hedgeSpreadPct) > 0.01) ||
           Number(expected.equity) > preview.equity + 1e-8) {
@@ -1430,6 +1499,7 @@ export function createDeltaOptionsExecution({
         const order = await submitLeg(product, 'BUY', preview.qty, preview.premium, {
           strategy: 'OPTIONS_BUY', role: 'ENTRY', maxLossUsd: preview.maxLossUsd, executionKey,
           manualTestOverride: preview.manualTestOverride === true,
+          signalGeneratedAt: preview.cachedAt,
           bracketStopLossPrice: preview.stopPremium,
           bracketTakeProfitPrice: preview.takeProfitPremium
         });
@@ -1489,7 +1559,8 @@ export function createDeltaOptionsExecution({
           hedgeProduct, 'BUY', preview.qty, preview.hedgePremium, {
             strategy: 'OPTIONS_SELL', role: 'PROTECTIVE_HEDGE',
             maxLossUsd: preview.maxLossUsd, executionKey,
-            manualTestOverride: preview.manualTestOverride === true
+            manualTestOverride: preview.manualTestOverride === true,
+            signalGeneratedAt: preview.cachedAt
           }
         ),
         waitForProtectiveFill,
@@ -1501,6 +1572,7 @@ export function createDeltaOptionsExecution({
             strategy: 'OPTIONS_SELL', role: 'SHORT', maxLossUsd: preview.maxLossUsd,
             hedgeOrderId: hedgeOrder?.id ?? null, executionKey,
             manualTestOverride: preview.manualTestOverride === true,
+            signalGeneratedAt: preview.cachedAt,
             bracketStopLossPrice: preview.stopPremium,
             bracketTakeProfitPrice: preview.takeProfitPremium
           });

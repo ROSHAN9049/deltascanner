@@ -336,6 +336,30 @@ export function createDeltaExecutor({
     return data || { success: true, result: null };
   }
 
+  async function requestLiveOptions(method, path, params = {}) {
+    const verb = String(method || 'GET').trim().toUpperCase();
+    const route = String(path || '');
+    if (verb !== 'GET' || !/^\/v2\/tickers\/[A-Z0-9_-]+$/.test(route)) {
+      throw new Error('Hybrid Live Options transport permits ticker GET requests only');
+    }
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params || {})) {
+      if (value !== undefined && value !== null) query.set(key, String(value));
+    }
+    const url = 'https://api.india.delta.exchange' + route +
+      (query.toString() ? '?' + query.toString() : '');
+    const response = await fetch(url, { method: 'GET', headers: { Accept: 'application/json' } });
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data || data.success === false) {
+      const error = new Error('Delta India Live public Options ticker request failed (' +
+        response.status + '): ' + String(data?.error?.message || data?.message || 'invalid response'));
+      error.status = response.status;
+      error.code = 'delta_live_options_ticker_failed';
+      throw error;
+    }
+    return data;
+  }
+
   async function getDemoOptionsAccountSnapshot() {
     const wallet = await requestDemoOptions('GET', '/v2/wallet/balances');
     const equity = accountEquity(wallet);
@@ -1036,9 +1060,13 @@ export function createDeltaExecutor({
       strategy = 'MOMENTUM',
       role = 'ENTRY',
       reserve = true,
-      referenceEntryPrice = null
+      referenceEntryPrice = null,
+      signalGeneratedAt = null
     } = {}
   ) {
+    const submitStartedAt = now();
+    const signalAt = Number.isFinite(Date.parse(signalGeneratedAt))
+      ? Date.parse(signalGeneratedAt) : submitStartedAt;
     const clientOrderId = stringOrEmpty(body?.client_order_id);
     const normalizedSymbol = stringOrEmpty(
       product?.symbol || body?.product_symbol
@@ -1120,6 +1148,14 @@ export function createDeltaExecutor({
         unfilledSize === 0 &&
         averageFillPrice !== null &&
         averageFillPrice > 0;
+      const orderAckAt = now();
+      const signalToAckMs = Math.max(0, orderAckAt - signalAt);
+      const referencePrice = numberOrNull(body.limit_price ?? referenceEntryPrice);
+      const slippageBps = fillConfirmedByRest && referencePrice > 0
+        ? Number((((stringOrEmpty(body.side).toLowerCase() === 'buy'
+          ? averageFillPrice - referencePrice : referencePrice - averageFillPrice) /
+          referencePrice) * 10000).toFixed(2))
+        : null;
       const positionSnapshotConfirmedByRest = fillConfirmedByRest && reserve && role === 'ENTRY'
         ? await persistRestConfirmedPosition({ product, body, order, clientOrderId, strategy })
         : false;
@@ -1141,7 +1177,13 @@ export function createDeltaExecutor({
               unfilled_size: unfilledSize,
               average_fill_price: order.average_fill_price ?? null,
               fill_confirmed_by_rest: fillConfirmedByRest,
-              position_snapshot_confirmed_by_rest: positionSnapshotConfirmedByRest
+              position_snapshot_confirmed_by_rest: positionSnapshotConfirmedByRest,
+              signal_to_order_ack_ms: signalToAckMs,
+              latency_source: signalGeneratedAt ? 'signal_timestamp' : 'submit_start_fallback',
+              signal_generated_at: new Date(signalAt).toISOString(),
+              order_acknowledged_at: new Date(orderAckAt).toISOString(),
+              reference_price: referencePrice,
+              slippage_bps: slippageBps
             }
           }
         ).catch(error => database.log(
@@ -1167,6 +1209,10 @@ export function createDeltaExecutor({
           averageFillPrice: order.average_fill_price ?? null,
           fillConfirmedByRest,
           positionSnapshotConfirmedByRest,
+          signalToOrderAckMs: signalToAckMs,
+          latencySource: signalGeneratedAt ? 'signal_timestamp' : 'submit_start_fallback',
+          referencePrice,
+          slippageBps,
           fillConfirmedByPrivateWebSocketAtAcknowledgement: false,
           note: fillConfirmedByRest
             ? 'REST order response confirms fill; private WebSocket confirmation may arrive independently'
@@ -1228,6 +1274,22 @@ export function createDeltaExecutor({
       if (hasPrice && !(limitPrice > 0)) throw new Error('limit price must be positive');
       await assertSafety(normalizedSymbol, 'ENTRY');
       const product = await resolveProduct(normalizedSymbol);
+      if (limitPrice !== null) {
+        let demoMark;
+        try { demoMark = await getFreshMarkPrice(normalizedSymbol); }
+        catch { throw new Error('Fresh Demo mark unavailable; Hybrid price validation blocked entry'); }
+        const mismatchPct = Math.abs(demoMark - limitPrice) / limitPrice * 100;
+        const maxMismatchPct = Math.max(0.1, Math.min(10,
+          numberOrNull(env.DELTA_MAX_LIVE_DEMO_PRICE_MISMATCH_PCT) ?? 1.5));
+        if (!Number.isFinite(mismatchPct) || mismatchPct > maxMismatchPct) {
+          await logExecutor('WARN', '[Executor] Blocked Futures entry: Live signal and Demo execution price mismatch', {
+            environment: 'testnet', symbol: normalizedSymbol, liveSignalPrice: limitPrice,
+            demoMarkPrice: demoMark, mismatchPct, maxMismatchPct,
+            executionBlocked: true, reason: 'LIVE_DEMO_PRICE_MISMATCH_EXCEEDED'
+          });
+          throw new Error('Live/Demo price mismatch exceeds ' + maxMismatchPct.toFixed(2) + '%; refresh signal before entry');
+        }
+      }
       const body = {
         product_id: product.id,
         size: quantity,
@@ -1313,13 +1375,21 @@ export function createDeltaExecutor({
       const referenceDriftPct = entry > 0 ? Math.abs(liveMarkPrice - entry) / entry * 100 : null;
       const driftWithinStopDistance = referenceDriftPct !== null &&
         slDistancePct !== null && referenceDriftPct <= slDistancePct + 1e-9;
-      if (!bracketContainsLiveMark || !driftWithinStopDistance) {
+      const maxCrossSourceMismatchPct = Math.max(0.1, Math.min(10,
+        numberOrNull(env.DELTA_MAX_LIVE_DEMO_PRICE_MISMATCH_PCT) ?? 1.5));
+      const crossSourceMismatchWithinLimit = referenceDriftPct !== null &&
+        referenceDriftPct <= maxCrossSourceMismatchPct + 1e-9;
+      if (!bracketContainsLiveMark || !driftWithinStopDistance || !crossSourceMismatchWithinLimit) {
         const reason = !bracketContainsLiveMark
           ? 'LIVE_MARK_OUTSIDE_BRACKET'
-          : 'LIVE_MARK_DRIFT_EXCEEDS_STOP_DISTANCE';
+          : !crossSourceMismatchWithinLimit
+            ? 'LIVE_DEMO_PRICE_MISMATCH_EXCEEDED'
+            : 'LIVE_MARK_DRIFT_EXCEEDS_STOP_DISTANCE';
         const logMessage = !bracketContainsLiveMark
           ? '[Executor] Blocked bracket order: live mark moved outside requested SL/TP bracket'
-          : '[Executor] Blocked bracket order: Testnet mark drift exceeds signal stop distance';
+          : !crossSourceMismatchWithinLimit
+            ? '[Executor] Blocked bracket order: Live signal and Demo execution price mismatch exceeded'
+            : '[Executor] Blocked bracket order: Testnet mark drift exceeds signal stop distance';
         await logExecutor('WARN', logMessage, {
           environment: 'testnet', symbol: normalizedSymbol, side: direction,
           referenceEntryPrice: entry, liveMarkPrice, referenceDriftPct, slDistancePct,
@@ -1328,11 +1398,15 @@ export function createDeltaExecutor({
           executionMarkSource: 'delta_india_testnet_rest',
           bracketContainsLiveMark,
           driftWithinStopDistance,
+          maxCrossSourceMismatchPct,
+          crossSourceMismatchWithinLimit,
           executionBlocked: true, reason
         });
         const errorMessage = !bracketContainsLiveMark
           ? 'Live mark has moved outside the requested SL/TP bracket; refresh signal before entry'
-          : 'Live Testnet mark no longer matches the signal risk envelope; refresh signal before entry';
+          : !crossSourceMismatchWithinLimit
+            ? 'Live/Demo price mismatch exceeds ' + maxCrossSourceMismatchPct.toFixed(2) + '%; refresh signal before entry'
+            : 'Live Testnet mark no longer matches the signal risk envelope; refresh signal before entry';
         throw new Error(errorMessage);
       }
 
@@ -1376,7 +1450,8 @@ export function createDeltaExecutor({
       return submitOrder(product, body, {
         strategy,
         role: 'ENTRY',
-        referenceEntryPrice: entry
+        referenceEntryPrice: entry,
+        signalGeneratedAt: options?.signalGeneratedAt ?? null
       });
     });
   }
@@ -1607,6 +1682,7 @@ export function createDeltaExecutor({
     // Keep Futures request()/getAccountSnapshot() on their existing route.
     // Options use the independent DELTA_DEMO_* keypair and fixed Testnet host.
     request: requestDemoOptions,
+    requestLive: requestLiveOptions,
     database,
     getAccountSnapshot: getDemoOptionsAccountSnapshot,
     logExecutor,

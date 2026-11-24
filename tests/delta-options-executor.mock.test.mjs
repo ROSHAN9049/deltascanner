@@ -10,7 +10,8 @@ function harness({
   enabled = true, shortState = 'open', hedgeFilled = true, hedgePartial = false,
   strategy = 'OPTIONS_SELL', manualOverrideEnabled = false, candidatePatch = {}, settingsPatch = {},
   closedOptionPositions = [], openOptionPositions = [], bracketEcho = true, bracketChildren = true,
-  noPositionForReduceOnly = false, getRecentCloseDetails = null
+  noPositionForReduceOnly = false, getRecentCloseDetails = null,
+  liveQuoteMismatchPct = 0
 } = {}) {
   const env = {
     DELTA_EXECUTION_MODE: 'testnet',
@@ -312,9 +313,27 @@ function harness({
     throw new Error('unexpected mock Delta request ' + method + ' ' + path);
   };
 
+  const requestLive = async (method, path, params = {}) => {
+    const response = await request(method, path, params, null);
+    const scale = 1 + Number(liveQuoteMismatchPct || 0) / 100;
+    return {
+      ...response,
+      result: Array.isArray(response?.result) ? response.result.map(row => ({
+        ...row,
+        quotes: {
+          ...row.quotes,
+          best_bid: Number(row?.quotes?.best_bid) * scale,
+          best_ask: Number(row?.quotes?.best_ask) * scale
+        },
+        mark_price: Number(row.mark_price) * scale
+      })) : response.result
+    };
+  };
+
   const executor = createDeltaOptionsExecution({
     env,
     request,
+    requestLive,
     database,
     getAccountSnapshot: async () => ({
       equity: 10000,
@@ -800,4 +819,17 @@ test('no_position_for_reduce_only stops repeat BUY exits and queues exact fill r
   ).length;
   assert.equal(secondExitAttempts, 1);
   assert.ok(logs.some(row => row[1].includes('stopped repeat exit attempts')));
+});
+
+
+test('Hybrid Options preview blocks a large Live/Demo premium mismatch before any order', async () => {
+  const { executor, apiCalls } = harness({
+    strategy: 'OPTIONS_BUY',
+    liveQuoteMismatchPct: 84
+  });
+  await assert.rejects(
+    executor.previewOptionsOrder({ symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1 }),
+    /Live\/Demo premium mismatch/
+  );
+  assert.equal(apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
 });

@@ -22,6 +22,12 @@ function uniqueBy(rows, keyOf) {
   });
 }
 
+const GRID_SCREENER_PAUSE_REASONS = new Set([
+  'GRID_VOLUME_TOO_LOW', 'GRID_SPREAD_TOO_WIDE', 'GRID_RANGE_DATA_INSUFFICIENT',
+  'GRID_TRENDING_MARKET', 'GRID_BOLLINGER_WIDTH_TOO_WIDE', 'GRID_ATR_OUT_OF_RANGE',
+  'GRID_ATR_UNSTABLE', 'GRID_VOLATILITY_SPIKE', 'GRID_SCREENER_NOT_QUALIFIED'
+]);
+
 const GLOBAL_GRID_PROTECTION_HALT_REASONS = new Set([
   'GRID_RANGE_BREAK',
   'GRID_BRACKET_UNVERIFIED_CANCELLED',
@@ -320,8 +326,7 @@ export async function manageDeltaTestnetMultiGrid({
   for (const symbol of poolSymbols) {
     const config = settings.grid_symbol_configs?.[symbol] || {};
     const previous = symbolStates[symbol] || {};
-    const paused = config.paused === true;
-    if (paused) manuallyPaused.add(symbol);
+    const manuallyPausedSymbol = config.paused === true;
     const ownership = ownerBySymbol.get(symbol);
     const hasGridDb = hasDatabaseGridPosition(symbol);
     const localState = symbolStates[symbol] || previous;
@@ -336,18 +341,35 @@ export async function manageDeltaTestnetMultiGrid({
 
     const metrics = gridSymbolMarketMetrics(symbol, {
       ticker: tickers[symbol] || {},
-      config
+      config,
+      candles: candlesBySymbol[symbol] || [],
+      settings
     });
+    const volatilityPaused = metrics.pauseNewEntries === true;
+    const screenerPaused = metrics.qualified !== true;
+    const screenerPauseReason = volatilityPaused ? 'GRID_VOLATILITY_SPIKE'
+      : metrics.blockReason || 'GRID_SCREENER_NOT_QUALIFIED';
+    const paused = manuallyPausedSymbol || screenerPaused;
+    if (manuallyPausedSymbol) manuallyPaused.add(symbol);
     const lower = Number(config.lowerPrice ?? config.grid_lower_price ?? 0);
     const upper = Number(config.upperPrice ?? config.grid_upper_price ?? 0);
     const rangeReady = lower > 0 && upper > lower;
     const atrStatus = config.atr_snapshot_status ?? config.atrSnapshotStatus;
     const productReady = Boolean(products[symbol]) && freshnessBySymbol[symbol] !== false;
     const dataReady = freshnessBySymbol[symbol] === true && productReady && rangeReady;
-    const ready = dataReady && ['READY', 'FALLBACK_3PCT'].includes(String(atrStatus || ''));
+    const ready = dataReady && metrics.qualified === true &&
+      ['READY', 'FALLBACK_3PCT'].includes(String(atrStatus || ''));
     metricsBySymbol.set(symbol, { ...metrics, rangeReady, dataReady, ready, atrStatus });
 
-    const currentState = symbolStates[symbol] || previous;
+    let currentState = symbolStates[symbol] || previous;
+    if (GRID_SCREENER_PAUSE_REASONS.has(String(currentState.pausedReason || '')) &&
+        metrics.qualified === true && !manuallyPausedSymbol) {
+      currentState = { ...currentState, pausedReason: null, status: 'PENDING' };
+      symbolStates[symbol] = currentState;
+      await database.log('INFO', '[GRID] Volatility normalized; Grid may resume after normal eligibility checks', {
+        symbol, reason: 'GRID_VOLATILITY_NORMALIZED'
+      }).catch(() => {});
+    }
     if (ownership.blocked) {
       if (ownership.owner === 'FUTURES') futuresBlocked.add(symbol);
       else unknownBlocked.add(symbol);
@@ -392,11 +414,15 @@ export async function manageDeltaTestnetMultiGrid({
       const needsManagement = hasGridExposure || hasPending;
       symbolStates[symbol] = {
         ...(symbolStates[symbol] || currentState),
-        status: 'PAUSED', pausedReason: null, skipReason: 'MANUAL_PAUSE',
+        status: 'PAUSED',
+        pausedReason: manuallyPausedSymbol ? null : screenerPauseReason,
+        skipReason: manuallyPausedSymbol ? 'MANUAL_PAUSE' : screenerPauseReason,
         futuresBlocker: null, lastTickAt: at
       };
       symbolStatuses[symbol] = {
-        status: 'PAUSED', reason: 'MANUAL_PAUSE', atrReady: metrics.atrReady,
+        status: 'PAUSED',
+        reason: manuallyPausedSymbol ? 'MANUAL_PAUSE' : screenerPauseReason,
+        atrReady: metrics.atrReady,
         turnover24hUsd: metrics.turnover24hUsd, spreadPct: metrics.spreadPct
       };
       if (needsManagement) mustManage.add(symbol);
@@ -586,9 +612,10 @@ export async function manageDeltaTestnetMultiGrid({
       grid_state: symbolState,
       grid_lower_price: lowerPrice,
       grid_upper_price: upperPrice,
-      grid_levels_count: levelsCount,
+      grid_levels_count: metricsBySymbol.get(symbol)?.dynamicLevelsCount || levelsCount,
       grid_atr: Number(config.atr) || 0,
-      grid_enabled: settings.grid_enabled === true && config.paused !== true,
+      grid_enabled: settings.grid_enabled === true && config.paused !== true &&
+        !GRID_SCREENER_PAUSE_REASONS.has(String(symbolStates[symbol]?.pausedReason || '')),
       grid_max_positions: 1,
       max_grid_positions: limit,
       maxGridPositions: limit,

@@ -214,6 +214,15 @@ function App() {
   const optionsTradePositions = Array.isArray(state?.optionsTradePositions) ? state.optionsTradePositions : [];
   const optionsTradeOrders = Array.isArray(state?.optionsTradeOrders) ? state.optionsTradeOrders : [];
   const deltaTestnetOrders = Array.isArray(state?.deltaTestnetOrders) ? state.deltaTestnetOrders : [];
+  const telemetryOrders = [...deltaTestnetOrders, ...optionsTradeOrders];
+  const orderTelemetry = telemetryOrders.map(row => {
+    let raw = row?.raw;
+    if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch { raw = {}; } }
+    return { at: row?.updated_at || row?.created_at || '', latency: raw?.signal_to_order_ack_ms == null ? NaN : Number(raw.signal_to_order_ack_ms), slippage: raw?.slippage_bps == null ? NaN : Number(raw.slippage_bps), source: raw?.latency_source };
+  }).filter(row => Number.isFinite(row.latency) && row.latency >= 0)
+    .sort((a, b) => Date.parse(b.at || 0) - Date.parse(a.at || 0));
+  const latestOrderLatencyMs = orderTelemetry[0]?.latency ?? null;
+  const latestOrderSlippageBps = Number.isFinite(orderTelemetry[0]?.slippage) ? orderTelemetry[0].slippage : null;
   const logs = Array.isArray(state?.logs) ? state.logs : [];
   const signals = latestSignals(signalRows);
   const today = indiaDateKey(new Date());
@@ -465,6 +474,12 @@ function App() {
         </button>
       </div>
     </header>
+    <div className="globalStatusBar" role="status" aria-label="Global system status">
+      <span><i className={market?.length && !marketError ? 'statusDot live' : 'statusDot unknown'}/><b>DATA</b> {market?.length && !marketError ? 'LIVE' : 'UNKNOWN'}</span>
+      <span><i className={executionCoverage?.deltaExecutionMode === 'testnet' ? 'statusDot live' : 'statusDot unknown'}/><b>EXECUTION</b> {executionCoverage?.deltaExecutionMode === 'testnet' ? 'DEMO' : 'LOCKED / UNKNOWN'}</span>
+      <span><i className={emergencyStopKnown ? (emergencyStopActive ? 'statusDot dangerDot' : 'statusDot live') : 'statusDot unknown'}/><b>E-STOP</b> {!emergencyStopKnown ? 'UNKNOWN' : emergencyStopActive ? 'ON' : 'OFF'}</span>
+      <span><b>ORDER ACK</b> {latestOrderLatencyMs === null ? 'PENDING TELEMETRY' : latestOrderLatencyMs.toFixed(0) + 'ms'}</span>
+    </div>
     {stale ? <div className="danger">⚠ WORKER HEARTBEAT / MARKET TICK STALE FOR MORE THAN 3 MINUTES. NEW ENTRIES MUST BE TREATED AS BLOCKED.</div> : null}
     {error || marketError ? <div className="error">{error || marketError}</div> : null}
     <nav>{tabs.map(([id,label]) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}{id === 'live' ? ' 🔒' : ''}</button>)}</nav>
@@ -643,6 +658,17 @@ function Dashboard({ market, settings, health, positions, accountDataProtected =
   }));
   return <>
     <section className="cards"><Card label="DELTA TESTNET EQUITY" value={equityText} sub={equitySub}/><Card label="DELTA OPEN POSITIONS" value={positionText} sub={posSub}/><Card label="DELTA OPEN ORDERS" value={orderText} sub={orderSub}/><Card label="TODAY'S REALIZED P&L (EXCHANGE)" value={pnlText} sub={pnlSub}/></section>
+    <Panel title="System Health · Live Diagnostics">
+      <div className="healthGrid">
+        <div><small>WORKER CPU</small><b className="muted">NOT EXPOSED</b><span>Hostless Worker CPU metrics are not available through the current heartbeat API</span></div>
+        <div><small>API PROCESS CPU</small><b>{health?.apiProcessCpuPercent == null ? '—' : Number(health.workerCpuPercent).toFixed(1) + '%'}</b><span>Measured API process CPU · may exceed 100% on multi-core hosts</span></div>
+        <div><small>DATABASE PING</small><b>{health?.databasePingMs == null ? '—' : Number(health.databasePingMs).toFixed(0) + 'ms'}</b><span className={health?.databaseHealthy === true ? 'up' : 'down'}>{health?.databaseHealthy === true ? 'Supabase reachable' : 'Database status unavailable'}</span></div>
+        <div><small>DEMO API</small><b className={health?.exchangeHealthy === true ? 'up' : 'down'}>{health?.exchangeHealthy === true ? 'CONNECTED' : 'UNKNOWN / DOWN'}</b><span>Delta Testnet public health probe · {health?.exchangeProbeAt ? new Date(health.exchangeProbeAt).toLocaleTimeString('en-IN') : 'No verified probe'}</span></div>
+        <div><small>LIVE MARKET FEED</small><b className={market?.length && !health?.error ? 'up' : 'down'}>{market?.length ? 'DATA LOADED' : 'NO DATA'}</b><span>{market?.length ? market.length + ' perpetual market rows in dashboard cache' : 'Awaiting public Live market snapshot'}</span></div>
+        <div><small>LAST ORDER ACK</small><b>{latestOrderLatencyMs === null ? 'NO DATA' : latestOrderLatencyMs.toFixed(0) + 'ms'}</b><span>{orderTelemetry[0]?.source === 'signal_timestamp' ? 'Signal timestamp to Demo acknowledgement' : latestOrderLatencyMs === null ? 'Awaiting first telemetry-bearing order' : 'Submit start to Demo acknowledgement (signal timestamp unavailable)'}</span></div>
+        <div><small>LAST VERIFIED SLIPPAGE</small><b>{latestOrderSlippageBps === null ? '—' : latestOrderSlippageBps.toFixed(1) + ' bps'}</b><span>Only available when a filled order has a reference price and average fill price</span></div>
+      </div>
+    </Panel>
     <Panel title="Last Signal · System Activity">
       <section className="cards">
         <Card label="LAST CONFIRMED SIGNAL" value={activity?.lastConfirmedSignalAvailable === false || !activity ? 'NO DATA' : activity.lastConfirmedSignalAt ? activityTimestamp(activity.lastConfirmedSignalAt) : 'None in last 24h'} sub="CONFIRMED + READY + normalized score ≥ 80 · IST"/>

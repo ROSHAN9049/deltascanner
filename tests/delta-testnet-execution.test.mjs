@@ -187,7 +187,7 @@ test('executor requires testnet and refuses any non-testnet URL', async () => {
 });
 
 test('bracket entry is a Testnet market order with exchange-side SL/TP and signed HMAC headers', async () => {
-  const runtime = fakeRuntime({ timestamp: 1770000000000 });
+  const runtime = fakeRuntime({ timestamp: 1770000000000, markPrice: 60000 });
   const executor = createDeltaExecutor({
     env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database,
     now: () => 1770000000000
@@ -212,7 +212,8 @@ test('bracket entry is a Testnet market order with exchange-side SL/TP and signe
 test('bracket entry blocks a Testnet mark drift larger than the signal stop distance', async () => {
   const runtime = fakeRuntime({ markPrice: 102.5 });
   const executor = createDeltaExecutor({
-    env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database
+    env: { ...demoEnv(), DELTA_MAX_LIVE_DEMO_PRICE_MISMATCH_PCT: '3.0' },
+    fetchImpl: runtime.fetchImpl, database: runtime.database
   });
   await assert.rejects(
     executor.placeBracketOrder('XAUTUSD', 'BUY', 1, 100, 98.5, 103),
@@ -321,7 +322,7 @@ test('bracket entry fails closed on invalid SL or TP before making any API reque
 });
 
 test('placeOrder chooses market without price and limit with price', async () => {
-  const runtime = fakeRuntime({ timestamp: 1770000000000 });
+  const runtime = fakeRuntime({ timestamp: 1770000000000, markPrice: 61000 });
   const executor = createDeltaExecutor({
     env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database,
     now: () => 1770000000000

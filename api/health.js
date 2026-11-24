@@ -8,6 +8,9 @@ import { summarizeRetentionHealth } from '../src/retention-health.js';
 import { getDeltaTestnetHealth } from '../server/delta-testnet-health.js';
 import { summarizeOptionsAutoTriggerHealth } from '../src/options-auto-trigger-health.js';
 
+let previousCpuUsage = process.cpuUsage();
+let previousCpuAt = process.hrtime.bigint();
+
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate');
   const optionsGate = getOptionsExecutionGate(process.env);
@@ -29,11 +32,13 @@ export default async function handler(req, res) {
     // products endpoint. Lease and heartbeat fields remain separate worker-health
     // observations so lease expiry cannot masquerade as exchange unavailability.
     const safeSelect = async (table, query, label) => {
+      const startedAt = Date.now();
       try {
-        return { ok: true, rows: await select(table, query), error: null };
+        const rows = await select(table, query);
+        return { ok: true, rows, error: null, durationMs: Math.max(0, Date.now() - startedAt) };
       } catch (error) {
         console.error('[health] ' + label + ' unavailable:', error.message);
-        return { ok: false, rows: [], error };
+        return { ok: false, rows: [], error, durationMs: Math.max(0, Date.now() - startedAt) };
       }
     };
     const [settingsResult, leaseResult, retentionResult, exchangeProbeResult, optionsLogsResult] = await Promise.all([
@@ -67,6 +72,16 @@ export default async function handler(req, res) {
     const optionsAutoTrigger = summarizeOptionsAutoTriggerHealth(optionsAutoTriggerLogs);
 
     const nowMs = Date.now();
+    const cpuNow = process.cpuUsage();
+    const cpuAt = process.hrtime.bigint();
+    const wallElapsedUs = Number(cpuAt - previousCpuAt) / 1000;
+    const cpuElapsedUs = Math.max(0, cpuNow.user - previousCpuUsage.user) +
+      Math.max(0, cpuNow.system - previousCpuUsage.system);
+    const apiProcessCpuPercent = wallElapsedUs > 0
+      ? Number((cpuElapsedUs / wallElapsedUs * 100).toFixed(2)) : null;
+    previousCpuUsage = cpuNow;
+    previousCpuAt = cpuAt;
+    const workerMemory = process.memoryUsage();
     const workerTickMs = settings.last_tick_at ? Date.parse(settings.last_tick_at) : null;
     const heartbeatMs = lease.heartbeat_at ? Date.parse(lease.heartbeat_at) : null;
     const leaseExpiresMs = lease.expires_at ? Date.parse(lease.expires_at) : null;
@@ -92,6 +107,10 @@ export default async function handler(req, res) {
       exchange: CONFIG.signalOnly ? 'Delta Exchange India · Production Market Feed' : 'Delta Exchange India Demo',
       exchangeHealthy,
       databaseHealthy,
+      databasePingMs: settingsResult.durationMs ?? null,
+      apiProcessCpuPercent,
+      workerMemoryRssBytes: workerMemory.rss,
+      workerHeapUsedBytes: workerMemory.heapUsed,
       databaseError: databaseHealthy ? null : 'Supabase worker-state read unavailable; execution health is UNKNOWN',
       exchangeProbeAt: exchangeProbeResult?.checkedAt || null,
       exchangeProbeStatus: exchangeProbeResult?.status ?? null,
