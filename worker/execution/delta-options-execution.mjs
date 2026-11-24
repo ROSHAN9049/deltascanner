@@ -1802,11 +1802,24 @@ export function createDeltaOptionsExecution({
           !positive(position?.entry_premium) || !positive(position?.qty) ||
           !positive(position?.contract_size)) continue;
       try {
-        const product = await resolveProduct(position.symbol);
+        const entryFillRows = await database.select(
+          'dd_fills',
+          'order_id=eq.' + encodeURIComponent(String(position.entry_order_id)) +
+            '&select=product_id,symbol&limit=5'
+        );
+        const entryProductIds = Array.isArray(entryFillRows)
+          ? [...new Set(entryFillRows
+              .filter(fill => !fill?.symbol || clean(fill.symbol).toUpperCase() === clean(position.symbol).toUpperCase())
+              .map(fill => Number(fill?.product_id))
+              .filter(id => Number.isSafeInteger(id) && id > 0))]
+          : [];
+        const productId = entryProductIds.length === 1
+          ? entryProductIds[0]
+          : (await resolveProduct(position.symbol)).id;
         const details = await getRecentCloseDetails(position.symbol, position.opened_at, {
           ...position,
-          product_id: product.id,
-          raw: { ...(position.raw || {}), product_id: product.id }
+          product_id: productId,
+          raw: { ...(position.raw || {}), product_id: productId }
         });
         const exitPrice = positive(details?.exit_price);
         const closeOrderId = clean(details?.close_order_id);
