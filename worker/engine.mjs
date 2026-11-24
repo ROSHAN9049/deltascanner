@@ -4543,8 +4543,12 @@ export class DeltaEngine {
         }
         const canonical = canonicalRows[0];
         const canonicalStrategy = String(canonical?.strategy || '').toUpperCase();
-        if (!canonical?.id || !['MOMENTUM', 'SCALPING'].includes(canonicalStrategy)) {
-          throw new Error('Existing position is not a uniquely tracked Engine Momentum/Scalping position');
+        const entryClientId = String(canonical?.client_order_id || '').toUpperCase();
+        const engineClientIdStrategy = entryClientId.startsWith('DDM-') ? 'MOMENTUM'
+          : entryClientId.startsWith('DDS-') ? 'SCALPING' : null;
+        if (!canonical?.id || !['MOMENTUM', 'SCALPING'].includes(canonicalStrategy) ||
+            engineClientIdStrategy !== canonicalStrategy) {
+          throw new Error('Existing position lacks a verified DDM/DDS Engine entry identity; reversal blocked');
         }
         const trackedPosition = {
           ...canonical,
