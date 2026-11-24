@@ -637,6 +637,10 @@ function Dashboard({ market, settings, health, positions, accountDataProtected =
   for(const s of signals||[]) for(const reason of String(s.blocked_reasons||'').split(' · ').filter(Boolean)) blocked[reason]=(blocked[reason]||0)+1;
   const top=Object.entries(blocked).sort((a,b)=>b[1]-a[1]).slice(0,3).map(x=>x[0]+' ('+x[1]+')').join(', ');
   const visibleSignals=selectVisibleSignalRows(market,signals,DEFAULT_VISIBLE_MARKET_LIMIT);
+  const routedSymbolSet = new Set((routeContext?.routedSymbols || []).map(symbol => String(symbol || '').toUpperCase()));
+  const isLiveOnlySignal = signal => routeContext?.routeDataVerified === true && !routedSymbolSet.has(String(signal?.symbol || '').toUpperCase());
+  const [signalStageFilter, setSignalStageFilter] = useState('ALL');
+  const stageFilteredSignals = visibleSignals.filter(signal => signalStageFilter !== 'LIVE_ONLY' || isLiveOnlySignal(signal));
   const visibleCoinCount=new Set(visibleSignals.map(s=>s.symbol)).size;
   const openSymbols=selectOpenPositionSymbols(positions);
   const dashboardReadiness = new Map(visibleSignals.map(signal => {
@@ -680,27 +684,31 @@ function Dashboard({ market, settings, health, positions, accountDataProtected =
     </Panel>
     <Panel title={'Full Delta Market Scanner · '+(market?.length||0)+' live perpetuals · Signal Only'}><MarketTable market={market} signals={signals} openPositionSymbols={openSymbols}/></Panel>
     <section className="grid2"><RiskGovernor signals={signals} health={health} settings={settings} positions={accountDataProtected?null:positions} pendingOrders={accountDataProtected?null:deltaTestnetOrders} onInspect={onInspect} inspect={inspect} routedSymbols={routeContext?.routedSymbols || []} routeDataVerified={routeContext?.routeDataVerified === true} entrySafetyTrusted={routeContext?.entrySafetyTrusted === true}/>
-      <Panel title={'Signal Stages · '+visibleCoinCount+' coins · WATCH → SETUP → CONFIRMED'}><div className="marketCount">Momentum and Scalping status for the same top {visibleCoinCount} coins shown in the market table.</div>
+      <Panel title={'Signal Stages · '+visibleCoinCount+' coins · WATCH → SETUP → CONFIRMED'}><div className="marketCount">Momentum and Scalping status for the same top {visibleCoinCount} coins shown in the market table. Symbols absent from a fresh, complete Testnet catalog remain visible as LIVE ONLY and are never entry-ready.</div>
+        <div className="chips" role="group" aria-label="Signal stage filters"><button className={signalStageFilter === 'ALL' ? 'active' : 'action'} type="button" onClick={() => setSignalStageFilter('ALL')}>ALL</button><button className={signalStageFilter === 'LIVE_ONLY' ? 'active' : 'action'} type="button" onClick={() => setSignalStageFilter('LIVE_ONLY')}>LIVE ONLY</button></div>
         <div className="tablewrap"><table><thead><tr><th>COIN</th><th>ENG</th><th>STAGE</th><th>SIDE</th><th>SCORE</th><th>QTY</th><th>NOTIONAL</th><th>RISK</th><th>READY</th><th>WHY BLOCKED</th></tr></thead><tbody>
-        {visibleSignals.map(s => {
+        {stageFilteredSignals.map(s => {
+          const liveOnly = isLiveOnlySignal(s);
           const positionOpen = openSymbols.has(String(s.symbol || '').toUpperCase());
           const governor = dashboardReadiness.get(s.symbol + ':' + s.strategy);
-          const ready = s.ready === true && governor?.ready === true && !positionOpen;
+          const ready = s.ready === true && governor?.ready === true && !positionOpen && !liveOnly;
           const governorReasons = (governor?.failedGates || []).map(gate =>
             gate.gate + ': ' + (gate.blockReason || gate.result)
           );
           const existingReasons = Array.isArray(s.gate_results)
             ? blockersDisplay(s.gate_results)
             : fmtReasons(s.blocked_reasons);
-          const whyBlocked = s.snapshot_missing
+          const whyBlocked = liveOnly
+            ? 'TESTNET ROUTE UNAVAILABLE'
+            : s.snapshot_missing
             ? 'No signal snapshot available'
             : positionOpen
               ? 'Open Delta Testnet position detected; duplicate entry blocked'
               : [...new Set([...governorReasons, existingReasons === '—' ? '' : existingReasons].filter(Boolean))].join(' · ') || '—';
           return <tr key={s.symbol + ':' + s.strategy}>
-            <td className="symbol">{s.symbol}</td>
+            <td className="symbol">{s.symbol}{liveOnly ? <span className="statusTag">TESTNET ROUTE UNAVAILABLE</span> : null}</td>
             <td>{s.strategy === 'MOMENTUM' ? 'MOM' : 'SCALP'}</td>
-            <td>{s.snapshot_missing ? 'WATCH · NO DATA' : s.stage}</td>
+            <td>{liveOnly ? <span className="statusTag">LIVE ONLY</span> : s.snapshot_missing ? 'WATCH · NO DATA' : s.stage}</td>
             <td className={s.side === 'BUY' ? 'up' : s.side === 'SELL' ? 'down' : 'muted'}>{s.side || '—'}</td>
             <td><b>{s.snapshot_missing ? '—' : safeNum(s.score) === null ? 'NO DATA' : safeNum(s.score).toFixed(0) + '/100'}</b></td>
             <td>{s.snapshot_missing ? '—' : fmtQty(s.qty_contracts)}</td>
