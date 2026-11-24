@@ -62,10 +62,7 @@ export function createDeltaTestnetHealthProbe({
               url: DELTA_TESTNET_HEALTH_URL, cached: false,
               error: status === null ? 'No HTTP response from Delta Testnet' : 'Delta Testnet returned HTTP ' + status
             };
-            if (attempt < maxAttempts && isRetryableStatus(status)) {
-              await new Promise(resolve => setTimeoutFn(resolve, 150 * attempt));
-              continue;
-            }
+            if (attempt < maxAttempts && isRetryableStatus(status)) continue;
             break;
           }
           const payload = await response.json();
@@ -84,10 +81,7 @@ export function createDeltaTestnetHealthProbe({
             healthy: false, status: null, checkedAt, source: 'delta-testnet-public-api',
             url: DELTA_TESTNET_HEALTH_URL, cached: false, error: safeError(error)
           };
-          if (attempt < maxAttempts) {
-            await new Promise(resolve => setTimeoutFn(resolve, 150 * attempt));
-            continue;
-          }
+          if (attempt < maxAttempts) continue;
         } finally {
           clearTimeoutFn(timeout);
         }
