@@ -50,7 +50,7 @@ export async function recordPaperOptionEntry({
     const shortAsk = positive(ticker?.ask);
     const hedgeBid = positive(hedgeTicker?.bid);
     hedgeEntryPrice = positive(hedgeTicker?.ask);
-    spreadWidth = Math.abs((strike || 0) - Number(hedgeTicker?.strike_price || 0));
+    spreadWidth = Math.abs((strike || 0) - Number(hedgeTicker?.strike_price || signal?.hedgeStrike || 0));
     const credit = positive(signal?.credit);
     const maxRisk = positive(signal?.maxRiskPerSpread);
     const matchingLegs =
