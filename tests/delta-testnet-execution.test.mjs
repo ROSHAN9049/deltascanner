@@ -233,13 +233,13 @@ test('bracket entry blocks a Testnet mark drift larger than the signal stop dist
   assert.equal(blocked?.data?.executionMarkSource, 'delta_india_testnet_rest');
 });
 
-test('SNDKBUSD production/Testnet price divergence remains blocked before order submission', async () => {
+test('large production/Testnet price divergence remains blocked before order submission', async () => {
   const runtime = fakeRuntime({ markPrice: 12.3 });
   const executor = createDeltaExecutor({
     env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database
   });
   await assert.rejects(
-    executor.placeBracketOrder('SNDKBUSD', 'SELL', 1, 78.8, 80.0, 75.8),
+    executor.placeBracketOrder('PAXGUSD', 'SELL', 1, 78.8, 80.0, 75.8),
     /Live mark has moved outside the requested SL\/TP bracket/
   );
   assert.equal(

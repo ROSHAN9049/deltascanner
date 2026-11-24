@@ -4,7 +4,8 @@ export const DELTA_TESTNET_MARKET_TICK_MAX_AGE_MS = 180_000;
 export const DELTA_TESTNET_FUTURES_ALLOWLIST = Object.freeze([
   'DOGSUSD',
   'USOONUSD',
-  'SNDKBUSD',
+  // Keep public scanning enabled, but quarantine Testnet execution until
+  // its mark price is reconciled with the production signal price basis.
   'SPYXUSD',
   'QQQXUSD',
   'XAUTUSD',

@@ -44,15 +44,17 @@ test('worker startup permits scan-only or explicit Testnet profiles and rejects 
   }), false);
 });
 
-test('the Testnet futures allowlist contains only the nine supported futures routes', () => {
+test('the Testnet futures allowlist excludes the quarantined SNDKBUSD price-basis mismatch', () => {
   assert.deepEqual(DELTA_TESTNET_FUTURES_ALLOWLIST, [
-    'DOGSUSD', 'USOONUSD', 'SNDKBUSD', 'SPYXUSD', 'QQQXUSD',
+    'DOGSUSD', 'USOONUSD', 'SPYXUSD', 'QQQXUSD',
     'XAUTUSD', 'PAXGUSD', 'NVDAXUSD', '1000SHIBUSD'
   ]);
-  for (const symbol of ['BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD', 'ADAUSD']) {
+  for (const symbol of ['BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD', 'ADAUSD', 'SNDKBUSD']) {
     assert.equal(isAllowedDeltaTestnetFutureSymbol(symbol), false);
   }
-  assert.equal(isAllowedDeltaTestnetFutureSymbol('XAUTUSD'), true);
+  for (const symbol of ['XAUTUSD', 'PAXGUSD', 'NVDAXUSD', 'SPYXUSD']) {
+    assert.equal(isAllowedDeltaTestnetFutureSymbol(symbol), true);
+  }
 });
 
 test('Grid symbol parser accepts exactly two distinct allowlisted Testnet symbols and fails closed otherwise', () => {
@@ -71,6 +73,7 @@ test('Testnet route requires exact allowlisted, live operational and non-reduce-
     only_reduce_only_orders_allowed: false
   };
   assert.equal(isEligibleDeltaTestnetPerpetualProduct(valid), true);
+  assert.equal(isEligibleDeltaTestnetPerpetualProduct({ ...valid, symbol: 'SNDKBUSD' }), false);
   assert.equal(isEligibleDeltaTestnetPerpetualProduct({ ...valid, symbol: 'BTCUSD' }), false);
   assert.equal(isEligibleDeltaTestnetPerpetualProduct({ ...valid, symbol: 'ETHUSD', state: 'prelaunch' }), false);
   assert.equal(isEligibleDeltaTestnetPerpetualProduct({ ...valid, symbol: 'SOLUSD', trading_status: 'suspended' }), false);
