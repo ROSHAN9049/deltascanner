@@ -53,11 +53,12 @@ export async function recordPaperOptionEntry({
     spreadWidth = Math.abs((strike || 0) - Number(hedgeTicker?.strike_price || signal?.hedgeStrike || 0));
     const credit = positive(signal?.credit);
     const maxRisk = positive(signal?.maxRiskPerSpread);
+    const shortType = symbol.startsWith('C-') ? 'CALL' : 'PUT';
+    const hedgeType = hedgeSymbol.startsWith('C-') ? 'CALL' : 'PUT';
     const matchingLegs =
       !!hedgeSymbol && hedgeSymbol === clean(signal?.hedgeSymbol).toUpperCase() &&
-      hedgeSymbol !== symbol &&
-      String(ticker?.option_type || ticker?.optionType || signal?.optionType).toUpperCase() ===
-        String(hedgeTicker?.option_type || hedgeTicker?.optionType || signal?.optionType).toUpperCase() &&
+      hedgeSymbol !== symbol && shortType === hedgeType &&
+      shortType === clean(signal?.optionType).toUpperCase() &&
       Number(ticker?.expiry_ms) === Number(hedgeTicker?.expiry_ms);
     if (!matchingLegs || shortBid === null || shortAsk === null ||
         hedgeBid === null || hedgeEntryPrice === null ||
