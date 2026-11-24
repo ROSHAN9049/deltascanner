@@ -873,7 +873,7 @@ export function createDeltaExecutor({
     const wallet = await getWalletSnapshot();
     const equity = accountEquity(wallet);
     if (!(equity > 0)) throw new Error('Delta Testnet account equity is unavailable; entries fail closed');
-    return { equity, available: accountAvailable(wallet, equity), raw: wallet };
+    return { equity, available: accountAvailable(wallet, equity), availableVerified: accountAvailableVerified(wallet), raw: wallet };
   }
 
   async function assertSafety(symbol, operation = 'ENTRY') {
