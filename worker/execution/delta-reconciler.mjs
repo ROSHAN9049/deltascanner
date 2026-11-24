@@ -107,7 +107,8 @@ export function createDeltaPositionReconciler({
       entryPrice === null || markPrice === null ||
       exchangeUpl === null || qty === null ||
       qty <= 0 || !['BUY', 'SELL'].includes(side) ||
-      typeof executor.getProductMetadata !== 'function'
+      (!(position?.raw?.product || position?.product) &&
+        typeof executor.getProductMetadata !== 'function')
     ) return;
 
     // Delta's margined-position response embeds the product specification.
