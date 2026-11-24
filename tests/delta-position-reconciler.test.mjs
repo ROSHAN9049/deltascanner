@@ -506,3 +506,27 @@ test('reconciler prefers the exchange position embedded contract multiplier over
   await reconciler.reconcile();
   assert.ok(!rt.logs.some(row => row.data?.event === 'upl_mismatch'));
 });
+
+
+test('reconciler persists Delta unrealized_pnl as the canonical local value without recomputing it', async () => {
+  const rt = runtime({
+    openRows: [{
+      id: 1, symbol: 'PAXGUSD', qty: 69, side: 'SELL',
+      entry_price: 3606.6, current_price: 3612.27, unrealized_pnl: -0.3913
+    }],
+    exchangePositions: [{
+      symbol: 'PAXGUSD', qty: 69, side: 'SELL',
+      entry_price: 3606.6, current_price: 3612.27, mark_price: 3612.27,
+      unrealized_pnl: -0.45954,
+      unrealized_cashflow: -0.45954,
+      raw: { product: { notional_type: 'vanilla', contract_value: '0.001' } }
+    }]
+  });
+  const reconciler = createDeltaPositionReconciler({
+    env: rt.env, database: rt.database, executor: rt.executor, now: fixedNow
+  });
+  await reconciler.reconcile();
+  assert.equal(rt.rows[0].unrealized_pnl, -0.45954);
+  assert.ok(!rt.logs.some(row => row.message.includes('Unrealized P&L mismatch')));
+  assert.ok(rt.logs.some(row => row.message.includes('Delta unrealized_pnl is the authoritative')));
+});
