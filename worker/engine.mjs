@@ -4590,7 +4590,8 @@ export class DeltaEngine {
         ]);
         if (!Array.isArray(freshSettingsRows) || freshSettingsRows.length !== 1 ||
             !Array.isArray(freshPositions) || !Array.isArray(freshTrades) ||
-            !freshAccount || !(n(freshAccount.equity) > 0) || !(n(freshAccount.available) >= 0)) {
+            !freshAccount || !(n(freshAccount.equity) > 0) ||
+            !(n(freshAccount.availableVerified) > 0)) {
           throw new Error('Fresh post-close settings, positions, account or trade history is incomplete');
         }
         if (freshPositions.some(position =>
@@ -4600,7 +4601,7 @@ export class DeltaEngine {
           throw new Error('Exchange still reports non-zero symbol quantity after reversal close');
         }
         riskSettings = freshSettingsRows[0];
-        riskAccount = { equity: n(freshAccount.equity), available: n(freshAccount.available) };
+        riskAccount = { equity: n(freshAccount.equity), available: n(freshAccount.availableVerified) };
         riskOpenPositions = freshPositions;
         riskTrades = freshTrades;
         await this.log('INFO', '[Reversal] Exchange flat confirmed; fresh risk snapshot loaded before opposite entry', {
