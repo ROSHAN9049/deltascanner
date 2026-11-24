@@ -5,6 +5,7 @@ import { apiUrl } from './api-url.js';
 import { indiaDateKey } from './date-utils.js';
 import { filterDeltaTradesByPeriod } from './delta-pnl-period.js';
 import GridStrategy from './GridStrategy.jsx';
+import OptionsTradeHistory from './OptionsTradeHistory.jsx';
 import { DEFAULT_VISIBLE_MARKET_LIMIT, selectOpenPositionSymbols, selectVisibleMarketRows, selectVisibleSignalRows } from './market-view.js';
 import { assessDeltaRange, fmtMultiplier, fmtPrice as fmtRawPrice, fmtRsi, safeNum } from './formatters.js';
 import { blockersDisplay, gateTooltip } from './gate-result.js';
@@ -18,7 +19,7 @@ import { formatHealthAge, formatLeaseRemaining, formatRetentionLastRun, getEmerg
 
 const tabs = [
   ['dashboard','Dashboard'],['rotation','Profit Rotation'],['momentum','Momentum'],['momentum-history','Mom History'],
-  ['scalping','Scalping'],['grid','Grid Strategy'],['scalp-history','Scalp History'],['options','Options'],['positions','Positions'],['delta-testnet-positions','Delta Testnet Positions'],['trade-history','Trade History'],
+  ['scalping','Scalping'],['grid','Grid Strategy'],['scalp-history','Scalp History'],['options','Options'],['options-trade-history','Options Trade History'],['positions','Positions'],['delta-testnet-positions','Delta Testnet Positions'],['trade-history','Trade History'],
   ['pnl','PNL'],
   // Paper Trading: placeholder only, not implemented.
   // Hidden until a real simulation engine exists.
@@ -210,6 +211,8 @@ function App() {
     ? state.signalCache
     : Array.isArray(state?.signals) ? state.signals : [];
   const optionCache = Array.isArray(state?.optionCache) ? state.optionCache : [];
+  const optionsTradePositions = Array.isArray(state?.optionsTradePositions) ? state.optionsTradePositions : [];
+  const optionsTradeOrders = Array.isArray(state?.optionsTradeOrders) ? state.optionsTradeOrders : [];
   const deltaTestnetOrders = Array.isArray(state?.deltaTestnetOrders) ? state.deltaTestnetOrders : [];
   const logs = Array.isArray(state?.logs) ? state.logs : [];
   const signals = latestSignals(signalRows);
@@ -473,6 +476,7 @@ function App() {
     {tab === 'momentum-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'MOMENTUM')} title="Momentum History" strategy="MOMENTUM" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'scalping' && <EngineView engine="SCALPING" signals={signals} entrySafetyBlocked={routeSafetyBlocked} entrySafetyReason={routeSafetyReason} openPositionSymbols={openPositionSymbols} />}
     {tab === 'grid' && <GridStrategy settings={settings} market={market} busy={busy} mutate={mutate} accountDataProtected={accountDataProtected} gridEntrySafety={executionCoverage?.gridEntrySafety || null} executionMode={executionCoverage?.deltaExecutionMode || 'disabled'} testnetDiagnostics={executionCoverage?.gridTestnetDiagnostics || null} apiGridExecutionAllowed={executionCoverage?.gridExecutionAllowed === true} apiGridTrailingEnvironmentEnabled={executionCoverage?.gridTrailingEnvironmentEnabled === true} workerGridAutoRangeEnvironmentEnabled={executionCoverage?.workerGridAutoRangeEnvironmentEnabled ?? null} workerGridAutoRangeHeartbeatFresh={executionCoverage?.workerGridAutoRangeHeartbeatFresh === true} apiGridSymbols={executionCoverage?.gridRequestedSymbolPool || executionCoverage?.gridSymbols || []} apiGridRejectedPoolSymbols={executionCoverage?.gridRejectedPoolSymbols || []} apiGridMaxConcurrentSymbols={executionCoverage?.gridMaxConcurrentSymbols ?? 2} />}
+    {tab === 'options-trade-history' && <OptionsTradeHistory positions={optionsTradePositions} orders={optionsTradeOrders} accountDataProtected={accountDataProtected} complete={state?.optionsTradeHistoryComplete === true} />}
     {tab === 'options' && <OptionsView settings={settings} optionCache={optionCache} executionCoverage={state?.executionCoverage || null} apiHealth={health} accountDataProtected={accountDataProtected} optionsBusy={optionsBusy} onPreview={requestOptionsPreview} />}
     {tab === 'scalp-history' && <TradeHistory trades={trades.filter(t => t.strategy === 'SCALPING')} title="Scalping History" strategy="SCALPING" accountDataProtected={accountDataProtected} tradesComplete={tradeHistoryComplete} />}
     {tab === 'positions' && <Positions rows={positions} accountDataProtected={accountDataProtected} />}

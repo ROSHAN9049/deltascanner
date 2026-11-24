@@ -96,3 +96,5 @@ footer{color:#526177;text-align:center;font-size:9px;padding-top:12px}
 .confirmActions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
 .confirmActions button{margin:0;min-width:82px}
 .gates .warn{background:#3a2411;color:#ffbf69}
+
+.historyFilters{display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 14px}.historyFilters button{border:1px solid #34445a;background:#111b2a;color:#9eacc0;border-radius:6px;padding:7px 12px;font-size:10px;font-weight:800;cursor:pointer}.historyFilters button.active{border-color:#2fba8a;background:#0d2b22;color:#6bf0bd}
