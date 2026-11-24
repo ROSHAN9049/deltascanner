@@ -44,7 +44,7 @@ export default function OptionsTradeHistory({ positions = [], orders = [], accou
     return 'historyStatus pending';
   };
   if (accountDataProtected) return <section className="panel"><div className="panelTitle"><h2>Options Trade History</h2></div><div className="pad lockedText">Private Options trade history is locked. Unlock the dashboard session in Settings. Hidden data is not zero.</div></section>;
-  return <section className="panel">
+  return <section className="panel optionsTradeHistory">
     <div className="panelTitle"><h2>Options Trade History</h2><span className="muted">{rows.length} trades</span></div>
     <div className="pad">
       {!complete ? <p className="warn">Options history could not be fully loaded. The visible rows may be incomplete.</p> : null}
