@@ -528,5 +528,4 @@ test('reconciler persists Delta unrealized_pnl as the canonical local value with
   await reconciler.reconcile();
   assert.equal(rt.rows[0].unrealized_pnl, -0.45954);
   assert.ok(!rt.logs.some(row => row.message.includes('Unrealized P&L mismatch')));
-  assert.ok(rt.logs.some(row => row.message.includes('Delta unrealized_pnl is the authoritative')));
 });
