@@ -5,6 +5,7 @@ import { recordPaperOptionEntry, refreshPaperOptionTrades } from '../worker/pape
 test('records one durable simulated LTP fill for a confirmed long option without an exchange order', async () => {
   const inserted = [];
   const database = {
+    async select() { return []; },
     async insert(table, row) { inserted.push({ table, row }); }
   };
   const result = await recordPaperOptionEntry({
@@ -30,7 +31,7 @@ test('records one durable simulated LTP fill for a confirmed long option without
 
 test('does not paper-fill non-confirmed, unready, or short option signals', async () => {
   let inserts = 0;
-  const database = { async insert() { inserts += 1; } };
+  const database = { async select() { return []; }, async insert() { inserts += 1; } };
   for (const signal of [
     { stage: 'SETUP', ready: true },
     { stage: 'CONFIRMED', ready: false }
@@ -51,6 +52,7 @@ test('does not paper-fill non-confirmed, unready, or short option signals', asyn
 
 test('duplicate daily paper entries are idempotent', async () => {
   const database = {
+    async select() { return []; },
     async insert() { throw Object.assign(new Error('duplicate key violates unique constraint'), { code: '23505' }); }
   };
   const result = await recordPaperOptionEntry({
