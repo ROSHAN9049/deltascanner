@@ -39,8 +39,19 @@ const encodeQuery = params => {
   return pairs.length ? '?' + pairs.join('&') : '';
 };
 
+// Keep only the currently-used secret key object in memory. Delta still
+// requires a fresh timestamp and HMAC for every request; this avoids repeatedly
+// converting the same configured secret into key material on the hot path.
+let cachedHmacSecret = null;
+let cachedHmacKey = null;
+
 export function deltaHmacSha256(secret, message) {
-  return crypto.createHmac('sha256', secret).update(message, 'utf8').digest('hex');
+  const normalizedSecret = String(secret ?? '');
+  if (!cachedHmacKey || cachedHmacSecret !== normalizedSecret) {
+    cachedHmacSecret = normalizedSecret;
+    cachedHmacKey = crypto.createSecretKey(Buffer.from(normalizedSecret, 'utf8'));
+  }
+  return crypto.createHmac('sha256', cachedHmacKey).update(message, 'utf8').digest('hex');
 }
 
 export function buildCloseClientOrderId(positionId, closeReason) {
