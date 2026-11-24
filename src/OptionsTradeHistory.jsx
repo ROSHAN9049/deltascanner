@@ -56,7 +56,7 @@ export default function OptionsTradeHistory({ positions = [], orders = [], accou
       </tr></thead><tbody>
         {visible.map((row, index) => <tr key={row.position_key || row.entry_order_id || index}>
           <td>{row.opened_at ? new Date(row.opened_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : value(row.updated_at)}</td>
-          <td className="symbol">{value(row.symbol)}</td><td className={row.side === 'BUY' ? 'up' : 'down'}>{value(row.side)}</td>
+          <td className="symbol">{row.paper_only && row.hedge_symbol ? `${value(row.symbol)} · hedge ${value(row.hedge_symbol)}` : value(row.symbol)}</td><td className={row.side === 'BUY' ? 'up' : 'down'}>{value(row.side)}</td>
           <td>{money(row.entryPrice)}</td><td>{money(row.exitPrice)}</td><td>{value(row.qty)}</td>
           <td>SL {money(row.sl)} / TP {money(row.tp)}</td>
           <td>
@@ -71,7 +71,7 @@ export default function OptionsTradeHistory({ positions = [], orders = [], accou
         </tr>)}
         {!visible.length ? <tr><td colSpan={10}>No {filter === 'ALL' ? '' : filter.toLowerCase() + ' '}Options trades found.</td></tr> : null}
       </tbody></table></div>
-      <p className="muted">Exchange trades show PnL only after a verified close fill. PAPER_ONLY rows are simulated from Delta India public LTP, never submit orders, and report premium points rather than exchange-settled USD PnL.</p>
+      <p className="muted">Exchange trades show PnL only after a verified close fill. PAPER_ONLY rows use Delta India public LTP or defined-risk spread bid/ask quotes, never submit orders, and report premium points rather than exchange-settled USD PnL.</p>
     </div>
   </section>;
 }
