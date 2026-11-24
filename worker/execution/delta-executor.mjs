@@ -1036,9 +1036,13 @@ export function createDeltaExecutor({
       strategy = 'MOMENTUM',
       role = 'ENTRY',
       reserve = true,
-      referenceEntryPrice = null
+      referenceEntryPrice = null,
+      signalGeneratedAt = null
     } = {}
   ) {
+    const submitStartedAt = now();
+    const signalAt = Number.isFinite(Date.parse(signalGeneratedAt))
+      ? Date.parse(signalGeneratedAt) : submitStartedAt;
     const clientOrderId = stringOrEmpty(body?.client_order_id);
     const normalizedSymbol = stringOrEmpty(
       product?.symbol || body?.product_symbol
@@ -1120,6 +1124,14 @@ export function createDeltaExecutor({
         unfilledSize === 0 &&
         averageFillPrice !== null &&
         averageFillPrice > 0;
+      const orderAckAt = now();
+      const signalToAckMs = Math.max(0, orderAckAt - signalAt);
+      const referencePrice = numberOrNull(body.limit_price ?? referenceEntryPrice);
+      const slippageBps = fillConfirmedByRest && referencePrice > 0
+        ? Number((((stringOrEmpty(body.side).toLowerCase() === 'buy'
+          ? averageFillPrice - referencePrice : referencePrice - averageFillPrice) /
+          referencePrice) * 10000).toFixed(2))
+        : null;
       const positionSnapshotConfirmedByRest = fillConfirmedByRest && reserve && role === 'ENTRY'
         ? await persistRestConfirmedPosition({ product, body, order, clientOrderId, strategy })
         : false;
@@ -1141,7 +1153,13 @@ export function createDeltaExecutor({
               unfilled_size: unfilledSize,
               average_fill_price: order.average_fill_price ?? null,
               fill_confirmed_by_rest: fillConfirmedByRest,
-              position_snapshot_confirmed_by_rest: positionSnapshotConfirmedByRest
+              position_snapshot_confirmed_by_rest: positionSnapshotConfirmedByRest,
+              signal_to_order_ack_ms: signalToAckMs,
+              latency_source: signalGeneratedAt ? 'signal_timestamp' : 'submit_start_fallback',
+              signal_generated_at: new Date(signalAt).toISOString(),
+              order_acknowledged_at: new Date(orderAckAt).toISOString(),
+              reference_price: referencePrice,
+              slippage_bps: slippageBps
             }
           }
         ).catch(error => database.log(
@@ -1167,6 +1185,10 @@ export function createDeltaExecutor({
           averageFillPrice: order.average_fill_price ?? null,
           fillConfirmedByRest,
           positionSnapshotConfirmedByRest,
+          signalToOrderAckMs: signalToAckMs,
+          latencySource: signalGeneratedAt ? 'signal_timestamp' : 'submit_start_fallback',
+          referencePrice,
+          slippageBps,
           fillConfirmedByPrivateWebSocketAtAcknowledgement: false,
           note: fillConfirmedByRest
             ? 'REST order response confirms fill; private WebSocket confirmation may arrive independently'
