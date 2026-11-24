@@ -18,7 +18,7 @@ export async function recordPaperOptionEntry({
 } = {}) {
   const symbol = clean(ticker?.symbol || signal?.symbol).toUpperCase();
   const normalizedStrategy = clean(strategy).toUpperCase();
-  if (!database || typeof database.insert !== 'function') {
+  if (!database || typeof database.insert !== 'function' || typeof database.select !== 'function') {
     throw new Error('Paper Options ledger database is unavailable');
   }
   if (!symbol || !/^[CP]-[A-Z0-9]+-/.test(symbol) ||
@@ -29,6 +29,12 @@ export async function recordPaperOptionEntry({
   }
   const entryPrice = ltpOf(ticker);
   if (entryPrice === null) return { recorded: false, reason: 'LIVE_LTP_UNAVAILABLE' };
+  const existingOpen = await database.select(
+    'dd_paper_trades',
+    'symbol=eq.' + encodeURIComponent(symbol) + '&status=eq.OPEN&select=id&limit=1'
+  );
+  if (!Array.isArray(existingOpen)) throw new Error('Paper Options duplicate check is incomplete');
+  if (existingOpen.length) return { recorded: false, duplicate: true, reason: 'OPEN_PAPER_TRADE_EXISTS' };
   const timestamp = new Date(now()).toISOString();
   const tradingDate = clean(dateKey) || timestamp.slice(0, 10);
   const tradeKey = [symbol, normalizedStrategy, tradingDate].join(':');
