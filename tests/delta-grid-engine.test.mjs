@@ -862,10 +862,10 @@ test('multi-symbol manager accepts one active symbol after the other is paused i
     },
     account: { privateApiAvailable: true, equity: 50000, available: 1000 },
     symbols: ['NVDAXUSD'],
-    tickers: { NVDAXUSD: { mark_price: 180 } },
+    tickers: { NVDAXUSD: { mark_price: 180, turnover_usd: 500000, quotes: { best_bid: 179.99, best_ask: 180.01 } } },
     products: { NVDAXUSD: { contract_value: 1, tick_size: 0.01, taker_commission_rate: 0.0005 } },
     candlesBySymbol: {
-      NVDAXUSD: Array.from({ length: 6 }, () => ({ open: 180, high: 180, low: 180, close: 180 }))
+      NVDAXUSD: Array.from({ length: 60 }, (_, i) => { const close = 180 + Math.sin(i * 0.8) * 0.8; return { open: close, high: close + 0.25, low: close - 0.25, close }; })
     },
     freshnessBySymbol: { NVDAXUSD: true },
     database,
@@ -903,7 +903,7 @@ function makeDynamicGridPoolFixture({
   }]));
   const tickers = Object.fromEntries(symbols.map((symbol, index) => [symbol, {
     mark_price: 105,
-    turnover_usd: 1000 - index * 100,
+    turnover_usd: 1000000 - index * 100000,
     quotes: { best_bid: 104.99, best_ask: 105.01 },
     ...(tickerOverrides[symbol] || {})
   }]));
@@ -915,7 +915,7 @@ function makeDynamicGridPoolFixture({
     taker_commission_rate: 0.0005
   }]));
   const candlesBySymbol = Object.fromEntries(symbols.map(symbol => [symbol,
-    Array.from({ length: 6 }, () => ({ open: 105, high: 105, low: 105, close: 105 }))
+    Array.from({ length: 60 }, (_, i) => { const close = 105 + Math.sin(i * 0.8) * 0.8; return { open: close, high: close + 0.25, low: close - 0.25, close }; })
   ]));
   const database = {
     async select(table, query) {
@@ -985,8 +985,8 @@ test('Dynamic Grid skips Futures-owned PAXG and continues with the best two elig
       client_order_id: 'SCALP-PAXGUSD-OPEN'
     }],
     tickerOverrides: {
-      NVDAXUSD: { turnover_usd: 1000, quotes: { best_bid: 104.99, best_ask: 105.02 } },
-      XAUTUSD: { turnover_usd: 2000, quotes: { best_bid: 104.99, best_ask: 105.005 } }
+      NVDAXUSD: { turnover_usd: 1000000, quotes: { best_bid: 104.99, best_ask: 105.02 } },
+      XAUTUSD: { turnover_usd: 2000000, quotes: { best_bid: 104.99, best_ask: 105.005 } }
     }
   });
   const result = await manageDeltaTestnetMultiGrid(fixture.input);
@@ -1023,8 +1023,8 @@ test('Dynamic Grid automatically re-admits PAXG after the Futures position close
     previousGridState: skipped.state,
     maxConcurrentSymbols: 1,
     tickerOverrides: {
-      PAXGUSD: { turnover_usd: 2000 },
-      NVDAXUSD: { turnover_usd: 1000 }
+      PAXGUSD: { turnover_usd: 2000000 },
+      NVDAXUSD: { turnover_usd: 1000000 }
     }
   });
   const resumed = await manageDeltaTestnetMultiGrid(second.input);
