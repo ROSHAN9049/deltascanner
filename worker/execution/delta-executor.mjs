@@ -1450,7 +1450,8 @@ export function createDeltaExecutor({
       return submitOrder(product, body, {
         strategy,
         role: 'ENTRY',
-        referenceEntryPrice: entry
+        referenceEntryPrice: entry,
+        signalGeneratedAt: options?.signalGeneratedAt ?? null
       });
     });
   }
