@@ -21,7 +21,7 @@ export default function OptionsTradeHistory({ positions = [], orders = [], accou
       const exit = exits.filter(order => !position.opened_at || new Date(order.created_at) >= new Date(position.opened_at))
         .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
       const exitRaw = rawOf(exit);
-      const exitPrice = position.short_exit_premium ?? exitRaw.average_fill_price ?? exitRaw.fill_price ??
+      const exitPrice = position.short_exit_premium ?? raw.exit_fill_price ?? exitRaw.average_fill_price ?? exitRaw.fill_price ??
         exit?.limit_price ?? null;
       const sl = raw.stop_premium ?? raw.stop_loss_price ?? raw.bracket_stop_loss_price;
       const tp = raw.take_profit_premium ?? raw.take_profit_price ?? raw.bracket_take_profit_price;
@@ -31,7 +31,7 @@ export default function OptionsTradeHistory({ positions = [], orders = [], accou
         exitPrice,
         sl,
         tp,
-        orderIds: [entryId, exitRaw.exchange_order_id, exit?.id, exit?.raw?.exchange_order_id].filter(Boolean)
+        orderIds: [entryId, raw.exit_order_id, exitRaw.exchange_order_id, exit?.id, exit?.raw?.exchange_order_id].filter(Boolean)
           .filter((id, index, list) => list.indexOf(id) === index).join(' / ')
       };
     }).sort((a, b) => new Date(b.opened_at || b.updated_at || 0) - new Date(a.opened_at || a.updated_at || 0));

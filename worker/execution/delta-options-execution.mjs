@@ -81,7 +81,8 @@ export function createDeltaOptionsExecution({
   logExecutor = async () => {},
   buildClientOrderId,
   now = () => Date.now(),
-  isMarketTickFresh = () => false
+  isMarketTickFresh = () => false,
+  getRecentCloseDetails = null
 } = {}) {
   if (typeof request !== 'function' || typeof database?.select !== 'function' ||
       typeof getAccountSnapshot !== 'function' || typeof buildClientOrderId !== 'function') {
@@ -1784,11 +1785,116 @@ export function createDeltaOptionsExecution({
     }
   }
 
+  async function reconcileClosedOptionFills() {
+    if (typeof getRecentCloseDetails !== 'function') {
+      return { scanned: 0, reconciled: 0, unavailable: true };
+    }
+    const rows = await database.select(
+      'dd_option_positions',
+      'status=eq.CLOSED&realized_pnl_verified=eq.false&select=*&order=closed_at.asc&limit=25'
+    );
+    if (!Array.isArray(rows)) {
+      throw new Error('Closed Options fill reconciliation snapshot is malformed');
+    }
+    let reconciled = 0;
+    for (const position of rows) {
+      if (!position?.position_key || !position?.entry_order_id ||
+          !positive(position?.entry_premium) || !positive(position?.qty) ||
+          !positive(position?.contract_size)) continue;
+      try {
+        const entryFillRows = await database.select(
+          'dd_fills',
+          'order_id=eq.' + encodeURIComponent(String(position.entry_order_id)) +
+            '&select=product_id,symbol&limit=5'
+        );
+        const entryProductIds = Array.isArray(entryFillRows)
+          ? [...new Set(entryFillRows
+              .filter(fill => !fill?.symbol || clean(fill.symbol).toUpperCase() === clean(position.symbol).toUpperCase())
+              .map(fill => Number(fill?.product_id))
+              .filter(id => Number.isSafeInteger(id) && id > 0))]
+          : [];
+        const productId = entryProductIds.length === 1
+          ? entryProductIds[0]
+          : (await resolveProduct(position.symbol)).id;
+        const details = await getRecentCloseDetails(position.symbol, position.opened_at, {
+          ...position,
+          product_id: productId,
+          raw: { ...(position.raw || {}), product_id: productId }
+        });
+        const exitPrice = positive(details?.exit_price);
+        const closeOrderId = clean(details?.close_order_id);
+        if (!exitPrice || !closeOrderId || details?.close_fill_history_complete !== true) {
+          continue;
+        }
+        const realizedPnl = number(details?.realized_pnl);
+        const verified = realizedPnl !== null;
+        const updatedAt = new Date(now()).toISOString();
+        const raw = {
+          ...(position.raw || {}),
+          exit_fill_price: exitPrice,
+          exit_order_id: closeOrderId,
+          exit_client_order_id: details?.client_order_id || null,
+          exit_fees: number(details?.fees),
+          exit_fee_currency: details?.fee_currency || null,
+          exit_fill_type: details?.fill_type || null,
+          exit_order_type: details?.order_type || null,
+          exit_fill_history_complete: true,
+          exit_fill_verified: verified,
+          exit_fill_reconciled_at: updatedAt,
+          realized_pnl_note: verified
+            ? 'Realized PnL sourced from the authenticated Delta Testnet close fill'
+            : 'Exact exit fill price verified; exchange realized PnL was not present, so PnL remains unverified'
+        };
+        await database.update(
+          'dd_option_positions',
+          'position_key=eq.' + encodeURIComponent(position.position_key) +
+            '&status=eq.CLOSED&realized_pnl_verified=eq.false',
+          {
+            short_exit_premium: exitPrice,
+            realized_pnl: verified ? realizedPnl : null,
+            realized_pnl_verified: verified,
+            updated_at: updatedAt,
+            raw
+          }
+        );
+        const confirmed = await database.select(
+          'dd_option_positions',
+          'position_key=eq.' + encodeURIComponent(position.position_key) +
+            '&select=position_key,status,short_exit_premium,realized_pnl,realized_pnl_verified,raw&limit=1'
+        );
+        const row = Array.isArray(confirmed) ? confirmed[0] : null;
+        if (!row || row.status !== 'CLOSED' ||
+            Math.abs(Number(row.short_exit_premium) - exitPrice) > 1e-8 ||
+            (verified && (row.realized_pnl_verified !== true ||
+              Math.abs(Number(row.realized_pnl) - realizedPnl) > 1e-8))) {
+          throw new Error('Options close-fill reconciliation read-after-write verification failed');
+        }
+        reconciled += 1;
+        await logExecutor('INFO', '[OptionsExecutor] Externally closed Option fill reconciled from authenticated Demo history', {
+          positionKey: position.position_key,
+          symbol: position.symbol,
+          closeOrderId,
+          exitPrice,
+          realizedPnl: verified ? realizedPnl : null,
+          realizedPnlVerified: verified
+        });
+      } catch (error) {
+        await logExecutor('WARN', '[OptionsExecutor] Closed Option fill remains unverified', {
+          positionKey: position.position_key,
+          symbol: position.symbol,
+          error: String(error?.message || error).slice(0, 220)
+        }).catch(() => {});
+      }
+    }
+    return { scanned: rows.length, reconciled, unavailable: false };
+  }
+
   async function monitorOptionsExits() {
     if (!isEnabled(env.OPTIONS_EXIT_MONITOR_ENABLED)) {
       return { status: 'DISABLED', monitored: 0, exits: 0 };
     }
     assertTestnetProfile();
+    const closeFillReconciliation = await reconcileClosedOptionFills();
     const rows = await database.select('dd_option_positions', 'status=in.(OPEN,HEDGE_CLOSE_PENDING)&select=*&order=opened_at.asc&limit=100');
     if (!Array.isArray(rows)) throw new Error('Options exit monitor position snapshot is malformed');
     let exits = 0;
@@ -1800,7 +1906,9 @@ export function createDeltaOptionsExecution({
           continue;
         }
         const quoteResponse = await request('GET', '/v2/tickers/' + encodeURIComponent(position.symbol));
-        const ticker = quoteResponse?.result ?? quoteResponse;
+        const ticker = Array.isArray(quoteResponse?.result)
+          ? quoteResponse.result.find(row => clean(row?.symbol).toUpperCase() === clean(position.symbol).toUpperCase())
+          : quoteResponse?.result ?? quoteResponse;
         if (!ticker || clean(ticker.symbol).toUpperCase() !== clean(position.symbol).toUpperCase()) throw new Error('Options exit quote did not match the open contract');
         const bid = positive(ticker?.quotes?.best_bid ?? ticker?.best_bid ?? ticker?.bid);
         const ask = positive(ticker?.quotes?.best_ask ?? ticker?.best_ask ?? ticker?.ask);
@@ -1824,14 +1932,78 @@ export function createDeltaOptionsExecution({
           : await closeSellOptionPosition(position, decision.reason);
         if (result.closed) exits += 1;
       } catch (error) {
+        const errorCode = clean(error?.code || error?.error_code).toLowerCase();
+        const errorMessage = String(error?.message || error);
+        const exchangeAlreadyFlat = errorCode === 'no_position_for_reduce_only' ||
+          /\bno_position_for_reduce_only\b/i.test(errorMessage);
+        if (exchangeAlreadyFlat && normalizeOptionsExitStatus(position.strategy) === 'OPTIONS_BUY' &&
+            normalizeOptionsExitStatus(position.status) === 'OPEN') {
+          const closedAt = new Date(now()).toISOString();
+          await database.update(
+            'dd_option_positions',
+            'position_key=eq.' + encodeURIComponent(position.position_key) + '&status=eq.OPEN',
+            {
+              status: 'CLOSED',
+              exit_reason: 'EXTERNAL_CLOSE_UNVERIFIED',
+              closed_at: closedAt,
+              updated_at: closedAt,
+              realized_pnl: null,
+              realized_pnl_verified: false,
+              raw: {
+                ...(position.raw || {}),
+                external_close_confirmed_by_reduce_only_rejection: true,
+                exit_fill_reconciliation_pending: true,
+                exit_fill_verified: false,
+                external_close_error_code: 'no_position_for_reduce_only',
+                external_close_observed_at: closedAt
+              }
+            }
+          );
+          await logExecutor('WARN', '[OptionsExitMonitor] Exchange reports no open long Option position; stopped repeat exit attempts and queued fill reconciliation', {
+            positionKey: position.position_key,
+            symbol: position.symbol,
+            strategy: position.strategy,
+            status: 'CLOSED',
+            realizedPnlVerified: false
+          }).catch(() => {});
+          continue;
+        }
+        if (exchangeAlreadyFlat) {
+          const updatedAt = new Date(now()).toISOString();
+          await database.update(
+            'dd_option_positions',
+            'position_key=eq.' + encodeURIComponent(position.position_key) +
+              '&status=eq.' + encodeURIComponent(position.status),
+            {
+              status: 'RECONCILIATION_REQUIRED',
+              exit_reason: 'NO_POSITION_FOR_REDUCE_ONLY_RECONCILIATION_REQUIRED',
+              updated_at: updatedAt,
+              raw: {
+                ...(position.raw || {}),
+                reduce_only_rejected_no_position: true,
+                exit_fill_reconciliation_pending: true,
+                external_close_error_code: 'no_position_for_reduce_only',
+                external_close_observed_at: updatedAt
+              }
+            }
+          );
+          await logExecutor('WARN', '[OptionsExitMonitor] No-position rejection parked the Options spread for reconciliation; no further blind exit retries', {
+            positionKey: position.position_key,
+            symbol: position.symbol,
+            strategy: position.strategy,
+            priorStatus: position.status,
+            status: 'RECONCILIATION_REQUIRED'
+          }).catch(() => {});
+          continue;
+        }
         await logExecutor('ERROR', '[OptionsExitMonitor] Position exit check failed; position remains tracked', {
           positionKey: position.position_key, symbol: position.symbol,
           strategy: position.strategy, status: position.status,
-          reason: String(error?.message || error).slice(0, 240)
+          reason: errorMessage.slice(0, 240)
         }).catch(() => {});
       }
     }
-    return { status: 'OK', monitored: rows.length, exits };
+    return { status: 'OK', monitored: rows.length, exits, closeFillReconciliation };
   }
 
   return Object.freeze({ previewOptionsOrder, placeOptionsOrder, monitorOptionsExits });
