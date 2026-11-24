@@ -96,7 +96,6 @@ export class DeltaAdapter {
         const requestBase = resolveDeltaRequestBase({
           method,
           auth,
-          marketData: options.marketData === true,
           productCatalog: options.productCatalog === true
         }, {
           base: this.base,
