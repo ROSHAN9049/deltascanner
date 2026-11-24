@@ -110,3 +110,11 @@ footer{color:#526177;text-align:center;font-size:9px;padding-top:12px}
 @media(max-width:900px){.healthGrid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:620px){.globalStatusBar{gap:9px 14px;padding:9px 10px}.healthGrid{grid-template-columns:1fr 1fr}.healthGrid>div{min-height:78px;padding:10px}.healthGrid b{font-size:14px}}
 @media(prefers-reduced-motion:no-preference){.card,.panel{transition:border-color .18s ease,box-shadow .18s ease,transform .18s ease}.card:hover{border-color:rgba(61,169,220,.5);box-shadow:0 10px 28px rgba(0,0,0,.24);transform:translateY(-1px)}}
+
+
+.optionsTradeHistory table tbody tr:hover td{background:rgba(44,75,112,.16)}
+.historyStatus{display:inline-flex;align-items:center;padding:4px 8px;border-radius:999px;border:1px solid;font-size:8px;font-weight:900;letter-spacing:.55px;white-space:nowrap}
+.historyStatus.success{color:#54e7a9;background:rgba(12,83,58,.22);border-color:rgba(54,190,135,.42)}
+.historyStatus.active{color:#65cfff;background:rgba(15,77,112,.2);border-color:rgba(65,168,220,.42)}
+.historyStatus.danger{color:#ff8093;background:rgba(115,25,46,.2);border-color:rgba(213,70,97,.48)}
+.historyStatus.pending{color:#e7c66f;background:rgba(109,81,20,.2);border-color:rgba(193,155,57,.4)}
