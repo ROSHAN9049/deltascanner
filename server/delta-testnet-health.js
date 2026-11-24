@@ -81,7 +81,10 @@ export function createDeltaTestnetHealthProbe({
             healthy: false, status: null, checkedAt, source: 'delta-testnet-public-api',
             url: DELTA_TESTNET_HEALTH_URL, cached: false, error: safeError(error)
           };
-          if (attempt < maxAttempts) continue;
+          // A controller-triggered timeout is already the bounded terminal
+          // probe budget; retrying it with an injected/expired timer can leave
+          // callers waiting forever. Retry transport errors, not our own abort.
+          if (attempt < maxAttempts && !controller.signal.aborted) continue;
         } finally {
           clearTimeoutFn(timeout);
         }
