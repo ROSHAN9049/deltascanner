@@ -1930,10 +1930,46 @@ export function createDeltaOptionsExecution({
           : await closeSellOptionPosition(position, decision.reason);
         if (result.closed) exits += 1;
       } catch (error) {
+        const errorCode = clean(error?.code || error?.error_code).toLowerCase();
+        const errorMessage = String(error?.message || error);
+        const exchangeAlreadyFlat = errorCode === 'no_position_for_reduce_only' ||
+          /\\bno_position_for_reduce_only\\b/i.test(errorMessage);
+        if (exchangeAlreadyFlat && normalizeOptionsExitStatus(position.strategy) === 'OPTIONS_BUY' &&
+            normalizeOptionsExitStatus(position.status) === 'OPEN') {
+          const closedAt = new Date(now()).toISOString();
+          await database.update(
+            'dd_option_positions',
+            'position_key=eq.' + encodeURIComponent(position.position_key) + '&status=eq.OPEN',
+            {
+              status: 'CLOSED',
+              exit_reason: 'EXTERNAL_CLOSE_UNVERIFIED',
+              closed_at: closedAt,
+              updated_at: closedAt,
+              realized_pnl: null,
+              realized_pnl_verified: false,
+              raw: {
+                ...(position.raw || {}),
+                external_close_confirmed_by_reduce_only_rejection: true,
+                exit_fill_reconciliation_pending: true,
+                exit_fill_verified: false,
+                external_close_error_code: 'no_position_for_reduce_only',
+                external_close_observed_at: closedAt
+              }
+            }
+          );
+          await logExecutor('WARN', '[OptionsExitMonitor] Exchange reports no open long Option position; stopped repeat exit attempts and queued fill reconciliation', {
+            positionKey: position.position_key,
+            symbol: position.symbol,
+            strategy: position.strategy,
+            status: 'CLOSED',
+            realizedPnlVerified: false
+          }).catch(() => {});
+          continue;
+        }
         await logExecutor('ERROR', '[OptionsExitMonitor] Position exit check failed; position remains tracked', {
           positionKey: position.position_key, symbol: position.symbol,
           strategy: position.strategy, status: position.status,
-          reason: String(error?.message || error).slice(0, 240)
+          reason: errorMessage.slice(0, 240)
         }).catch(() => {});
       }
     }
