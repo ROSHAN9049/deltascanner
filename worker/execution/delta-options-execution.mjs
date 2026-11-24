@@ -1559,7 +1559,8 @@ export function createDeltaOptionsExecution({
           hedgeProduct, 'BUY', preview.qty, preview.hedgePremium, {
             strategy: 'OPTIONS_SELL', role: 'PROTECTIVE_HEDGE',
             maxLossUsd: preview.maxLossUsd, executionKey,
-            manualTestOverride: preview.manualTestOverride === true
+            manualTestOverride: preview.manualTestOverride === true,
+            signalGeneratedAt: preview.cachedAt
           }
         ),
         waitForProtectiveFill,
@@ -1571,6 +1572,7 @@ export function createDeltaOptionsExecution({
             strategy: 'OPTIONS_SELL', role: 'SHORT', maxLossUsd: preview.maxLossUsd,
             hedgeOrderId: hedgeOrder?.id ?? null, executionKey,
             manualTestOverride: preview.manualTestOverride === true,
+            signalGeneratedAt: preview.cachedAt,
             bracketStopLossPrice: preview.stopPremium,
             bracketTakeProfitPrice: preview.takeProfitPremium
           });
