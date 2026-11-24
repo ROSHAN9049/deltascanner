@@ -2631,6 +2631,7 @@ export class DeltaEngine {
     const productCountsByUnderlying = countOptionProductsByUnderlying(this.optionProductMap, underlyings);
 
     const next = new Map();
+    const paperTickerMap = new Map();
     const counts = {};
     const greeksAvailableByUnderlying = {};
     const greeksMissingByUnderlying = {};
@@ -2683,6 +2684,8 @@ export class DeltaEngine {
             } : {})
           });
         }
+
+        for (const ticker of joined) paperTickerMap.set(ticker.symbol, ticker);
 
         const selected = selectOptionContractsForScan({
           rows: joined,
@@ -2915,7 +2918,7 @@ export class DeltaEngine {
     this.optionTickerMap = next;
     this.lastOptionTickerFetch = now;
     try {
-      await refreshPaperOptionTrades({ database: db, tickers: next, now: () => now });
+      await refreshPaperOptionTrades({ database: db, tickers: paperTickerMap, now: () => now });
     } catch (error) {
       await this.log('WARN', 'Paper Options ledger refresh unavailable; Live market analysis continues without simulated exits', {
         error: String(error?.message || error).slice(0, 220),
@@ -3682,7 +3685,7 @@ export class DeltaEngine {
             blocked, executionLocked: executionLocked || paperOnly,
             ready: !paperOnly && s.ready && q >= 1 && !duplicate && routeConfigured && !executionLocked };
           await this.insertSignalHistoryRow({
-            symbol: row.symbol, product_id: n(best.ticker.product_id || best.ticker.id),
+            symbol: row.symbol, product_id: best.ticker.testnet_product_verified === true ? n(best.ticker.product_id || best.ticker.id) : null,
             rank: 1, strategy: 'OPTIONS_BUY', price: row.mark, change_24h: row.underlyingChange,
             turnover_usd: n(best.ticker.turnover_usd || best.ticker.turnover), spread_pct: row.spreadPct,
             volume_spike: row.volume, score: row.score, stage: row.stage, side: 'BUY',
@@ -3784,7 +3787,7 @@ export class DeltaEngine {
             credit, maxRiskPerSpread, notional: Math.max(0, credit * q), risk: maxRiskPerSpread * q,
             blocked, executionLocked, ready, optionRouteReady };
           await this.insertSignalHistoryRow({
-            symbol: row.symbol, product_id: n(best.ticker.product_id || best.ticker.id),
+            symbol: row.symbol, product_id: best.ticker.testnet_product_verified === true ? n(best.ticker.product_id || best.ticker.id) : null,
             rank: 1, strategy: 'OPTIONS_SELL', price: row.mark, change_24h: row.underlyingChange,
             turnover_usd: n(best.ticker.turnover_usd || best.ticker.turnover), spread_pct: row.spreadPct,
             volume_spike: row.volume, score: row.score, stage: row.stage, side: 'SELL',
@@ -4160,7 +4163,7 @@ export class DeltaEngine {
       underlying: String(s.underlyingSymbol || '').toUpperCase().replace(/USD$/, ''),
       strategy: s.strategy,
       symbol: s.symbol,
-      product_id: n(s.ticker?.product_id || s.productId),
+      product_id: s.ticker?.testnet_product_verified === true ? n(s.ticker?.product_id || s.productId) : null,
       option_type: s.optionType,
       strike: s.strike,
       expiry_ms: Math.round(n(s.expiryMs)),
@@ -4233,6 +4236,7 @@ export class DeltaEngine {
         theta: s.theta,
         vega: s.vega,
         fullMarketScan: true,
+        paperOnly: CONFIG.deltaExecutionMode === 'testnet' && s.ticker?.testnet_product_verified !== true,
         goldOptionSettlement: String(s.underlyingSymbol || '').toUpperCase().startsWith('XAUT'),
         analysisReady: s.analysisReady === true,
         hedgeSymbol: s.hedgeSymbol || null,
