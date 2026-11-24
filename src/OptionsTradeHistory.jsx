@@ -59,14 +59,19 @@ export default function OptionsTradeHistory({ positions = [], orders = [], accou
           <td className="symbol">{value(row.symbol)}</td><td className={row.side === 'BUY' ? 'up' : 'down'}>{value(row.side)}</td>
           <td>{money(row.entryPrice)}</td><td>{money(row.exitPrice)}</td><td>{value(row.qty)}</td>
           <td>SL {money(row.sl)} / TP {money(row.tp)}</td>
-          <td><span className={statusClass(row.status)}>{String(row.status || 'UNKNOWN').toUpperCase()}</span></td>
+          <td>
+            {row.paper_only ? <span className="historyStatus pending">PAPER_ONLY · SIMULATED_FILL</span> : null}
+            <span className={statusClass(row.status)}>{String(row.status || 'UNKNOWN').toUpperCase()}</span>
+          </td>
           <td className={row.realized_pnl_verified === true && numeric(row.realized_pnl) !== null ? (numeric(row.realized_pnl) >= 0 ? 'up' : 'down') : 'muted'}>
-            {row.realized_pnl_verified === true ? money(row.realized_pnl) : 'UNVERIFIED'}
-          </td><td>{row.orderIds || value(row.entry_order_id)}</td>
+            {row.realized_pnl_verified === true
+              ? (row.paper_only ? value(row.realized_pnl) + ' premium pts' : money(row.realized_pnl))
+              : 'UNVERIFIED'}
+          </td><td>{row.paper_only ? 'SIMULATED_FILL' : (row.orderIds || value(row.entry_order_id))}</td>
         </tr>)}
         {!visible.length ? <tr><td colSpan={10}>No {filter === 'ALL' ? '' : filter.toLowerCase() + ' '}Options trades found.</td></tr> : null}
       </tbody></table></div>
-      <p className="muted">PnL is displayed only when the exchange close fill is verified. Missing exit fills are not estimated from mark/current premium.</p>
+      <p className="muted">Exchange trades show PnL only after a verified close fill. PAPER_ONLY rows are simulated from Delta India public LTP, never submit orders, and report premium points rather than exchange-settled USD PnL.</p>
     </div>
   </section>;
 }
