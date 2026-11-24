@@ -1647,16 +1647,18 @@ export function createDeltaExecutor({
       }
 
       // Poll the private exchange position snapshot after every accepted close,
-      // regardless of the initial order state. A reversal may proceed only when
-      // the exchange reports zero size; unknown/partial/pending closes time out.
+      // regardless of the initial order state. Reversals get a longer window
+      // because Delta's margined-position snapshot can lag a fill by several seconds.
       let confirmedFlat = false;
-      // Delta's margined-position snapshot can lag a fill by several seconds.
-      // Poll for up to 15 seconds before aborting the opposite-side entry.
-      for (let attempt = 0; attempt < 15; attempt += 1) {
+      const maxFlatPollAttempts = closeReason === 'REVERSAL' ? 15 : 3;
+      const flatPollIntervalMs = closeReason === 'REVERSAL' ? 1000 : 250;
+      for (let attempt = 0; attempt < maxFlatPollAttempts; attempt += 1) {
         const latest = await getOpenPositions();
         confirmedFlat = !latest.some(row => row.symbol === normalizedSymbol && row.qty > 0);
         if (confirmedFlat) break;
-        if (attempt < 14) await new Promise(resolve => setTimeout(resolve, 1000));
+        if (attempt < maxFlatPollAttempts - 1) {
+          await new Promise(resolve => setTimeout(resolve, flatPollIntervalMs));
+        }
       }
       order.exchange_position_flat = confirmedFlat;
       if (confirmedFlat) {
