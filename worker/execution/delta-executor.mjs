@@ -1479,7 +1479,7 @@ export function createDeltaExecutor({
       if (!Number.isSafeInteger(quantity) || quantity <= 0) {
         throw new Error('qty must be a positive whole number of contracts');
       }
-      if (!positionId || !['TIMEOUT', 'STOP_LOSS', 'TAKE_PROFIT'].includes(closeReason)) {
+      if (!positionId || !['TIMEOUT', 'STOP_LOSS', 'TAKE_PROFIT', 'REVERSAL'].includes(closeReason)) {
         throw new Error('Automatic close requires a stable position id and supported close reason');
       }
       if (!['BUY', 'SELL'].includes(expectedSide)) {
@@ -1651,11 +1651,14 @@ export function createDeltaExecutor({
       // leave protection untouched for the next reconciliation cycle.
       if (['FILLED', 'CLOSED'].includes(acceptedState) && numberOrNull(order?.unfilled_size) === 0) {
         let confirmedFlat = false;
-        for (let attempt = 0; attempt < 3; attempt += 1) {
+        // Reversal and all other automatic exits remain blocked until the
+        // exchange's private position endpoint confirms zero size. Poll for up
+        // to 6.5 seconds; a timeout leaves the position/protective orders intact.
+        for (let attempt = 0; attempt < 12; attempt += 1) {
           const latest = await getOpenPositions();
           confirmedFlat = !latest.some(row => row.symbol === normalizedSymbol && row.qty > 0);
           if (confirmedFlat) break;
-          if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+          if (attempt < 11) await new Promise(resolve => setTimeout(resolve, 250 + attempt * 500));
         }
         order.exchange_position_flat = confirmedFlat;
         if (confirmedFlat) {
