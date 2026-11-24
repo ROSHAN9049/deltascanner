@@ -660,7 +660,7 @@ function Dashboard({ market, settings, health, positions, accountDataProtected =
     <Panel title="System Health · Live Diagnostics">
       <div className="healthGrid">
         <div><small>WORKER CPU</small><b className="muted">NOT EXPOSED</b><span>Hostless Worker CPU metrics are not available through the current heartbeat API</span></div>
-        <div><small>API PROCESS CPU</small><b>{health?.workerCpuPercent == null ? '—' : Number(health.workerCpuPercent).toFixed(1) + '%'}</b><span>Measured API process CPU · may exceed 100% on multi-core hosts</span></div>
+        <div><small>API PROCESS CPU</small><b>{health?.apiProcessCpuPercent == null ? '—' : Number(health.workerCpuPercent).toFixed(1) + '%'}</b><span>Measured API process CPU · may exceed 100% on multi-core hosts</span></div>
         <div><small>DATABASE PING</small><b>{health?.databasePingMs == null ? '—' : Number(health.databasePingMs).toFixed(0) + 'ms'}</b><span className={health?.databaseHealthy === true ? 'up' : 'down'}>{health?.databaseHealthy === true ? 'Supabase reachable' : 'Database status unavailable'}</span></div>
         <div><small>DEMO API</small><b className={health?.exchangeHealthy === true ? 'up' : 'down'}>{health?.exchangeHealthy === true ? 'CONNECTED' : 'UNKNOWN / DOWN'}</b><span>Delta Testnet public health probe · {health?.exchangeProbeAt ? new Date(health.exchangeProbeAt).toLocaleTimeString('en-IN') : 'No verified probe'}</span></div>
         <div><small>LIVE MARKET FEED</small><b className={market?.length && !health?.error ? 'up' : 'down'}>{market?.length ? 'DATA LOADED' : 'NO DATA'}</b><span>{market?.length ? market.length + ' perpetual market rows in dashboard cache' : 'Awaiting public Live market snapshot'}</span></div>
