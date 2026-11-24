@@ -37,6 +37,12 @@ export default function OptionsTradeHistory({ positions = [], orders = [], accou
     }).sort((a, b) => new Date(b.opened_at || b.updated_at || 0) - new Date(a.opened_at || a.updated_at || 0));
   }, [positions, orders]);
   const visible = rows.filter(row => filter === 'ALL' || String(row.status).toUpperCase() === filter);
+  const statusClass = status => {
+    const key = String(status || '').toUpperCase();
+    if (['FILLED','CLOSED','OPEN'].includes(key)) return key === 'OPEN' ? 'historyStatus active' : 'historyStatus success';
+    if (['REJECTED','FAILED','CANCELLED','CANCELED'].includes(key)) return 'historyStatus danger';
+    return 'historyStatus pending';
+  };
   if (accountDataProtected) return <section className="panel"><div className="panelTitle"><h2>Options Trade History</h2></div><div className="pad lockedText">Private Options trade history is locked. Unlock the dashboard session in Settings. Hidden data is not zero.</div></section>;
   return <section className="panel">
     <div className="panelTitle"><h2>Options Trade History</h2><span className="muted">{rows.length} trades</span></div>
@@ -53,7 +59,7 @@ export default function OptionsTradeHistory({ positions = [], orders = [], accou
           <td className="symbol">{value(row.symbol)}</td><td className={row.side === 'BUY' ? 'up' : 'down'}>{value(row.side)}</td>
           <td>{money(row.entryPrice)}</td><td>{money(row.exitPrice)}</td><td>{value(row.qty)}</td>
           <td>SL {money(row.sl)} / TP {money(row.tp)}</td>
-          <td>{String(row.status || 'UNKNOWN').toUpperCase()}</td>
+          <td><span className={statusClass(row.status)}>{String(row.status || 'UNKNOWN').toUpperCase()}</span></td>
           <td className={row.realized_pnl_verified === true && numeric(row.realized_pnl) !== null ? (numeric(row.realized_pnl) >= 0 ? 'up' : 'down') : 'muted'}>
             {row.realized_pnl_verified === true ? money(row.realized_pnl) : 'UNVERIFIED'}
           </td><td>{row.orderIds || value(row.entry_order_id)}</td>
