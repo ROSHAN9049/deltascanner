@@ -184,11 +184,18 @@ const IV_HISTORY_RETENTION_DELETE_SQL = `
   RETURNING target.id
 `;
 
-export function duplicatePositionBlocker(openPositions, symbol) {
+export function duplicatePositionBlocker(openPositions, symbol, requestedSide = null) {
   const selected = String(symbol || '').toUpperCase();
-  return (Array.isArray(openPositions) ? openPositions : []).some(position =>
+  const wanted = String(requestedSide || '').toUpperCase();
+  const conflict = (Array.isArray(openPositions) ? openPositions : []).find(position =>
     String(position?.symbol || '').toUpperCase() === selected && n(position?.qty) > 0
-  ) ? 'Duplicate symbol' : '';
+  );
+  if (!conflict) return '';
+  const existingSide = String(conflict?.side || (Number(conflict?.size) < 0 ? 'SELL' : 'BUY')).toUpperCase();
+  // Opposite-side exposure is eligible only for the explicit close-confirm-recheck
+  // reversal sequence in openTrade(); same-side duplicates remain blocked.
+  if (['BUY', 'SELL'].includes(wanted) && ['BUY', 'SELL'].includes(existingSide) && wanted !== existingSide) return '';
+  return 'Duplicate symbol';
 }
 
 export function tradetronRouteBlocker({ signalOnly, bridgeEnabled, strategy, signal, bridge }) {
@@ -2432,7 +2439,7 @@ export class DeltaEngine {
     )) {
       reasons.push('Delta Testnet route unavailable: no verified live, operational product for this symbol');
     }
-    const duplicateBlocker = duplicatePositionBlocker(openPositions, signal.symbol);
+    const duplicateBlocker = duplicatePositionBlocker(openPositions, signal.symbol, signal.side);
     if (duplicateBlocker) reasons.push(duplicateBlocker);
     const strategyPositionCap = suppliedPositionCap ||
       await this.getStrategyPositionCapAssessment(strategy, settings);
