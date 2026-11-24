@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import {
   createDeltaExecutor,
+  deltaHmacSha256,
   assertDeltaTestnetConfiguration,
   DELTA_ENTRY_ORDER_LOOKUP_MAX_AGE_MS,
   DELTA_TESTNET_REST_BASE,
@@ -1593,7 +1595,8 @@ test('E-STOP blocks entries but permits closePosition to submit a reduce-only ex
       entry_price: '60000',
       mark_price: '60000',
       unrealized_pnl: '0'
-    }]
+    }],
+    positionsAfterFill: []
   });
   const executor = createDeltaExecutor({
     env: demoEnv(),
@@ -1610,6 +1613,7 @@ test('E-STOP blocks entries but permits closePosition to submit a reduce-only ex
     strategy: 'MOMENTUM'
   });
   assert.equal(order.id, 123);
+  assert.equal(order.exchange_position_flat, true);
   const post = runtime.httpCalls.find(call =>
     new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST'
   );
@@ -1703,3 +1707,16 @@ test('withholds all-in net when fill settlement currency and wallet attribution 
   assert.equal(materialized.find(row => row.table === 'dd_rotation_ledger'), undefined);
 });
 
+
+
+test('cached HMAC key material preserves Delta request signatures and rotates when credentials change', () => {
+  const message = 'GET1770000000/v2/positions?product_id=1';
+  const secretA = 'demo-secret-A';
+  const secretB = 'demo-secret-B';
+  const expectedA = crypto.createHmac('sha256', secretA).update(message, 'utf8').digest('hex');
+  const expectedB = crypto.createHmac('sha256', secretB).update(message, 'utf8').digest('hex');
+  assert.equal(deltaHmacSha256(secretA, message), expectedA);
+  assert.equal(deltaHmacSha256(secretA, message), expectedA);
+  assert.equal(deltaHmacSha256(secretB, message), expectedB);
+  assert.equal(deltaHmacSha256(secretA, message), expectedA);
+});

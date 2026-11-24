@@ -95,7 +95,7 @@ export async function closeTrackedPosition({
   if (!normalizedSymbol || !/^[A-Z0-9]+USD$/.test(normalizedSymbol)) {
     throw new Error('Invalid perpetual symbol for automatic exit');
   }
-  if (!['TIMEOUT', 'STOP_LOSS', 'TAKE_PROFIT'].includes(closeReason)) {
+  if (!['TIMEOUT', 'STOP_LOSS', 'TAKE_PROFIT', 'REVERSAL'].includes(closeReason)) {
     throw new Error('Unsupported automatic close reason');
   }
   if (position?.origin !== 'ENGINE' || !['MOMENTUM', 'SCALPING'].includes(stringOrEmpty(position?.strategy).toUpperCase())) {
@@ -136,9 +136,11 @@ export async function closeTrackedPosition({
   }
   const canonicalProductId = Number(canonical.product_id);
   const requestedProductId = Number(productId);
-  if (Number.isFinite(canonicalProductId) && canonicalProductId > 0 &&
-      Number.isFinite(requestedProductId) && requestedProductId > 0 &&
-      canonicalProductId !== requestedProductId) {
+  if (!Number.isSafeInteger(canonicalProductId) || canonicalProductId <= 0 ||
+      !Number.isSafeInteger(requestedProductId) || requestedProductId <= 0) {
+    throw new Error('Canonical and requested Delta product IDs are required; automatic close blocked');
+  }
+  if (canonicalProductId !== requestedProductId) {
     throw new Error('Local/canonical product ID mismatch; automatic close blocked');
   }
 
@@ -167,9 +169,7 @@ export async function closeTrackedPosition({
       expectedProductId: Number.isFinite(requestedProductId) ? requestedProductId : null,
       strategy: stringOrEmpty(position.strategy).toUpperCase()
     });
-    const orderState = stringOrEmpty(order?.state).toUpperCase();
-    const confirmedFilledAndFlat = ['FILLED', 'CLOSED'].includes(orderState) &&
-      Number(order?.unfilled_size) === 0 && order?.exchange_position_flat === true;
+    const confirmedFilledAndFlat = order?.exchange_position_flat === true;
     if (confirmedFilledAndFlat) {
       await database.update(
         'dd_delta_positions',

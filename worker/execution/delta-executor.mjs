@@ -39,8 +39,19 @@ const encodeQuery = params => {
   return pairs.length ? '?' + pairs.join('&') : '';
 };
 
+// Keep only the currently-used secret key object in memory. Delta still
+// requires a fresh timestamp and HMAC for every request; this avoids repeatedly
+// converting the same configured secret into key material on the hot path.
+let cachedHmacSecret = null;
+let cachedHmacKey = null;
+
 export function deltaHmacSha256(secret, message) {
-  return crypto.createHmac('sha256', secret).update(message, 'utf8').digest('hex');
+  const normalizedSecret = String(secret ?? '');
+  if (!cachedHmacKey || cachedHmacSecret !== normalizedSecret) {
+    cachedHmacSecret = normalizedSecret;
+    cachedHmacKey = crypto.createSecretKey(Buffer.from(normalizedSecret, 'utf8'));
+  }
+  return crypto.createHmac('sha256', cachedHmacKey).update(message, 'utf8').digest('hex');
 }
 
 export function buildCloseClientOrderId(positionId, closeReason) {
@@ -862,7 +873,7 @@ export function createDeltaExecutor({
     const wallet = await getWalletSnapshot();
     const equity = accountEquity(wallet);
     if (!(equity > 0)) throw new Error('Delta Testnet account equity is unavailable; entries fail closed');
-    return { equity, available: accountAvailable(wallet, equity), raw: wallet };
+    return { equity, available: accountAvailable(wallet, equity), availableVerified: accountAvailableVerified(wallet), raw: wallet };
   }
 
   async function assertSafety(symbol, operation = 'ENTRY') {
@@ -1468,7 +1479,7 @@ export function createDeltaExecutor({
       if (!Number.isSafeInteger(quantity) || quantity <= 0) {
         throw new Error('qty must be a positive whole number of contracts');
       }
-      if (!positionId || !['TIMEOUT', 'STOP_LOSS', 'TAKE_PROFIT'].includes(closeReason)) {
+      if (!positionId || !['TIMEOUT', 'STOP_LOSS', 'TAKE_PROFIT', 'REVERSAL'].includes(closeReason)) {
         throw new Error('Automatic close requires a stable position id and supported close reason');
       }
       if (!['BUY', 'SELL'].includes(expectedSide)) {
@@ -1635,42 +1646,47 @@ export function createDeltaExecutor({
         throw new Error('Delta Testnet close order was not accepted (' + acceptedState + ')');
       }
 
-      // Cancel protective reduce-only orders only after REST confirms the
-      // position is flat. If the snapshot is delayed or the close is partial,
-      // leave protection untouched for the next reconciliation cycle.
-      if (['FILLED', 'CLOSED'].includes(acceptedState) && numberOrNull(order?.unfilled_size) === 0) {
-        let confirmedFlat = false;
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-          const latest = await getOpenPositions();
-          confirmedFlat = !latest.some(row => row.symbol === normalizedSymbol && row.qty > 0);
-          if (confirmedFlat) break;
-          if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+      // Poll the private exchange position snapshot after every accepted close,
+      // regardless of the initial order state. Reversals get a longer window
+      // because Delta's margined-position snapshot can lag a fill by several seconds.
+      let confirmedFlat = false;
+      const maxFlatPollAttempts = closeReason === 'REVERSAL' ? 15 : 3;
+      const flatPollIntervalMs = closeReason === 'REVERSAL' ? 1000 : 250;
+      for (let attempt = 0; attempt < maxFlatPollAttempts; attempt += 1) {
+        const latest = await getOpenPositions();
+        confirmedFlat = !latest.some(row => row.symbol === normalizedSymbol && row.qty > 0);
+        if (confirmedFlat) break;
+        if (attempt < maxFlatPollAttempts - 1) {
+          await new Promise(resolve => setTimeout(resolve, flatPollIntervalMs));
         }
-        order.exchange_position_flat = confirmedFlat;
-        if (confirmedFlat) {
-          const openOrders = await getOpenOrders();
-          const protections = openOrders.filter(row =>
-            (numberOrNull(row?.product_id) === product.id ||
-              stringOrEmpty(row?.product_symbol || row?.symbol).toUpperCase() === normalizedSymbol) &&
-            (row?.reduce_only === true || Boolean(row?.stop_order_type) || row?.bracket_order === true)
-          );
-          for (const protection of protections) {
-            const orderId = numberOrNull(protection?.id);
-            if (orderId === null) {
-              await logExecutor('ERROR', '[Executor] Flat position has a protective order without an exchange id', {
-                environment: 'testnet', symbol: normalizedSymbol, positionId,
-                closeReason, clientOrderId
-              });
-              continue;
-            }
-            await cancelOrderById(orderId);
+      }
+      order.exchange_position_flat = confirmedFlat;
+      if (confirmedFlat) {
+        // Cancel protective reduce-only orders only after REST confirms flat.
+        const openOrders = await getOpenOrders();
+        const protections = openOrders.filter(row =>
+          (numberOrNull(row?.product_id) === product.id ||
+            stringOrEmpty(row?.product_symbol || row?.symbol).toUpperCase() === normalizedSymbol) &&
+          (row?.reduce_only === true || Boolean(row?.stop_order_type) || row?.bracket_order === true)
+        );
+        for (const protection of protections) {
+          const orderId = numberOrNull(protection?.id);
+          if (orderId === null) {
+            await logExecutor('ERROR', '[Executor] Flat position has a protective order without an exchange id', {
+              environment: 'testnet', symbol: normalizedSymbol, positionId,
+              closeReason, clientOrderId
+            });
+            continue;
           }
-        } else {
-          await logExecutor('WARN', '[Executor] Close order is filled but position snapshot is not yet flat; protection retained', {
-            environment: 'testnet', symbol: normalizedSymbol, positionId,
-            closeReason, clientOrderId, orderId: order?.id ?? null
-          });
+          await cancelOrderById(orderId);
         }
+      } else {
+        await logExecutor('WARN', '[Executor] Close accepted but exchange position is not confirmed flat after polling; protection retained', {
+          environment: 'testnet', symbol: normalizedSymbol, positionId,
+          closeReason, clientOrderId, orderId: order?.id ?? null,
+          orderState: acceptedState,
+          executionBlocked: true
+        });
       }
 
       return order;

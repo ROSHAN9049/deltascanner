@@ -14,7 +14,7 @@ test('analysis shares one position-cap snapshot while final entry gate stays fre
   const openTradeStart = engine.indexOf('  async openTrade(');
   const openTradeEnd = engine.indexOf('\n  async ', openTradeStart + 10);
   const openTrade = engine.slice(openTradeStart, openTradeEnd);
-  assert.match(openTrade, /this\.riskGate\(signal, strategy, account, settings, openPositions, trades\)/);
+  assert.match(openTrade, /this\.riskGate\(signal, strategy, riskAccount, riskSettings, riskOpenPositions, riskTrades\)/);
   const riskGateStart = engine.indexOf('  async riskGate(');
   const riskGateEnd = engine.indexOf('\n  async ', riskGateStart + 10);
   const riskGate = engine.slice(riskGateStart, riskGateEnd);

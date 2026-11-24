@@ -23,8 +23,8 @@ export default function OptionsTradeHistory({ positions = [], orders = [], accou
       const exitRaw = rawOf(exit);
       const exitPrice = position.short_exit_premium ?? raw.exit_fill_price ?? exitRaw.average_fill_price ?? exitRaw.fill_price ??
         exit?.limit_price ?? null;
-      const sl = raw.stop_premium ?? raw.stop_loss_price ?? raw.bracket_stop_loss_price;
-      const tp = raw.take_profit_premium ?? raw.take_profit_price ?? raw.bracket_take_profit_price;
+      const sl = position.stop_price ?? raw.stop_premium ?? raw.stop_loss_price ?? raw.bracket_stop_loss_price;
+      const tp = position.take_profit_price ?? raw.take_profit_premium ?? raw.take_profit_price ?? raw.bracket_take_profit_price;
       return {
         ...position,
         entryPrice: position.entry_premium ?? raw.entry_premium ?? entry?.raw?.average_fill_price ?? entry?.limit_price,
@@ -52,21 +52,33 @@ export default function OptionsTradeHistory({ positions = [], orders = [], accou
         {['ALL', 'OPEN', 'CLOSED'].map(key => <button key={key} type="button" className={filter === key ? 'active' : ''} onClick={() => setFilter(key)}>{key === 'ALL' ? 'View All' : key}</button>)}
       </div>
       <div className="tablewrap"><table><thead><tr>
-        <th>DATE / TIME</th><th>SYMBOL</th><th>SIDE</th><th>ENTRY PRICE</th><th>EXIT PRICE</th><th>QTY</th><th>SL / TP</th><th>STATUS</th><th>REALIZED PNL</th><th>ORDER ID</th>
+        <th>DATE / TIME</th><th>SYMBOL</th><th>SIDE</th><th>ENTRY PRICE</th><th>EXIT PRICE</th><th>QTY</th><th>SL / TP / MAX RISK</th><th>STATUS</th><th>PNL (USD / PREMIUM PTS)</th><th>ORDER ID</th>
       </tr></thead><tbody>
         {visible.map((row, index) => <tr key={row.position_key || row.entry_order_id || index}>
           <td>{row.opened_at ? new Date(row.opened_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : value(row.updated_at)}</td>
-          <td className="symbol">{value(row.symbol)}</td><td className={row.side === 'BUY' ? 'up' : 'down'}>{value(row.side)}</td>
+          <td className="symbol">{row.paper_only && row.hedge_symbol ? `${value(row.symbol)} · hedge ${value(row.hedge_symbol)}` : value(row.symbol)}</td><td className={row.side === 'BUY' ? 'up' : 'down'}>{value(row.side)}</td>
           <td>{money(row.entryPrice)}</td><td>{money(row.exitPrice)}</td><td>{value(row.qty)}</td>
-          <td>SL {money(row.sl)} / TP {money(row.tp)}</td>
-          <td><span className={statusClass(row.status)}>{String(row.status || 'UNKNOWN').toUpperCase()}</span></td>
-          <td className={row.realized_pnl_verified === true && numeric(row.realized_pnl) !== null ? (numeric(row.realized_pnl) >= 0 ? 'up' : 'down') : 'muted'}>
-            {row.realized_pnl_verified === true ? money(row.realized_pnl) : 'UNVERIFIED'}
-          </td><td>{row.orderIds || value(row.entry_order_id)}</td>
+          <td>{row.paper_only && row.strategy === 'OPTIONS_SELL'
+            ? 'Max loss ' + money(rawOf(row).max_risk_per_spread)
+            : 'SL ' + money(row.sl) + ' / TP ' + money(row.tp)}</td>
+          <td>
+            {row.paper_only ? <span className="historyStatus pending">PAPER_ONLY · SIMULATED_FILL</span> : null}
+            <span className={statusClass(row.status)}>{String(row.status || 'UNKNOWN').toUpperCase()}</span>
+          </td>
+          <td className={row.paper_only
+            ? (numeric(row.status === 'CLOSED' ? row.realized_pnl : row.unrealized_pnl) !== null
+              ? (numeric(row.status === 'CLOSED' ? row.realized_pnl : row.unrealized_pnl) >= 0 ? 'up' : 'down')
+              : 'muted')
+            : (row.realized_pnl_verified === true && numeric(row.realized_pnl) !== null
+              ? (numeric(row.realized_pnl) >= 0 ? 'up' : 'down') : 'muted')}>
+            {row.paper_only
+              ? (value(row.status === 'CLOSED' ? row.realized_pnl : row.unrealized_pnl) + ' premium pts')
+              : (row.realized_pnl_verified === true ? money(row.realized_pnl) : 'UNVERIFIED')}
+          </td><td>{row.paper_only ? 'SIMULATED_FILL' : (row.orderIds || value(row.entry_order_id))}</td>
         </tr>)}
         {!visible.length ? <tr><td colSpan={10}>No {filter === 'ALL' ? '' : filter.toLowerCase() + ' '}Options trades found.</td></tr> : null}
       </tbody></table></div>
-      <p className="muted">PnL is displayed only when the exchange close fill is verified. Missing exit fills are not estimated from mark/current premium.</p>
+      <p className="muted">Exchange trades show PnL only after a verified close fill. PAPER_ONLY rows use Delta India public LTP or defined-risk spread bid/ask quotes, never submit orders, and report premium points rather than exchange-settled USD PnL.</p>
     </div>
   </section>;
 }

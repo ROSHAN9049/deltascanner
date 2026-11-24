@@ -49,6 +49,7 @@ import { evaluateGlobalPositionCap, routeUnlessGlobalPositionCapBlocked } from '
 import { createConfirmedSignalTelegramNotifier } from './telegram-alerts.mjs';
 import { createLeaseManager, getLeaseTtlSeconds } from './lease-manager.mjs';
 import { buildAdaptiveVolatilityShadowObservation, getAdaptiveVolatilityImpulse, inferAdaptiveVolatilityShadowSide, processAdaptiveVolatilityShadowCycle } from './adaptive-volatility-shadow.mjs';
+import { recordPaperOptionEntry, refreshPaperOptionTrades } from './paper-options-ledger.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const n = v => Number.isFinite(+v) ? +v : 0;
@@ -183,11 +184,18 @@ const IV_HISTORY_RETENTION_DELETE_SQL = `
   RETURNING target.id
 `;
 
-export function duplicatePositionBlocker(openPositions, symbol) {
+export function duplicatePositionBlocker(openPositions, symbol, requestedSide = null) {
   const selected = String(symbol || '').toUpperCase();
-  return (Array.isArray(openPositions) ? openPositions : []).some(position =>
+  const wanted = String(requestedSide || '').toUpperCase();
+  const conflict = (Array.isArray(openPositions) ? openPositions : []).find(position =>
     String(position?.symbol || '').toUpperCase() === selected && n(position?.qty) > 0
-  ) ? 'Duplicate symbol' : '';
+  );
+  if (!conflict) return '';
+  const existingSide = String(conflict?.side || (Number(conflict?.size) < 0 ? 'SELL' : 'BUY')).toUpperCase();
+  // Opposite-side exposure is eligible only for the explicit close-confirm-recheck
+  // reversal sequence in openTrade(); same-side duplicates remain blocked.
+  if (['BUY', 'SELL'].includes(wanted) && ['BUY', 'SELL'].includes(existingSide) && wanted !== existingSide) return '';
+  return 'Duplicate symbol';
 }
 
 export function tradetronRouteBlocker({ signalOnly, bridgeEnabled, strategy, signal, bridge }) {
@@ -2431,7 +2439,7 @@ export class DeltaEngine {
     )) {
       reasons.push('Delta Testnet route unavailable: no verified live, operational product for this symbol');
     }
-    const duplicateBlocker = duplicatePositionBlocker(openPositions, signal.symbol);
+    const duplicateBlocker = duplicatePositionBlocker(openPositions, signal.symbol, signal.side);
     if (duplicateBlocker) reasons.push(duplicateBlocker);
     const strategyPositionCap = suppliedPositionCap ||
       await this.getStrategyPositionCapAssessment(strategy, settings);
@@ -2623,6 +2631,7 @@ export class DeltaEngine {
     const productCountsByUnderlying = countOptionProductsByUnderlying(this.optionProductMap, underlyings);
 
     const next = new Map();
+    const paperTickerMap = new Map();
     const counts = {};
     const greeksAvailableByUnderlying = {};
     const greeksMissingByUnderlying = {};
@@ -2648,24 +2657,35 @@ export class DeltaEngine {
           const symbol = String(ticker?.symbol || '').toUpperCase();
           if (!symbol || !/^[CP]-/.test(symbol)) continue;
           const product = testnetMode ? this.optionProductMap.get(symbol) : null;
-          if (testnetMode && !product) continue;
+          const paperOnly = testnetMode && !product;
           const marketTicker = normalizeDeltaOptionTicker(ticker);
           joined.push({
             ...(product || {}),
             ...marketTicker,
             symbol,
             underlying,
-            // The ticker response is public production market data; only the
-            // product ID/specifications used for execution come from Testnet.
-            ...(testnetMode ? {
+            // Never carry a production product_id into a Testnet execution row.
+            ...(testnetMode && product ? {
               product_id: product.product_id,
               contract_value: product.contract_value,
               tick_size: product.tick_size,
               taker_commission_rate: product.taker_commission_rate,
-              testnet_product_verified: true
+              testnet_product_verified: true,
+              paper_only: false
+            } : {}),
+            ...(paperOnly ? {
+              product_id: null,
+              contract_value: null,
+              tick_size: null,
+              taker_commission_rate: null,
+              testnet_product_verified: false,
+              paper_only: true,
+              route_status: 'PAPER_ONLY'
             } : {})
           });
         }
+
+        for (const ticker of joined) paperTickerMap.set(ticker.symbol, ticker);
 
         const selected = selectOptionContractsForScan({
           rows: joined,
@@ -2897,6 +2917,15 @@ export class DeltaEngine {
 
     this.optionTickerMap = next;
     this.lastOptionTickerFetch = now;
+    try {
+      await refreshPaperOptionTrades({ database: db, tickers: paperTickerMap, now: () => now });
+    } catch (error) {
+      await this.log('WARN', 'Paper Options ledger refresh unavailable; Live market analysis continues without simulated exits', {
+        error: String(error?.message || error).slice(0, 220),
+        paperLedgerAvailable: false,
+        orderRoutingAttempted: false
+      }).catch(() => {});
+    }
     const testnetProductsAvailable = testnetMode ? this.optionProductMap.size : null;
     const missingUnderlyings = testnetMode
       ? underlyings.filter(asset => productCountsByUnderlying[asset] === 0)
@@ -3632,14 +3661,16 @@ export class DeltaEngine {
         if (best) {
           const s = best.signal;
           const sizing = this.optionSizing({ ...s, ticker: best.ticker }, account, settings);
-          const q = sizing.qty;
+          const paperOnly = CONFIG.deltaExecutionMode === 'testnet' && best.ticker.testnet_product_verified !== true;
+          const q = paperOnly ? 1 : sizing.qty;
           const duplicate = (openPositions || []).some(p => String(p.symbol) === s.symbol && n(p.qty) > 0);
           const routeConfigured = CONFIG.deltaExecutionMode === 'testnet'
-            ? testnetOptionsRouteConfigured
+            ? testnetOptionsRouteConfigured && best.ticker.testnet_product_verified === true
             : CONFIG.tradetronOptionsBridgeEnabled && this.tradetronOptions.isConfigured();
           const executionLocked = !optionsEnvironmentGate || !optionsDatabaseGate.allowed;
           const blocked = [...s.blocked];
-          if (q < 1) blocked.push(sizing.reason || 'Full-premium risk budget below one contract');
+          if (!paperOnly && q < 1) blocked.push(sizing.reason || 'Full-premium risk budget below one contract');
+          if (paperOnly) blocked.push('PAPER_ONLY · No verified Delta Testnet product; no exchange order');
           if (duplicate) blocked.push('Duplicate option position');
           if (!routeConfigured) blocked.push(CONFIG.deltaExecutionMode === 'testnet'
             ? 'Direct Delta Testnet Options route unavailable'
@@ -3648,11 +3679,13 @@ export class DeltaEngine {
           if (!optionsEnvironmentGate) blocked.push(OPTIONS_EXECUTION_LOCK_REASON);
           const ready = s.ready && q >= 1 && !duplicate && routeConfigured && !executionLocked;
           const row = { ...s, analysisReady: s.ready === true, ticker: best.ticker, strategy: 'OPTIONS_BUY', qty: q,
-            notional: sizing.premiumNotional,
-            risk: sizing.totalRisk,
-            blocked, executionLocked, ready };
+            paperOnly, routeStatus: paperOnly ? 'PAPER_ONLY' : 'TESTNET',
+            notional: paperOnly ? null : sizing.premiumNotional,
+            risk: paperOnly ? null : sizing.totalRisk,
+            blocked, executionLocked: executionLocked || paperOnly,
+            ready: !paperOnly && s.ready && q >= 1 && !duplicate && routeConfigured && !executionLocked };
           await this.insertSignalHistoryRow({
-            symbol: row.symbol, product_id: n(best.ticker.product_id || best.ticker.id),
+            symbol: row.symbol, product_id: best.ticker.testnet_product_verified === true ? n(best.ticker.product_id || best.ticker.id) : null,
             rank: 1, strategy: 'OPTIONS_BUY', price: row.mark, change_24h: row.underlyingChange,
             turnover_usd: n(best.ticker.turnover_usd || best.ticker.turnover), spread_pct: row.spreadPct,
             volume_spike: row.volume, score: row.score, stage: row.stage, side: 'BUY',
@@ -3676,6 +3709,34 @@ export class DeltaEngine {
               executionLocked, routeConfigured, signalOnly: CONFIG.signalOnly, testnetProductVerified: best.ticker.testnet_product_verified === true, riskModel: 'FULL_PREMIUM_PLUS_TWO_SIDE_FEES' }, 'OPTIONS_BUY')
           });
           out.push(row);
+          if (paperOnly && s.ready === true && !duplicate) {
+            try {
+              const paperResult = await recordPaperOptionEntry({
+                database: db,
+                ticker: best.ticker,
+                signal: s,
+                strategy: 'OPTIONS_BUY',
+                dateKey: indiaDateKey(new Date(now))
+              });
+              if (paperResult.recorded) {
+                await this.log('INFO', 'Options PAPER_ONLY simulated fill recorded at Live LTP', {
+                  symbol: row.symbol,
+                  tradeKey: paperResult.tradeKey,
+                  fillType: 'SIMULATED_FILL',
+                  entryPrice: paperResult.row.entry_price,
+                  qty: 1,
+                  executionBlocked: true,
+                  orderRoutingAttempted: false
+                }).catch(() => {});
+              }
+            } catch (error) {
+              await this.log('WARN', 'Options PAPER_ONLY signal qualified but simulated fill could not be persisted', {
+                symbol: row.symbol,
+                error: String(error?.message || error).slice(0, 220),
+                orderRoutingAttempted: false
+              }).catch(() => {});
+            }
+          }
         }
       }
 
@@ -3711,22 +3772,27 @@ export class DeltaEngine {
           if (!hedge) blocked.push('Defined-risk hedge unavailable');
           if (!(credit > 0)) blocked.push('Net credit <= 0');
           if (!testnetMode && q < 1) blocked.push('Spread risk exceeds option risk budget');
+          const paperOnly = testnetMode && best.ticker.testnet_product_verified !== true;
           const optionRouteReady = testnetMode
-            ? testnetOptionsRouteConfigured
+            ? testnetOptionsRouteConfigured && best.ticker.testnet_product_verified === true
             : CONFIG.tradetronOptionsBridgeEnabled && this.tradetronOptions.isConfigured();
           const executionLocked = !optionsEnvironmentGate || !optionsDatabaseGate.allowed;
+          if (paperOnly) blocked.push('PAPER_ONLY · No verified Delta Testnet product; no exchange order');
           if (!optionRouteReady) blocked.push(testnetMode
             ? 'Direct Delta Testnet Options route unavailable'
             : 'Tradetron option signal route unavailable');
           if (!optionsDatabaseGate.allowed) blocked.push(OPTIONS_DATABASE_EXECUTION_LOCK_REASON);
           if (!optionsEnvironmentGate) blocked.push(OPTIONS_EXECUTION_LOCK_REASON);
-          const ready = s.ready && q >= 1 && !!hedge && credit > 0 && optionRouteReady && !executionLocked;
+          const ready = !paperOnly && s.ready && q >= 1 && !!hedge && credit > 0 && optionRouteReady && !executionLocked;
           const row = { ...s, analysisReady: s.ready === true, ticker: best.ticker, strategy: 'OPTIONS_SELL', qty: q,
+            paperOnly, routeStatus: paperOnly ? 'PAPER_ONLY' : 'TESTNET',
             hedgeSymbol: hedge?.symbol || '', hedgeStrike: hedge?.strike || 0, hedgeDelta: hedge?.delta || 0,
-            credit, maxRiskPerSpread, notional: Math.max(0, credit * q), risk: maxRiskPerSpread * q,
-            blocked, executionLocked, ready, optionRouteReady };
+            credit, maxRiskPerSpread,
+            notional: paperOnly ? null : Math.max(0, credit * q),
+            risk: paperOnly ? null : maxRiskPerSpread * q,
+            blocked, executionLocked: executionLocked || paperOnly, ready, optionRouteReady };
           await this.insertSignalHistoryRow({
-            symbol: row.symbol, product_id: n(best.ticker.product_id || best.ticker.id),
+            symbol: row.symbol, product_id: best.ticker.testnet_product_verified === true ? n(best.ticker.product_id || best.ticker.id) : null,
             rank: 1, strategy: 'OPTIONS_SELL', price: row.mark, change_24h: row.underlyingChange,
             turnover_usd: n(best.ticker.turnover_usd || best.ticker.turnover), spread_pct: row.spreadPct,
             volume_spike: row.volume, score: row.score, stage: row.stage, side: 'SELL',
@@ -3754,6 +3820,49 @@ export class DeltaEngine {
               definedRiskOnly: settings.options_sell_defined_risk_only !== false }, 'OPTIONS_SELL')
           });
           out.push(row);
+          if (paperOnly && s.ready === true && hedge && credit > 0 && maxRiskPerSpread > 0) {
+            try {
+              const hedgeTicker = chain.find(ticker =>
+                String(ticker?.symbol || '').toUpperCase() === String(hedge.symbol || '').toUpperCase()
+              );
+              const paperResult = await recordPaperOptionEntry({
+                database: db,
+                ticker: best.ticker,
+                hedgeTicker,
+                signal: {
+                  ...s,
+                  ready: s.ready,
+                  hedgeSymbol: hedge.symbol,
+                  hedgeStrike: hedge.strike,
+                  credit,
+                  maxRiskPerSpread
+                },
+                strategy: 'OPTIONS_SELL',
+                dateKey: indiaDateKey(new Date(now))
+              });
+              if (paperResult.recorded) {
+                await this.log('INFO', 'Options PAPER_ONLY defined-risk spread simulated fill recorded from Live bid/ask', {
+                  symbol: row.symbol,
+                  hedgeSymbol: row.hedgeSymbol,
+                  tradeKey: paperResult.tradeKey,
+                  fillType: 'SIMULATED_FILL',
+                  entryCredit: paperResult.row.entry_price,
+                  qty: 1,
+                  maxRiskPerSpread,
+                  pnlUnit: 'OPTION_PREMIUM_POINTS',
+                  executionBlocked: true,
+                  orderRoutingAttempted: false
+                }).catch(() => {});
+              }
+            } catch (error) {
+              await this.log('WARN', 'Options PAPER_ONLY defined-risk spread qualified but simulated fill could not be persisted', {
+                symbol: row.symbol,
+                hedgeSymbol: row.hedgeSymbol,
+                error: String(error?.message || error).slice(0, 220),
+                orderRoutingAttempted: false
+              }).catch(() => {});
+            }
+          }
         }
       }
     }
@@ -4102,7 +4211,7 @@ export class DeltaEngine {
       underlying: String(s.underlyingSymbol || '').toUpperCase().replace(/USD$/, ''),
       strategy: s.strategy,
       symbol: s.symbol,
-      product_id: n(s.ticker?.product_id || s.productId),
+      product_id: s.ticker?.testnet_product_verified === true ? n(s.ticker?.product_id || s.productId) : null,
       option_type: s.optionType,
       strike: s.strike,
       expiry_ms: Math.round(n(s.expiryMs)),
@@ -4175,6 +4284,7 @@ export class DeltaEngine {
         theta: s.theta,
         vega: s.vega,
         fullMarketScan: true,
+        paperOnly: CONFIG.deltaExecutionMode === 'testnet' && s.ticker?.testnet_product_verified !== true,
         goldOptionSettlement: String(s.underlyingSymbol || '').toUpperCase().startsWith('XAUT'),
         analysisReady: s.analysisReady === true,
         hedgeSymbol: s.hedgeSymbol || null,
@@ -4435,10 +4545,146 @@ export class DeltaEngine {
       }
       return false;
     }
+    let riskAccount = account;
+    let riskSettings = settings;
+    let riskOpenPositions = openPositions;
+    let riskTrades = trades;
+    const normalizedSignalSymbol = String(signal?.symbol || '').toUpperCase();
+    const sameSymbolExposure = (Array.isArray(openPositions) ? openPositions : []).filter(position =>
+      String(position?.symbol || position?.product_symbol || '').toUpperCase() === normalizedSignalSymbol &&
+      Math.abs(n(position?.qty ?? position?.size)) > 0
+    );
+    if (sameSymbolExposure.length > 1) {
+      await this.log('ERROR', '[Reversal] Multiple exchange position rows exist for one symbol; reversal aborted', {
+        symbol: normalizedSignalSymbol, count: sameSymbolExposure.length,
+        executionBlocked: true, orderRoutingAttempted: false
+      }).catch(() => {});
+      return false;
+    }
+    if (sameSymbolExposure.length === 1) {
+      const existing = sameSymbolExposure[0];
+      const existingSide = String(existing?.side || (Number(existing?.size) < 0 ? 'SELL' : 'BUY')).toUpperCase();
+      const requestedSide = String(signal?.side || '').toUpperCase();
+      if (existingSide === requestedSide) {
+        await this.log('WARN', '[Reversal] Same-direction duplicate remains blocked', {
+          symbol: normalizedSignalSymbol, side: requestedSide,
+          executionBlocked: true, orderRoutingAttempted: false
+        }).catch(() => {});
+        return false;
+      }
+      if (!['BUY', 'SELL'].includes(existingSide) || !['BUY', 'SELL'].includes(requestedSide)) {
+        await this.log('ERROR', '[Reversal] Existing/requested side is invalid; reversal aborted', {
+          symbol: normalizedSignalSymbol, existingSide, requestedSide,
+          executionBlocked: true, orderRoutingAttempted: false
+        }).catch(() => {});
+        return false;
+      }
+
+      try {
+        const canonicalRows = await db.select(
+          'dd_delta_positions',
+          'symbol=eq.' + encodeURIComponent(normalizedSignalSymbol) +
+            '&status=eq.OPEN&select=id,symbol,qty,side,product_id,strategy,opened_at,client_order_id,entry_order_id,execution_id&limit=10'
+        );
+        if (!Array.isArray(canonicalRows) || canonicalRows.length !== 1) {
+          throw new Error('Expected exactly one canonical OPEN Engine position before reversal');
+        }
+        const canonical = canonicalRows[0];
+        const canonicalStrategy = String(canonical?.strategy || '').toUpperCase();
+        const entryClientId = String(canonical?.client_order_id || '').toUpperCase();
+        const engineClientIdStrategy = entryClientId.startsWith('DDM-') ? 'MOMENTUM'
+          : entryClientId.startsWith('DDS-') ? 'SCALPING' : null;
+        if (!canonical?.id || !['MOMENTUM', 'SCALPING'].includes(canonicalStrategy) ||
+            engineClientIdStrategy !== canonicalStrategy) {
+          throw new Error('Existing position lacks a verified DDM/DDS Engine entry identity; reversal blocked');
+        }
+        const trackedPosition = {
+          ...canonical,
+          origin: 'ENGINE',
+          delta_position_id: String(canonical.id),
+          execution_id: canonical.execution_id || canonical.client_order_id || canonical.entry_order_id || null
+        };
+        const settingsForExit = await db.select(
+          'dd_settings',
+          'id=eq.1&select=exit_lifecycle_deploy_boundary_utc'
+        );
+        const deploymentBoundaryMs = resolveExitLifecycleBoundary(settingsForExit);
+        const closeResult = await closeTrackedPosition({
+          database: db,
+          executor: deltaExecutor,
+          position: trackedPosition,
+          symbol: normalizedSignalSymbol,
+          productId: Number(existing.product_id ?? canonical.product_id),
+          qty: Math.abs(n(existing.qty ?? existing.size)),
+          side: existingSide,
+          reason: 'REVERSAL',
+          deploymentBoundaryMs,
+          enrolledPositionIds: parseEnrolledPositionIds(process.env.EXIT_LIFECYCLE_ENROLLED_POSITION_IDS),
+          now: () => Date.now(),
+          log: (level, message, details) => this.log(level, message, details)
+        });
+        if (closeResult?.positionClosed !== true ||
+            closeResult?.order?.exchange_position_flat !== true) {
+          await this.log('ERROR', '[Reversal] Close did not receive exchange-confirmed zero position; opposite entry aborted', {
+            symbol: normalizedSignalSymbol,
+            positionId: String(canonical.id),
+            closeOrderId: closeResult?.order?.id ?? null,
+            exchangePositionFlat: closeResult?.order?.exchange_position_flat === true,
+            executionBlocked: true,
+            orderRoutingAttempted: true
+          }).catch(() => {});
+          return false;
+        }
+
+        // Re-read all account/risk inputs after the close. Any missing or
+        // malformed response aborts; no stale pre-close snapshot is reused.
+        const [freshSettingsRows, freshPositions, freshAccount, freshTrades] = await Promise.all([
+          db.select('dd_settings', 'id=eq.1&select=*'),
+          deltaExecutor.getOpenPositions(),
+          deltaExecutor.getAccountSnapshot(),
+          db.select('dd_trades', 'order=closed_at.desc&limit=500')
+        ]);
+        if (!Array.isArray(freshSettingsRows) || freshSettingsRows.length !== 1 ||
+            !Array.isArray(freshPositions) || !Array.isArray(freshTrades) ||
+            !freshAccount || !(n(freshAccount.equity) > 0) ||
+            !(n(freshAccount.availableVerified) > 0)) {
+          throw new Error('Fresh post-close settings, positions, account or trade history is incomplete');
+        }
+        if (freshPositions.some(position =>
+          String(position?.symbol || '').toUpperCase() === normalizedSignalSymbol &&
+          Math.abs(n(position?.qty)) > 0
+        )) {
+          throw new Error('Exchange still reports non-zero symbol quantity after reversal close');
+        }
+        riskSettings = freshSettingsRows[0];
+        riskAccount = { equity: n(freshAccount.equity), available: n(freshAccount.availableVerified) };
+        riskOpenPositions = freshPositions;
+        riskTrades = freshTrades;
+        await this.log('INFO', '[Reversal] Exchange flat confirmed; fresh risk snapshot loaded before opposite entry', {
+          symbol: normalizedSignalSymbol,
+          closedPositionId: String(canonical.id),
+          closeOrderId: closeResult.order?.id ?? null,
+          remainingOpenPositions: freshPositions.length,
+          freshEquity: riskAccount.equity,
+          freshAvailable: riskAccount.available,
+          nextSide: requestedSide,
+          executionBlocked: false
+        }).catch(() => {});
+      } catch (error) {
+        await this.log('ERROR', '[Reversal] Safe reversal sequence aborted; no opposite entry submitted', {
+          symbol: normalizedSignalSymbol,
+          reason: String(error?.message || error).slice(0, 260),
+          executionBlocked: true,
+          orderRoutingAttempted: false
+        }).catch(() => {});
+        return false;
+      }
+    }
+
     if (CONFIG.deltaExecutionMode === 'testnet' && ['MOMENTUM', 'SCALPING'].includes(strategy)) {
       const maxSameSide = envInteger('MAX_SAME_SIDE_POSITIONS', 3, 1, 20);
       const correlation = assessCorrelatedEntry({
-        symbol: signal.symbol, side: signal.side, positions: openPositions,
+        symbol: signal.symbol, side: signal.side, positions: riskOpenPositions,
         maxSameSide, aggressive: envBoolean('DELTA_AGGRESSIVE_CORRELATION_MODE', false)
       });
       if (correlation.blocked) {
@@ -4451,7 +4697,7 @@ export class DeltaEngine {
         return false;
       }
     }
-    const gate = await this.riskGate(signal, strategy, account, settings, openPositions, trades);
+    const gate = await this.riskGate(signal, strategy, riskAccount, riskSettings, riskOpenPositions, riskTrades);
     if (gate.reasons.length || !gate.size) return false;
 
     // Testnet is a separate, hardcoded Demo-only execution route. The existing

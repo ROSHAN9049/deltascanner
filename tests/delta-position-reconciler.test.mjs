@@ -105,7 +105,7 @@ test('reconciler refreshes mark and unrealized P&L when quantity and side match'
   assert.ok(!rt.logs.some(row => row.data?.event === 'upl_mismatch'));
 });
 
-test('reconciler logs upl_mismatch when local vanilla P&L has opposite sign', async () => {
+test('reconciler treats Delta unrealized_pnl as canonical and does not calculate a competing local estimate', async () => {
   const rt = runtime({
     openRows: [{
       id: 1,
@@ -114,7 +114,7 @@ test('reconciler logs upl_mismatch when local vanilla P&L has opposite sign', as
       side: 'BUY',
       entry_price: 3871.87,
       current_price: 4000,
-      unrealized_pnl: -6.73
+      unrealized_pnl: 123.45
     }],
     exchangePositions: [{
       symbol: 'XAUTUSD',
@@ -126,12 +126,6 @@ test('reconciler logs upl_mismatch when local vanilla P&L has opposite sign', as
       unrealized_pnl: -6.73
     }]
   });
-  rt.executor.getProductMetadata = async () => ({
-    symbol: 'XAUTUSD',
-    contract_value: '0.001',
-    notional_type: 'vanilla'
-  });
-
   const reconciler = createDeltaPositionReconciler({
     env: rt.env, database: rt.database,
     executor: rt.executor, now: fixedNow
@@ -139,12 +133,9 @@ test('reconciler logs upl_mismatch when local vanilla P&L has opposite sign', as
 
   await reconciler.reconcile();
 
-  const warning = rt.logs.find(row => row.data?.event === 'upl_mismatch');
-  assert.ok(warning);
-  assert.equal(warning.data.symbol, 'XAUTUSD');
-  assert.ok(warning.data.localUpl > 0);
-  assert.equal(warning.data.exchangeUpl, -6.73);
-  assert.ok(warning.data.driftPct > 5);
+  assert.equal(rt.rows[0].unrealized_pnl, -6.73);
+  assert.ok(!rt.logs.some(row => row.data?.event === 'upl_mismatch'));
+  assert.ok(!rt.logs.some(row => row.message.includes('Unrealized P&L mismatch')));
 });
 
 test('reconciler is Testnet-only and never calls the exchange API in disabled mode', async () => {
@@ -505,4 +496,27 @@ test('reconciler prefers the exchange position embedded contract multiplier over
   });
   await reconciler.reconcile();
   assert.ok(!rt.logs.some(row => row.data?.event === 'upl_mismatch'));
+});
+
+
+test('reconciler persists Delta unrealized_pnl as the canonical local value without recomputing it', async () => {
+  const rt = runtime({
+    openRows: [{
+      id: 1, symbol: 'PAXGUSD', qty: 69, side: 'SELL',
+      entry_price: 3606.6, current_price: 3612.27, unrealized_pnl: -0.3913
+    }],
+    exchangePositions: [{
+      symbol: 'PAXGUSD', qty: 69, side: 'SELL',
+      entry_price: 3606.6, current_price: 3612.27, mark_price: 3612.27,
+      unrealized_pnl: -0.45954,
+      unrealized_cashflow: -0.45954,
+      raw: { product: { notional_type: 'vanilla', contract_value: '0.001' } }
+    }]
+  });
+  const reconciler = createDeltaPositionReconciler({
+    env: rt.env, database: rt.database, executor: rt.executor, now: fixedNow
+  });
+  await reconciler.reconcile();
+  assert.equal(rt.rows[0].unrealized_pnl, -0.45954);
+  assert.ok(!rt.logs.some(row => row.message.includes('Unrealized P&L mismatch')));
 });
