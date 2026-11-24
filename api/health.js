@@ -77,7 +77,7 @@ export default async function handler(req, res) {
     const wallElapsedUs = Number(cpuAt - previousCpuAt) / 1000;
     const cpuElapsedUs = Math.max(0, cpuNow.user - previousCpuUsage.user) +
       Math.max(0, cpuNow.system - previousCpuUsage.system);
-    const workerCpuPercent = wallElapsedUs > 0
+    const apiProcessCpuPercent = wallElapsedUs > 0
       ? Number((cpuElapsedUs / wallElapsedUs * 100).toFixed(2)) : null;
     previousCpuUsage = cpuNow;
     previousCpuAt = cpuAt;
@@ -108,7 +108,7 @@ export default async function handler(req, res) {
       exchangeHealthy,
       databaseHealthy,
       databasePingMs: settingsResult.durationMs ?? null,
-      workerCpuPercent,
+      apiProcessCpuPercent,
       workerMemoryRssBytes: workerMemory.rss,
       workerHeapUsedBytes: workerMemory.heapUsed,
       databaseError: databaseHealthy ? null : 'Supabase worker-state read unavailable; execution health is UNKNOWN',
