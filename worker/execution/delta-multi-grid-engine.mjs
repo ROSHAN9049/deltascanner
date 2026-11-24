@@ -320,8 +320,7 @@ export async function manageDeltaTestnetMultiGrid({
   for (const symbol of poolSymbols) {
     const config = settings.grid_symbol_configs?.[symbol] || {};
     const previous = symbolStates[symbol] || {};
-    const paused = config.paused === true;
-    if (paused) manuallyPaused.add(symbol);
+    const manuallyPausedSymbol = config.paused === true;
     const ownership = ownerBySymbol.get(symbol);
     const hasGridDb = hasDatabaseGridPosition(symbol);
     const localState = symbolStates[symbol] || previous;
@@ -336,18 +335,31 @@ export async function manageDeltaTestnetMultiGrid({
 
     const metrics = gridSymbolMarketMetrics(symbol, {
       ticker: tickers[symbol] || {},
-      config
+      config,
+      candles: candlesBySymbol[symbol] || [],
+      settings
     });
+    const volatilityPaused = metrics.pauseNewEntries === true;
+    const paused = manuallyPausedSymbol || volatilityPaused;
+    if (manuallyPausedSymbol) manuallyPaused.add(symbol);
     const lower = Number(config.lowerPrice ?? config.grid_lower_price ?? 0);
     const upper = Number(config.upperPrice ?? config.grid_upper_price ?? 0);
     const rangeReady = lower > 0 && upper > lower;
     const atrStatus = config.atr_snapshot_status ?? config.atrSnapshotStatus;
     const productReady = Boolean(products[symbol]) && freshnessBySymbol[symbol] !== false;
     const dataReady = freshnessBySymbol[symbol] === true && productReady && rangeReady;
-    const ready = dataReady && ['READY', 'FALLBACK_3PCT'].includes(String(atrStatus || ''));
+    const ready = dataReady && metrics.qualified === true &&
+      ['READY', 'FALLBACK_3PCT'].includes(String(atrStatus || ''));
     metricsBySymbol.set(symbol, { ...metrics, rangeReady, dataReady, ready, atrStatus });
 
-    const currentState = symbolStates[symbol] || previous;
+    let currentState = symbolStates[symbol] || previous;
+    if (currentState.pausedReason === 'GRID_VOLATILITY_SPIKE' && !volatilityPaused) {
+      currentState = { ...currentState, pausedReason: null, status: 'PENDING' };
+      symbolStates[symbol] = currentState;
+      await database.log('INFO', '[GRID] Volatility normalized; Grid may resume after normal eligibility checks', {
+        symbol, reason: 'GRID_VOLATILITY_NORMALIZED'
+      }).catch(() => {});
+    }
     if (ownership.blocked) {
       if (ownership.owner === 'FUTURES') futuresBlocked.add(symbol);
       else unknownBlocked.add(symbol);
@@ -392,11 +404,15 @@ export async function manageDeltaTestnetMultiGrid({
       const needsManagement = hasGridExposure || hasPending;
       symbolStates[symbol] = {
         ...(symbolStates[symbol] || currentState),
-        status: 'PAUSED', pausedReason: null, skipReason: 'MANUAL_PAUSE',
+        status: 'PAUSED',
+        pausedReason: volatilityPaused ? 'GRID_VOLATILITY_SPIKE' : null,
+        skipReason: manuallyPausedSymbol ? 'MANUAL_PAUSE' : 'GRID_VOLATILITY_SPIKE',
         futuresBlocker: null, lastTickAt: at
       };
       symbolStatuses[symbol] = {
-        status: 'PAUSED', reason: 'MANUAL_PAUSE', atrReady: metrics.atrReady,
+        status: 'PAUSED',
+        reason: manuallyPausedSymbol ? 'MANUAL_PAUSE' : 'GRID_VOLATILITY_SPIKE',
+        atrReady: metrics.atrReady,
         turnover24hUsd: metrics.turnover24hUsd, spreadPct: metrics.spreadPct
       };
       if (needsManagement) mustManage.add(symbol);
@@ -586,9 +602,10 @@ export async function manageDeltaTestnetMultiGrid({
       grid_state: symbolState,
       grid_lower_price: lowerPrice,
       grid_upper_price: upperPrice,
-      grid_levels_count: levelsCount,
+      grid_levels_count: metricsBySymbol.get(symbol)?.dynamicLevelsCount || levelsCount,
       grid_atr: Number(config.atr) || 0,
-      grid_enabled: settings.grid_enabled === true && config.paused !== true,
+      grid_enabled: settings.grid_enabled === true && config.paused !== true &&
+        symbolStates[symbol]?.pausedReason !== 'GRID_VOLATILITY_SPIKE',
       grid_max_positions: 1,
       max_grid_positions: limit,
       maxGridPositions: limit,
