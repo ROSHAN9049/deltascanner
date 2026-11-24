@@ -52,7 +52,7 @@ export default function OptionsTradeHistory({ positions = [], orders = [], accou
         {['ALL', 'OPEN', 'CLOSED'].map(key => <button key={key} type="button" className={filter === key ? 'active' : ''} onClick={() => setFilter(key)}>{key === 'ALL' ? 'View All' : key}</button>)}
       </div>
       <div className="tablewrap"><table><thead><tr>
-        <th>DATE / TIME</th><th>SYMBOL</th><th>SIDE</th><th>ENTRY PRICE</th><th>EXIT PRICE</th><th>QTY</th><th>SL / TP / MAX RISK</th><th>STATUS</th><th>PNL · PREMIUM PTS</th><th>ORDER ID</th>
+        <th>DATE / TIME</th><th>SYMBOL</th><th>SIDE</th><th>ENTRY PRICE</th><th>EXIT PRICE</th><th>QTY</th><th>SL / TP / MAX RISK</th><th>STATUS</th><th>PNL (USD / PREMIUM PTS)</th><th>ORDER ID</th>
       </tr></thead><tbody>
         {visible.map((row, index) => <tr key={row.position_key || row.entry_order_id || index}>
           <td>{row.opened_at ? new Date(row.opened_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : value(row.updated_at)}</td>
