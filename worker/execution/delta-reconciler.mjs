@@ -94,70 +94,19 @@ export function createDeltaPositionReconciler({
     }
   }
 
-  async function logUplMismatchIfNeeded(position) {
-    const entryPrice = numberOrNull(position?.entry_price);
-    // Delta calculates vanilla futures uPnL from mark/fair price. Never compare
-    // it with a last-traded/current-price fallback when mark_price is absent.
-    const markPrice = numberOrNull(position?.mark_price);
+  async function logExchangePnlSnapshot(position) {
+    // Delta's unrealized_pnl is the authoritative mark-to-market value. Fees
+    // and unrealized_cashflow are separate exchange fields; never recompute or
+    // compare a second local estimate and present it as the canonical P&L.
     const exchangeUpl = numberOrNull(position?.unrealized_pnl);
-    const qty = numberOrNull(position?.qty);
-    const side = stringValue(position?.side).toUpperCase();
-
-    if (
-      entryPrice === null || markPrice === null ||
-      exchangeUpl === null || qty === null ||
-      qty <= 0 || !['BUY', 'SELL'].includes(side) ||
-      (!(position?.raw?.product || position?.product) &&
-        typeof executor.getProductMetadata !== 'function')
-    ) return;
-
-    // Delta's margined-position response embeds the product specification.
-    // Prefer that same-response contract multiplier over a separately cached
-    // catalogue value; a stale/different catalogue multiplier creates false
-    // P&L drift warnings. Fees/commissions are reported separately by Delta and
-    // are not part of futures unrealized_pnl/unrealized_cashflow.
-    let product = position?.raw?.product || position?.product || null;
-    const embeddedContractValue = numberOrNull(product?.contract_value);
-    const embeddedNotionalType = stringValue(product?.notional_type).toLowerCase();
-    if (!(embeddedContractValue > 0) || !embeddedNotionalType) {
-      try {
-        product = await executor.getProductMetadata(position.symbol);
-      } catch {
-        // Diagnostics must not interrupt exchange-authoritative refresh.
-        return;
-      }
+    if (exchangeUpl === null) {
+      await writeLog('WARN', '[Reconciler] Delta position snapshot omitted unrealized_pnl; local P&L remains unavailable', {
+        event: 'exchange_upl_missing',
+        symbol: position?.symbol || null,
+        markPrice: numberOrNull(position?.mark_price),
+        unrealizedCashflow: numberOrNull(position?.unrealized_cashflow)
+      });
     }
-
-    if (stringValue(product?.notional_type).toLowerCase() !== 'vanilla') return;
-    const contractValue = numberOrNull(product?.contract_value);
-    if (contractValue === null || contractValue <= 0) return;
-
-    const sideSign = side === 'BUY' ? 1 : -1;
-    const localUpl = (markPrice - entryPrice) * qty * contractValue * sideSign;
-    const scale = Math.max(Math.abs(localUpl), Math.abs(exchangeUpl));
-    if (scale < 0.01) return;
-
-    const signMismatch = localUpl * exchangeUpl < 0;
-    const driftPct = Math.abs(localUpl - exchangeUpl) / scale * 100;
-    if (!signMismatch && driftPct <= 5) return;
-
-    await writeLog('WARN', '[Reconciler] Unrealized P&L mismatch against local calculation', {
-      event: 'upl_mismatch',
-      symbol: position.symbol,
-      localUpl,
-      exchangeUpl,
-      driftPct: Number(driftPct.toFixed(2)),
-      contractValue,
-      impliedContractValue: Number((Math.abs(exchangeUpl) /
-        Math.max(1e-12, Math.abs(markPrice - entryPrice) * qty)).toFixed(8)),
-      indexPrice: numberOrNull(position?.index_price),
-      unrealizedCashflow: numberOrNull(position?.unrealized_cashflow),
-      markPriceSource: 'exchange_mark_price',
-      entryPrice,
-      markPrice,
-      qty,
-      side
-    });
   }
 
   async function updateOpenRow(id, patch) {
@@ -322,7 +271,7 @@ export function createDeltaPositionReconciler({
           updated_at: timestamp
         });
 
-        await logUplMismatchIfNeeded(exchangePosition);
+        await logExchangePnlSnapshot(exchangePosition);
       }
 
       // Hydrate an exchange-open position if the DB has no OPEN row for it.
