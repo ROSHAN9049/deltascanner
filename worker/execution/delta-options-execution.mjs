@@ -1966,6 +1966,34 @@ export function createDeltaOptionsExecution({
           }).catch(() => {});
           continue;
         }
+        if (exchangeAlreadyFlat) {
+          const updatedAt = new Date(now()).toISOString();
+          await database.update(
+            'dd_option_positions',
+            'position_key=eq.' + encodeURIComponent(position.position_key) +
+              '&status=eq.' + encodeURIComponent(position.status),
+            {
+              status: 'RECONCILIATION_REQUIRED',
+              exit_reason: 'NO_POSITION_FOR_REDUCE_ONLY_RECONCILIATION_REQUIRED',
+              updated_at: updatedAt,
+              raw: {
+                ...(position.raw || {}),
+                reduce_only_rejected_no_position: true,
+                exit_fill_reconciliation_pending: true,
+                external_close_error_code: 'no_position_for_reduce_only',
+                external_close_observed_at: updatedAt
+              }
+            }
+          );
+          await logExecutor('WARN', '[OptionsExitMonitor] No-position rejection parked the Options spread for reconciliation; no further blind exit retries', {
+            positionKey: position.position_key,
+            symbol: position.symbol,
+            strategy: position.strategy,
+            priorStatus: position.status,
+            status: 'RECONCILIATION_REQUIRED'
+          }).catch(() => {});
+          continue;
+        }
         await logExecutor('ERROR', '[OptionsExitMonitor] Position exit check failed; position remains tracked', {
           positionKey: position.position_key, symbol: position.symbol,
           strategy: position.strategy, status: position.status,
