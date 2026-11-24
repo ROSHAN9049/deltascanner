@@ -169,7 +169,6 @@ export async function closeTrackedPosition({
       expectedProductId: Number.isFinite(requestedProductId) ? requestedProductId : null,
       strategy: stringOrEmpty(position.strategy).toUpperCase()
     });
-    const orderState = stringOrEmpty(order?.state).toUpperCase();
     const confirmedFilledAndFlat = order?.exchange_position_flat === true;
     if (confirmedFilledAndFlat) {
       await database.update(
