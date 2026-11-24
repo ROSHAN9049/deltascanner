@@ -9,7 +9,8 @@ const HEDGE = 'C-BTC-82000-311226';
 function harness({
   enabled = true, shortState = 'open', hedgeFilled = true, hedgePartial = false,
   strategy = 'OPTIONS_SELL', manualOverrideEnabled = false, candidatePatch = {}, settingsPatch = {},
-  closedOptionPositions = [], bracketEcho = true, bracketChildren = true
+  closedOptionPositions = [], bracketEcho = true, bracketChildren = true,
+  getRecentCloseDetails = null
 } = {}) {
   const env = {
     DELTA_EXECUTION_MODE: 'testnet',
@@ -90,6 +91,11 @@ function harness({
         return canonicalRows;
       }
       if (table === 'dd_option_positions') {
+        const key = query.match(/position_key=eq.([^&]+)/)?.[1];
+        if (key) {
+          const decoded = decodeURIComponent(key);
+          return [...optionRows, ...closedOptionPositions].filter(row => row.position_key === decoded);
+        }
         if (query.includes('status=eq.CLOSED')) return closedOptionPositions;
         if (query.includes('status=in.(')) {
           return optionRows.filter(row =>
@@ -135,9 +141,11 @@ function harness({
     async update(table, query, patch) {
       if (table === 'dd_option_positions') {
         const key = query.match(/position_key=eq.([^&]+)/)?.[1];
-        const row = optionRows.find(item => item.position_key === decodeURIComponent(key || '') &&
+        const row = [...optionRows, ...closedOptionPositions].find(item => item.position_key === decodeURIComponent(key || '') &&
           (!query.includes('status=eq.ENTRY_PENDING') || item.status === 'ENTRY_PENDING') &&
-          (!query.includes('status=eq.OPEN') || item.status === 'OPEN'));
+          (!query.includes('status=eq.OPEN') || item.status === 'OPEN') &&
+          (!query.includes('status=eq.CLOSED') || item.status === 'CLOSED') &&
+          (!query.includes('realized_pnl_verified=eq.false') || item.realized_pnl_verified === false));
         if (row) Object.assign(row, patch);
         return row ? [{ ...row }] : [];
       }
@@ -311,7 +319,8 @@ function harness({
     buildClientOrderId: (value, prefix, symbol) =>
       String(value || prefix + '-' + symbol).replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 32),
     now: () => NOW,
-    isMarketTickFresh: () => true
+    isMarketTickFresh: () => true,
+    getRecentCloseDetails
   });
   return { executor, apiCalls, storedOrders, optionRows, logs };
 }
@@ -692,4 +701,53 @@ test('Demo manual quality override logs missing daily IV Percentile but keeps th
   assert.equal(preview.executionAllowed, true);
   assert.ok(logs.some(args => args[2]?.qualityFiltersObserved?.some(filter => filter.code === 'IV_PCTL_UNAVAILABLE_DEMO_LOG_ONLY')));
   assert.equal(apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false);
+});
+
+
+test('closed unverified Options positions reconcile exact exit fills from authenticated Demo history', async () => {
+  const closed = {
+    position_key: 'closed-option-1',
+    symbol: SHORT,
+    strategy: 'OPTIONS_BUY',
+    side: 'BUY',
+    qty: 1,
+    contract_size: 0.001,
+    entry_premium: 900,
+    entry_order_id: '12345',
+    opened_at: new Date(NOW - 60_000).toISOString(),
+    closed_at: new Date(NOW).toISOString(),
+    status: 'CLOSED',
+    realized_pnl: null,
+    realized_pnl_verified: false,
+    raw: {}
+  };
+  let lookupArgs = null;
+  const { executor, logs } = harness({
+    strategy: 'OPTIONS_BUY',
+    closedOptionPositions: [closed],
+    getRecentCloseDetails: async (...args) => {
+      lookupArgs = args;
+      return {
+        exit_price: 1100,
+        realized_pnl: 0.2,
+        fees: 0.001,
+        fee_currency: 'USD',
+        close_order_id: '98765',
+        client_order_id: 'close-client-id',
+        fill_type: 'normal',
+        order_type: 'market_order',
+        close_fill_history_complete: true
+      };
+    }
+  });
+  const result = await executor.monitorOptionsExits();
+  assert.equal(result.closeFillReconciliation.scanned, 1);
+  assert.equal(result.closeFillReconciliation.reconciled, 1);
+  assert.equal(lookupArgs[0], SHORT);
+  assert.equal(lookupArgs[2].product_id, 101);
+  assert.equal(closed.short_exit_premium, 1100);
+  assert.equal(closed.realized_pnl, 0.2);
+  assert.equal(closed.realized_pnl_verified, true);
+  assert.equal(closed.raw.exit_order_id, '98765');
+  assert.ok(logs.some(row => row[1].includes('Externally closed Option fill reconciled')));
 });
