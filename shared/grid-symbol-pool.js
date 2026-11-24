@@ -1,3 +1,4 @@
+import { screenGridMarket } from './grid-market-screener.js';
 const text = value => String(value ?? '').trim();
 const n = value => Number.isFinite(Number(value)) ? Number(value) : 0;
 
@@ -66,20 +67,16 @@ export function classifyGridSymbolOwnership({
   return { owner: 'NONE', blocked: false, position: null };
 }
 
-export function gridSymbolMarketMetrics(symbol, { ticker = {}, config = {} } = {}) {
-  const bid = n(ticker?.quotes?.best_bid ?? ticker?.best_bid ?? ticker?.bid);
-  const ask = n(ticker?.quotes?.best_ask ?? ticker?.best_ask ?? ticker?.ask);
-  const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : 0;
-  const explicitSpread = n(ticker?.spread_pct);
-  const spreadPct = explicitSpread > 0 ? explicitSpread
-    : mid > 0 && ask >= bid ? (ask - bid) / mid * 100 : null;
+export function gridSymbolMarketMetrics(symbol, { ticker = {}, config = {}, candles = [], settings = {} } = {}) {
+  const screener = screenGridMarket({ ticker, config, candles, settings });
   return {
     symbol: text(symbol).toUpperCase(),
     atrReady: (config?.atr_snapshot_status ?? config?.atrSnapshotStatus) === 'READY' &&
       n(config?.atr_14d ?? config?.atr) > 0 &&
       n(config?.atr_pct ?? config?.atrPct) > 0,
-    turnover24hUsd: n(ticker?.turnover_usd ?? ticker?.turnover),
-    spreadPct
+    turnover24hUsd: screener.turnover24hUsd,
+    spreadPct: screener.spreadPct,
+    ...screener
   };
 }
 
