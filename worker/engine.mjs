@@ -4493,10 +4493,141 @@ export class DeltaEngine {
       }
       return false;
     }
+    let riskAccount = account;
+    let riskSettings = settings;
+    let riskOpenPositions = openPositions;
+    let riskTrades = trades;
+    const normalizedSignalSymbol = String(signal?.symbol || '').toUpperCase();
+    const sameSymbolExposure = (Array.isArray(openPositions) ? openPositions : []).filter(position =>
+      String(position?.symbol || position?.product_symbol || '').toUpperCase() === normalizedSignalSymbol &&
+      Math.abs(n(position?.qty ?? position?.size)) > 0
+    );
+    if (sameSymbolExposure.length > 1) {
+      await this.log('ERROR', '[Reversal] Multiple exchange position rows exist for one symbol; reversal aborted', {
+        symbol: normalizedSignalSymbol, count: sameSymbolExposure.length,
+        executionBlocked: true, orderRoutingAttempted: false
+      }).catch(() => {});
+      return false;
+    }
+    if (sameSymbolExposure.length === 1) {
+      const existing = sameSymbolExposure[0];
+      const existingSide = String(existing?.side || (Number(existing?.size) < 0 ? 'SELL' : 'BUY')).toUpperCase();
+      const requestedSide = String(signal?.side || '').toUpperCase();
+      if (existingSide === requestedSide) {
+        await this.log('WARN', '[Reversal] Same-direction duplicate remains blocked', {
+          symbol: normalizedSignalSymbol, side: requestedSide,
+          executionBlocked: true, orderRoutingAttempted: false
+        }).catch(() => {});
+        return false;
+      }
+      if (!['BUY', 'SELL'].includes(existingSide) || !['BUY', 'SELL'].includes(requestedSide)) {
+        await this.log('ERROR', '[Reversal] Existing/requested side is invalid; reversal aborted', {
+          symbol: normalizedSignalSymbol, existingSide, requestedSide,
+          executionBlocked: true, orderRoutingAttempted: false
+        }).catch(() => {});
+        return false;
+      }
+
+      try {
+        const canonicalRows = await db.select(
+          'dd_delta_positions',
+          'symbol=eq.' + encodeURIComponent(normalizedSignalSymbol) +
+            '&status=eq.OPEN&select=id,symbol,qty,side,product_id,strategy,opened_at,client_order_id,entry_order_id,execution_id&limit=10'
+        );
+        if (!Array.isArray(canonicalRows) || canonicalRows.length !== 1) {
+          throw new Error('Expected exactly one canonical OPEN Engine position before reversal');
+        }
+        const canonical = canonicalRows[0];
+        const canonicalStrategy = String(canonical?.strategy || '').toUpperCase();
+        if (!canonical?.id || !['MOMENTUM', 'SCALPING'].includes(canonicalStrategy)) {
+          throw new Error('Existing position is not a uniquely tracked Engine Momentum/Scalping position');
+        }
+        const trackedPosition = {
+          ...canonical,
+          origin: 'ENGINE',
+          delta_position_id: String(canonical.id),
+          execution_id: canonical.execution_id || canonical.client_order_id || canonical.entry_order_id || null
+        };
+        const settingsForExit = await db.select(
+          'dd_settings',
+          'id=eq.1&select=exit_lifecycle_deploy_boundary_utc'
+        );
+        const deploymentBoundaryMs = resolveExitLifecycleBoundary(settingsForExit);
+        const closeResult = await closeTrackedPosition({
+          database: db,
+          executor: deltaExecutor,
+          position: trackedPosition,
+          symbol: normalizedSignalSymbol,
+          productId: Number(existing.product_id ?? canonical.product_id),
+          qty: Math.abs(n(existing.qty ?? existing.size)),
+          side: existingSide,
+          reason: 'REVERSAL',
+          deploymentBoundaryMs,
+          enrolledPositionIds: parseEnrolledPositionIds(process.env.EXIT_LIFECYCLE_ENROLLED_POSITION_IDS),
+          now: () => Date.now(),
+          log: (level, message, details) => this.log(level, message, details)
+        });
+        if (closeResult?.positionClosed !== true ||
+            closeResult?.order?.exchange_position_flat !== true) {
+          await this.log('ERROR', '[Reversal] Close did not receive exchange-confirmed zero position; opposite entry aborted', {
+            symbol: normalizedSignalSymbol,
+            positionId: String(canonical.id),
+            closeOrderId: closeResult?.order?.id ?? null,
+            exchangePositionFlat: closeResult?.order?.exchange_position_flat === true,
+            executionBlocked: true,
+            orderRoutingAttempted: true
+          }).catch(() => {});
+          return false;
+        }
+
+        // Re-read all account/risk inputs after the close. Any missing or
+        // malformed response aborts; no stale pre-close snapshot is reused.
+        const [freshSettingsRows, freshPositions, freshAccount, freshTrades] = await Promise.all([
+          db.select('dd_settings', 'id=eq.1&select=*'),
+          deltaExecutor.getOpenPositions(),
+          deltaExecutor.getAccountSnapshot(),
+          db.select('dd_trades', 'order=closed_at.desc&limit=500')
+        ]);
+        if (!Array.isArray(freshSettingsRows) || freshSettingsRows.length !== 1 ||
+            !Array.isArray(freshPositions) || !Array.isArray(freshTrades) ||
+            !freshAccount || !(n(freshAccount.equity) > 0) || !(n(freshAccount.available) >= 0)) {
+          throw new Error('Fresh post-close settings, positions, account or trade history is incomplete');
+        }
+        if (freshPositions.some(position =>
+          String(position?.symbol || '').toUpperCase() === normalizedSignalSymbol &&
+          Math.abs(n(position?.qty)) > 0
+        )) {
+          throw new Error('Exchange still reports non-zero symbol quantity after reversal close');
+        }
+        riskSettings = freshSettingsRows[0];
+        riskAccount = { equity: n(freshAccount.equity), available: n(freshAccount.available) };
+        riskOpenPositions = freshPositions;
+        riskTrades = freshTrades;
+        await this.log('INFO', '[Reversal] Exchange flat confirmed; fresh risk snapshot loaded before opposite entry', {
+          symbol: normalizedSignalSymbol,
+          closedPositionId: String(canonical.id),
+          closeOrderId: closeResult.order?.id ?? null,
+          remainingOpenPositions: freshPositions.length,
+          freshEquity: riskAccount.equity,
+          freshAvailable: riskAccount.available,
+          nextSide: requestedSide,
+          executionBlocked: false
+        }).catch(() => {});
+      } catch (error) {
+        await this.log('ERROR', '[Reversal] Safe reversal sequence aborted; no opposite entry submitted', {
+          symbol: normalizedSignalSymbol,
+          reason: String(error?.message || error).slice(0, 260),
+          executionBlocked: true,
+          orderRoutingAttempted: false
+        }).catch(() => {});
+        return false;
+      }
+    }
+
     if (CONFIG.deltaExecutionMode === 'testnet' && ['MOMENTUM', 'SCALPING'].includes(strategy)) {
       const maxSameSide = envInteger('MAX_SAME_SIDE_POSITIONS', 3, 1, 20);
       const correlation = assessCorrelatedEntry({
-        symbol: signal.symbol, side: signal.side, positions: openPositions,
+        symbol: signal.symbol, side: signal.side, positions: riskOpenPositions,
         maxSameSide, aggressive: envBoolean('DELTA_AGGRESSIVE_CORRELATION_MODE', false)
       });
       if (correlation.blocked) {
@@ -4509,7 +4640,7 @@ export class DeltaEngine {
         return false;
       }
     }
-    const gate = await this.riskGate(signal, strategy, account, settings, openPositions, trades);
+    const gate = await this.riskGate(signal, strategy, riskAccount, riskSettings, riskOpenPositions, riskTrades);
     if (gate.reasons.length || !gate.size) return false;
 
     // Testnet is a separate, hardcoded Demo-only execution route. The existing
