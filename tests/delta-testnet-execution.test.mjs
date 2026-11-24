@@ -198,6 +198,7 @@ test('bracket entry is a Testnet market order with exchange-side SL/TP and signe
     strategy: 'MOMENTUM', clientOrderId: 'DDM-XAUTUSD-TEST-1'
   });
   assert.equal(order.id, 123);
+  assert.equal(order.exchange_position_flat, true);
   const post = runtime.httpCalls.find(call => new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST');
   assert.ok(post);
   assert.equal(new URL(post.url).origin, DELTA_TESTNET_REST_BASE);
@@ -1595,7 +1596,8 @@ test('E-STOP blocks entries but permits closePosition to submit a reduce-only ex
       entry_price: '60000',
       mark_price: '60000',
       unrealized_pnl: '0'
-    }]
+    }],
+    positionsAfterFill: []
   });
   const executor = createDeltaExecutor({
     env: demoEnv(),
