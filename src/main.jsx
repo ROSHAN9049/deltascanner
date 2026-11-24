@@ -1016,7 +1016,9 @@ function OptionTable({
       '1h ' + String(d.marketRegime1h || 'UNKNOWN') +
         (safeNum(d.marketRegime1hAdx) === null ? '' : ' ADX ' + safeNum(d.marketRegime1hAdx).toFixed(1))
     ].join(' · ');
-    const candidateVerified = s.stage === 'CONFIRMED' && d.analysisReady === true &&
+    const paperOnly = d.paperOnly === true;
+    const candidateVerified = !paperOnly && safeNum(s.product_id) !== null && safeNum(s.product_id) > 0 &&
+      s.stage === 'CONFIRMED' && d.analysisReady === true &&
       (!hasSellRiskColumns || protectiveLegConfirmed);
     const manualOverrideCandidate = isManualOverrideOptionCandidate({
       row: s,
@@ -1029,7 +1031,7 @@ function OptionTable({
       requiresHedge: hasSellRiskColumns
     });
     const reasonText = fmtReasons(s.blocked_reasons);
-    const statusLocked = String(reasonText).toLowerCase().includes('execution') ||
+    const statusLocked = paperOnly || String(reasonText).toLowerCase().includes('execution') ||
       String(reasonText).toLowerCase().includes('route unavailable') ||
       String(reasonText).toLowerCase().includes('defined-risk hedge unavailable');
     return <tr key={s.id || s.symbol + s.strategy + s.captured_at}>
@@ -1057,11 +1059,11 @@ function OptionTable({
         <td className="warn">{protectiveLegConfirmed ? 'SPREAD LEG: ' + d.hedgeSymbol + ' · STRIKE ' + hedgeStrike : 'PROTECTIVE LEG: NOT CONFIRMED'}</td>
         <td>{maxLossAvailable ? fmtRawPrice(rawMaxLoss, 2) : 'MAX LOSS: NOT AVAILABLE — SPREAD NOT CONFIRMED'}</td>
       </> : null}
-      <td className={statusLocked ? 'warn' : s.ready ? 'up' : 'muted'}>{statusLocked ? 'REVIEW REQUIRED' : s.ready ? 'READY' : 'ANALYSIS ONLY'}</td>
+      <td className={statusLocked ? 'warn' : s.ready ? 'up' : 'muted'}>{paperOnly ? 'PAPER_ONLY · NO ORDER' : statusLocked ? 'REVIEW REQUIRED' : s.ready ? 'READY' : 'ANALYSIS ONLY'}</td>
       <td><button className="action" type="button"
-        disabled={actionDisabled || (!candidateVerified && !manualOverrideCandidate) || !s.symbol}
+        disabled={actionDisabled || paperOnly || (!candidateVerified && !manualOverrideCandidate) || !s.symbol}
         onClick={() => onPreview(manualOverrideCandidate && !candidateVerified ? { ...s, manualTestOverride: true } : s)}>
-        {candidateVerified ? 'PREVIEW TESTNET' : manualOverrideCandidate ? 'TEST EXECUTE' : 'NOT VERIFIED'}
+        {paperOnly ? 'PAPER ONLY' : candidateVerified ? 'PREVIEW TESTNET' : manualOverrideCandidate ? 'TEST EXECUTE' : 'NOT VERIFIED'}
       </button></td>
     </tr>;
   })}{!rows.length ? <tr><td colSpan={columnCount}>{emptyMessage} No missing values are substituted with zero.</td></tr> : null}</tbody></table></div>;
