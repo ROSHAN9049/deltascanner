@@ -1612,7 +1612,8 @@ export function createDeltaExecutor({
     logExecutor,
     buildClientOrderId,
     now,
-    isMarketTickFresh
+    isMarketTickFresh,
+    getRecentCloseDetails
   });
 
   async function previewOptionsOrder(input) {
