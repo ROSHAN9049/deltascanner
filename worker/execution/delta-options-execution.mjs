@@ -1906,7 +1906,9 @@ export function createDeltaOptionsExecution({
           continue;
         }
         const quoteResponse = await request('GET', '/v2/tickers/' + encodeURIComponent(position.symbol));
-        const ticker = quoteResponse?.result ?? quoteResponse;
+        const ticker = Array.isArray(quoteResponse?.result)
+          ? quoteResponse.result.find(row => clean(row?.symbol).toUpperCase() === clean(position.symbol).toUpperCase())
+          : quoteResponse?.result ?? quoteResponse;
         if (!ticker || clean(ticker.symbol).toUpperCase() !== clean(position.symbol).toUpperCase()) throw new Error('Options exit quote did not match the open contract');
         const bid = positive(ticker?.quotes?.best_bid ?? ticker?.best_bid ?? ticker?.bid);
         const ask = positive(ticker?.quotes?.best_ask ?? ticker?.best_ask ?? ticker?.ask);
