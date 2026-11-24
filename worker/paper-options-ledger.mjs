@@ -5,6 +5,10 @@ const positive = value => {
 };
 const ltpOf = ticker =>
   positive(ticker?.close) ?? positive(ticker?.last_price) ?? positive(ticker?.mark_price);
+const bidOf = ticker =>
+  positive(ticker?.quotes?.best_bid) ?? positive(ticker?.best_bid) ?? positive(ticker?.bid);
+const askOf = ticker =>
+  positive(ticker?.quotes?.best_ask) ?? positive(ticker?.best_ask) ?? positive(ticker?.ask);
 
 function optionIntrinsic(optionType, strike, spot) {
   if (optionType === 'CALL') return Math.max(0, spot - strike);
@@ -46,10 +50,10 @@ export async function recordPaperOptionEntry({
 
   if (isSpread) {
     hedgeSymbol = clean(hedgeTicker?.symbol).toUpperCase();
-    const shortBid = positive(ticker?.bid);
-    const shortAsk = positive(ticker?.ask);
-    const hedgeBid = positive(hedgeTicker?.bid);
-    hedgeEntryPrice = positive(hedgeTicker?.ask);
+    const shortBid = bidOf(ticker);
+    const shortAsk = askOf(ticker);
+    const hedgeBid = bidOf(hedgeTicker);
+    hedgeEntryPrice = askOf(hedgeTicker);
     spreadWidth = Math.abs((strike || 0) - Number(hedgeTicker?.strike_price || signal?.hedgeStrike || 0));
     const credit = positive(signal?.credit);
     const maxRisk = positive(signal?.maxRiskPerSpread);
@@ -169,8 +173,8 @@ export async function refreshPaperOptionTrades({
 
     if (strategy === 'OPTIONS_SELL') {
       const hedgeTicker = tickerMap.get(clean(row.hedge_symbol).toUpperCase());
-      const shortAsk = positive(ticker.ask);
-      const hedgeBid = positive(hedgeTicker?.bid);
+      const shortAsk = askOf(ticker);
+      const hedgeBid = bidOf(hedgeTicker);
       if (shortAsk === null || hedgeBid === null) continue;
       currentPrice = Math.max(0, shortAsk - hedgeBid);
       if (expired) {
