@@ -217,7 +217,7 @@ function App() {
   const orderTelemetry = deltaTestnetOrders.map(row => {
     let raw = row?.raw;
     if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch { raw = {}; } }
-    return { at: row?.updated_at || row?.created_at || '', latency: Number(raw?.signal_to_order_ack_ms), slippage: Number(raw?.slippage_bps), source: raw?.latency_source };
+    return { at: row?.updated_at || row?.created_at || '', latency: raw?.signal_to_order_ack_ms == null ? NaN : Number(raw.signal_to_order_ack_ms), slippage: raw?.slippage_bps == null ? NaN : Number(raw.slippage_bps), source: raw?.latency_source };
   }).filter(row => Number.isFinite(row.latency) && row.latency >= 0)
     .sort((a, b) => Date.parse(b.at || 0) - Date.parse(a.at || 0));
   const latestOrderLatencyMs = orderTelemetry[0]?.latency ?? null;
