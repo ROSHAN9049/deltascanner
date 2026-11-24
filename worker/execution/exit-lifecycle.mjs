@@ -95,7 +95,7 @@ export async function closeTrackedPosition({
   if (!normalizedSymbol || !/^[A-Z0-9]+USD$/.test(normalizedSymbol)) {
     throw new Error('Invalid perpetual symbol for automatic exit');
   }
-  if (!['TIMEOUT', 'STOP_LOSS', 'TAKE_PROFIT'].includes(closeReason)) {
+  if (!['TIMEOUT', 'STOP_LOSS', 'TAKE_PROFIT', 'REVERSAL'].includes(closeReason)) {
     throw new Error('Unsupported automatic close reason');
   }
   if (position?.origin !== 'ENGINE' || !['MOMENTUM', 'SCALPING'].includes(stringOrEmpty(position?.strategy).toUpperCase())) {
