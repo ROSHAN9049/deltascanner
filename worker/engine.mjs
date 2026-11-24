@@ -4250,7 +4250,8 @@ export class DeltaEngine {
       try {
         return await deltaExecutor.placeBracketOrder(
           signal.symbol, signal.side, qty, signal.price, signal.sl, signal.tp,
-          { strategy, clientOrderId, expectedProductId: signal.productId }
+          { strategy, clientOrderId, expectedProductId: signal.productId,
+            signalGeneratedAt: signal.created_at || signal.generated_at || signal.timestamp || null }
         );
       } catch (error) {
         if (isPrivateApiConnectivityError(error)) {
