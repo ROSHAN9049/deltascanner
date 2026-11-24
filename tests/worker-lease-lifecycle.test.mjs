@@ -193,18 +193,14 @@ test('network errors, invalid JSON, and timed-out requests all fail closed', asy
     maxAttempts: 1,
     setTimeoutFn(callback) { fireTimeout = callback; return { unref() {} }; },
     clearTimeoutFn() {},
-    fetchImpl(_url, options) {
+    async fetchImpl(_url, options) {
       return new Promise((resolve, reject) => {
-        if (options.signal.aborted) {
-          reject(new Error('request aborted by timeout'));
-          return;
-        }
         options.signal.addEventListener('abort', () => reject(new Error('request aborted by timeout')), { once: true });
       });
     }
   });
   const pending = timeoutFailure();
-  await new Promise(resolve => setImmediate(resolve));
+  await Promise.resolve();
   assert.equal(typeof fireTimeout, 'function');
   fireTimeout();
   const timedOut = await pending;
