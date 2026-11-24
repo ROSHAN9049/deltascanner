@@ -107,15 +107,25 @@ export function createDeltaPositionReconciler({
       entryPrice === null || markPrice === null ||
       exchangeUpl === null || qty === null ||
       qty <= 0 || !['BUY', 'SELL'].includes(side) ||
-      typeof executor.getProductMetadata !== 'function'
+      (!(position?.raw?.product || position?.product) &&
+        typeof executor.getProductMetadata !== 'function')
     ) return;
 
-    let product;
-    try {
-      product = await executor.getProductMetadata(position.symbol);
-    } catch {
-      // Diagnostics must not interrupt exchange-authoritative refresh.
-      return;
+    // Delta's margined-position response embeds the product specification.
+    // Prefer that same-response contract multiplier over a separately cached
+    // catalogue value; a stale/different catalogue multiplier creates false
+    // P&L drift warnings. Fees/commissions are reported separately by Delta and
+    // are not part of futures unrealized_pnl/unrealized_cashflow.
+    let product = position?.raw?.product || position?.product || null;
+    const embeddedContractValue = numberOrNull(product?.contract_value);
+    const embeddedNotionalType = stringValue(product?.notional_type).toLowerCase();
+    if (!(embeddedContractValue > 0) || !embeddedNotionalType) {
+      try {
+        product = await executor.getProductMetadata(position.symbol);
+      } catch {
+        // Diagnostics must not interrupt exchange-authoritative refresh.
+        return;
+      }
     }
 
     if (stringValue(product?.notional_type).toLowerCase() !== 'vanilla') return;

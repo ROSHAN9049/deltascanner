@@ -482,3 +482,27 @@ test('engine position management reads canonical Delta bracket projection before
   assert.ok(method.indexOf('projectCanonicalDeltaBrackets') < method.indexOf('const originalRisk'));
   assert.match(method, /stale engine position levels were not used/);
 });
+
+
+test('reconciler prefers the exchange position embedded contract multiplier over cached catalogue metadata', async () => {
+  const rt = runtime({
+    openRows: [{
+      id: 1, symbol: 'PAXGUSD', qty: 10, side: 'BUY',
+      entry_price: 100, current_price: 101, unrealized_pnl: 0.1
+    }],
+    exchangePositions: [{
+      symbol: 'PAXGUSD', qty: 10, side: 'BUY',
+      entry_price: 100, current_price: 101, mark_price: 101,
+      unrealized_pnl: 0.1,
+      raw: { product: { notional_type: 'vanilla', contract_value: '0.01' } }
+    }]
+  });
+  rt.executor.getProductMetadata = async () => ({
+    symbol: 'PAXGUSD', contract_value: '0.001', notional_type: 'vanilla'
+  });
+  const reconciler = createDeltaPositionReconciler({
+    env: rt.env, database: rt.database, executor: rt.executor, now: fixedNow
+  });
+  await reconciler.reconcile();
+  assert.ok(!rt.logs.some(row => row.data?.event === 'upl_mismatch'));
+});

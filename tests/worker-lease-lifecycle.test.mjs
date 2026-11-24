@@ -190,6 +190,7 @@ test('network errors, invalid JSON, and timed-out requests all fail closed', asy
   assert.equal((await jsonFailure()).healthy, false);
   let fireTimeout;
   const timeoutFailure = createDeltaTestnetHealthProbe({
+    maxAttempts: 1,
     setTimeoutFn(callback) { fireTimeout = callback; return { unref() {} }; },
     clearTimeoutFn() {},
     async fetchImpl(_url, options) {
