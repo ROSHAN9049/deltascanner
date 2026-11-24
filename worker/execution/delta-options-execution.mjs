@@ -788,8 +788,12 @@ export function createDeltaOptionsExecution({
 
   async function submitLeg(product, side, qty, price, {
     strategy, role, maxLossUsd, hedgeOrderId = null, reduceOnly = false, executionKey = null,
-    manualTestOverride = false, bracketStopLossPrice = null, bracketTakeProfitPrice = null
+    manualTestOverride = false, bracketStopLossPrice = null, bracketTakeProfitPrice = null,
+    signalGeneratedAt = null
   } = {}) {
+    const submitStartedAt = now();
+    const signalAt = Number.isFinite(Date.parse(signalGeneratedAt))
+      ? Date.parse(signalGeneratedAt) : submitStartedAt;
     const roleSuffix = role === 'PROTECTIVE_HEDGE' ? 'H' :
       role === 'UNWIND' ? 'U' : role === 'SHORT' ? 'S' :
         role === 'EXIT' ? 'X' : role === 'HEDGE_EXIT' ? 'HX' : 'B';
@@ -871,6 +875,8 @@ export function createDeltaOptionsExecution({
     try {
       const response = await request('POST', '/v2/orders', {}, body);
       const order = response?.result ?? response;
+      const orderAckAt = now();
+      const signalToAckMs = Math.max(0, orderAckAt - signalAt);
       if (!order || typeof order !== 'object' || Array.isArray(order) ||
           !(order.id || order.client_order_id || order.state)) {
         const error = new Error('Delta Testnet Options order acknowledgement is malformed');
@@ -892,7 +898,18 @@ export function createDeltaOptionsExecution({
             exchange_order_id: order.id ?? null,
             exchange_state: state,
             unfilled_size: number(order.unfilled_size),
-            average_fill_price: number(order.average_fill_price)
+            average_fill_price: number(order.average_fill_price),
+            signal_to_order_ack_ms: signalToAckMs,
+            latency_source: signalGeneratedAt ? 'signal_timestamp' : 'submit_start_fallback',
+            signal_generated_at: new Date(signalAt).toISOString(),
+            order_acknowledged_at: new Date(orderAckAt).toISOString(),
+            reference_price: positive(price),
+            slippage_bps: ['FILLED','CLOSED'].includes(state) &&
+              number(order.unfilled_size) === 0 && positive(order.average_fill_price) && positive(price)
+              ? Number((((String(side).toUpperCase() === 'BUY'
+                ? Number(order.average_fill_price) - Number(price)
+                : Number(price) - Number(order.average_fill_price)) / Number(price)) * 10000).toFixed(2))
+              : null
           }
         }
       ).catch(() => {});
@@ -906,6 +923,9 @@ export function createDeltaOptionsExecution({
         orderId: order.id ?? null,
         orderState: state,
         role,
+        signalToOrderAckMs: signalToAckMs,
+        latencySource: signalGeneratedAt ? 'signal_timestamp' : 'submit_start_fallback',
+        referencePrice: positive(price),
         entry_price: price,
         stop_loss_price: bracketStopLossPrice,
         take_profit_price: bracketTakeProfitPrice,
@@ -1479,6 +1499,7 @@ export function createDeltaOptionsExecution({
         const order = await submitLeg(product, 'BUY', preview.qty, preview.premium, {
           strategy: 'OPTIONS_BUY', role: 'ENTRY', maxLossUsd: preview.maxLossUsd, executionKey,
           manualTestOverride: preview.manualTestOverride === true,
+          signalGeneratedAt: preview.cachedAt,
           bracketStopLossPrice: preview.stopPremium,
           bracketTakeProfitPrice: preview.takeProfitPremium
         });
