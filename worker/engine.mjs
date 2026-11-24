@@ -49,6 +49,7 @@ import { evaluateGlobalPositionCap, routeUnlessGlobalPositionCapBlocked } from '
 import { createConfirmedSignalTelegramNotifier } from './telegram-alerts.mjs';
 import { createLeaseManager, getLeaseTtlSeconds } from './lease-manager.mjs';
 import { buildAdaptiveVolatilityShadowObservation, getAdaptiveVolatilityImpulse, inferAdaptiveVolatilityShadowSide, processAdaptiveVolatilityShadowCycle } from './adaptive-volatility-shadow.mjs';
+import { recordPaperOptionEntry, refreshPaperOptionTrades } from './paper-options-ledger.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const n = v => Number.isFinite(+v) ? +v : 0;
@@ -2648,21 +2649,30 @@ export class DeltaEngine {
           const symbol = String(ticker?.symbol || '').toUpperCase();
           if (!symbol || !/^[CP]-/.test(symbol)) continue;
           const product = testnetMode ? this.optionProductMap.get(symbol) : null;
-          if (testnetMode && !product) continue;
+          const paperOnly = testnetMode && !product;
           const marketTicker = normalizeDeltaOptionTicker(ticker);
           joined.push({
             ...(product || {}),
             ...marketTicker,
             symbol,
             underlying,
-            // The ticker response is public production market data; only the
-            // product ID/specifications used for execution come from Testnet.
-            ...(testnetMode ? {
+            // Never carry a production product_id into a Testnet execution row.
+            ...(testnetMode && product ? {
               product_id: product.product_id,
               contract_value: product.contract_value,
               tick_size: product.tick_size,
               taker_commission_rate: product.taker_commission_rate,
-              testnet_product_verified: true
+              testnet_product_verified: true,
+              paper_only: false
+            } : {}),
+            ...(paperOnly ? {
+              product_id: null,
+              contract_value: null,
+              tick_size: null,
+              taker_commission_rate: null,
+              testnet_product_verified: false,
+              paper_only: true,
+              route_status: 'PAPER_ONLY'
             } : {})
           });
         }
@@ -2897,6 +2907,15 @@ export class DeltaEngine {
 
     this.optionTickerMap = next;
     this.lastOptionTickerFetch = now;
+    try {
+      await refreshPaperOptionTrades({ database: db, tickers: next, now: () => now });
+    } catch (error) {
+      await this.log('WARN', 'Paper Options ledger refresh unavailable; Live market analysis continues without simulated exits', {
+        error: String(error?.message || error).slice(0, 220),
+        paperLedgerAvailable: false,
+        orderRoutingAttempted: false
+      }).catch(() => {});
+    }
     const testnetProductsAvailable = testnetMode ? this.optionProductMap.size : null;
     const missingUnderlyings = testnetMode
       ? underlyings.filter(asset => productCountsByUnderlying[asset] === 0)
@@ -3632,14 +3651,16 @@ export class DeltaEngine {
         if (best) {
           const s = best.signal;
           const sizing = this.optionSizing({ ...s, ticker: best.ticker }, account, settings);
-          const q = sizing.qty;
+          const paperOnly = CONFIG.deltaExecutionMode === 'testnet' && best.ticker.testnet_product_verified !== true;
+          const q = paperOnly ? 1 : sizing.qty;
           const duplicate = (openPositions || []).some(p => String(p.symbol) === s.symbol && n(p.qty) > 0);
           const routeConfigured = CONFIG.deltaExecutionMode === 'testnet'
-            ? testnetOptionsRouteConfigured
+            ? testnetOptionsRouteConfigured && best.ticker.testnet_product_verified === true
             : CONFIG.tradetronOptionsBridgeEnabled && this.tradetronOptions.isConfigured();
           const executionLocked = !optionsEnvironmentGate || !optionsDatabaseGate.allowed;
           const blocked = [...s.blocked];
-          if (q < 1) blocked.push(sizing.reason || 'Full-premium risk budget below one contract');
+          if (!paperOnly && q < 1) blocked.push(sizing.reason || 'Full-premium risk budget below one contract');
+          if (paperOnly) blocked.push('PAPER_ONLY · No verified Delta Testnet product; no exchange order');
           if (duplicate) blocked.push('Duplicate option position');
           if (!routeConfigured) blocked.push(CONFIG.deltaExecutionMode === 'testnet'
             ? 'Direct Delta Testnet Options route unavailable'
@@ -3648,9 +3669,11 @@ export class DeltaEngine {
           if (!optionsEnvironmentGate) blocked.push(OPTIONS_EXECUTION_LOCK_REASON);
           const ready = s.ready && q >= 1 && !duplicate && routeConfigured && !executionLocked;
           const row = { ...s, analysisReady: s.ready === true, ticker: best.ticker, strategy: 'OPTIONS_BUY', qty: q,
-            notional: sizing.premiumNotional,
-            risk: sizing.totalRisk,
-            blocked, executionLocked, ready };
+            paperOnly, routeStatus: paperOnly ? 'PAPER_ONLY' : 'TESTNET',
+            notional: paperOnly ? null : sizing.premiumNotional,
+            risk: paperOnly ? null : sizing.totalRisk,
+            blocked, executionLocked: executionLocked || paperOnly,
+            ready: !paperOnly && s.ready && q >= 1 && !duplicate && routeConfigured && !executionLocked };
           await this.insertSignalHistoryRow({
             symbol: row.symbol, product_id: n(best.ticker.product_id || best.ticker.id),
             rank: 1, strategy: 'OPTIONS_BUY', price: row.mark, change_24h: row.underlyingChange,
@@ -3676,6 +3699,34 @@ export class DeltaEngine {
               executionLocked, routeConfigured, signalOnly: CONFIG.signalOnly, testnetProductVerified: best.ticker.testnet_product_verified === true, riskModel: 'FULL_PREMIUM_PLUS_TWO_SIDE_FEES' }, 'OPTIONS_BUY')
           });
           out.push(row);
+          if (paperOnly && s.ready === true && !duplicate) {
+            try {
+              const paperResult = await recordPaperOptionEntry({
+                database: db,
+                ticker: best.ticker,
+                signal: s,
+                strategy: 'OPTIONS_BUY',
+                dateKey: indiaDateKey(new Date(now))
+              });
+              if (paperResult.recorded) {
+                await this.log('INFO', 'Options PAPER_ONLY simulated fill recorded at Live LTP', {
+                  symbol: row.symbol,
+                  tradeKey: paperResult.tradeKey,
+                  fillType: 'SIMULATED_FILL',
+                  entryPrice: paperResult.row.entry_price,
+                  qty: 1,
+                  executionBlocked: true,
+                  orderRoutingAttempted: false
+                }).catch(() => {});
+              }
+            } catch (error) {
+              await this.log('WARN', 'Options PAPER_ONLY signal qualified but simulated fill could not be persisted', {
+                symbol: row.symbol,
+                error: String(error?.message || error).slice(0, 220),
+                orderRoutingAttempted: false
+              }).catch(() => {});
+            }
+          }
         }
       }
 
@@ -3712,7 +3763,7 @@ export class DeltaEngine {
           if (!(credit > 0)) blocked.push('Net credit <= 0');
           if (!testnetMode && q < 1) blocked.push('Spread risk exceeds option risk budget');
           const optionRouteReady = testnetMode
-            ? testnetOptionsRouteConfigured
+            ? testnetOptionsRouteConfigured && best.ticker.testnet_product_verified === true
             : CONFIG.tradetronOptionsBridgeEnabled && this.tradetronOptions.isConfigured();
           const executionLocked = !optionsEnvironmentGate || !optionsDatabaseGate.allowed;
           if (!optionRouteReady) blocked.push(testnetMode
