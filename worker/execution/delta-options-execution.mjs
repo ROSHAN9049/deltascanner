@@ -1933,7 +1933,7 @@ export function createDeltaOptionsExecution({
         const errorCode = clean(error?.code || error?.error_code).toLowerCase();
         const errorMessage = String(error?.message || error);
         const exchangeAlreadyFlat = errorCode === 'no_position_for_reduce_only' ||
-          /\\bno_position_for_reduce_only\\b/i.test(errorMessage);
+          /\bno_position_for_reduce_only\b/i.test(errorMessage);
         if (exchangeAlreadyFlat && normalizeOptionsExitStatus(position.strategy) === 'OPTIONS_BUY' &&
             normalizeOptionsExitStatus(position.status) === 'OPEN') {
           const closedAt = new Date(now()).toISOString();
