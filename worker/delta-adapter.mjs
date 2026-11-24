@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { CONFIG } from '../server/config.js';
+import { resolveHybridDeltaRequest } from './hybrid-market-policy.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -25,18 +26,25 @@ function hmac(secret, text) {
  * scanner's public-data environment is SIGNAL_ONLY.
  */
 export function resolveDeltaRequestBase({
+  method = 'GET',
   auth = false,
-  marketData = false,
   productCatalog = false
 } = {}, {
   base = CONFIG.restBase,
   marketDataBase = CONFIG.marketDataRestBase || 'https://api.india.delta.exchange',
-  productCatalogBase = base
+  productCatalogBase = CONFIG.deltaTestnetRestBase || 'https://cdn-ind.testnet.deltaex.org'
 } = {}) {
-  if (auth) return base;
-  if (marketData) return marketDataBase;
-  if (productCatalog) return productCatalogBase;
-  return base;
+  const route = resolveHybridDeltaRequest({
+    method,
+    authenticated: auth,
+    executionMetadata: productCatalog,
+    testnetBase: auth ? base : productCatalogBase
+  });
+  if (route.purpose === 'LIVE_PUBLIC_MARKET_DATA' &&
+      marketDataBase !== 'https://api.india.delta.exchange') {
+    throw new Error('Hybrid live market data must use the fixed Delta India public endpoint');
+  }
+  return route.base;
 }
 
 export class DeltaAdapter {
@@ -86,8 +94,8 @@ export class DeltaAdapter {
         }
         if (body !== undefined && body !== null) headers['Content-Type'] = 'application/json';
         const requestBase = resolveDeltaRequestBase({
+          method,
           auth,
-          marketData: options.marketData === true,
           productCatalog: options.productCatalog === true
         }, {
           base: this.base,
