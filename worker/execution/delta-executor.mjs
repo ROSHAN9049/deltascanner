@@ -336,6 +336,30 @@ export function createDeltaExecutor({
     return data || { success: true, result: null };
   }
 
+  async function requestLiveOptions(method, path, params = {}) {
+    const verb = String(method || 'GET').trim().toUpperCase();
+    const route = String(path || '');
+    if (verb !== 'GET' || !/^\/v2\/tickers\/[A-Z0-9_-]+$/.test(route)) {
+      throw new Error('Hybrid Live Options transport permits ticker GET requests only');
+    }
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params || {})) {
+      if (value !== undefined && value !== null) query.set(key, String(value));
+    }
+    const url = 'https://api.india.delta.exchange' + route +
+      (query.toString() ? '?' + query.toString() : '');
+    const response = await fetch(url, { method: 'GET', headers: { Accept: 'application/json' } });
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data || data.success === false) {
+      const error = new Error('Delta India Live public Options ticker request failed (' +
+        response.status + '): ' + String(data?.error?.message || data?.message || 'invalid response'));
+      error.status = response.status;
+      error.code = 'delta_live_options_ticker_failed';
+      throw error;
+    }
+    return data;
+  }
+
   async function getDemoOptionsAccountSnapshot() {
     const wallet = await requestDemoOptions('GET', '/v2/wallet/balances');
     const equity = accountEquity(wallet);
@@ -1629,6 +1653,7 @@ export function createDeltaExecutor({
     // Keep Futures request()/getAccountSnapshot() on their existing route.
     // Options use the independent DELTA_DEMO_* keypair and fixed Testnet host.
     request: requestDemoOptions,
+    requestLive: requestLiveOptions,
     database,
     getAccountSnapshot: getDemoOptionsAccountSnapshot,
     logExecutor,
