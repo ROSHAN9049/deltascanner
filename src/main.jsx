@@ -214,7 +214,8 @@ function App() {
   const optionsTradePositions = Array.isArray(state?.optionsTradePositions) ? state.optionsTradePositions : [];
   const optionsTradeOrders = Array.isArray(state?.optionsTradeOrders) ? state.optionsTradeOrders : [];
   const deltaTestnetOrders = Array.isArray(state?.deltaTestnetOrders) ? state.deltaTestnetOrders : [];
-  const orderTelemetry = deltaTestnetOrders.map(row => {
+  const telemetryOrders = [...deltaTestnetOrders, ...optionsTradeOrders];
+  const orderTelemetry = telemetryOrders.map(row => {
     let raw = row?.raw;
     if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch { raw = {}; } }
     return { at: row?.updated_at || row?.created_at || '', latency: raw?.signal_to_order_ack_ms == null ? NaN : Number(raw.signal_to_order_ack_ms), slippage: raw?.slippage_bps == null ? NaN : Number(raw.slippage_bps), source: raw?.latency_source };
