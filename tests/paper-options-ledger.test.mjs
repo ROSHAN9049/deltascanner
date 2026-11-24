@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { recordPaperOptionEntry, refreshPaperOptionTrades } from '../worker/paper-options-ledger.mjs';
 
 test('records one durable simulated LTP fill for a confirmed long option without an exchange order', async () => {
@@ -153,4 +154,11 @@ test('marks paper spreads to market and settles their defined-risk intrinsic val
   assert.equal(updates[0].patch.exit_reason, 'EXPIRY');
   assert.equal(updates[0].patch.exit_price, 5000);
   assert.equal(updates[0].patch.realized_pnl, -4945);
+});
+
+test('PAPER_ONLY option candidates are visibly marked and cannot invoke Testnet preview', async () => {
+  const main = await readFile(new URL('../src/main.jsx', import.meta.url), 'utf8');
+  assert.match(main, /const paperOnly = d\.paperOnly === true/);
+  assert.match(main, /disabled=\{actionDisabled \|\| paperOnly/);
+  assert.match(main, /PAPER_ONLY · NO ORDER/);
 });
