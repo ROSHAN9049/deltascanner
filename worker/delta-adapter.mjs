@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { CONFIG } from '../server/config.js';
+import { resolveHybridDeltaRequest } from './hybrid-market-policy.mjs';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -34,29 +35,17 @@ export function resolveDeltaRequestBase({
   marketDataBase = CONFIG.marketDataRestBase || 'https://api.india.delta.exchange',
   productCatalogBase = CONFIG.deltaTestnetRestBase || 'https://cdn-ind.testnet.deltaex.org'
 } = {}) {
-  const verb = String(method || 'GET').trim().toUpperCase();
-  // Hybrid invariant: authenticated traffic is execution/account traffic and
-  // can only ever reach the fixed Delta India Demo/Testnet host.
-  if (auth) {
-    if (base !== 'https://cdn-ind.testnet.deltaex.org') {
-      throw new Error('Hybrid execution is locked to the Delta India Testnet endpoint');
-    }
-    return base;
+  const route = resolveHybridDeltaRequest({
+    method,
+    authenticated: auth,
+    executionMetadata: productCatalog,
+    testnetBase: auth ? base : productCatalogBase
+  });
+  if (route.purpose === 'LIVE_PUBLIC_MARKET_DATA' &&
+      marketDataBase !== 'https://api.india.delta.exchange') {
+    throw new Error('Hybrid live market data must use the fixed Delta India public endpoint');
   }
-  // Never allow anonymous writes. A missing auth flag must not turn a write
-  // into a public production API request.
-  if (verb !== 'GET') {
-    throw new Error('Unauthenticated Delta requests are read-only in Hybrid Mode');
-  }
-  // Testnet product metadata is read-only routing metadata, not live market
-  // data. All tickers, candles and public scanner data use production India.
-  if (productCatalog) {
-    if (productCatalogBase !== 'https://cdn-ind.testnet.deltaex.org') {
-      throw new Error('Execution product catalogue must use the fixed Delta India Testnet endpoint');
-    }
-    return productCatalogBase;
-  }
-  return marketDataBase;
+  return route.base;
 }
 
 export class DeltaAdapter {
