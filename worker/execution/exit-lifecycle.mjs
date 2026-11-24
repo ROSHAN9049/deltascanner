@@ -170,8 +170,7 @@ export async function closeTrackedPosition({
       strategy: stringOrEmpty(position.strategy).toUpperCase()
     });
     const orderState = stringOrEmpty(order?.state).toUpperCase();
-    const confirmedFilledAndFlat = ['FILLED', 'CLOSED'].includes(orderState) &&
-      Number(order?.unfilled_size) === 0 && order?.exchange_position_flat === true;
+    const confirmedFilledAndFlat = order?.exchange_position_flat === true;
     if (confirmedFilledAndFlat) {
       await database.update(
         'dd_delta_positions',
