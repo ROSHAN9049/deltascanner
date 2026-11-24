@@ -136,9 +136,11 @@ export async function closeTrackedPosition({
   }
   const canonicalProductId = Number(canonical.product_id);
   const requestedProductId = Number(productId);
-  if (Number.isFinite(canonicalProductId) && canonicalProductId > 0 &&
-      Number.isFinite(requestedProductId) && requestedProductId > 0 &&
-      canonicalProductId !== requestedProductId) {
+  if (!Number.isSafeInteger(canonicalProductId) || canonicalProductId <= 0 ||
+      !Number.isSafeInteger(requestedProductId) || requestedProductId <= 0) {
+    throw new Error('Canonical and requested Delta product IDs are required; automatic close blocked');
+  }
+  if (canonicalProductId !== requestedProductId) {
     throw new Error('Local/canonical product ID mismatch; automatic close blocked');
   }
 
