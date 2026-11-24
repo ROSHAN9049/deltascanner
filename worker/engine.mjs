@@ -3772,20 +3772,25 @@ export class DeltaEngine {
           if (!hedge) blocked.push('Defined-risk hedge unavailable');
           if (!(credit > 0)) blocked.push('Net credit <= 0');
           if (!testnetMode && q < 1) blocked.push('Spread risk exceeds option risk budget');
+          const paperOnly = testnetMode && best.ticker.testnet_product_verified !== true;
           const optionRouteReady = testnetMode
             ? testnetOptionsRouteConfigured && best.ticker.testnet_product_verified === true
             : CONFIG.tradetronOptionsBridgeEnabled && this.tradetronOptions.isConfigured();
           const executionLocked = !optionsEnvironmentGate || !optionsDatabaseGate.allowed;
+          if (paperOnly) blocked.push('PAPER_ONLY · No verified Delta Testnet product; no exchange order');
           if (!optionRouteReady) blocked.push(testnetMode
             ? 'Direct Delta Testnet Options route unavailable'
             : 'Tradetron option signal route unavailable');
           if (!optionsDatabaseGate.allowed) blocked.push(OPTIONS_DATABASE_EXECUTION_LOCK_REASON);
           if (!optionsEnvironmentGate) blocked.push(OPTIONS_EXECUTION_LOCK_REASON);
-          const ready = s.ready && q >= 1 && !!hedge && credit > 0 && optionRouteReady && !executionLocked;
+          const ready = !paperOnly && s.ready && q >= 1 && !!hedge && credit > 0 && optionRouteReady && !executionLocked;
           const row = { ...s, analysisReady: s.ready === true, ticker: best.ticker, strategy: 'OPTIONS_SELL', qty: q,
+            paperOnly, routeStatus: paperOnly ? 'PAPER_ONLY' : 'TESTNET',
             hedgeSymbol: hedge?.symbol || '', hedgeStrike: hedge?.strike || 0, hedgeDelta: hedge?.delta || 0,
-            credit, maxRiskPerSpread, notional: Math.max(0, credit * q), risk: maxRiskPerSpread * q,
-            blocked, executionLocked, ready, optionRouteReady };
+            credit, maxRiskPerSpread,
+            notional: paperOnly ? null : Math.max(0, credit * q),
+            risk: paperOnly ? null : maxRiskPerSpread * q,
+            blocked, executionLocked: executionLocked || paperOnly, ready, optionRouteReady };
           await this.insertSignalHistoryRow({
             symbol: row.symbol, product_id: best.ticker.testnet_product_verified === true ? n(best.ticker.product_id || best.ticker.id) : null,
             rank: 1, strategy: 'OPTIONS_SELL', price: row.mark, change_24h: row.underlyingChange,
@@ -3815,6 +3820,49 @@ export class DeltaEngine {
               definedRiskOnly: settings.options_sell_defined_risk_only !== false }, 'OPTIONS_SELL')
           });
           out.push(row);
+          if (paperOnly && s.ready === true && hedge && credit > 0 && maxRiskPerSpread > 0) {
+            try {
+              const hedgeTicker = chain.find(ticker =>
+                String(ticker?.symbol || '').toUpperCase() === String(hedge.symbol || '').toUpperCase()
+              );
+              const paperResult = await recordPaperOptionEntry({
+                database: db,
+                ticker: best.ticker,
+                hedgeTicker,
+                signal: {
+                  ...s,
+                  ready: s.ready,
+                  hedgeSymbol: hedge.symbol,
+                  hedgeStrike: hedge.strike,
+                  credit,
+                  maxRiskPerSpread
+                },
+                strategy: 'OPTIONS_SELL',
+                dateKey: indiaDateKey(new Date(now))
+              });
+              if (paperResult.recorded) {
+                await this.log('INFO', 'Options PAPER_ONLY defined-risk spread simulated fill recorded from Live bid/ask', {
+                  symbol: row.symbol,
+                  hedgeSymbol: row.hedgeSymbol,
+                  tradeKey: paperResult.tradeKey,
+                  fillType: 'SIMULATED_FILL',
+                  entryCredit: paperResult.row.entry_price,
+                  qty: 1,
+                  maxRiskPerSpread,
+                  pnlUnit: 'OPTION_PREMIUM_POINTS',
+                  executionBlocked: true,
+                  orderRoutingAttempted: false
+                }).catch(() => {});
+              }
+            } catch (error) {
+              await this.log('WARN', 'Options PAPER_ONLY defined-risk spread qualified but simulated fill could not be persisted', {
+                symbol: row.symbol,
+                hedgeSymbol: row.hedgeSymbol,
+                error: String(error?.message || error).slice(0, 220),
+                orderRoutingAttempted: false
+              }).catch(() => {});
+            }
+          }
         }
       }
     }
