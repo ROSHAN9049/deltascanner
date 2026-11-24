@@ -32,7 +32,8 @@ const MIGRATIONS = [
   'db/migrations/20261120000100_engine_log_message_latest_idx.sql',
   'db/migrations/20261121000100_position_fk_indexes.sql',
   'db/migrations/20261121000200_iv_history_observed_at_idx.sql',
-  'db/migrations/20261124000100_options_paper_trades.sql'
+  'db/migrations/20261124000100_options_paper_trades.sql',
+  'db/migrations/20261124000200_options_paper_spread_columns.sql'
 ];
 
 // These are the four "already exists" SQLSTATEs explicitly approved for skipping.
