@@ -1274,6 +1274,22 @@ export function createDeltaExecutor({
       if (hasPrice && !(limitPrice > 0)) throw new Error('limit price must be positive');
       await assertSafety(normalizedSymbol, 'ENTRY');
       const product = await resolveProduct(normalizedSymbol);
+      if (limitPrice !== null) {
+        let demoMark;
+        try { demoMark = await getFreshMarkPrice(normalizedSymbol); }
+        catch { throw new Error('Fresh Demo mark unavailable; Hybrid price validation blocked entry'); }
+        const mismatchPct = Math.abs(demoMark - limitPrice) / limitPrice * 100;
+        const maxMismatchPct = Math.max(0.1, Math.min(10,
+          numberOrNull(env.DELTA_MAX_LIVE_DEMO_PRICE_MISMATCH_PCT) ?? 1.5));
+        if (!Number.isFinite(mismatchPct) || mismatchPct > maxMismatchPct) {
+          await logExecutor('WARN', '[Executor] Blocked Futures entry: Live signal and Demo execution price mismatch', {
+            environment: 'testnet', symbol: normalizedSymbol, liveSignalPrice: limitPrice,
+            demoMarkPrice: demoMark, mismatchPct, maxMismatchPct,
+            executionBlocked: true, reason: 'LIVE_DEMO_PRICE_MISMATCH_EXCEEDED'
+          });
+          throw new Error('Live/Demo price mismatch exceeds ' + maxMismatchPct.toFixed(2) + '%; refresh signal before entry');
+        }
+      }
       const body = {
         product_id: product.id,
         size: quantity,
@@ -1359,13 +1375,21 @@ export function createDeltaExecutor({
       const referenceDriftPct = entry > 0 ? Math.abs(liveMarkPrice - entry) / entry * 100 : null;
       const driftWithinStopDistance = referenceDriftPct !== null &&
         slDistancePct !== null && referenceDriftPct <= slDistancePct + 1e-9;
-      if (!bracketContainsLiveMark || !driftWithinStopDistance) {
+      const maxCrossSourceMismatchPct = Math.max(0.1, Math.min(10,
+        numberOrNull(env.DELTA_MAX_LIVE_DEMO_PRICE_MISMATCH_PCT) ?? 1.5));
+      const crossSourceMismatchWithinLimit = referenceDriftPct !== null &&
+        referenceDriftPct <= maxCrossSourceMismatchPct + 1e-9;
+      if (!bracketContainsLiveMark || !driftWithinStopDistance || !crossSourceMismatchWithinLimit) {
         const reason = !bracketContainsLiveMark
           ? 'LIVE_MARK_OUTSIDE_BRACKET'
-          : 'LIVE_MARK_DRIFT_EXCEEDS_STOP_DISTANCE';
+          : !crossSourceMismatchWithinLimit
+            ? 'LIVE_DEMO_PRICE_MISMATCH_EXCEEDED'
+            : 'LIVE_MARK_DRIFT_EXCEEDS_STOP_DISTANCE';
         const logMessage = !bracketContainsLiveMark
           ? '[Executor] Blocked bracket order: live mark moved outside requested SL/TP bracket'
-          : '[Executor] Blocked bracket order: Testnet mark drift exceeds signal stop distance';
+          : !crossSourceMismatchWithinLimit
+            ? '[Executor] Blocked bracket order: Live signal and Demo execution price mismatch exceeded'
+            : '[Executor] Blocked bracket order: Testnet mark drift exceeds signal stop distance';
         await logExecutor('WARN', logMessage, {
           environment: 'testnet', symbol: normalizedSymbol, side: direction,
           referenceEntryPrice: entry, liveMarkPrice, referenceDriftPct, slDistancePct,
@@ -1374,11 +1398,15 @@ export function createDeltaExecutor({
           executionMarkSource: 'delta_india_testnet_rest',
           bracketContainsLiveMark,
           driftWithinStopDistance,
+          maxCrossSourceMismatchPct,
+          crossSourceMismatchWithinLimit,
           executionBlocked: true, reason
         });
         const errorMessage = !bracketContainsLiveMark
           ? 'Live mark has moved outside the requested SL/TP bracket; refresh signal before entry'
-          : 'Live Testnet mark no longer matches the signal risk envelope; refresh signal before entry';
+          : !crossSourceMismatchWithinLimit
+            ? 'Live/Demo price mismatch exceeds ' + maxCrossSourceMismatchPct.toFixed(2) + '%; refresh signal before entry'
+            : 'Live Testnet mark no longer matches the signal risk envelope; refresh signal before entry';
         throw new Error(errorMessage);
       }
 
