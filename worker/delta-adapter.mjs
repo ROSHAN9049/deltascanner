@@ -25,18 +25,38 @@ function hmac(secret, text) {
  * scanner's public-data environment is SIGNAL_ONLY.
  */
 export function resolveDeltaRequestBase({
+  method = 'GET',
   auth = false,
   marketData = false,
   productCatalog = false
 } = {}, {
   base = CONFIG.restBase,
   marketDataBase = CONFIG.marketDataRestBase || 'https://api.india.delta.exchange',
-  productCatalogBase = base
+  productCatalogBase = CONFIG.deltaTestnetRestBase || 'https://cdn-ind.testnet.deltaex.org'
 } = {}) {
-  if (auth) return base;
-  if (marketData) return marketDataBase;
-  if (productCatalog) return productCatalogBase;
-  return base;
+  const verb = String(method || 'GET').trim().toUpperCase();
+  // Hybrid invariant: authenticated traffic is execution/account traffic and
+  // can only ever reach the fixed Delta India Demo/Testnet host.
+  if (auth) {
+    if (base !== 'https://cdn-ind.testnet.deltaex.org') {
+      throw new Error('Hybrid execution is locked to the Delta India Testnet endpoint');
+    }
+    return base;
+  }
+  // Never allow anonymous writes. A missing auth flag must not turn a write
+  // into a public production API request.
+  if (verb !== 'GET') {
+    throw new Error('Unauthenticated Delta requests are read-only in Hybrid Mode');
+  }
+  // Testnet product metadata is read-only routing metadata, not live market
+  // data. All tickers, candles and public scanner data use production India.
+  if (productCatalog) {
+    if (productCatalogBase !== 'https://cdn-ind.testnet.deltaex.org') {
+      throw new Error('Execution product catalogue must use the fixed Delta India Testnet endpoint');
+    }
+    return productCatalogBase;
+  }
+  return marketDataBase;
 }
 
 export class DeltaAdapter {
@@ -86,6 +106,7 @@ export class DeltaAdapter {
         }
         if (body !== undefined && body !== null) headers['Content-Type'] = 'application/json';
         const requestBase = resolveDeltaRequestBase({
+          method,
           auth,
           marketData: options.marketData === true,
           productCatalog: options.productCatalog === true
