@@ -94,6 +94,8 @@ const applyHourlyTrendGate = (signal, trend) => {
   signal.hourlyTrend = trend?.trend || 'UNKNOWN';
   signal.hourlyEma50 = trend?.ema50 ?? null;
   signal.hourlyEma200 = trend?.ema200 ?? null;
+  signal.hourlyCandles = Number(trend?.candles) || 0;
+  signal.hourlyTrendBlocked = !allowed;
   return signal;
 };
 const applyStrictVolumeGate = signal => {
