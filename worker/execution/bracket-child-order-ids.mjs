@@ -10,7 +10,9 @@ function matchesPrice(actual, expected, tickSize) {
   const e = number(expected);
   if (!(a > 0 && e > 0)) return false;
   const tick = Math.max(0, number(tickSize) || 0);
-  const tolerance = Math.max(Math.abs(e) * 0.0005, tick > 0 ? tick * 2 : 1e-9);
+  // Do not use a percentage tolerance: even a small percentage can match a
+  // different nearby trigger price. Only allow exchange tick rounding.
+  const tolerance = tick > 0 ? tick * 2 : 1e-9;
   return Math.abs(a - e) <= tolerance;
 }
 
