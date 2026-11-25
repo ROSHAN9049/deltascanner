@@ -5244,6 +5244,34 @@ export class DeltaEngine {
         entryOrderId: row.entry_order_id
       });
     }
+    // Refresh child IDs even for positions already marked protection_verified.
+    // The verification flag can predate the child-ID persistence fix.
+    const currentBracketChildIds = resolveBracketChildOrderIds(openOrders, {
+      productId: n(row.product_id || exchangePosition?.product_id),
+      qty,
+      stopPrice: row.stop_price,
+      takeProfitPrice: row.tp_price,
+      tickSize: n(this.productMap.get(row.symbol)?.tick_size) || n(row.tick_size) || 0
+    });
+    const childIdPatch = {};
+    if (currentBracketChildIds.stopLossOrderId &&
+        String(row.protection_order_id || '') !== currentBracketChildIds.stopLossOrderId) {
+      childIdPatch.protection_order_id = currentBracketChildIds.stopLossOrderId;
+    }
+    if (currentBracketChildIds.takeProfitOrderId &&
+        String(row.tp_order_id || '') !== currentBracketChildIds.takeProfitOrderId) {
+      childIdPatch.tp_order_id = currentBracketChildIds.takeProfitOrderId;
+    }
+    if (Object.keys(childIdPatch).length && row.execution_id) {
+      childIdPatch.updated_at = iso();
+      await db.update('dd_positions', 'execution_id=eq.' + encodeURIComponent(row.execution_id), childIdPatch);
+      Object.assign(row, childIdPatch);
+      await this.log('INFO', 'Existing TESTNET bracket child order IDs synchronized from exchange open orders', {
+        symbol: row.symbol, executionId: row.execution_id,
+        stopLossOrderId: currentBracketChildIds.stopLossOrderId,
+        takeProfitOrderId: currentBracketChildIds.takeProfitOrderId
+      });
+    }
     const mark = n(exchangePosition.mark_price || this.tickerMap.get(row.symbol)?.mark_price || row.current_price);
     const originalRisk = Math.abs(n(row.entry_price) - n(row.stop_price));
     const fee = n(this.productMap.get(row.symbol)?.taker_commission_rate);
