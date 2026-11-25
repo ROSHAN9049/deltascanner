@@ -1496,7 +1496,22 @@ export function createDeltaExecutor({
           stopLossPrice: stop, takeProfitPrice: target, maxMismatchPct,
           executionBlocked: true, reason: 'ENTRY_MARK_RISK_ENVELOPE_MISMATCH'
         });
-        throw new Error('Fresh Testnet mark no longer matches the requested SL/TP risk envelope');
+        const error = new Error('Fresh Testnet mark no longer matches the requested SL/TP risk envelope');
+        error.code = 'ENTRY_MARK_RISK_ENVELOPE_MISMATCH';
+        error.executionBlocked = true;
+        error.orderRoutingAttempted = false;
+        error.details = {
+          symbol: normalizedSymbol,
+          side: direction,
+          referenceEntryPrice: entry,
+          liveMarkPrice,
+          referenceDriftPct,
+          slDistancePct,
+          stopLossPrice: stop,
+          takeProfitPrice: target,
+          maxMismatchPct
+        };
+        throw error;
       }
 
       const tickSize = numberOrNull(product?.tick_size);
