@@ -15,6 +15,7 @@ import { shouldWriteMarketCache } from './market-cache-policy.mjs';
 import { MIN_RAW_CANDLES_FOR_ATR, mergeCandleUpdate, normalizeCandleBatch, normalizeEpochSeconds, candleMaxAgeIntervals } from './candle-normalization.mjs';
 import { detectAtrSpike, replaceOutlierCandleWithPrevious } from './atr-spike-guard.mjs';
 import { shouldEmitThrottledLog, websocketReconnectDelay, WS_ERROR_LOG_COOLDOWN_MS } from './ws-resilience.mjs';
+import { shouldRefreshGridCandle, resolveCandleRetryAfterMs } from './candle-refresh-policy.mjs';
 import {
   isOptionsExecutionAllowed,
   OPTIONS_EXECUTION_LOCK_REASON,
@@ -296,6 +297,7 @@ export class DeltaEngine {
     this.gridAtrSnapshotInitialized = false;
     this.gridCandleSymbol = '';
     this.gridCandleRefreshBySymbol = new Map();
+    this.gridCandleRetryAfterBySymbol = new Map();
     this.lastGridTestnetDiagnostics = null;
     this.testnetGridDiagnosticState = createGridState();
     this.lastOptionsTestnetDiagnostics = null;
@@ -685,16 +687,24 @@ export class DeltaEngine {
     }
 
     try {
-      const needsRefresh = this.gridCandleSymbol !== symbol ||
-        Date.now() - this.lastGridCandleRefresh >= 15000;
+      const now = Date.now();
+      const lastSuccessAt = this.gridCandleSymbol === symbol ? this.lastGridCandleRefresh : 0;
+      const retryAfterAt = this.gridCandleRetryAfterBySymbol.get(symbol) || 0;
+      const needsRefresh = shouldRefreshGridCandle(now, lastSuccessAt, retryAfterAt);
       if (needsRefresh) {
         await this.refreshCandle(symbol, '1m');
         this.gridCandleSymbol = symbol;
         this.lastGridCandleRefresh = Date.now();
+        this.gridCandleRetryAfterBySymbol.delete(symbol);
       }
     } catch (error) {
+      const retryAfterMs = resolveCandleRetryAfterMs(error, CONFIG.deltaExecutionMode === 'testnet'
+        ? CANDLE_TESTNET_WARMUP_RETRY_MS : CANDLE_WARMUP_RETRY_MS);
+      const retryAt = Date.now() + retryAfterMs;
+      this.gridCandleRetryAfterBySymbol.set(symbol, retryAt);
       await safeLog('WARN', 'Grid diagnostic candle refresh failed; main futures scan continues', {
         symbol, error: String(error?.message || error).slice(0, 200),
+        retryAfterMs, nextRetryAt: new Date(retryAt).toISOString(),
         executionBlocked: true, orderRoutingAttempted: false
       });
     }
@@ -1108,13 +1118,20 @@ export class DeltaEngine {
       tickers[symbol] = this.tickerMap.get(symbol) || {};
       this.candleCacheSymbols.add(symbol);
       const lastRefresh = this.gridCandleRefreshBySymbol.get(symbol) || 0;
-      if (nowMs - lastRefresh >= 15_000) {
+      const retryAfterAt = this.gridCandleRetryAfterBySymbol.get(symbol) || 0;
+      if (shouldRefreshGridCandle(nowMs, lastRefresh, retryAfterAt)) {
         try {
           await this.refreshCandle(symbol, '1m');
           this.gridCandleRefreshBySymbol.set(symbol, Date.now());
+          this.gridCandleRetryAfterBySymbol.delete(symbol);
         } catch (error) {
+          const retryAfterMs = resolveCandleRetryAfterMs(error, CONFIG.deltaExecutionMode === 'testnet'
+            ? CANDLE_TESTNET_WARMUP_RETRY_MS : CANDLE_WARMUP_RETRY_MS);
+          const retryAt = Date.now() + retryAfterMs;
+          this.gridCandleRetryAfterBySymbol.set(symbol, retryAt);
           await this.log('WARN', 'Grid candle refresh failed for pool symbol; only this symbol remains pending', {
             symbol, error: String(error?.message || error).slice(0, 200),
+            retryAfterMs, nextRetryAt: new Date(retryAt).toISOString(),
             executionBlocked: true
           }).catch(() => {});
         }
@@ -1288,14 +1305,25 @@ export class DeltaEngine {
 
     let dataFresh = settings.grid_enabled !== true;
     if (settings.grid_enabled === true || (Array.isArray(priorState.positions) && priorState.positions.length > 0)) {
-      const needsRefresh = this.gridCandleSymbol !== symbol || Date.now() - this.lastGridCandleRefresh >= 15000;
+      const now = Date.now();
+      const lastSuccessAt = this.gridCandleSymbol === symbol ? this.lastGridCandleRefresh : 0;
+      const retryAfterAt = this.gridCandleRetryAfterBySymbol.get(symbol) || 0;
+      const needsRefresh = shouldRefreshGridCandle(now, lastSuccessAt, retryAfterAt);
       if (needsRefresh) {
         try {
           await this.refreshCandle(symbol, '1m');
           this.gridCandleSymbol = symbol;
           this.lastGridCandleRefresh = Date.now();
+          this.gridCandleRetryAfterBySymbol.delete(symbol);
         } catch (error) {
-          await this.log('WARN', 'Grid candle refresh failed; new entries remain blocked', { symbol, error: error.message });
+          const retryAfterMs = resolveCandleRetryAfterMs(error, CONFIG.deltaExecutionMode === 'testnet'
+            ? CANDLE_TESTNET_WARMUP_RETRY_MS : CANDLE_WARMUP_RETRY_MS);
+          const retryAt = Date.now() + retryAfterMs;
+          this.gridCandleRetryAfterBySymbol.set(symbol, retryAt);
+          await this.log('WARN', 'Grid candle refresh failed; new entries remain blocked', {
+            symbol, error: String(error?.message || error).slice(0, 200),
+            retryAfterMs, nextRetryAt: new Date(retryAt).toISOString()
+          });
         }
       }
       dataFresh = this.gridCandleSymbol === symbol &&
@@ -1816,7 +1844,10 @@ export class DeltaEngine {
       if (this.shouldLogCandleFailure(key)) {
         await this.log('WARN', 'Candle REST batch rejected; preserving prior valid series', detail);
       }
-      throw new Error('candle_batch_rejected:' + normalized.reason);
+      const error = new Error('candle_batch_rejected:' + normalized.reason);
+      error.code = normalized.reason;
+      error.retryAfterMs = detail.retryAfterMs;
+      throw error;
     }
     const rows = normalized.candles.slice(-120);
     const previousRows = this.getCandles(symbol, resolution);
