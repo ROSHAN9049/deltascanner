@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildGridLevels, createGridState, detectOneWayMomentum, evaluateGridTick, normalizeGridConfig
+  buildGridLevels, createGridState, detectOneWayMomentum, evaluateGridTick, normalizeGridConfig, setGridVerifiedPool
 } from '../worker/grid-strategy.mjs';
 
 const baseSettings = {
@@ -18,11 +18,25 @@ const baseSettings = {
   grid_reduce_after_losses: true
 };
 
-test('Grid Testnet symbols are normalized from the Delta allowlist without removing simulator defaults', () => {
+test('Grid config accepts screener-qualified symbols while pool verification requires live Testnet product IDs', () => {
+  const product = symbol => ({
+    id: symbol === 'PAXGUSD' ? 701 : 702, symbol,
+    contract_type: 'perpetual_futures', state: 'live',
+    trading_status: 'operational', only_reduce_only_orders_allowed: false
+  });
+  const accepted = setGridVerifiedPool([
+    { symbol: 'PAXGUSD', productId: 701, product: product('PAXGUSD'), screen: { qualified: true } },
+    { symbol: 'NVDAXUSD', productId: 702, product: product('NVDAXUSD'), screen: { qualified: true } },
+    { symbol: 'NOTREALUSD', productId: 0, product: {}, screen: { qualified: true } },
+    { symbol: 'FAKEUSD', productId: 703, product: { ...product('FAKEUSD'), state: 'offline' }, screen: { qualified: true } }
+  ]);
+  assert.deepEqual(accepted.map(row => row.symbol), ['PAXGUSD', 'NVDAXUSD']);
   assert.equal(normalizeGridConfig({ ...baseSettings, grid_symbol: 'PAXGUSD' }).symbol, 'PAXGUSD');
   assert.equal(normalizeGridConfig({ ...baseSettings, grid_symbol: 'NVDAXUSD' }).symbol, 'NVDAXUSD');
-  assert.equal(normalizeGridConfig({ ...baseSettings, grid_symbol: 'NOTREALUSD' }).symbol, 'ETHUSD');
+  assert.equal(normalizeGridConfig({ ...baseSettings, grid_symbol: 'NOTREALUSD' }).symbol, 'NOTREALUSD');
+  assert.equal(normalizeGridConfig({ ...baseSettings, grid_symbol: 'bad symbol' }).symbol, '');
   assert.equal(normalizeGridConfig({ ...baseSettings, grid_daily_loss_pct: 2.5 }).dailyLossPct, 2);
+  setGridVerifiedPool([]);
 });
 
 test('grid levels use true geometric spacing and only lower levels are entry-enabled', () => {

@@ -35,7 +35,7 @@ function fakeRuntime({
   equity = 1000,
   available = equity,
   markPrice = 60000,
-  orderState = 'open',
+  orderState = 'closed',
   orderAverageFillPrice = 60000,
   fills = [],
   orderHistory = [],
@@ -48,6 +48,8 @@ function fakeRuntime({
   const persistedPositions = [];
   let hasPostedOrder = false;
   let latestOrder = null;
+  let nextOrderId = 123;
+  const ordersById = new Map();
 
   const database = {
     async select(table, query) {
@@ -96,11 +98,11 @@ function fakeRuntime({
     httpCalls.push({ url, init, body: init.body ? JSON.parse(init.body) : null });
     if (parsed.pathname === '/v2/products') {
       return response({ success: true, result: [
-        { id: 181689, symbol: 'XAUTUSD', contract_type: 'perpetual_futures', state: 'live', trading_status: 'operational', only_reduce_only_orders_allowed: false },
-        { id: 182001, symbol: 'PAXGUSD', contract_type: 'perpetual_futures', state: 'live', trading_status: 'operational', only_reduce_only_orders_allowed: false },
-        { id: 182002, symbol: 'NVDAXUSD', contract_type: 'perpetual_futures', state: 'live', trading_status: 'operational', only_reduce_only_orders_allowed: false },
-        { id: 141835, symbol: 'SNDKBUSD', contract_type: 'perpetual_futures', state: 'live', trading_status: 'operational', only_reduce_only_orders_allowed: false },
-        { id: 27, symbol: 'BTCUSD', contract_type: 'perpetual_futures', state: 'live', trading_status: 'operational', only_reduce_only_orders_allowed: false }
+        { id: 181689, symbol: 'XAUTUSD', contract_type: 'perpetual_futures', state: 'live', trading_status: 'operational', only_reduce_only_orders_allowed: false, tick_size: '0.1' },
+        { id: 182001, symbol: 'PAXGUSD', contract_type: 'perpetual_futures', state: 'live', trading_status: 'operational', only_reduce_only_orders_allowed: false, tick_size: '0.1' },
+        { id: 182002, symbol: 'NVDAXUSD', contract_type: 'perpetual_futures', state: 'live', trading_status: 'operational', only_reduce_only_orders_allowed: false, tick_size: '0.1' },
+        { id: 141835, symbol: 'SNDKBUSD', contract_type: 'perpetual_futures', state: 'live', trading_status: 'operational', only_reduce_only_orders_allowed: false, tick_size: '0.1' },
+        { id: 27, symbol: 'BTCUSD', contract_type: 'perpetual_futures', state: 'live', trading_status: 'operational', only_reduce_only_orders_allowed: false, tick_size: '0.1' }
       ], meta: {} });
     }
     if (parsed.pathname.startsWith('/v2/tickers/')) {
@@ -119,7 +121,9 @@ function fakeRuntime({
     if (parsed.pathname === '/v2/orders/history') return response({ success: true, result: orderHistory, meta: {} });
     if (parsed.pathname === '/v2/orders' && init.method === 'GET') return response({ success: true, result: [] });
     if (/^\/v2\/orders\/\d+$/.test(parsed.pathname) && init.method === 'GET') {
-      return latestOrder ? response({ success: true, result: latestOrder }) : response({ success: false }, 404);
+      const id = Number(parsed.pathname.split('/').pop());
+      const found = ordersById.get(id);
+      return found ? response({ success: true, result: found }) : response({ success: false }, 404);
     }
     if (parsed.pathname === '/v2/wallet/balances') {
       return response({ success: true, result: [], meta: { net_equity: String(equity), available_balance: String(available) } });
@@ -128,23 +132,38 @@ function fakeRuntime({
       hasPostedOrder = true;
       const clientOrderId = JSON.parse(init.body).client_order_id;
       const requestBody = JSON.parse(init.body);
+      const isProtection = Boolean(requestBody.stop_order_type);
       const order = {
-        id: 123, state: orderState, client_order_id: clientOrderId,
-        bracket_stop_loss_price: requestBody.bracket_stop_loss_price,
-        bracket_take_profit_price: requestBody.bracket_take_profit_price
+        id: nextOrderId++, product_id: requestBody.product_id,
+        size: requestBody.size, side: requestBody.side,
+        order_type: requestBody.order_type,
+        state: isProtection ? 'pending' : orderState,
+        client_order_id: clientOrderId,
+        reduce_only: requestBody.reduce_only === true,
+        stop_order_type: requestBody.stop_order_type || null,
+        stop_price: requestBody.stop_price ?? null
       };
-      if (['closed', 'filled'].includes(String(orderState).toLowerCase())) {
+      if (isProtection) {
+        order.unfilled_size = requestBody.size;
+      } else if (['closed', 'filled'].includes(String(orderState).toLowerCase())) {
         order.unfilled_size = 0;
         order.average_fill_price = String(orderAverageFillPrice);
       } else {
-        order.unfilled_size = 1;
+        order.unfilled_size = requestBody.size;
       }
       latestOrder = order;
+      ordersById.set(order.id, order);
       return response({ success: true, result: order });
     }
     if (parsed.pathname === '/v2/orders' && init.method === 'DELETE') {
-      if (latestOrder) latestOrder = { ...latestOrder, state: 'cancelled', unfilled_size: 0 };
-      return response({ success: true, result: { id: JSON.parse(init.body).id, state: 'cancelled' } });
+      const cancelId = Number(JSON.parse(init.body).id);
+      const current = ordersById.get(cancelId);
+      if (current) {
+        const cancelled = { ...current, state: 'cancelled' };
+        ordersById.set(cancelId, cancelled);
+        if (latestOrder?.id === cancelId) latestOrder = cancelled;
+      }
+      return response({ success: true, result: { id: cancelId, state: 'cancelled' } });
     }
     return response({ success: false, error: { code: 'unexpected_test_request' } }, 400);
   };
@@ -188,7 +207,7 @@ test('executor requires testnet and refuses any non-testnet URL', async () => {
   await assert.rejects(liveHost.getOpenPositions(), /hardcoded Testnet endpoint/);
 });
 
-test('bracket entry is a Testnet market order with exchange-side SL/TP and signed HMAC headers', async () => {
+test('entry is IOC limit followed by separately verified reduce-only SL and TP', async () => {
   const runtime = fakeRuntime({ timestamp: 1770000000000, markPrice: 60000 });
   const executor = createDeltaExecutor({
     env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database,
@@ -198,17 +217,27 @@ test('bracket entry is a Testnet market order with exchange-side SL/TP and signe
     strategy: 'MOMENTUM', clientOrderId: 'DDM-XAUTUSD-TEST-1'
   });
   assert.equal(order.id, 123);
-  const post = runtime.httpCalls.find(call => new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST');
-  assert.ok(post);
-  assert.equal(new URL(post.url).origin, DELTA_TESTNET_REST_BASE);
-  assert.equal(post.body.order_type, 'market_order');
-  assert.equal(post.body.limit_price, undefined);
-  assert.equal(post.body.bracket_stop_loss_price, '59000');
-  assert.equal(post.body.bracket_take_profit_price, '62000');
-  assert.equal(post.body.bracket_stop_trigger_method, 'mark_price');
-  assert.equal(post.body.client_order_id, 'DDM-XAUTUSD-TEST-1');
-  assert.match(post.init.headers.signature, /^[0-9a-f]{64}$/);
-  assert.equal(post.init.headers.timestamp, '1770000000');
+  assert.equal(order.filled_size, 1);
+  assert.equal(order.protection_verified, true);
+  const posts = runtime.httpCalls.filter(call => new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST');
+  assert.equal(posts.length, 3);
+  const entry = posts[0];
+  assert.equal(new URL(entry.url).origin, DELTA_TESTNET_REST_BASE);
+  assert.equal(entry.body.order_type, 'limit_order');
+  assert.equal(entry.body.time_in_force, 'ioc');
+  assert.equal(entry.body.limit_price, '60000.1');
+  assert.equal(entry.body.reduce_only, false);
+  assert.equal(entry.body.bracket_stop_loss_price, undefined);
+  assert.equal(entry.body.bracket_take_profit_price, undefined);
+  assert.equal(entry.body.client_order_id, 'DDM-XAUTUSD-TEST-1');
+  assert.equal(posts[1].body.stop_order_type, 'stop_loss_order');
+  assert.equal(posts[1].body.stop_price, '59000');
+  assert.equal(posts[1].body.reduce_only, true);
+  assert.equal(posts[2].body.stop_order_type, 'take_profit_order');
+  assert.equal(posts[2].body.stop_price, '62000');
+  assert.equal(posts[2].body.reduce_only, true);
+  assert.match(entry.init.headers.signature, /^[0-9a-f]{64}$/);
+  assert.equal(entry.init.headers.timestamp, '1770000000');
 });
 
 test('bracket entry blocks a Testnet mark drift larger than the signal stop distance', async () => {
@@ -219,7 +248,7 @@ test('bracket entry blocks a Testnet mark drift larger than the signal stop dist
   });
   await assert.rejects(
     executor.placeBracketOrder('XAUTUSD', 'BUY', 1, 100, 98.5, 103),
-    /signal risk envelope/
+    /risk envelope/
   );
   assert.equal(
     runtime.httpCalls.some(call => new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST'),
@@ -227,13 +256,13 @@ test('bracket entry blocks a Testnet mark drift larger than the signal stop dist
     'a mark drift larger than the SL risk distance must not submit an order'
   );
   const blocked = runtime.logs.find(row =>
-    row.message === '[Executor] Blocked bracket order: Testnet mark drift exceeds signal stop distance'
+    row.message === '[Executor] Entry blocked: Testnet mark is outside the validated risk envelope'
   );
-  assert.equal(blocked?.data?.reason, 'LIVE_MARK_DRIFT_EXCEEDS_STOP_DISTANCE');
-  assert.equal(blocked?.data?.bracketContainsLiveMark, true);
-  assert.equal(blocked?.data?.driftWithinStopDistance, false);
-  assert.equal(blocked?.data?.signalReferenceSource, 'production_public_market_data');
-  assert.equal(blocked?.data?.executionMarkSource, 'delta_india_testnet_rest');
+  assert.equal(blocked?.data?.reason, 'ENTRY_MARK_RISK_ENVELOPE_MISMATCH');
+  assert.equal(blocked?.data?.stopLossPrice, 98.5);
+  assert.equal(blocked?.data?.executionBlocked, true);
+  assert.equal(blocked?.data?.referenceEntryPrice, 100);
+  assert.equal(blocked?.data?.liveMarkPrice, 102.5);
 });
 
 test('large production/Testnet price divergence remains blocked before order submission', async () => {
@@ -243,39 +272,41 @@ test('large production/Testnet price divergence remains blocked before order sub
   });
   await assert.rejects(
     executor.placeBracketOrder('PAXGUSD', 'SELL', 1, 78.8, 80.0, 75.8),
-    /Live mark has moved outside the requested SL\/TP bracket/
+    /risk envelope/
   );
   assert.equal(
     runtime.httpCalls.some(call => new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST'),
     false
   );
   const blocked = runtime.logs.find(row =>
-    row.message === '[Executor] Blocked bracket order: live mark moved outside requested SL/TP bracket'
+    row.message === '[Executor] Entry blocked: Testnet mark is outside the validated risk envelope'
   );
-  assert.equal(blocked?.data?.reason, 'LIVE_MARK_OUTSIDE_BRACKET');
+  assert.equal(blocked?.data?.reason, 'ENTRY_MARK_RISK_ENVELOPE_MISMATCH');
   assert.ok(blocked?.data?.referenceDriftPct > 80);
   assert.equal(blocked?.data?.executionBlocked, true);
 });
 
-test('Grid bracket entry uses a GTC non-reduce-only limit order with exchange-side SL/TP', async () => {
-  const runtime = fakeRuntime({ orderState: 'open', markPrice: 2500 });
+test('Grid entries also use IOC limits and independent reduce-only protection', async () => {
+  const runtime = fakeRuntime({ orderState: 'closed', markPrice: 2500 });
   const executor = createDeltaExecutor({
     env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database
   });
   const order = await executor.placeBracketOrder('PAXGUSD', 'BUY', 1, 2500, 2462.5, 2575, {
-    strategy: 'GRID', clientOrderId: 'DDG-PAXGUSD-G07-TEST', orderType: 'limit_order'
+    strategy: 'GRID', clientOrderId: 'DDG-PAXGUSD-G07-TEST'
   });
   assert.equal(order.id, 123);
-  const post = runtime.httpCalls.find(call =>
+  const posts = runtime.httpCalls.filter(call =>
     new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST'
   );
-  assert.equal(post.body.order_type, 'limit_order');
-  assert.equal(post.body.time_in_force, 'gtc');
-  assert.equal(post.body.reduce_only, false);
-  assert.equal(post.body.limit_price, '2500');
-  assert.equal(post.body.bracket_stop_loss_price, '2462.5');
-  assert.equal(post.body.bracket_take_profit_price, '2575');
-  assert.equal(post.body.bracket_stop_trigger_method, 'mark_price');
+  assert.equal(posts.length, 3);
+  assert.equal(posts[0].body.order_type, 'limit_order');
+  assert.equal(posts[0].body.time_in_force, 'ioc');
+  assert.equal(posts[0].body.reduce_only, false);
+  assert.equal(posts[0].body.limit_price, '2500.1');
+  assert.equal(posts[1].body.stop_order_type, 'stop_loss_order');
+  assert.equal(posts[1].body.reduce_only, true);
+  assert.equal(posts[2].body.stop_order_type, 'take_profit_order');
+  assert.equal(posts[2].body.reduce_only, true);
 });
 
 test('pending Testnet Grid order cancellation is confirmed by a follow-up order lookup', async () => {
@@ -283,12 +314,13 @@ test('pending Testnet Grid order cancellation is confirmed by a follow-up order 
   const executor = createDeltaExecutor({
     env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database
   });
-  await executor.placeBracketOrder('XAUTUSD', 'BUY', 1, 60000, 59000, 62000, {
-    strategy: 'GRID', clientOrderId: 'DDG-XAUTUSD-G07-CANCEL', orderType: 'limit_order'
-  });
-  const cancelled = await executor.cancelOrderById(123);
+  await assert.rejects(executor.placeBracketOrder('XAUTUSD', 'BUY', 1, 60000, 59000, 62000, {
+    strategy: 'GRID', clientOrderId: 'DDG-XAUTUSD-G07-CANCEL'
+  }), /IOC entry was not filled/);
+  const cancelled = await executor.getOrderById(123);
   assert.equal(cancelled.id, 123);
   assert.equal(cancelled.state, 'cancelled');
+  assert.equal(cancelled.unfilled_size, 1);
   assert.ok(runtime.httpCalls.some(call =>
     new URL(call.url).pathname === '/v2/orders' && call.init.method === 'DELETE'
   ));
@@ -741,14 +773,14 @@ test('bracket entry fails closed if the live mark has crossed the requested SL/T
     executor.placeBracketOrder('XAUTUSD', 'SELL', 1, 60000, 61000, 59000, {
       strategy: 'MOMENTUM', clientOrderId: 'DDM-XAUTUSD-CROSSED'
     }),
-    /Live mark has moved outside the requested SL\/TP bracket/
+    /risk envelope/
   );
   assert.equal(
     runtime.httpCalls.some(call => new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST'),
     false,
     'stale/crossed bracket must be blocked before order submission'
   );
-  assert.ok(runtime.logs.some(row => row.message.includes('live mark moved outside requested SL/TP bracket')));
+  assert.ok(runtime.logs.some(row => row.message.includes('Entry blocked: Testnet mark is outside the validated risk envelope')));
 });
 
 test('closed REST order acknowledgement immediately polls and persists an OPEN position', async () => {
@@ -781,6 +813,8 @@ test('closed REST order acknowledgement immediately polls and persists an OPEN p
   assert.equal(position.qty, 1);
   assert.equal(position.status, 'OPEN');
   assert.equal(position.entry_price, 60010);
+  assert.equal(position.sl_price, 61000);
+  assert.equal(position.tp_price, 59000);
   assert.equal(position.order_id, '123');
   assert.equal(position.client_order_id, 'DDM-XAUTUSD-RESTFILL');
   assert.ok(runtime.logs.some(row =>

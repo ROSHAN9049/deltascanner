@@ -499,6 +499,65 @@ export function createDeltaExecutor({
     return order;
   }
 
+  async function moveStopLossToPrice({ symbol, positionSide, qty, stopPrice, orderId, expectedProductId }) {
+    return withSymbolLock(symbol, async () => {
+      const normalizedSymbol = stringOrEmpty(symbol).toUpperCase();
+      const side = stringOrEmpty(positionSide).toUpperCase();
+      const quantity = numberOrNull(qty);
+      const price = numberOrNull(stopPrice);
+      const id = numberOrNull(orderId);
+      await assertSafety(normalizedSymbol, 'EXIT');
+      if (!['BUY', 'SELL'].includes(side) || !Number.isSafeInteger(quantity) || quantity <= 0 ||
+          !(price > 0) || !Number.isSafeInteger(id) || id <= 0) {
+        throw new Error('Breakeven stop modification requires valid side, exact quantity, price and stop order id');
+      }
+      const positions = await getOpenPositions();
+      const position = positions.find(row => row.symbol === normalizedSymbol && row.qty > 0);
+      if (!position || position.side !== side || position.qty !== quantity) {
+        throw new Error('Breakeven stop modification blocked: exchange position side/quantity mismatch');
+      }
+      if (expectedProductId !== undefined && expectedProductId !== null &&
+          numberOrNull(expectedProductId) !== position.product_id) {
+        throw new Error('Breakeven stop modification blocked: Testnet product ID mismatch');
+      }
+      const product = await resolveProduct(normalizedSymbol, { entryOnly: false });
+      if (position.product_id !== null && position.product_id !== product.id) {
+        throw new Error('Breakeven stop modification blocked: resolved Testnet product differs from open position');
+      }
+      const current = await getOrderById(id);
+      if (numberOrNull(current.product_id) !== product.id ||
+          stringOrEmpty(current.stop_order_type).toLowerCase() !== 'stop_loss_order' ||
+          current.reduce_only !== true || numberOrNull(current.size) !== quantity ||
+          !['OPEN', 'PENDING'].includes(stringOrEmpty(current.state).toUpperCase())) {
+        throw new Error('Breakeven stop modification blocked: existing SL is not active, reduce-only and exact-quantity');
+      }
+      const currentStop = numberOrNull(current.stop_price);
+      if (side === 'BUY' && !(price >= currentStop)) {
+        throw new Error('Long breakeven stop must not loosen the existing stop');
+      }
+      if (side === 'SELL' && !(price <= currentStop)) {
+        throw new Error('Short breakeven stop must not loosen the existing stop');
+      }
+      await request('PUT', '/v2/orders', {}, { id, product_id: product.id, stop_price: String(price) });
+      const updated = await getOrderById(id);
+      const verifiedPrice = numberOrNull(updated.stop_price);
+      const tolerance = Math.max(Math.abs(price) * 1e-8, numberOrNull(product.tick_size) || 0);
+      if (updated.reduce_only !== true ||
+          stringOrEmpty(updated.stop_order_type).toLowerCase() !== 'stop_loss_order' ||
+          numberOrNull(updated.size) !== quantity ||
+          !['OPEN', 'PENDING'].includes(stringOrEmpty(updated.state).toUpperCase()) ||
+          verifiedPrice === null || Math.abs(verifiedPrice - price) > tolerance) {
+        throw new Error('Delta did not verify the updated reduce-only breakeven stop');
+      }
+      await logExecutor('INFO', '[Executor] Breakeven stop updated and verified on Delta Testnet', {
+        environment: 'testnet', symbol: normalizedSymbol, positionSide: side, qty: quantity,
+        orderId: id, previousStopPrice: currentStop, stopPrice: verifiedPrice,
+        productId: product.id, protectionVerified: true
+      });
+      return updated;
+    });
+  }
+
   async function cancelOrderById(orderId) {
     const id = numberOrNull(orderId);
     if (!Number.isSafeInteger(id) || id <= 0) {
@@ -1313,6 +1372,81 @@ export function createDeltaExecutor({
     });
   }
 
+  async function placeProtectionOrder(product, symbol, side, qty, stopPrice, stopType, clientOrderId, strategy) {
+    const body = {
+      product_id: product.id,
+      size: qty,
+      side: side.toLowerCase(),
+      order_type: 'market_order',
+      stop_order_type: stopType,
+      stop_price: String(stopPrice),
+      stop_trigger_method: 'mark_price',
+      reduce_only: true,
+      client_order_id: clientOrderId
+    };
+    const ack = await submitOrder(product, body, { strategy, role: 'PROTECTION' });
+    const orderId = numberOrNull(ack?.id);
+    if (!Number.isSafeInteger(orderId) || orderId <= 0) {
+      throw new Error(stopType + ' acknowledgement did not include an exchange order id');
+    }
+    const verified = await getOrderById(orderId);
+    const state = stringOrEmpty(verified?.state).toUpperCase();
+    if (stringOrEmpty(verified?.stop_order_type).toLowerCase() !== stopType ||
+        verified?.reduce_only !== true ||
+        numberOrNull(verified?.size) !== qty ||
+        !['OPEN', 'PENDING'].includes(state)) {
+      throw new Error(stopType + ' protection could not be verified as active, reduce-only and exact-quantity');
+    }
+    return verified;
+  }
+
+  async function emergencyCloseFilledEntry(product, symbol, entrySide, filledQty, entryClientOrderId, strategy) {
+    await assertSafety(symbol, 'EXIT');
+    const positions = await getOpenPositions();
+    const position = positions.find(row => row.symbol === symbol && row.qty > 0);
+    if (!position) {
+      await logExecutor('WARN', '[Executor] Emergency close not required; REST position snapshot is already flat', {
+        environment: 'testnet', symbol, filledQty, entryClientOrderId
+      });
+      return { state: 'ALREADY_FLAT' };
+    }
+    const expectedPositionSide = entrySide;
+    if (position.side !== expectedPositionSide) {
+      throw new Error('Emergency close blocked: exchange position side does not match the confirmed entry');
+    }
+    const closeQty = Math.min(filledQty, position.qty);
+    if (!Number.isSafeInteger(closeQty) || closeQty <= 0) {
+      throw new Error('Emergency close blocked: exchange position quantity is not a valid whole number');
+    }
+    const clientOrderId = buildClientOrderId(entryClientOrderId + '-EMERGENCY', 'DDE', symbol);
+    const body = {
+      product_id: product.id,
+      size: closeQty,
+      side: entrySide === 'BUY' ? 'sell' : 'buy',
+      order_type: 'market_order',
+      reduce_only: true,
+      client_order_id: clientOrderId
+    };
+    await logExecutor('ERROR', '[Executor] Protective order failure; submitting reduce-only emergency market close', {
+      environment: 'testnet', symbol, entrySide, filledQty, exchangePositionQty: position.qty,
+      emergencyCloseQty: closeQty, productId: product.id, clientOrderId
+    });
+    await submitOrder(product, body, { strategy, role: 'EMERGENCY_EXIT' });
+    const after = await getOpenPositions();
+    const remaining = after.find(row => row.symbol === symbol && row.qty > 0);
+    if (remaining && remaining.qty >= position.qty) {
+      throw new Error('CRITICAL: emergency reduce-only close was acknowledged but exchange position did not reduce');
+    }
+    if (remaining) {
+      throw new Error('CRITICAL: emergency close left residual exposure; position requires immediate reconciliation');
+    }
+    await logExecutor('ERROR', '[Executor] Emergency close verified flat on Delta Testnet', {
+      environment: 'testnet', symbol, closedQty: closeQty, clientOrderId,
+      positionStatus: 'FLAT', executionBlocked: true
+    });
+    return { state: 'CLOSED', client_order_id: clientOrderId, closed_qty: closeQty };
+  }
+
   async function placeBracketOrder(symbol, side, qty, entryPrice, slPrice, tpPrice, options = {}) {
     return withSymbolLock(symbol, async () => {
       const normalizedSymbol = stringOrEmpty(symbol).toUpperCase();
@@ -1323,41 +1457,20 @@ export function createDeltaExecutor({
       const target = numberOrNull(tpPrice);
       if (!['BUY', 'SELL'].includes(direction)) throw new Error('side must be BUY or SELL');
       if (!Number.isSafeInteger(quantity) || quantity <= 0) throw new Error('qty must be a positive whole number of contracts');
-      if (!(Number.isFinite(entry) && entry > 0)) {
-        await logExecutor('ERROR', '[Executor] Blocked bracket order: invalid entry price', {
-          environment: 'testnet', symbol: normalizedSymbol, entryPrice: entryPrice ?? null,
-          executionBlocked: true
-        });
-        throw new Error('Invalid entry price (must be finite and > 0)');
-      }
-      if (!(Number.isFinite(stop) && stop > 0)) {
-        await logExecutor('ERROR', '[Executor] Blocked bracket order: invalid SL price', {
-          environment: 'testnet', symbol: normalizedSymbol, stopLossPrice: slPrice ?? null,
-          executionBlocked: true
-        });
-        throw new Error('Invalid SL price (must be finite and > 0)');
-      }
-      if (!(Number.isFinite(target) && target > 0)) {
-        await logExecutor('ERROR', '[Executor] Blocked bracket order: invalid TP price', {
-          environment: 'testnet', symbol: normalizedSymbol, takeProfitPrice: tpPrice ?? null,
-          executionBlocked: true
-        });
-        throw new Error('Invalid TP price (must be finite and > 0)');
-      }
-      if (direction === 'BUY' && !(stop < entry && target > entry)) {
-        throw new Error('BUY bracket prices must satisfy SL < entry < TP');
-      }
-      if (direction === 'SELL' && !(target < entry && stop > entry)) {
-        throw new Error('SELL bracket prices must satisfy TP < entry < SL');
-      }
+      if (!(entry > 0 && Number.isFinite(entry))) throw new Error('Invalid entry price (must be finite and > 0)');
+      if (!(stop > 0 && Number.isFinite(stop))) throw new Error('Invalid SL price (must be finite and > 0)');
+      if (!(target > 0 && Number.isFinite(target))) throw new Error('Invalid TP price (must be finite and > 0)');
+      if (direction === 'BUY' && !(stop < entry && target > entry)) throw new Error('BUY bracket prices must satisfy SL < entry < TP');
+      if (direction === 'SELL' && !(target < entry && stop > entry)) throw new Error('SELL bracket prices must satisfy TP < entry < SL');
+
       const slDistancePct = Math.abs(stop - entry) / entry * 100;
       const minSlDistancePct = resolveMinimumStopDistancePct(process.env.DELTA_MIN_SL_DISTANCE_PCT);
       if (slDistancePct + 1e-9 < minSlDistancePct) {
-        await logExecutor('WARN', '[Executor] SL distance too tight; entry blocked', {
+        await logExecutor('WARN', '[Executor] SL distance too tight; entry blocked before Testnet order submission', {
           environment: 'testnet', symbol: normalizedSymbol, side: direction,
-          entryPrice: entry, stopLossPrice: stop, slDistancePct: Number(slDistancePct.toFixed(4)),
-          minimumSlDistancePct: minSlDistancePct, executionBlocked: true,
-          reason: 'SL_DISTANCE_BELOW_MINIMUM'
+          slDistancePct: Number(slDistancePct.toFixed(4)),
+          minimumSlDistancePct: minSlDistancePct,
+          executionBlocked: true
         });
         throw new Error('SL distance too tight (' + slDistancePct.toFixed(2) + '%), minimum required ' + minSlDistancePct.toFixed(2) + '%');
       }
@@ -1368,102 +1481,154 @@ export function createDeltaExecutor({
         throw new Error('Delta Testnet product ID changed since signal generation; entry blocked');
       }
 
-      let liveMarkPrice;
-      try {
-        liveMarkPrice = await getFreshMarkPrice(normalizedSymbol);
-      } catch (error) {
-        await logExecutor('WARN', '[Executor] Blocked bracket order: fresh mark price unavailable', {
-          environment: 'testnet', symbol: normalizedSymbol, referenceEntryPrice: entry,
-          stopLossPrice: stop, takeProfitPrice: target,
-          error: String(error?.message || error).slice(0, 200),
-          executionBlocked: true
-        });
-        throw new Error('Fresh Delta Testnet mark price unavailable; entry blocked');
-      }
+      const liveMarkPrice = await getFreshMarkPrice(normalizedSymbol);
       const bracketContainsLiveMark = direction === 'BUY'
         ? stop < liveMarkPrice && liveMarkPrice < target
         : target < liveMarkPrice && liveMarkPrice < stop;
-      const referenceDriftPct = entry > 0 ? Math.abs(liveMarkPrice - entry) / entry * 100 : null;
-      const driftWithinStopDistance = referenceDriftPct !== null &&
-        slDistancePct !== null && referenceDriftPct <= slDistancePct + 1e-9;
-      const maxCrossSourceMismatchPct = Math.max(0.1, Math.min(10,
+      const referenceDriftPct = Math.abs(liveMarkPrice - entry) / entry * 100;
+      const maxMismatchPct = Math.max(0.1, Math.min(10,
         numberOrNull(env.DELTA_MAX_LIVE_DEMO_PRICE_MISMATCH_PCT) ?? 1.5));
-      const crossSourceMismatchWithinLimit = referenceDriftPct !== null &&
-        referenceDriftPct <= maxCrossSourceMismatchPct + 1e-9;
-      if (!bracketContainsLiveMark || !driftWithinStopDistance || !crossSourceMismatchWithinLimit) {
-        const reason = !bracketContainsLiveMark
-          ? 'LIVE_MARK_OUTSIDE_BRACKET'
-          : !crossSourceMismatchWithinLimit
-            ? 'LIVE_DEMO_PRICE_MISMATCH_EXCEEDED'
-            : 'LIVE_MARK_DRIFT_EXCEEDS_STOP_DISTANCE';
-        const logMessage = !bracketContainsLiveMark
-          ? '[Executor] Blocked bracket order: live mark moved outside requested SL/TP bracket'
-          : !crossSourceMismatchWithinLimit
-            ? '[Executor] Blocked bracket order: Live signal and Demo execution price mismatch exceeded'
-            : '[Executor] Blocked bracket order: Testnet mark drift exceeds signal stop distance';
-        await logExecutor('WARN', logMessage, {
+      if (!bracketContainsLiveMark || referenceDriftPct > slDistancePct + 1e-9 ||
+          referenceDriftPct > maxMismatchPct + 1e-9) {
+        await logExecutor('WARN', '[Executor] Entry blocked: Testnet mark is outside the validated risk envelope', {
           environment: 'testnet', symbol: normalizedSymbol, side: direction,
           referenceEntryPrice: entry, liveMarkPrice, referenceDriftPct, slDistancePct,
-          stopLossPrice: stop, takeProfitPrice: target,
-          signalReferenceSource: 'production_public_market_data',
-          executionMarkSource: 'delta_india_testnet_rest',
-          bracketContainsLiveMark,
-          driftWithinStopDistance,
-          maxCrossSourceMismatchPct,
-          crossSourceMismatchWithinLimit,
-          executionBlocked: true, reason
+          stopLossPrice: stop, takeProfitPrice: target, maxMismatchPct,
+          executionBlocked: true, reason: 'ENTRY_MARK_RISK_ENVELOPE_MISMATCH'
         });
-        const errorMessage = !bracketContainsLiveMark
-          ? 'Live mark has moved outside the requested SL/TP bracket; refresh signal before entry'
-          : !crossSourceMismatchWithinLimit
-            ? 'Live/Demo price mismatch exceeds ' + maxCrossSourceMismatchPct.toFixed(2) + '%; refresh signal before entry'
-            : 'Live Testnet mark no longer matches the signal risk envelope; refresh signal before entry';
-        throw new Error(errorMessage);
+        throw new Error('Fresh Testnet mark no longer matches the requested SL/TP risk envelope');
       }
 
+      const tickSize = numberOrNull(product?.tick_size);
+      if (!(tickSize > 0)) throw new Error('Verified Testnet product tick_size is unavailable; IOC entry blocked');
+      const bufferedPrice = direction === 'BUY' ? liveMarkPrice + tickSize : liveMarkPrice - tickSize;
+      if (!(bufferedPrice > 0)) throw new Error('IOC entry price is invalid after directional tick buffer');
+      const limitPrice = Number((direction === 'BUY'
+        ? Math.ceil(bufferedPrice / tickSize - 1e-10) * tickSize
+        : Math.floor(bufferedPrice / tickSize + 1e-10) * tickSize).toPrecision(12));
       const strategy = strategyValue(options?.strategy);
       const prefix = strategy === 'MOMENTUM' ? 'DDM' : strategy === 'SCALPING' ? 'DDS' : 'DDG';
-      const requestedOrderType = String(options?.orderType || 'market_order').trim().toLowerCase();
-      if (!['market_order', 'limit_order'].includes(requestedOrderType)) {
-        throw new Error('Grid bracket order type must be market_order or limit_order');
-      }
-      const body = {
-        product_id: product.id,
-        size: quantity,
-        side: direction.toLowerCase(),
-        order_type: requestedOrderType,
-        client_order_id: buildClientOrderId(options?.clientOrderId, prefix, normalizedSymbol),
-        bracket_stop_loss_price: String(stop),
-        bracket_take_profit_price: String(target),
-        bracket_stop_trigger_method: 'mark_price',
-        ...(requestedOrderType === 'limit_order'
-          ? { limit_price: String(entry), time_in_force: 'gtc', reduce_only: false }
-          : {})
+      const entryClientOrderId = buildClientOrderId(options?.clientOrderId, prefix, normalizedSymbol);
+      const entryBody = {
+        product_id: product.id, size: quantity, side: direction.toLowerCase(),
+        order_type: 'limit_order', limit_price: String(limitPrice),
+        time_in_force: 'ioc', reduce_only: false, client_order_id: entryClientOrderId
       };
+      await logExecutor('INFO', '[Executor] Submitting IOC entry before separate protective orders', {
+        environment: 'testnet', symbol: normalizedSymbol, side: direction,
+        requestedQty: quantity, referenceEntryPrice: entry, markPrice: liveMarkPrice,
+        limitPrice, tickSize, timeInForce: 'ioc', clientOrderId: entryClientOrderId,
+        stopLossPrice: stop, takeProfitPrice: target
+      });
 
-      await logExecutor(
-        'INFO',
-        '[Executor] Preparing Testnet ' + requestedOrderType.replace('_', ' ') + ' bracket order',
-        {
-          environment: 'testnet',
-          symbol: normalizedSymbol,
-          side: direction,
-          qty: quantity,
-          orderType: body.order_type,
-          referenceEntryPrice: entry,
-          stopLossPrice: stop,
-          takeProfitPrice: target,
-          bracketStopTriggerMethod: body.bracket_stop_trigger_method,
-          clientOrderId: body.client_order_id
-        }
-      );
-
-      return submitOrder(product, body, {
-        strategy,
-        role: 'ENTRY',
-        referenceEntryPrice: entry,
+      let entryOrder = await submitOrder(product, entryBody, {
+        strategy, role: 'ENTRY', referenceEntryPrice: limitPrice,
         signalGeneratedAt: options?.signalGeneratedAt ?? null
       });
+      let latestOrder = entryOrder;
+      if (numberOrNull(latestOrder?.unfilled_size) === null && numberOrNull(latestOrder?.id) > 0) {
+        latestOrder = await getOrderById(latestOrder.id);
+      }
+      let unfilled = numberOrNull(latestOrder?.unfilled_size);
+      if (unfilled === null || unfilled < 0 || unfilled > quantity) {
+        throw new Error('IOC fill quantity is ambiguous; refusing to place protection or submit a second entry');
+      }
+      const filledQty = quantity - unfilled;
+      const orderId = numberOrNull(latestOrder?.id);
+      if (orderId > 0 && unfilled > 0 &&
+          !['CANCELLED', 'CANCELED', 'CLOSED', 'FILLED', 'REJECTED', 'FAILED', 'EXPIRED'].includes(stringOrEmpty(latestOrder?.state).toUpperCase())) {
+        latestOrder = await cancelOrderById(orderId);
+        unfilled = numberOrNull(latestOrder?.unfilled_size);
+        if (unfilled === null || unfilled < 0 || unfilled > quantity) {
+          throw new Error('IOC remainder cancellation left fill quantity ambiguous; manual reconciliation required');
+        }
+      }
+      const confirmedFillQty = quantity - unfilled;
+      if (confirmedFillQty <= 0) {
+        await logExecutor('WARN', '[Executor] IOC entry produced zero fill; no SL/TP orders submitted', {
+          environment: 'testnet', symbol: normalizedSymbol, requestedQty: quantity,
+          unfilledSize: unfilled, orderId: latestOrder?.id ?? null,
+          state: latestOrder?.state ?? null, executionBlocked: true
+        });
+        throw new Error('IOC entry was not filled; no position or protective orders created');
+      }
+      if (confirmedFillQty !== filledQty) {
+        throw new Error('IOC fill quantity changed during remainder cancellation; reconciliation required before protection');
+      }
+      const averageFillPrice = numberOrNull(latestOrder?.average_fill_price);
+      if (!(averageFillPrice > 0)) {
+        throw new Error('IOC fill is confirmed but average_fill_price is missing; protective placement blocked for reconciliation');
+      }
+
+      const slClientId = buildClientOrderId(entryClientOrderId + '-SL', prefix, normalizedSymbol);
+      const tpClientId = buildClientOrderId(entryClientOrderId + '-TP', prefix, normalizedSymbol);
+      let slOrder = null;
+      let tpOrder = null;
+      try {
+        slOrder = await placeProtectionOrder(product, normalizedSymbol,
+          direction === 'BUY' ? 'SELL' : 'BUY', confirmedFillQty, stop,
+          'stop_loss_order', slClientId, strategy);
+        tpOrder = await placeProtectionOrder(product, normalizedSymbol,
+          direction === 'BUY' ? 'SELL' : 'BUY', confirmedFillQty, target,
+          'take_profit_order', tpClientId, strategy);
+      } catch (protectionError) {
+        if (slOrder?.id) {
+          try { await cancelOrderById(slOrder.id); }
+          catch (cancelError) {
+            await logExecutor('ERROR', '[Executor] Could not cancel orphaned SL after TP placement failure', {
+              environment: 'testnet', symbol: normalizedSymbol, orderId: slOrder.id,
+              error: String(cancelError?.message || cancelError).slice(0, 220)
+            });
+          }
+        }
+        try {
+          await emergencyCloseFilledEntry(product, normalizedSymbol, direction, confirmedFillQty,
+            entryClientOrderId, strategy);
+        } catch (closeError) {
+          await logExecutor('ERROR', '[Executor] CRITICAL: protection failed and emergency close is not verified; exposure requires immediate operator intervention', {
+            environment: 'testnet', symbol: normalizedSymbol, filledQty: confirmedFillQty,
+            entryOrderId: latestOrder?.id ?? null,
+            protectionError: String(protectionError?.message || protectionError).slice(0, 220),
+            emergencyCloseError: String(closeError?.message || closeError).slice(0, 220),
+            executionBlocked: true, positionStatus: 'UNVERIFIED'
+          });
+          throw new Error('CRITICAL: SL/TP protection failed and emergency close could not be verified: ' +
+            String(closeError?.message || closeError));
+        }
+        throw new Error('SL/TP protection failed; filled entry was emergency-closed: ' +
+          String(protectionError?.message || protectionError));
+      }
+
+      // Re-persist the canonical Delta position after both child orders are verified.
+      // The initial entry acknowledgement is intentionally bracket-free, so its first
+      // position projection cannot yet contain the exchange-side SL/TP prices.
+      await persistRestConfirmedPosition({
+        product,
+        body: {
+          ...entryBody,
+          bracket_stop_loss_price: String(stop),
+          bracket_take_profit_price: String(target)
+        },
+        order: latestOrder,
+        clientOrderId: entryClientOrderId,
+        strategy
+      });
+
+      await logExecutor('INFO', '[Executor] Entry fill protected by separately verified reduce-only SL and TP orders', {
+        environment: 'testnet', symbol: normalizedSymbol, side: direction,
+        requestedQty: quantity, filledQty: confirmedFillQty, unfilledQty: unfilled,
+        averageFillPrice, entryOrderId: latestOrder?.id ?? null,
+        stopLossOrderId: slOrder.id, takeProfitOrderId: tpOrder.id,
+        stopLossPrice: stop, takeProfitPrice: target,
+        protectionVerified: true
+      });
+      return {
+        ...latestOrder, filled_size: confirmedFillQty, unfilled_size: unfilled,
+        average_fill_price: averageFillPrice,
+        protection_verified: true,
+        stop_loss_order_id: slOrder.id,
+        take_profit_order_id: tpOrder.id
+      };
     });
   }
 
@@ -1732,6 +1897,7 @@ export function createDeltaExecutor({
     getOrderById,
     getOrderByClientOrderId,
     cancelOrderById,
+    moveStopLossToPrice,
     getFillsPage,
     getWalletTransactionsPage,
     getAccountSnapshot,

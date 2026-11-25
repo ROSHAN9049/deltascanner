@@ -30,13 +30,13 @@ test('selects the highest-turnover symbols without duplicates', () => {
   assert.deepEqual([...symbols], ['HIGHUSD', 'MIDUSD', 'LOWUSD']);
 });
 
-test('retains only selected 1m/5m/15m series plus the BTC hourly regime', () => {
+test('retains selected 1m/5m/15m/1h series for the selected candle universe', () => {
   const selected = new Set(['BTCUSD', 'ETHUSD']);
   assert.equal(shouldRetainCandleCacheKey('1m:BTCUSD', selected), true);
   assert.equal(shouldRetainCandleCacheKey('15m:ETHUSD', selected), true);
   assert.equal(shouldRetainCandleCacheKey('5m:SNDKBUSD', selected), false);
   assert.equal(shouldRetainCandleCacheKey('1h:BTCUSD', selected), true);
-  assert.equal(shouldRetainCandleCacheKey('1h:ETHUSD', selected), false);
+  assert.equal(shouldRetainCandleCacheKey('1h:ETHUSD', selected), true);
   assert.equal(shouldRetainCandleCacheKey('options:BTCUSD', selected), false);
 });
 
@@ -45,7 +45,8 @@ test('prunes candle series, per-series metadata, and healing keys outside the se
     ['1m:BTCUSD', [1, 2]],
     ['5m:ETHUSD', [1, 2]],
     ['15m:LOWUSD', [1, 2]],
-    ['1h:BTCUSD', [1, 2]]
+    ['1h:BTCUSD', [1, 2]],
+    ['1h:ETHUSD', [1, 2]]
   ]);
   const metadata = new Map([
     ['1m:BTCUSD', 1],
@@ -60,7 +61,7 @@ test('prunes candle series, per-series metadata, and healing keys outside the se
     healingInFlight: inFlight
   });
   assert.deepEqual(result, { removedSeries: 1, removedMetadataEntries: 2, removedHealingKeys: 1 });
-  assert.deepEqual([...candles.keys()].sort(), ['1h:BTCUSD', '1m:BTCUSD', '5m:ETHUSD']);
+  assert.deepEqual([...candles.keys()].sort(), ['1h:BTCUSD', '1h:ETHUSD', '1m:BTCUSD', '5m:ETHUSD']);
   assert.deepEqual([...metadata.keys()], ['1m:BTCUSD']);
   assert.deepEqual([...inFlight], ['1m:BTCUSD']);
 });
