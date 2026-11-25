@@ -52,6 +52,7 @@ import { cleanupWebSocketListeners } from './websocket-lifecycle.mjs';
 import { evaluateGlobalPositionCap, routeUnlessGlobalPositionCapBlocked } from './global-position-cap.mjs';
 import { createConfirmedSignalTelegramNotifier } from './telegram-alerts.mjs';
 import { createLeaseManager, getLeaseTtlSeconds } from './lease-manager.mjs';
+import { resolveSignalCandleMinute } from '../shared/signal-candle-minute.js';
 import { buildAdaptiveVolatilityShadowObservation, getAdaptiveVolatilityImpulse, inferAdaptiveVolatilityShadowSide, processAdaptiveVolatilityShadowCycle } from './adaptive-volatility-shadow.mjs';
 import { recordPaperOptionEntry, refreshPaperOptionTrades } from './paper-options-ledger.mjs';
 
@@ -1127,16 +1128,29 @@ export class DeltaEngine {
     const symbols = verifiedPool.map(row => row.symbol);
     const requestedPoolSymbols = symbols;
     const maxConcurrentSymbols = Number(CONFIG.gridMaxConcurrentSymbols) || 2;
-    const autoRangeResult = await this.refreshAutoGridRanges(settings, symbols, {
-      forceSnapshot: !this.gridAtrSnapshotInitialized
-    });
+    // An empty verified pool is a valid "no eligible market" outcome, not an
+    // Auto-Range configuration error. Do not call range reconciliation with
+    // zero symbols; preserve existing ranges and report the waiting state.
+    const autoRangeResult = symbols.length > 0
+      ? await this.refreshAutoGridRanges(settings, symbols, {
+          forceSnapshot: !this.gridAtrSnapshotInitialized
+        })
+      : {
+          settings,
+          blocked: false,
+          applied: false,
+          skipped: true,
+          reason: 'WAITING_FOR_QUALIFIED_GRID_POOL'
+        };
     const executionSettings = autoRangeResult.settings || settings;
     if (CONFIG.gridExecutionAllowed !== true || CONFIG.directDeltaExecutionEnabled !== true ||
         CONFIG.deltaExecutionMode !== 'testnet' || CONFIG.environment !== 'TESTNET' ||
         symbols.length < 1 || symbols.length > 6 || account.privateApiAvailable !== true) {
       this.lastGridTestnetDiagnostics = {
         executionMode: 'testnet',
-        gridExecutionAllowed: false,
+        gridExecutionAllowed: CONFIG.gridExecutionAllowed === true &&
+          CONFIG.directDeltaExecutionEnabled === true &&
+          CONFIG.deltaExecutionMode === 'testnet' && CONFIG.environment === 'TESTNET',
         poolSymbols: requestedPoolSymbols,
         symbols: [],
         activeSymbols: [],
@@ -1147,8 +1161,14 @@ export class DeltaEngine {
         gridAutoRangeEnvironmentEnabled: CONFIG.gridAutoRangeEnabled === true,
         gridAutoRangeBlocked: autoRangeResult.blocked === true,
         gridAutoRangeApplied: autoRangeResult.applied === true,
+        gridAutoRangeStatus: autoRangeResult.reason ||
+          (autoRangeResult.applied ? 'APPLIED' : 'CURRENT'),
         executionLocked: true,
-        status: account.privateApiAvailable === true ? 'GRID_EXECUTION_DISABLED' : 'WAITING_FOR_PRIVATE_API',
+        status: symbols.length === 0
+          ? 'WAITING_FOR_QUALIFIED_GRID_POOL'
+          : account.privateApiAvailable !== true
+            ? 'WAITING_FOR_PRIVATE_API'
+            : 'GRID_EXECUTION_DISABLED',
         orderRoutingAttempted: false,
         updatedAt: iso()
       };
@@ -1249,6 +1269,8 @@ export class DeltaEngine {
       gridAutoRangeEnvironmentEnabled: CONFIG.gridAutoRangeEnabled === true,
       gridAutoRangeBlocked: autoRangeResult.blocked === true,
       gridAutoRangeApplied: autoRangeResult.applied === true,
+      gridAutoRangeStatus: autoRangeResult.reason ||
+        (autoRangeResult.applied ? 'APPLIED' : 'CURRENT'),
       gridAutoRangeWaitingForFlat: autoRangeResult.waitingForFlat || [],
       gridAutoRangePendingSymbols: autoRangeResult.pendingSymbols || [],
       gridAutoRangeLastAppliedUtcDay: executionSettings.grid_state?.autoRangeLastAppliedUtcDay || null,
@@ -2109,7 +2131,12 @@ export class DeltaEngine {
           ticker, candles, config: settings.grid_symbol_configs?.[symbol] || {}, settings
         });
         if (!screen.qualified) {
-          rejected.push({ symbol, reason: screen.blockReason || 'GRID_SCREEN_FAILED' });
+          rejected.push({
+            symbol,
+            reason: screen.blockReason || 'GRID_SCREEN_FAILED',
+            reasons: Array.isArray(screen.reasons) ? screen.reasons : [],
+            screen
+          });
           continue;
         }
         qualified.push({
@@ -4868,10 +4895,15 @@ export class DeltaEngine {
     // Testnet is a separate, hardcoded Demo-only execution route. The existing
     // Tradetron branch below remains unchanged for DELTA_EXECUTION_MODE=disabled.
     if (CONFIG.deltaExecutionMode === 'testnet' && ['MOMENTUM', 'SCALPING'].includes(strategy)) {
-      const signalCandle = Number(signal.signalCandleTs || signal.candleTs || 0);
-      const normalizedCandleMs = signalCandle > 1e12 ? signalCandle
-        : signalCandle > 1e9 ? signalCandle * 1000 : Date.now();
-      const stableMinute = Math.floor(normalizedCandleMs / 60000).toString(36);
+      const signalMinute = resolveSignalCandleMinute(signal);
+      if (!signalMinute) {
+        await this.log('WARN', 'Delta Testnet entry blocked: signal candle timestamp is missing or invalid', {
+          symbol: signal.symbol, strategy, side: signal.side,
+          executionBlocked: true, orderRoutingAttempted: false
+        }).catch(() => {});
+        return false;
+      }
+      const stableMinute = signalMinute.toString(36);
       const entryCid = (strategy === 'MOMENTUM' ? 'DDM-' : 'DDS-') +
         String(signal.symbol || '').toUpperCase().slice(0, 10) + '-' + stableMinute;
       const priorTestnetOrders = await db.select(
