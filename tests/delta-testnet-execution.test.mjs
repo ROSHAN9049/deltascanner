@@ -813,6 +813,8 @@ test('closed REST order acknowledgement immediately polls and persists an OPEN p
   assert.equal(position.qty, 1);
   assert.equal(position.status, 'OPEN');
   assert.equal(position.entry_price, 60010);
+  assert.equal(position.sl_price, 61000);
+  assert.equal(position.tp_price, 59000);
   assert.equal(position.order_id, '123');
   assert.equal(position.client_order_id, 'DDM-XAUTUSD-RESTFILL');
   assert.ok(runtime.logs.some(row =>

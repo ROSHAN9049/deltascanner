@@ -1599,6 +1599,21 @@ export function createDeltaExecutor({
           String(protectionError?.message || protectionError));
       }
 
+      // Re-persist the canonical Delta position after both child orders are verified.
+      // The initial entry acknowledgement is intentionally bracket-free, so its first
+      // position projection cannot yet contain the exchange-side SL/TP prices.
+      await persistRestConfirmedPosition({
+        product,
+        body: {
+          ...entryBody,
+          bracket_stop_loss_price: String(stop),
+          bracket_take_profit_price: String(target)
+        },
+        order: latestOrder,
+        clientOrderId: entryClientOrderId,
+        strategy
+      });
+
       await logExecutor('INFO', '[Executor] Entry fill protected by separately verified reduce-only SL and TP orders', {
         environment: 'testnet', symbol: normalizedSymbol, side: direction,
         requestedQty: quantity, filledQty: confirmedFillQty, unfilledQty: unfilled,
