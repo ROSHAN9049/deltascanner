@@ -37,6 +37,7 @@ import { buildApiDerivedTrackingPlan, strategyForDerivedTrade } from './tradetro
 import { deltaExecutor } from './execution/delta-executor.mjs';
 import { closeTrackedPosition, parseEnrolledPositionIds, resolveExitLifecycleBoundary, runAutomaticPositionExitCycle } from './execution/exit-lifecycle.mjs';
 import { projectCanonicalDeltaBrackets } from './execution/delta-position-projection.mjs';
+import { resolveBracketChildOrderIds } from './execution/bracket-child-order-ids.mjs';
 import { manageDeltaTestnetMultiGrid } from './execution/delta-multi-grid-engine.mjs';
 import { calculateAutoGridRange, calculateAtrGridRange, hasGridAutoRangeExposure, isAutoGridRangeRefreshDue, isGridAtrSnapshotRefreshRequired, selectLatestCompletedDailyCandle, utcDayKey } from '../shared/grid-auto-range.js';
 import { assertDirectDeltaExecutionMode, getExecutionRouteBlockReason, DELTA_TESTNET_FUTURES_ALLOWLIST, isAllowedDeltaTestnetFutureSymbol, isEligibleDeltaTestnetPerpetualProduct, isMarketTickFresh, canStartWorkerInExecutionProfile } from './execution/execution-route-policy.mjs';
@@ -5120,6 +5121,11 @@ export class DeltaEngine {
       near(o.stop_price || o.bracket_take_profit_price, tp)
     );
     const bracketVerified = bracketExistsByApi || hasCombinedBracket || (hasSeparateStop && hasSeparateTakeProfit);
+    // Exchange open-orders are authoritative for the actual child order IDs.
+    // Persist the SL and TP IDs separately; the parent entry order ID is not a child ID.
+    const bracketChildOrderIds = resolveBracketChildOrderIds(protectedOrders, {
+      productId, qty, stopPrice: stop, takeProfitPrice: tp, tickSize: tick
+    });
 
     const tp1Cid = ('TP1-' + String(row.execution_id).replace(/[^a-zA-Z0-9]/g, '')).slice(0, 32);
     const tp1Existing = protectedOrders.find(o =>
@@ -5167,13 +5173,22 @@ export class DeltaEngine {
 
     const verified = bracketVerified && !!tp1OrderId;
     if (verified) {
-      await db.update('dd_positions', 'execution_id=eq.' + encodeURIComponent(row.execution_id), {
+      const protectionPatch = {
         protection_verified: true,
         tp1_order_id: tp1OrderId,
         updated_at: iso()
-      });
+      };
+      if (bracketChildOrderIds.stopLossOrderId) {
+        protectionPatch.protection_order_id = bracketChildOrderIds.stopLossOrderId;
+      }
+      if (bracketChildOrderIds.takeProfitOrderId) {
+        protectionPatch.tp_order_id = bracketChildOrderIds.takeProfitOrderId;
+      }
+      await db.update('dd_positions', 'execution_id=eq.' + encodeURIComponent(row.execution_id), protectionPatch);
       await this.log('INFO', 'Recovered TESTNET position protection verified', {
-        symbol: row.symbol, executionId: row.execution_id, qty, stop, tp1, tp, tp1OrderId
+        symbol: row.symbol, executionId: row.execution_id, qty, stop, tp1, tp, tp1OrderId,
+        stopLossOrderId: bracketChildOrderIds.stopLossOrderId,
+        takeProfitOrderId: bracketChildOrderIds.takeProfitOrderId
       });
     }
     return verified;
@@ -5227,6 +5242,34 @@ export class DeltaEngine {
         stop: bracketProjection.patch.stop_price ?? row.stop_price,
         target: bracketProjection.patch.tp_price ?? row.tp_price,
         entryOrderId: row.entry_order_id
+      });
+    }
+    // Refresh child IDs even for positions already marked protection_verified.
+    // The verification flag can predate the child-ID persistence fix.
+    const currentBracketChildIds = resolveBracketChildOrderIds(openOrders, {
+      productId: n(row.product_id || exchangePosition?.product_id),
+      qty,
+      stopPrice: row.stop_price,
+      takeProfitPrice: row.tp_price,
+      tickSize: n(this.productMap.get(row.symbol)?.tick_size) || n(row.tick_size) || 0
+    });
+    const childIdPatch = {};
+    if (currentBracketChildIds.stopLossOrderId &&
+        String(row.protection_order_id || '') !== currentBracketChildIds.stopLossOrderId) {
+      childIdPatch.protection_order_id = currentBracketChildIds.stopLossOrderId;
+    }
+    if (currentBracketChildIds.takeProfitOrderId &&
+        String(row.tp_order_id || '') !== currentBracketChildIds.takeProfitOrderId) {
+      childIdPatch.tp_order_id = currentBracketChildIds.takeProfitOrderId;
+    }
+    if (Object.keys(childIdPatch).length && row.execution_id) {
+      childIdPatch.updated_at = iso();
+      await db.update('dd_positions', 'execution_id=eq.' + encodeURIComponent(row.execution_id), childIdPatch);
+      Object.assign(row, childIdPatch);
+      await this.log('INFO', 'Existing TESTNET bracket child order IDs synchronized from exchange open orders', {
+        symbol: row.symbol, executionId: row.execution_id,
+        stopLossOrderId: currentBracketChildIds.stopLossOrderId,
+        takeProfitOrderId: currentBracketChildIds.takeProfitOrderId
       });
     }
     const mark = n(exchangePosition.mark_price || this.tickerMap.get(row.symbol)?.mark_price || row.current_price);
