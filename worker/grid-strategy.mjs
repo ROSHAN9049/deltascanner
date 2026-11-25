@@ -1,8 +1,27 @@
-import { DELTA_TESTNET_FUTURES_ALLOWLIST } from './execution/execution-route-policy.mjs';
-
 const n = value => Number.isFinite(Number(value)) ? Number(value) : 0;
 const clamp = (value, min, max) => Math.max(min, Math.min(max, n(value)));
-export const GRID_SYMBOLS = Object.freeze([...new Set(['BTCUSD', 'ETHUSD', ...DELTA_TESTNET_FUTURES_ALLOWLIST])]);
+export const GRID_VERIFIED_POOL = new Map();
+
+export function setGridVerifiedPool(rows = []) {
+  GRID_VERIFIED_POOL.clear();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const symbol = String(row?.symbol || '').trim().toUpperCase();
+    const productId = Number(row?.productId ?? row?.product_id);
+    const product = row?.product || {};
+    if (!/^[A-Z0-9]{2,20}USD$/.test(symbol) ||
+        !Number.isSafeInteger(productId) || productId <= 0 ||
+        Number(product.id ?? product.product_id) !== productId ||
+        String(product.contract_type || '').toLowerCase() !== 'perpetual_futures' ||
+        String(product.state || '').toLowerCase() !== 'live' ||
+        String(product.trading_status || '').toLowerCase() !== 'operational' ||
+        (product.only_reduce_only_orders_allowed ?? product.product_specs?.only_reduce_only_orders_allowed) !== false ||
+        row?.screen?.qualified !== true) continue;
+    GRID_VERIFIED_POOL.set(symbol, Object.freeze({
+      symbol, productId, product, screen: row.screen, verifiedAt: row.verifiedAt || new Date().toISOString()
+    }));
+  }
+  return [...GRID_VERIFIED_POOL.values()];
+}
 
 export function buildGridLevels(lowerPrice, upperPrice, levelCount) {
   const lower = n(lowerPrice), upper = n(upperPrice), count = Math.round(n(levelCount));
@@ -22,8 +41,8 @@ export function buildGridLevels(lowerPrice, upperPrice, levelCount) {
 }
 
 export function normalizeGridConfig(settings = {}) {
-  const symbol = GRID_SYMBOLS.includes(String(settings.grid_symbol || '').toUpperCase())
-    ? String(settings.grid_symbol || '').toUpperCase() : 'ETHUSD';
+  const requestedSymbol = String(settings.grid_symbol || '').trim().toUpperCase();
+  const symbol = /^[A-Z0-9]{2,20}USD$/.test(requestedSymbol) ? requestedSymbol : '';
   const lowerPrice = n(settings.grid_lower_price);
   const upperPrice = n(settings.grid_upper_price);
   const levelCount = Math.round(clamp(settings.grid_levels_count || 10, 8, 12));

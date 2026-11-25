@@ -499,6 +499,65 @@ export function createDeltaExecutor({
     return order;
   }
 
+  async function moveStopLossToPrice({ symbol, positionSide, qty, stopPrice, orderId, expectedProductId }) {
+    return withSymbolLock(symbol, async () => {
+      const normalizedSymbol = stringOrEmpty(symbol).toUpperCase();
+      const side = stringOrEmpty(positionSide).toUpperCase();
+      const quantity = numberOrNull(qty);
+      const price = numberOrNull(stopPrice);
+      const id = numberOrNull(orderId);
+      await assertSafety(normalizedSymbol, 'EXIT');
+      if (!['BUY', 'SELL'].includes(side) || !Number.isSafeInteger(quantity) || quantity <= 0 ||
+          !(price > 0) || !Number.isSafeInteger(id) || id <= 0) {
+        throw new Error('Breakeven stop modification requires valid side, exact quantity, price and stop order id');
+      }
+      const positions = await getOpenPositions();
+      const position = positions.find(row => row.symbol === normalizedSymbol && row.qty > 0);
+      if (!position || position.side !== side || position.qty !== quantity) {
+        throw new Error('Breakeven stop modification blocked: exchange position side/quantity mismatch');
+      }
+      if (expectedProductId !== undefined && expectedProductId !== null &&
+          numberOrNull(expectedProductId) !== position.product_id) {
+        throw new Error('Breakeven stop modification blocked: Testnet product ID mismatch');
+      }
+      const product = await resolveProduct(normalizedSymbol, { entryOnly: false });
+      if (position.product_id !== null && position.product_id !== product.id) {
+        throw new Error('Breakeven stop modification blocked: resolved Testnet product differs from open position');
+      }
+      const current = await getOrderById(id);
+      if (numberOrNull(current.product_id) !== product.id ||
+          stringOrEmpty(current.stop_order_type).toLowerCase() !== 'stop_loss_order' ||
+          current.reduce_only !== true || numberOrNull(current.size) !== quantity ||
+          !['OPEN', 'PENDING'].includes(stringOrEmpty(current.state).toUpperCase())) {
+        throw new Error('Breakeven stop modification blocked: existing SL is not active, reduce-only and exact-quantity');
+      }
+      const currentStop = numberOrNull(current.stop_price);
+      if (side === 'BUY' && !(price >= currentStop)) {
+        throw new Error('Long breakeven stop must not loosen the existing stop');
+      }
+      if (side === 'SELL' && !(price <= currentStop)) {
+        throw new Error('Short breakeven stop must not loosen the existing stop');
+      }
+      await request('PUT', '/v2/orders', {}, { id, product_id: product.id, stop_price: String(price) });
+      const updated = await getOrderById(id);
+      const verifiedPrice = numberOrNull(updated.stop_price);
+      const tolerance = Math.max(Math.abs(price) * 1e-8, numberOrNull(product.tick_size) || 0);
+      if (updated.reduce_only !== true ||
+          stringOrEmpty(updated.stop_order_type).toLowerCase() !== 'stop_loss_order' ||
+          numberOrNull(updated.size) !== quantity ||
+          !['OPEN', 'PENDING'].includes(stringOrEmpty(updated.state).toUpperCase()) ||
+          verifiedPrice === null || Math.abs(verifiedPrice - price) > tolerance) {
+        throw new Error('Delta did not verify the updated reduce-only breakeven stop');
+      }
+      await logExecutor('INFO', '[Executor] Breakeven stop updated and verified on Delta Testnet', {
+        environment: 'testnet', symbol: normalizedSymbol, positionSide: side, qty: quantity,
+        orderId: id, previousStopPrice: currentStop, stopPrice: verifiedPrice,
+        productId: product.id, protectionVerified: true
+      });
+      return updated;
+    });
+  }
+
   async function cancelOrderById(orderId) {
     const id = numberOrNull(orderId);
     if (!Number.isSafeInteger(id) || id <= 0) {
@@ -1817,6 +1876,7 @@ export function createDeltaExecutor({
     getOrderById,
     getOrderByClientOrderId,
     cancelOrderById,
+    moveStopLossToPrice,
     getFillsPage,
     getWalletTransactionsPage,
     getAccountSnapshot,

@@ -2,7 +2,7 @@ export const DEFAULT_CANDLE_CACHE_SYMBOL_LIMIT = 70;
 export const MIN_CANDLE_CACHE_SYMBOL_LIMIT = 50;
 export const MAX_CANDLE_CACHE_SYMBOL_LIMIT = 80;
 
-const CANDLE_RESOLUTIONS = new Set(['1m', '5m', '15m']);
+const CANDLE_RESOLUTIONS = new Set(['1m', '5m', '15m', '1h']);
 
 export function resolveCandleCacheSymbolLimit(value, fallback = DEFAULT_CANDLE_CACHE_SYMBOL_LIMIT) {
   if (value === undefined || value === null || String(value).trim() === '') return fallback;
@@ -37,8 +37,6 @@ export function selectTopCandleSymbols(tickers, limit = DEFAULT_CANDLE_CACHE_SYM
 export function shouldRetainCandleCacheKey(key, eligibleSymbols) {
   const selected = eligibleSymbols instanceof Set ? eligibleSymbols : new Set();
   const normalized = String(key || '');
-  if (normalized === '1h:BTCUSD') return true;
-
   const separator = normalized.indexOf(':');
   if (separator < 1) return false;
   const resolution = normalized.slice(0, separator);

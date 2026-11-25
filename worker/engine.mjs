@@ -9,7 +9,9 @@ import { SIGNAL_RESERVATION_TTL_MS, TradetronBridge, withSignalReservations } fr
 import { buildTradetronPnlHistoryRows, TradetronDeveloperApi } from '../server/tradetron-developer-api.mjs';
 import { buildTradetronSnapshotRiskState, TRADETRON_SNAPSHOT_MAX_AGE_MS } from '../src/tradetron-position-sync.js';
 import { indiaDateKey } from '../src/date-utils.js';
-import { createGridState, evaluateGridTick } from './grid-strategy.mjs';
+import { createGridState, evaluateGridTick, setGridVerifiedPool } from './grid-strategy.mjs';
+import { screenGridMarket } from '../shared/grid-market-screener.js';
+
 import { CANDLE_WARMUP_BATCH_SIZE, CANDLE_WARMUP_RETRY_MS, CANDLE_TESTNET_WARMUP_BATCH_SIZE, CANDLE_TESTNET_WARMUP_CONCURRENCY, CANDLE_TESTNET_WARMUP_RETRY_MS, planCandleWarmup } from './candle-warmup.mjs';
 import { shouldWriteMarketCache } from './market-cache-policy.mjs';
 import { MIN_RAW_CANDLES_FOR_ATR, mergeCandleUpdate, normalizeCandleBatch, normalizeEpochSeconds, candleMaxAgeIntervals } from './candle-normalization.mjs';
@@ -64,6 +66,47 @@ const roundDown = (v, step) => {
   return Math.floor(v / s) * s;
 };
 const roundTick = (v, tick) => tick > 0 ? Math.round(v / tick) * tick : v;
+const emaValue = (values, period) => {
+  if (!Array.isArray(values) || values.length < period) return null;
+  const alpha = 2 / (period + 1);
+  let value = values.slice(0, period).reduce((sum, item) => sum + Number(item), 0) / period;
+  for (let index = period; index < values.length; index += 1) value = Number(values[index]) * alpha + value * (1 - alpha);
+  return Number.isFinite(value) ? value : null;
+};
+const hourlyTrendForCandles = candles => {
+  const rows = (Array.isArray(candles) ? candles : []).filter(row => Number(row?.close) > 0).slice(0, -1);
+  if (rows.length < 200) return { trend: 'UNKNOWN', ema50: null, ema200: null, candles: rows.length };
+  const closes = rows.map(row => Number(row.close));
+  const ema50 = emaValue(closes, 50), ema200 = emaValue(closes, 200);
+  return { trend: ema50 > ema200 ? 'BULL' : ema50 < ema200 ? 'BEAR' : 'FLAT', ema50, ema200, candles: rows.length };
+};
+const applyHourlyTrendGate = (signal, trend) => {
+  if (!signal || !signal.side) return signal;
+  const allowed = trend?.trend === 'BULL' ? signal.side === 'BUY' : trend?.trend === 'BEAR' ? signal.side === 'SELL' : false;
+  if (!allowed) {
+    signal.blocked = Array.isArray(signal.blocked) ? signal.blocked : [];
+    signal.blocked.push('1h EMA50/EMA200 trend filter: ' + (trend?.trend || 'UNKNOWN'));
+    signal.ready = false;
+    if (signal.stage === 'CONFIRMED') signal.stage = 'SETUP';
+    signal.hourlyTrendBlocked = true;
+  }
+  signal.hourlyTrend = trend?.trend || 'UNKNOWN';
+  signal.hourlyEma50 = trend?.ema50 ?? null;
+  signal.hourlyEma200 = trend?.ema200 ?? null;
+  return signal;
+};
+const applyStrictVolumeGate = signal => {
+  if (!signal || !signal.side) return signal;
+  if (!(Number(signal.volumeSpike) > 1.5)) {
+    signal.blocked = Array.isArray(signal.blocked) ? signal.blocked : [];
+    signal.blocked.push('Strict volume filter: volume must be > 1.5x');
+    signal.ready = false;
+    if (signal.stage === 'CONFIRMED') signal.stage = 'SETUP';
+    signal.strictVolumeBlocked = true;
+  }
+  return signal;
+};
+
 export const OPTION_UNDERLYINGS = Object.freeze(['BTC', 'ETH', 'XAUT']);
 
 export function correlationGroupForSymbol(symbol) {
@@ -337,11 +380,14 @@ export class DeltaEngine {
     this.lastMarketCacheWrite = 0;
     this.candleWarmCursor = 0;
     this.candleFetchAt = new Map();
+    this.hourlyCandleRefreshAt = new Map();
     this.candleFailureLogAt = new Map();
     this.candleUpdateCounts = new Map();
     this.lastObservedAtr = new Map();
     this.lastAtrJumpLogAt = new Map();
     this.candleHealingInFlight = new Set();
+    this.gridVerifiedPool = [];
+    this.gridVerifiedPoolRefreshedAt = 0;
     this.wsConnected = false;
     this.candleRestHealingNeeded = false;
     this.lastLeaseContentionLogAt = 0;
@@ -1077,10 +1123,9 @@ export class DeltaEngine {
   }
 
   async runTestnetGridExecution(settings = {}, account = {}) {
-    const symbols = Array.isArray(CONFIG.gridSymbolPool || CONFIG.gridSymbols)
-      ? [...(CONFIG.gridSymbolPool || CONFIG.gridSymbols)] : [];
-    const requestedPoolSymbols = Array.isArray(CONFIG.gridRequestedSymbolPool)
-      ? [...CONFIG.gridRequestedSymbolPool] : [...symbols, ...(CONFIG.gridRejectedPoolSymbols || [])];
+    const verifiedPool = await this.refreshGridVerifiedPool(settings);
+    const symbols = verifiedPool.map(row => row.symbol);
+    const requestedPoolSymbols = symbols;
     const maxConcurrentSymbols = Number(CONFIG.gridMaxConcurrentSymbols) || 2;
     const autoRangeResult = await this.refreshAutoGridRanges(settings, symbols, {
       forceSnapshot: !this.gridAtrSnapshotInitialized
@@ -1097,7 +1142,7 @@ export class DeltaEngine {
         activeSymbols: [],
         skippedSymbols: [],
         maxConcurrentSymbols,
-        gridSymbolPoolSource: CONFIG.gridSymbolPoolSource || 'GRID_SYMBOLS',
+        gridSymbolPoolSource: 'GRID_VERIFIED_POOL',
         gridRejectedPoolSymbols: CONFIG.gridRejectedPoolSymbols || [],
         gridAutoRangeEnvironmentEnabled: CONFIG.gridAutoRangeEnabled === true,
         gridAutoRangeBlocked: autoRangeResult.blocked === true,
@@ -1197,7 +1242,7 @@ export class DeltaEngine {
       skippedSymbols: result.skippedSymbols || [],
       symbolStatuses: result.symbolStatuses || {},
       maxConcurrentSymbols,
-      gridSymbolPoolSource: CONFIG.gridSymbolPoolSource || 'GRID_SYMBOLS',
+      gridSymbolPoolSource: 'GRID_VERIFIED_POOL',
       gridRejectedPoolSymbols: CONFIG.gridRejectedPoolSymbols || [],
       enabled: executionSettings.grid_enabled === true,
       gridTrailingEnvironmentEnabled: CONFIG.gridTrailingEnabled === true,
@@ -1820,15 +1865,15 @@ export class DeltaEngine {
 
   async refreshCandle(symbol, resolution) {
     const normalizedSymbol = String(symbol || '').trim().toUpperCase();
-    if (!['1m', '5m', '15m'].includes(resolution) || !this.candleCacheSymbols.has(normalizedSymbol)) return [];
+    if (!['1m', '5m', '15m', '1h'].includes(resolution) || !this.candleCacheSymbols.has(normalizedSymbol)) return [];
     symbol = normalizedSymbol;
     const key = resolution + ':' + symbol;
     // Track attempts even when the API fails or returns a partial series. Testnet
     // mode uses a longer cooldown so thin/empty products cannot trigger retry storms.
     this.candleFetchAt.set(key, Date.now());
-    const value = await this.adapter.candles(symbol, resolution, 100);
+    const value = await this.adapter.candles(symbol, resolution, resolution === '1h' ? 260 : 100);
     const normalized = normalizeCandleBatch(value, resolution, {
-      minCandles: MIN_RAW_CANDLES_FOR_ATR,
+      minCandles: resolution === '1h' ? 200 : MIN_RAW_CANDLES_FOR_ATR,
       maxAgeIntervals: candleMaxAgeIntervals(resolution, CONFIG.deltaExecutionMode === 'testnet')
     });
     if (!normalized.ok) {
@@ -1850,7 +1895,7 @@ export class DeltaEngine {
       error.retryAfterMs = detail.retryAfterMs;
       throw error;
     }
-    const rows = normalized.candles.slice(-120);
+    const rows = normalized.candles.slice(resolution === '1h' ? -260 : -120);
     const previousRows = this.getCandles(symbol, resolution);
     if (this.rejectAtrSpike(symbol, resolution, previousRows, rows, 'REST')) return this.getCandles(symbol, resolution);
     this.candles.set(key, rows);
@@ -2007,6 +2052,82 @@ export class DeltaEngine {
       }).catch(() => {});
     }
     return nextSymbols;
+  }
+
+  async refreshHourlyTrendCandles() {
+    const now = Date.now();
+    const ranked = [...this.tickerMap.values()].sort((a, b) =>
+      n(b.turnover_usd || b.turnover) - n(a.turnover_usd || a.turnover)).slice(0, 40);
+    let refreshed = 0, failed = 0;
+    for (const ticker of ranked) {
+      const symbol = String(ticker?.symbol || '').toUpperCase();
+      if (!symbol || now - Math.max(this.hourlyCandleRefreshAt.get(symbol) || 0, this.candleFetchAt.get('1h:' + symbol) || 0) < 10 * 60 * 1000) continue;
+      this.candleCacheSymbols.add(symbol);
+      try {
+        const rows = await this.refreshCandle(symbol, '1h');
+        if (rows.length < 201) throw new Error('1h EMA history has fewer than 200 completed candles');
+        this.hourlyCandleRefreshAt.set(symbol, Date.now());
+        refreshed += 1;
+      } catch (error) {
+        failed += 1;
+        await this.log('WARN', '1h REST trend candle refresh failed; signal entries remain blocked for this symbol', {
+          symbol, error: String(error?.message || error).slice(0, 200),
+          cachedCandles: this.getCandles(symbol, '1h').length, executionBlocked: true
+        }).catch(() => {});
+      }
+    }
+    if (refreshed || failed) await this.log('INFO', '1h REST trend candle refresh cycle completed', {
+      refreshed, failed, universe: ranked.length, refreshIntervalMs: 600000
+    }).catch(() => {});
+  }
+
+  async refreshGridVerifiedPool(settings = {}) {
+    if (Date.now() - this.gridVerifiedPoolRefreshedAt < 5 * 60 * 1000) return this.gridVerifiedPool;
+    this.gridVerifiedPoolRefreshedAt = Date.now();
+    const ranked = [...this.tickerMap.values()]
+      .filter(ticker => isAllowedDeltaTestnetFutureSymbol(ticker?.symbol))
+      .sort((a, b) => n(b.turnover_usd || b.turnover) - n(a.turnover_usd || a.turnover))
+      .slice(0, 30);
+    const qualified = [], rejected = [];
+    for (const ticker of ranked) {
+      const symbol = String(ticker.symbol || '').toUpperCase();
+      try {
+        this.candleCacheSymbols.add(symbol);
+        const lastRefresh = this.gridCandleRefreshBySymbol.get(symbol) || 0;
+        if (Date.now() - lastRefresh >= 5 * 60 * 1000 || this.getCandles(symbol, '1m').length < 30) {
+          await this.refreshCandle(symbol, '1m');
+          this.gridCandleRefreshBySymbol.set(symbol, Date.now());
+        }
+        const candles = this.getCandles(symbol, '1m');
+        const product = await deltaExecutor.getProductMetadata(symbol);
+        if (!isEligibleDeltaTestnetPerpetualProduct(product) ||
+            !Number.isSafeInteger(Number(product.id)) || Number(product.id) <= 0) {
+          rejected.push({ symbol, reason: 'TESTNET_PRODUCT_NOT_VERIFIED' });
+          continue;
+        }
+        const screen = screenGridMarket({
+          ticker, candles, config: settings.grid_symbol_configs?.[symbol] || {}, settings
+        });
+        if (!screen.qualified) {
+          rejected.push({ symbol, reason: screen.blockReason || 'GRID_SCREEN_FAILED' });
+          continue;
+        }
+        qualified.push({
+          symbol, productId: Number(product.id), product, screen,
+          verifiedAt: iso(), turnover: n(ticker.turnover_usd || ticker.turnover)
+        });
+      } catch (error) {
+        rejected.push({ symbol, reason: String(error?.message || error).slice(0, 160) });
+      }
+    }
+    qualified.sort((a, b) => b.turnover - a.turnover);
+    this.gridVerifiedPool = setGridVerifiedPool(qualified.slice(0, 6));
+    await this.log('INFO', 'Dynamic Grid verified pool refreshed from market screener and Testnet product catalogue', {
+      pool: this.gridVerifiedPool.map(row => ({ symbol: row.symbol, productId: row.productId, screen: row.screen })),
+      rejected: rejected.slice(0, 20), candidateCount: ranked.length,
+      source: 'REST candles + live ticker + Delta Testnet product metadata'
+    }).catch(() => {});
+    return this.gridVerifiedPool;
   }
 
   async refreshCandleWarmup() {
@@ -3986,6 +4107,12 @@ export class DeltaEngine {
         btcOverrideScoreMin: n(settings.btc_override_score_min || 90),
         btcOverrideVolumeMin: n(settings.btc_override_volume_min || 1.5)
       });
+      const hourlyRefreshFresh = Date.now() - (this.hourlyCandleRefreshAt.get(ticker.symbol) || 0) <= 20 * 60 * 1000;
+      const hourlyTrend = hourlyRefreshFresh
+        ? hourlyTrendForCandles(this.getCandles(ticker.symbol, '1h'))
+        : { trend: 'UNKNOWN', ema50: null, ema200: null, candles: 0 };
+      applyStrictVolumeGate(applyHourlyTrendGate(momShadow, hourlyTrend));
+      applyStrictVolumeGate(applyHourlyTrendGate(scalpShadow, hourlyTrend));
       normalizationUniverses.MOMENTUM.push(momShadow);
       normalizationUniverses.SCALPING.push(scalpShadow);
       if (adaptiveShadowEnabled) {
@@ -4054,6 +4181,12 @@ export class DeltaEngine {
         btcOverrideScoreMin: n(settings.btc_override_score_min || 90),
         btcOverrideVolumeMin: n(settings.btc_override_volume_min || 1.5)
       });
+      const hourlyRefreshFresh = Date.now() - (this.hourlyCandleRefreshAt.get(ticker.symbol) || 0) <= 20 * 60 * 1000;
+      const hourlyTrend = hourlyRefreshFresh
+        ? hourlyTrendForCandles(this.getCandles(ticker.symbol, '1h'))
+        : { trend: 'UNKNOWN', ema50: null, ema200: null, candles: 0 };
+      applyStrictVolumeGate(applyHourlyTrendGate(mom, hourlyTrend));
+      applyStrictVolumeGate(applyHourlyTrendGate(scalp, hourlyTrend));
       mom.normalizedScore = momNormalizedScore;
       scalp.normalizedScore = scalpNormalizedScore;
       this.applyTestnetCandleFreshness(mom, '5m');
@@ -5273,7 +5406,47 @@ export class DeltaEngine {
       });
     }
     const mark = n(exchangePosition.mark_price || this.tickerMap.get(row.symbol)?.mark_price || row.current_price);
-    const originalRisk = Math.abs(n(row.entry_price) - n(row.stop_price));
+    const entryPrice = n(row.entry_price);
+    const originalRisk = Math.abs(entryPrice - n(row.stop_price));
+    const atBreakeven = Math.abs(n(row.stop_price) - entryPrice) <= Math.max(
+      n(this.productMap.get(row.symbol)?.tick_size) || 0, entryPrice * 1e-8
+    );
+    const reachedHalfR = originalRisk > 0 && (row.side === 'BUY'
+      ? mark >= entryPrice + originalRisk * 0.5
+      : mark <= entryPrice - originalRisk * 0.5);
+    if (!atBreakeven && reachedHalfR) {
+      const stopOrderId = Number(row.protection_order_id || currentBracketChildIds.stopLossOrderId);
+      if (!Number.isSafeInteger(stopOrderId) || stopOrderId <= 0) {
+        await this.log('ERROR', 'Breakeven trigger reached but verified SL child order ID is missing; existing protection left unchanged', {
+          symbol: row.symbol, executionId: row.execution_id, mark, entryPrice,
+          originalRisk, qty, executionBlocked: true
+        });
+        return;
+      }
+      const tick = n(this.productMap.get(row.symbol)?.tick_size);
+      const breakeven = roundTick(entryPrice, tick);
+      try {
+        await deltaExecutor.moveStopLossToPrice({
+          symbol: row.symbol, positionSide: row.side, qty,
+          stopPrice: breakeven, orderId: stopOrderId,
+          expectedProductId: n(row.product_id || exchangePosition?.product_id)
+        });
+        row.stop_price = breakeven;
+        await db.update('dd_positions', 'execution_id=eq.' + encodeURIComponent(row.execution_id), {
+          qty, current_price: mark, stop_price: breakeven, updated_at: iso()
+        });
+        await this.log('INFO', 'Position reached +0.5R; exchange SL moved to breakeven and verified', {
+          symbol: row.symbol, executionId: row.execution_id, side: row.side,
+          entryPrice, mark, originalRisk, stopPrice: breakeven, stopOrderId
+        });
+      } catch (error) {
+        await this.log('ERROR', 'Breakeven stop modification failed; original exchange SL retained and position management failed closed', {
+          symbol: row.symbol, executionId: row.execution_id, stopOrderId,
+          error: String(error?.message || error).slice(0, 220), executionBlocked: true
+        });
+      }
+      return;
+    }
     const fee = n(this.productMap.get(row.symbol)?.taker_commission_rate);
     if (qty <= 0) return;
     if (!row.protection_verified) {
@@ -6030,6 +6203,7 @@ export class DeltaEngine {
       await this.cacheMarketState();
     }
     await this.refreshCandleWarmup();
+    await this.refreshHourlyTrendCandles();
     if (settings.options_enabled !== false &&
         (!this.lastOptionTickerFetch || Date.now() - this.lastOptionTickerFetch >= 60000)) {
       await this.refreshOptionDiagnosticsSafely(settings);
