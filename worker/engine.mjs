@@ -4992,10 +4992,56 @@ export class DeltaEngine {
         });
         return true;
       } catch (error) {
-        await this.log('ERROR', 'Delta Testnet entry rejected or failed closed', {
-          symbol: signal.symbol, strategy, side: signal.side,
-          reason: String(error?.message || error)
-        });
+        const deterministicPreflightBlock =
+          error?.code === 'ENTRY_MARK_RISK_ENVELOPE_MISMATCH' &&
+          error?.executionBlocked === true &&
+          error?.orderRoutingAttempted === false;
+        if (deterministicPreflightBlock) {
+          try {
+            // This guard runs before POST /v2/orders. Persist the rejected
+            // signal-candle identity so the same stale setup is not retried
+            // on every scan tick. A new candle gets a new client-order ID.
+            await db.upsert('dd_orders', {
+              id: entryCid,
+              product_id: signal.productId,
+              symbol: signal.symbol,
+              side: signal.side === 'BUY' ? 'buy' : 'sell',
+              order_type: 'delta_testnet_preflight_rejection',
+              size: gate.size.qty,
+              state: 'REJECTED',
+              client_order_id: entryCid,
+              role: 'ENTRY',
+              strategy,
+              execution_id: entryCid,
+              failure_reason: error.code,
+              failure_detail: String(error?.message || error).slice(0, 240),
+              raw: {
+                source: 'delta_testnet_preflight',
+                environment: 'testnet',
+                accepted: false,
+                executionBlocked: true,
+                orderRoutingAttempted: false,
+                reason: error.code,
+                ...(error?.details && typeof error.details === 'object' ? error.details : {})
+              }
+            }, 'client_order_id');
+          } catch (persistError) {
+            await this.log('ERROR', 'Could not persist Testnet preflight rejection; same-candle retry suppression is unavailable', {
+              symbol: signal.symbol, strategy, side: signal.side,
+              clientOrderId: entryCid,
+              reason: String(persistError?.message || persistError).slice(0, 240),
+              orderRoutingAttempted: false
+            }).catch(() => {});
+          }
+        }
+        await this.log(deterministicPreflightBlock ? 'WARN' : 'ERROR',
+          'Delta Testnet entry rejected or failed closed', {
+            symbol: signal.symbol, strategy, side: signal.side,
+            reason: String(error?.message || error),
+            preflightRejected: deterministicPreflightBlock,
+            sameSignalCandleRetryBlocked: deterministicPreflightBlock,
+            orderRoutingAttempted: error?.orderRoutingAttempted === true
+          });
         return false;
       }
     }
