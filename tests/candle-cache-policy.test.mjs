@@ -45,7 +45,8 @@ test('prunes candle series, per-series metadata, and healing keys outside the se
     ['1m:BTCUSD', [1, 2]],
     ['5m:ETHUSD', [1, 2]],
     ['15m:LOWUSD', [1, 2]],
-    ['1h:BTCUSD', [1, 2]]
+    ['1h:BTCUSD', [1, 2]],
+    ['1h:ETHUSD', [1, 2]]
   ]);
   const metadata = new Map([
     ['1m:BTCUSD', 1],

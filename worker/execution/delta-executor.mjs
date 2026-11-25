@@ -1466,6 +1466,12 @@ export function createDeltaExecutor({
       const slDistancePct = Math.abs(stop - entry) / entry * 100;
       const minSlDistancePct = resolveMinimumStopDistancePct(process.env.DELTA_MIN_SL_DISTANCE_PCT);
       if (slDistancePct + 1e-9 < minSlDistancePct) {
+        await logExecutor('WARN', '[Executor] SL distance too tight; entry blocked before Testnet order submission', {
+          environment: 'testnet', symbol: normalizedSymbol, side: direction,
+          slDistancePct: Number(slDistancePct.toFixed(4)),
+          minimumSlDistancePct: minSlDistancePct,
+          executionBlocked: true
+        });
         throw new Error('SL distance too tight (' + slDistancePct.toFixed(2) + '%), minimum required ' + minSlDistancePct.toFixed(2) + '%');
       }
       await assertSafety(normalizedSymbol, 'ENTRY');
