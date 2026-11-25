@@ -773,7 +773,7 @@ test('bracket entry fails closed if the live mark has crossed the requested SL/T
     executor.placeBracketOrder('XAUTUSD', 'SELL', 1, 60000, 61000, 59000, {
       strategy: 'MOMENTUM', clientOrderId: 'DDM-XAUTUSD-CROSSED'
     }),
-    /Live mark has moved outside the requested SL\/TP bracket/
+    /risk envelope/
   );
   assert.equal(
     runtime.httpCalls.some(call => new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST'),
