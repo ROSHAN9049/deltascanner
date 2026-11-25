@@ -77,20 +77,6 @@ export default async function handler(req, res) {
     const optionCache = optionCacheResult.rows;
     const rawLogs = rawLogsResult.rows;
     const ledger = ledgerResult.rows;
-    const dataAvailability = {
-      signals: signalsResult.available,
-      signalCache: signalCacheResult.available,
-      marketCache: marketCacheResult.available,
-      optionCache: optionCacheResult.available,
-      paperOptionsLedger: privateDataAuthorized === true && paperTradeResult?.available === true,
-      workerHeartbeat: heartbeatResult.available && heartbeatResult.rows.some(row =>
-        String(row?.message || '').startsWith('Worker heartbeat scan')
-      ),
-      logs: rawLogsResult.available,
-      rotationLedger: ledgerResult.available,
-      rotationLedgerCount: ledgerRowCount !== null
-    };
-
     // The heartbeat's environment mode is shared with the dashboard through
     // Supabase. It no longer depends on any legacy bridge or mirror metadata.
     const heartbeatLog = findWorkerHeartbeatRow(heartbeatResult.rows);
@@ -147,6 +133,20 @@ export default async function handler(req, res) {
           count('dd_wallet_transactions', 'select=id').catch(() => null)
         ])
       : [[], { rows: [], available: false }, { rows: [], available: false }, { rows: [], available: false }, null, [], null, [], null, [], null, [], null, [], null];
+
+    const dataAvailability = {
+      signals: signalsResult.available,
+      signalCache: signalCacheResult.available,
+      marketCache: marketCacheResult.available,
+      optionCache: optionCacheResult.available,
+      paperOptionsLedger: privateDataAuthorized === true && paperTradeResult?.available === true,
+      workerHeartbeat: heartbeatResult.available && heartbeatResult.rows.some(row =>
+        String(row?.message || '').startsWith('Worker heartbeat scan')
+      ),
+      logs: rawLogsResult.available,
+      rotationLedger: ledgerResult.available,
+      rotationLedgerCount: ledgerRowCount !== null
+    };
 
     const [lastConfirmedSignalResult, signalsTodayCount] = await Promise.all([
       select(
