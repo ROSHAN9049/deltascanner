@@ -25,7 +25,12 @@ const MAIN_DETAIL_FIELDS = Object.freeze([
   'btcRegimeSource',
   'btcAtrPct',
   'btcRegimeComputedAt',
-  'normalizedScore'
+  'normalizedScore',
+  'hourlyTrend',
+  'hourlyEma50',
+  'hourlyEma200',
+  'hourlyCandles',
+  'hourlyTrendBlocked'
 ]);
 
 // Options use independent, strategy-aware allowlists. OPTIONS_BUY keeps 15
