@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { DELTA_INDIA_OPTIONS_UNDERLYINGS, parseDeltaOptionSymbol } from './delta-options-policy.mjs';
-import { evaluateIvMetrics, evaluateOptionsExit } from '../options-regime-strategy.mjs';
+import { evaluateIvMetrics, evaluateOptionsExit, evaluateOptionGreeks, normalizeOptionGreeks } from '../options-regime-strategy.mjs';
 import { executeDefinedRiskSellExit } from '../options-exit-sequence.mjs';
 import {
   assertOptionsExecutionAllowed,
@@ -225,7 +225,7 @@ export function createDeltaOptionsExecution({
       'dd_option_cache',
       'symbol=eq.' + encodeURIComponent(symbol) +
         '&strategy=eq.' + encodeURIComponent(strategy) +
-        '&select=symbol,strategy,score,stage,cached_at,details,market_regime,iv_rank,iv_percentile,oi,volume,delta,spread_pct&limit=2'
+        '&select=symbol,strategy,score,stage,cached_at,details,market_regime,iv_rank,iv_percentile,oi,volume,delta,gamma,theta,vega,spread_pct&limit=2'
     );
     if (!Array.isArray(rows) || rows.length !== 1) {
       throw new Error('A unique current Options candidate is not present in dd_option_cache');
@@ -239,6 +239,25 @@ export function createDeltaOptionsExecution({
     const ivRank = number(row.iv_rank ?? details.ivRank);
     const ivPercentile = number(row.iv_percentile ?? details.ivPercentile);
     const marketRegime = clean(row.market_regime || details.marketRegime).toUpperCase();
+    const greeks = normalizeOptionGreeks({
+      ...row,
+      details: {
+        ...details,
+        delta: details.delta ?? row.delta,
+        gamma: details.gamma ?? row.gamma,
+        theta: details.theta ?? row.theta,
+        vega: details.vega ?? row.vega
+      }
+    });
+    const greekGate = evaluateOptionGreeks(strategy, greeks);
+    if (!greekGate.allowed) throw new Error(greekGate.reason);
+    if (strategy === 'OPTIONS_SELL') {
+      const hedgeDelta = number(details.hedgeDelta ?? details.hedgeGreeks?.delta);
+      if (!clean(details.hedgeSymbol) || hedgeDelta === null ||
+          Math.abs(hedgeDelta) < 0.05 || Math.abs(hedgeDelta) > 0.15) {
+        throw new Error('OPTIONS_SELL requires a verified protective hedge with absolute Delta between 0.05 and 0.15');
+      }
+    }
     const demoQualityOverride = isOptionsDemoExecution(env) && manualTestOverride === true;
     const normalizedScore = number(row.score);
     // Match the explicitly configured Testnet normalized-score floor.
@@ -344,7 +363,8 @@ export function createDeltaOptionsExecution({
       });
     }
     return {
-      ...row, details, ivRank, ivPercentile, marketRegime, cachedAt: new Date(cachedAtMs).toISOString(),
+      ...row, details, ivRank, ivPercentile, marketRegime, greeks,
+      cachedAt: new Date(cachedAtMs).toISOString(),
       manualTestOverride: manualTestOverride === true
     };
   }
@@ -488,7 +508,7 @@ export function createDeltaOptionsExecution({
     if (quantity < product.minSize || (quantity - product.minSize) % product.sizeStep !== 0) {
       throw new Error('Options quantity violates the exact Demo product minimum size or contract-size increment');
     }
-    if (product.parsed.dte < 0.5) throw new Error('Options contract has less than 0.5 days to expiry; gamma-risk entry blocked');
+    if (product.parsed.dte < 2) throw new Error('Options entry requires at least 2 full days to expiry; near-expiry gamma risk blocks entry');
     if (useManualTestOverride) {
       assertManualCandidateQualification(candidate, product, settings, strategyKey);
     }
@@ -1262,6 +1282,8 @@ export function createDeltaOptionsExecution({
       realized_pnl_verified: false, opened_at: new Date(now()).toISOString(), updated_at: new Date(now()).toISOString(),
       raw: {
         environment: 'DELTA_DEMO',
+        underlying: product.parsed.underlying,
+        greeks: candidate.greeks,
         iv_rank: candidate.ivRank,
         iv_percentile: candidate.ivPercentile,
         regime: candidate.marketRegime,
@@ -1367,6 +1389,8 @@ export function createDeltaOptionsExecution({
       realized_pnl_verified: false, opened_at: new Date(now()).toISOString(), updated_at: new Date(now()).toISOString(),
       raw: {
         environment: 'DELTA_DEMO',
+        underlying: product.parsed.underlying,
+        greeks: candidate.greeks,
         iv_rank: candidate.ivRank,
         iv_percentile: candidate.ivPercentile,
         regime: candidate.marketRegime,
@@ -1992,15 +2016,28 @@ export function createDeltaOptionsExecution({
         const isBuy = normalizeOptionsExitStatus(position.strategy) === 'OPTIONS_BUY';
         const currentPremium = isBuy ? bid : ask;
         const dte = (Number(position.expiry_ms) - now()) / 86_400_000;
+        const positionRaw = parseDetails(position.raw);
+        const previousTrough = number(positionRaw.premiumTrough) ?? number(position.entry_premium);
         const decision = evaluateOptionsExit({
           strategy: position.strategy, entryPremium: position.entry_premium,
-          currentPremium, peakPremium: position.peak_premium, dte,
+          currentPremium, peakPremium: position.peak_premium,
+          troughPremium: previousTrough, dte,
           openedAt: position.opened_at, now: now()
         });
+        const nextPeak = Math.max(Number(position.peak_premium) || 0, currentPremium);
+        const nextTrough = Math.min(previousTrough ?? currentPremium, currentPremium);
         await database.update('dd_option_positions', 'position_key=eq.' + encodeURIComponent(position.position_key) + '&status=eq.OPEN', {
           current_premium: currentPremium,
-          peak_premium: Math.max(Number(position.peak_premium) || 0, currentPremium),
-          dte, updated_at: new Date(now()).toISOString()
+          peak_premium: nextPeak,
+          dte,
+          raw: {
+            ...positionRaw,
+            premiumPeak: nextPeak,
+            premiumTrough: nextTrough,
+            trailingStopPremium: decision.trailingStopPremium ?? null,
+            trailingStopArmed: decision.trailingStopArmed === true
+          },
+          updated_at: new Date(now()).toISOString()
         });
         if (!decision.exit) continue;
         const result = isBuy

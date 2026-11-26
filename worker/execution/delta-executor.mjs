@@ -1378,6 +1378,22 @@ export function createDeltaExecutor({
         }
       }
     );
+    // PostgREST can return an empty UPDATE representation when the row is not
+    // visible to the current policy. Read the row back before declaring the
+    // exchange-side child order verified; a silent zero-row update is unsafe.
+    const persistedRows = await database.select(
+      'dd_orders',
+      'client_order_id=eq.' + encodeURIComponent(clientOrderId) + '&select=state,raw&limit=1'
+    );
+    const persisted = Array.isArray(persistedRows) && persistedRows.length === 1
+      ? persistedRows[0] : null;
+    if (!persisted || persisted.raw?.protection_verified_by_rest !== true ||
+        Number(persisted.raw?.verified_order_snapshot?.id) !== Number(orderId) ||
+        persisted.raw?.reduce_only !== true ||
+        String(persisted.raw?.exchange_state || '').toUpperCase() !== state ||
+        String(persisted.state || '').toUpperCase() !== state) {
+      throw new Error(stopType + ' exchange verification snapshot failed its database read-back check');
+    }
     return verified;
   }
 

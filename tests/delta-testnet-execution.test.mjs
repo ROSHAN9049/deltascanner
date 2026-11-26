@@ -51,6 +51,7 @@ function fakeRuntime({
   let latestOrder = null;
   let nextOrderId = 123;
   const ordersById = new Map();
+  const persistedOrders = [...orders];
 
   const database = {
     async select(table, query) {
@@ -72,7 +73,14 @@ function fakeRuntime({
           ];
         }
       }
-      if (table === 'dd_orders') return orders;
+      if (table === 'dd_orders') {
+        const clientMatch = query.match(/client_order_id=eq\.([^&]+)/);
+        if (clientMatch) {
+          const clientOrderId = decodeURIComponent(clientMatch[1]);
+          return persistedOrders.filter(row => row.client_order_id === clientOrderId).map(row => ({ ...row, raw: { ...(row.raw || {}) } }));
+        }
+        return persistedOrders;
+      }
       return [];
     },
     async log(level, message, data = {}) { logs.push({ level, message, data }); },
@@ -83,6 +91,11 @@ function fakeRuntime({
         const row = persistedPositions.find(item => String(item.id) === decodeURIComponent(idMatch?.[1] || ''));
         if (row) Object.assign(row, patch);
       }
+      if (table === 'dd_orders') {
+        const clientMatch = query.match(/client_order_id=eq\.([^&]+)/);
+        const row = persistedOrders.find(item => item.client_order_id === decodeURIComponent(clientMatch?.[1] || ''));
+        if (row) Object.assign(row, patch);
+      }
       return [];
     },
     async insert(table, row) {
@@ -91,7 +104,13 @@ function fakeRuntime({
       }
       return [];
     },
-    async upsert() {}
+    async upsert(table, row, conflict) {
+      if (table === 'dd_orders') {
+        const index = persistedOrders.findIndex(item => item[conflict] === row[conflict]);
+        if (index >= 0) persistedOrders[index] = { ...persistedOrders[index], ...row };
+        else persistedOrders.push({ ...row });
+      }
+    }
   };
 
   const fetchImpl = async (url, init = {}) => {
@@ -238,6 +257,15 @@ test('entry is IOC limit followed by separately verified reduce-only SL and TP',
   assert.equal(posts[2].body.stop_order_type, 'take_profit_order');
   assert.equal(posts[2].body.stop_price, '62000');
   assert.equal(posts[2].body.reduce_only, true);
+  const ledgerRows = await runtime.database.select('dd_orders', 'order_type=eq.delta_testnet_order');
+  const verifiedChildren = ledgerRows.filter(row => row.role === 'PROTECTION');
+  assert.equal(verifiedChildren.length, 2);
+  for (const child of verifiedChildren) {
+    assert.equal(child.raw.protection_verified_by_rest, true);
+    assert.equal(child.raw.reduce_only, true);
+    assert.equal(child.raw.verified_order_snapshot.id, child.raw.testnet_order_id);
+    assert.equal(child.raw.exchange_state, 'PENDING');
+  }
   assert.match(entry.init.headers.signature, /^[0-9a-f]{64}$/);
   assert.equal(entry.init.headers.timestamp, '1770000000');
 });
@@ -268,29 +296,26 @@ test('confirmed IOC fill with missing average price is emergency-closed before a
   assert.ok(runtime.logs.some(row => row.message.includes('Emergency close verified flat')));
 });
 
-test('bracket entry blocks a Testnet mark drift larger than the signal stop distance', async () => {
+test('bracket entry re-anchors SL/TP to a fresh Testnet mark within the configured mismatch cap', async () => {
   const runtime = fakeRuntime({ markPrice: 102.5 });
   const executor = createDeltaExecutor({
     env: { ...demoEnv(), DELTA_MAX_LIVE_DEMO_PRICE_MISMATCH_PCT: '3.0' },
     fetchImpl: runtime.fetchImpl, database: runtime.database
   });
-  await assert.rejects(
-    executor.placeBracketOrder('XAUTUSD', 'BUY', 1, 100, 98.5, 103),
-    /risk envelope/
+  await executor.placeBracketOrder('XAUTUSD', 'BUY', 1, 100, 98.5, 103);
+  const posts = runtime.httpCalls.filter(call =>
+    new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST'
   );
-  assert.equal(
-    runtime.httpCalls.some(call => new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST'),
-    false,
-    'a mark drift larger than the SL risk distance must not submit an order'
-  );
-  const blocked = runtime.logs.find(row =>
+  assert.equal(posts.length, 3, 'IOC entry followed by separate reduce-only SL and TP');
+  assert.equal(posts[1].body.stop_order_type, 'stop_loss_order');
+  assert.equal(posts[1].body.stop_price, '100.9');
+  assert.equal(posts[1].body.reduce_only, true);
+  assert.equal(posts[2].body.stop_order_type, 'take_profit_order');
+  assert.equal(posts[2].body.stop_price, '105.6');
+  assert.equal(posts[2].body.reduce_only, true);
+  assert.equal(runtime.logs.some(row =>
     row.message === '[Executor] Entry blocked: Testnet mark is outside the validated risk envelope'
-  );
-  assert.equal(blocked?.data?.reason, 'ENTRY_MARK_RISK_ENVELOPE_MISMATCH');
-  assert.equal(blocked?.data?.stopLossPrice, 98.5);
-  assert.equal(blocked?.data?.executionBlocked, true);
-  assert.equal(blocked?.data?.referenceEntryPrice, 100);
-  assert.equal(blocked?.data?.liveMarkPrice, 102.5);
+  ), false);
 });
 
 test('large production/Testnet price divergence remains blocked before order submission', async () => {
