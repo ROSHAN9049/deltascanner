@@ -1477,14 +1477,18 @@ export function createDeltaExecutor({
       target = direction === 'BUY'
         ? liveMarkPrice * (1 + targetDistancePct / 100)
         : liveMarkPrice * (1 - targetDistancePct / 100);
-      const tickSize = numberOrNull(product?.tick_size);
-      if (!(tickSize > 0)) throw new Error('Verified Testnet product tick_size is unavailable; bracket prices cannot be safely rounded');
+      const bracketTickSize = numberOrNull(product?.tick_size);
+      if (!(bracketTickSize > 0)) throw new Error('Verified Testnet product tick_size is unavailable; bracket prices cannot be safely rounded');
       stop = Number((direction === 'BUY'
-        ? Math.floor(stop / tickSize + 1e-10) * tickSize
-        : Math.ceil(stop / tickSize - 1e-10) * tickSize).toPrecision(12));
+        ? Math.floor(stop / bracketTickSize + 1e-10) * bracketTickSize
+        : Math.ceil(stop / bracketTickSize - 1e-10) * bracketTickSize).toPrecision(12));
       target = Number((direction === 'BUY'
-        ? Math.ceil(target / tickSize - 1e-10) * tickSize
-        : Math.floor(target / tickSize + 1e-10) * tickSize).toPrecision(12));
+        ? Math.ceil(target / bracketTickSize - 1e-10) * bracketTickSize
+        : Math.floor(target / bracketTickSize + 1e-10) * bracketTickSize).toPrecision(12));
+      const roundedSlDistancePct = Math.abs(liveMarkPrice - stop) / liveMarkPrice * 100;
+      if (!(roundedSlDistancePct + 1e-9 >= minSlDistancePct)) {
+        throw new Error('Fresh-mark SL distance falls below the required minimum after tick rounding');
+      }
       const bracketContainsLiveMark = direction === 'BUY'
         ? stop < liveMarkPrice && liveMarkPrice < target
         : target < liveMarkPrice && liveMarkPrice < stop;
