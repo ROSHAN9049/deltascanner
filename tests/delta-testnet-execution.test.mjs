@@ -74,7 +74,7 @@ function fakeRuntime({
         }
       }
       if (table === 'dd_orders') {
-        const clientMatch = query.match(/client_order_id=eq\\.([^&]+)/);
+        const clientMatch = query.match(/client_order_id=eq\.([^&]+)/);
         if (clientMatch) {
           const clientOrderId = decodeURIComponent(clientMatch[1]);
           return persistedOrders.filter(row => row.client_order_id === clientOrderId).map(row => ({ ...row, raw: { ...(row.raw || {}) } }));
