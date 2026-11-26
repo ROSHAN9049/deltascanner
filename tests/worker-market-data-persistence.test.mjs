@@ -30,13 +30,13 @@ const product = (symbol, id, patch = {}) => ({
 test('strategy preserves distinct Testnet execution and public market-data product IDs', () => {
   const signal = analyse(
     {
-      symbol: 'DOGSUSD',
+      symbol: 'LINKUSD',
       mark_price: '10',
       close: '10',
       ltp_change_24h: '0',
       quotes: { best_bid: '9.99', best_ask: '10.01' }
     },
-    product('DOGSUSD', 70001, { marketDataProductId: 50122 }),
+    product('LINKUSD', 70001, { marketDataProductId: 50122 }),
     [], [], [], [], [], 'MOMENTUM', {}
   );
 
@@ -44,10 +44,10 @@ test('strategy preserves distinct Testnet execution and public market-data produ
   assert.equal(signal.marketDataProductId, 50122, 'history/cache writes use the public market-data product ID');
 });
 
-test('refreshProducts reports USOONUSD as a market-universe mismatch and retains the other seven allowlisted routes', async () => {
+test('refreshProducts reports LINKUSD as a market-universe mismatch and retains the other eleven allowlisted routes', async () => {
   const engine = new DeltaEngine();
   const marketSymbols = DELTA_TESTNET_FUTURES_ALLOWLIST
-    .filter(symbol => symbol !== 'USOONUSD')
+    .filter(symbol => symbol !== 'LINKUSD')
     .concat('SOONUSD');
   const executionProducts = DELTA_TESTNET_FUTURES_ALLOWLIST.map((symbol, index) =>
     product(symbol, 80000 + index)
@@ -65,19 +65,19 @@ test('refreshProducts reports USOONUSD as a market-universe mismatch and retains
   engine.log = async (level, message, data) => logs.push({ level, message, data });
   await engine.refreshProducts({ executionMode: 'testnet' });
 
-  assert.equal(engine.testnetExecutionCatalogReady, false, 'the full eight-symbol intersection remains incomplete');
+  assert.equal(engine.testnetExecutionCatalogReady, false, 'the full twelve-symbol intersection remains incomplete');
   const refreshLog = logs.find(row => row.message === 'Delta product universe refreshed');
   assert.ok(refreshLog);
   assert.deepEqual(refreshLog.data.testnetAllowlistMissingFromTestnetCatalog, []);
-  assert.deepEqual(refreshLog.data.testnetAllowlistMissingFromMarketDataUniverse, ['USOONUSD']);
-  assert.deepEqual(refreshLog.data.testnetAllowlistMissing, ['USOONUSD']);
+  assert.deepEqual(refreshLog.data.testnetAllowlistMissingFromMarketDataUniverse, ['LINKUSD']);
+  assert.deepEqual(refreshLog.data.testnetAllowlistMissing, ['LINKUSD']);
   assert.equal(refreshLog.data.testnetAllowlistPartialReady, true);
-  assert.equal(refreshLog.data.testnetAllowlistAvailableCount, 7);
+  assert.equal(refreshLog.data.testnetAllowlistAvailableCount, 11);
 
-  for (const symbol of DELTA_TESTNET_FUTURES_ALLOWLIST.filter(value => value !== 'USOONUSD')) {
+  for (const symbol of DELTA_TESTNET_FUTURES_ALLOWLIST.filter(value => value !== 'LINKUSD')) {
     assert.equal(engine.productMap.get(symbol)?.executionProductAvailable, true, symbol + ' must retain its verified Testnet route');
   }
-  assert.equal(engine.productMap.has('USOONUSD'), false, 'do not alias USOONUSD to the different public SOONUSD symbol');
+  assert.equal(engine.productMap.has('LINKUSD'), false, 'do not alias LINKUSD to the different public SOONUSD symbol');
   assert.equal(engine.productMap.get('SOONUSD')?.executionProductAvailable, false, 'SOONUSD is not in the fixed Testnet entry allowlist');
 });
 
@@ -87,7 +87,7 @@ test('incomplete full allowlist does not add a global block to an individually v
   engine.lastTickAt = Date.now();
 
   const signal = {
-    symbol: 'DOGSUSD',
+    symbol: 'LINKUSD',
     blocked: [],
     normalizedScore: 90,
     side: 'BUY',
@@ -136,7 +136,7 @@ test('final entry path reaches the individual risk gate when the full catalogue 
     {},
     'MOMENTUM',
     {
-      symbol: 'DOGSUSD',
+      symbol: 'LINKUSD',
       side: 'BUY',
       stage: 'CONFIRMED',
       ready: true,
@@ -163,7 +163,7 @@ test('fresh tick is persisted only when a real ticker snapshot has non-empty row
   const updates = [];
   engine.updateEngineState = async patch => updates.push(patch);
   engine.lastTickAt = Date.parse('2026-11-02T12:30:00.000Z');
-  engine.tickerMap = new Map([['DOGSUSD', { symbol: 'DOGSUSD' }]]);
+  engine.tickerMap = new Map([['LINKUSD', { symbol: 'LINKUSD' }]]);
 
   assert.equal(await engine.persistMarketTick(), true);
   assert.deepEqual(updates, [{ last_tick_at: '2026-11-02T12:30:00.000Z' }]);
