@@ -75,3 +75,22 @@ Each entry order requests an exchange-side SL/TP bracket. After fill, the execut
 The 60-second exit monitor and Demo credentials must remain enabled while any Demo Options position is open, even after setting `OPTIONS_EXECUTION_MODE=disabled` to stop new entries. The Demo transport remains pinned to the Testnet host so existing positions can still be managed; disable the monitor or remove the Demo keys only after the Demo account and `dd_option_positions` have no open/reconciliation-required rows.
 
 Configure both the Hostless `deltascanner-api` Worker and `deltascanner-api-v2` API App with the common Demo execution profile and dedicated Demo keypair, because the Worker poller calls the separate API App preview/execute routes. On the Worker only, additionally set `AUTO_EXECUTE_OPTIONS=true` and `OPTIONS_DEMO_AUTO_EXECUTE=true`; keep `FULL_AUTO_EXECUTE` unchanged. Keep both services on the exact Demo/Testnet URL and do not place Demo keys in the Site service. Leave all live keys and production settings untouched. The environment template keeps `OPTIONS_EXECUTION_MODE=disabled`, Demo credentials empty, `OPTIONS_EXECUTION_ALLOWED=false`, and `OPTIONS_EXIT_MONITOR_ENABLED=false` by default.
+
+## Phase 4 — BTC and ETH Greek-confirmed regime strategy
+
+BTC and ETH use the same strategy gates; the underlying is resolved from the exact option symbol and must still match a LIVE Delta India Testnet product. No BTC-only assumptions or copied contract multipliers are used for ETH.
+
+- **TRENDING (15m and 1h agree):** `OPTIONS_BUY` — bullish underlying selects CALL; bearish selects PUT. Absolute option Delta must be 0.45–0.65.
+- **SIDEWAYS (15m and 1h agree):** `OPTIONS_SELL` — defined-risk vertical credit spread only, never a naked short. Short-leg absolute Delta must be 0.10–0.20 and the protective BUY hedge absolute Delta 0.05–0.15. The hedge must be fully filled before the short leg is submitted.
+- **UNKNOWN, conflicting timeframes, missing Greeks or stale candidate:** NO TRADE.
+- Every entry requires at least **2 full days to expiry**. The gate is enforced from the parsed contract expiry at preview time, including Demo/manual override paths.
+- Delta, Gamma, Theta and Vega must all be present and finite. Gamma must be positive, Theta negative and Vega non-negative. No absolute Gamma/Theta/Vega thresholds are inferred from chart numbers because the chart's units and contract multiplier are not supplied.
+- IV filters remain strategy-specific: BUY requires IV Rank below 40 and IV Percentile below 20; SELL requires IV Rank above 50 and IV Percentile above 80. Existing score, liquidity, spread, product identity, account-risk, hedge, E-STOP and exchange verification gates remain in force.
+
+### Premium trailing exits
+
+- **BUY:** initial premium stop -30%; trailing activates once premium reaches +30%; then the stop follows 20% below the highest observed premium. Hard take-profit remains +50%.
+- **SELL spread:** hard stop at 2x entry premium and take-profit at 50% premium decay. Once premium has decayed 30%, persist the lowest observed premium (trough) and exit on a 15% rebound from that trough. The 0.5-DTE time exit remains an additional backstop; the 2-DTE rule applies only to new entries.
+- The 60-second exit monitor persists the peak/trough and current trailing stop in `dd_option_positions.raw`. It must remain running while Demo positions are open.
+
+The new Greek and trailing rules apply equally to BTC and ETH. They do not enable Live routing or change the global execution mode. Testnet execution remains subject to the existing explicit Demo/Testnet switches and E-STOP controls.
