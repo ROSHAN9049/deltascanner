@@ -1,5 +1,6 @@
 import { resolveMinimumStopDistancePct } from '../../shared/delta-risk-policy.js';
 import crypto from 'node:crypto';
+import { accountEquity, accountAvailable, accountAvailableVerified } from './delta-wallet-balance.mjs';
 import * as defaultDb from '../../server/db.js';
 import { indiaDateKey } from '../../src/date-utils.js';
 import { isAllowedDeltaTestnetFutureSymbol, isEligibleDeltaTestnetPerpetualProduct, isMarketTickFresh } from './execution-route-policy.mjs';
@@ -112,68 +113,6 @@ function normalizePosition(row) {
     opened_at: row?.created_at || row?.opened_at || null,
     raw: row
   };
-}
-
-function accountEquity(wallet) {
-  const candidates = [
-    wallet?.meta?.net_equity,
-    wallet?.meta?.equity,
-    wallet?.meta?.total_equity,
-    wallet?.result?.net_equity,
-    wallet?.result?.equity,
-    wallet?.result?.total_equity
-  ].map(numberOrNull).filter(value => value !== null && value > 0);
-  if (candidates.length) return candidates[0];
-  const result = Array.isArray(wallet?.result)
-    ? wallet.result
-    : Array.isArray(wallet?.result?.balances) ? wallet.result.balances : [];
-  const settlementAssets = new Set(['USD', 'USDT', 'USDC', 'INR']);
-  const balances = result.filter(row => settlementAssets.has(stringOrEmpty(row?.asset_symbol || row?.currency || row?.symbol).toUpperCase()));
-  if (!balances.length) return null;
-  const total = balances.reduce((sum, row) => {
-    const balance = numberOrNull(row?.balance ?? row?.total_balance ?? row?.wallet_balance);
-    const unrealized = numberOrNull(row?.unrealized_pnl) ?? 0;
-    return sum + (balance ?? 0) + unrealized;
-  }, 0);
-  return total > 0 ? total : null;
-}
-
-function accountAvailable(wallet, equity) {
-  const candidates = [
-    wallet?.meta?.available_balance,
-    wallet?.meta?.available_margin,
-    wallet?.result?.available_balance
-  ].map(numberOrNull).filter(value => value !== null && value >= 0);
-  if (candidates.length) return candidates[0];
-  const result = Array.isArray(wallet?.result)
-    ? wallet.result
-    : Array.isArray(wallet?.result?.balances) ? wallet.result.balances : [];
-  const settlementAssets = new Set(['USD', 'USDT', 'USDC', 'INR']);
-  const balances = result.filter(row => settlementAssets.has(stringOrEmpty(row?.asset_symbol || row?.currency || row?.symbol).toUpperCase()));
-  if (balances.length) {
-    const total = balances.reduce((sum, row) => sum + (numberOrNull(row?.available_balance) ?? 0), 0);
-    if (total >= 0) return total;
-  }
-  return equity;
-}
-
-function accountAvailableVerified(wallet) {
-  const candidates = [
-    wallet?.meta?.available_balance,
-    wallet?.meta?.available_margin,
-    wallet?.result?.available_balance
-  ].map(numberOrNull).filter(value => value !== null && value >= 0);
-  if (candidates.length) return candidates[0];
-  const result = Array.isArray(wallet?.result)
-    ? wallet.result
-    : Array.isArray(wallet?.result?.balances) ? wallet.result.balances : [];
-  const settlementAssets = new Set(['USD', 'USDT', 'USDC', 'INR']);
-  const balances = result.filter(row =>
-    settlementAssets.has(stringOrEmpty(row?.asset_symbol || row?.currency || row?.symbol).toUpperCase())
-  );
-  const verified = balances.map(row => numberOrNull(row?.available_balance))
-    .filter(value => value !== null && value >= 0);
-  return verified.length ? verified.reduce((sum, value) => sum + value, 0) : null;
 }
 
 function terminalState(state) {
