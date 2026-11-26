@@ -24,7 +24,12 @@ export function screenGridMarket({ ticker = {}, candles = [], config = {}, setti
   const mid = bid > 0 && ask >= bid ? (bid + ask) / 2 : 0;
   const spreadPct = n(ticker?.spread_pct) > 0 ? n(ticker.spread_pct)
     : mid > 0 ? ((ask - bid) / mid) * 100 : null;
-  const turnover24hUsd = n(ticker?.turnover_usd ?? ticker?.turnover);
+  const explicitUsdTurnover = n(ticker?.turnover_usd);
+  const turnoverCurrency = String(ticker?.turnover_currency ?? ticker?.quote_currency ?? ticker?.quote_asset ?? '').trim().toUpperCase();
+  const quoteTurnover = n(ticker?.turnover);
+  const turnover24hUsd = explicitUsdTurnover > 0
+    ? explicitUsdTurnover
+    : (turnoverCurrency === '' || turnoverCurrency === 'USD') ? quoteTurnover : 0;
   const closes = rows.slice(-20).map(row => n(row.close));
   const path = closes.slice(1).reduce((sum, value, index) => sum + Math.abs(value - closes[index]), 0);
   const net = closes.length > 1 ? Math.abs(closes[closes.length - 1] - closes[0]) : null;

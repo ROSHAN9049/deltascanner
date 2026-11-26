@@ -480,8 +480,12 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
   const btcT15 = trendFor15m(btc15);
   const lastEntry = closedEntry.at(-1);
 
-  const bullish = (t5 === 'BULL' || (t5 === 'FLAT' && t15 === 'BULL')) && t15 !== 'BEAR';
-  const bearish = (t5 === 'BEAR' || (t5 === 'FLAT' && t15 === 'BEAR')) && t15 !== 'BULL';
+  const bullish = cfg.relaxedTrend === true
+    ? (t5 === 'BULL' || (t5 === 'FLAT' && t15 === 'BULL'))
+    : (t5 === 'BULL' || (t5 === 'FLAT' && t15 === 'BULL')) && t15 !== 'BEAR';
+  const bearish = cfg.relaxedTrend === true
+    ? (t5 === 'BEAR' || (t5 === 'FLAT' && t15 === 'BEAR'))
+    : (t5 === 'BEAR' || (t5 === 'FLAT' && t15 === 'BEAR')) && t15 !== 'BULL';
 
   const volumeMin = n(cfg.volumeMin || (isScalping ? 0.75 : 1.0));
   const antiChaseMax = n(cfg.antiChasePct || 15);
@@ -608,8 +612,9 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
     !!price && !!riskDistance && !!sl;
 
   const normalizedScore = Number(cfg?.normalizedScore);
+  const normalizedScoreMin = Math.max(60, Math.min(80, n(cfg.normalizedScoreMin) || 80));
   const normalizedScorePass =
-    Number.isFinite(normalizedScore) && normalizedScore >= 80;
+    Number.isFinite(normalizedScore) && normalizedScore >= normalizedScoreMin;
 
   const hardReady =
     !!side &&
@@ -633,7 +638,7 @@ export function analyse(ticker, product, c1, c5, c15, btc5, btc15, strategy, cfg
     blocked.push('No directional trigger');
   } else {
     if (!normalizedScorePass) {
-      blocked.push('Normalized score below 80 or unavailable');
+      blocked.push('Normalized score below ' + normalizedScoreMin + ' or unavailable');
     }
     if (!rsiOk) blocked.push('RSI/VWAP');
     if (vr < volumeMin && !volumeFallback) blocked.push('Volume spike < ' + volumeMin.toFixed(2) + 'x');

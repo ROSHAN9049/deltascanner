@@ -81,8 +81,10 @@ const hourlyTrendForCandles = candles => {
   const ema50 = emaValue(closes, 50), ema200 = emaValue(closes, 200);
   return { trend: ema50 > ema200 ? 'BULL' : ema50 < ema200 ? 'BEAR' : 'FLAT', ema50, ema200, candles: rows.length };
 };
+const isDemoTestnetTuning = CONFIG.environment === 'TESTNET' &&
+  CONFIG.deltaExecutionMode === 'testnet' && CONFIG.directDeltaExecutionEnabled === true;
 const applyHourlyTrendGate = (signal, trend) => {
-  if (!signal || !signal.side) return signal;
+  if (!signal || !signal.side || isDemoTestnetTuning) return signal;
   const allowed = trend?.trend === 'BULL' ? signal.side === 'BUY' : trend?.trend === 'BEAR' ? signal.side === 'SELL' : false;
   if (!allowed) {
     signal.blocked = Array.isArray(signal.blocked) ? signal.blocked : [];
@@ -99,7 +101,7 @@ const applyHourlyTrendGate = (signal, trend) => {
   return signal;
 };
 const applyStrictVolumeGate = signal => {
-  if (!signal || !signal.side) return signal;
+  if (!signal || !signal.side || isDemoTestnetTuning) return signal;
   if (!(Number(signal.volumeSpike) > 1.5)) {
     signal.blocked = Array.isArray(signal.blocked) ? signal.blocked : [];
     signal.blocked.push('Strict volume filter: volume must be > 1.5x');
@@ -865,12 +867,26 @@ export class DeltaEngine {
       lastAppliedUtcDay: gridState.autoRangeLastAppliedUtcDay || null,
       timestamp
     });
-    const shouldRefresh = due || snapshotMissing;
+    const lastDriftRefreshAt = Number(gridState.autoRangeLastPriceDriftAt || 0);
+    const driftCooldownPassed = !lastDriftRefreshAt || timestamp - lastDriftRefreshAt >= 15 * 60 * 1000;
+    const priceDriftSymbols = driftCooldownPassed ? normalizedSymbols.filter(symbol => {
+      const config = existingConfigs[symbol] || {};
+      const lower = n(config.lowerPrice ?? config.grid_lower_price);
+      const upper = n(config.upperPrice ?? config.grid_upper_price);
+      const ticker = this.tickerMap.get(symbol) || {};
+      const price = n(ticker.mark_price ?? ticker.close ?? ticker.last_price);
+      if (!(lower > 0 && upper > lower && price > 0)) return false;
+      const midpoint = (lower + upper) / 2;
+      return Math.abs(price - midpoint) / midpoint >= 0.0075;
+    }) : [];
+    const priceDriftRefresh = priceDriftSymbols.length > 0;
+    const shouldRefresh = due || snapshotMissing || priceDriftRefresh;
     if (!shouldRefresh) return { settings, blocked: false, applied: false };
 
     const defer = async (reason, detail = {}, nextSettings = settings) => {
       await this.log('WARN', 'Grid Auto-Range reconciliation unavailable; symbol ranges remain unchanged', {
-        reason, utcDay: dayKey, symbols: normalizedSymbols, trailingRefreshEnabled, ...detail
+        reason, utcDay: dayKey, symbols: normalizedSymbols, trailingRefreshEnabled,
+        priceDriftRefresh, priceDriftSymbols, ...detail
       }).catch(() => {});
       return { settings: nextSettings, blocked: true, applied: false, reason };
     };
@@ -1030,6 +1046,7 @@ export class DeltaEngine {
         ...gridState,
         autoRangeLastAppliedUtcDay: dayKey,
         autoRangeLastAppliedAt: nowIso,
+        ...(priceDriftRefresh ? { autoRangeLastPriceDriftAt: timestamp } : {}),
         autoRangeLastCandleBySymbol: {
           ...(gridState.autoRangeLastCandleBySymbol || {}),
           ...Object.fromEntries(calculated.filter(row => row.candle).map(row =>
@@ -3761,15 +3778,17 @@ export class DeltaEngine {
       this.lastOptionSignals = [];
       return [];
     }
+    const testnetOptionsTuning = CONFIG.environment === 'TESTNET' &&
+      CONFIG.deltaExecutionMode === 'testnet' && CONFIG.directDeltaExecutionEnabled === true;
     const cfg = {
       buyMinDelta: settings.options_buy_min_delta,
       buyMaxDelta: settings.options_buy_max_delta,
       sellMinDelta: settings.options_sell_min_delta,
       sellMaxDelta: settings.options_sell_max_delta,
-      minOi: settings.options_min_oi,
+      minOi: testnetOptionsTuning ? 5 : settings.options_min_oi,
       minVolume: settings.options_min_volume,
       maxSpreadPct: settings.options_max_spread_pct,
-      minDays: settings.options_min_days_to_expiry,
+      minDays: testnetOptionsTuning ? 1 : settings.options_min_days_to_expiry,
       maxDays: settings.options_max_days_to_expiry,
       scoreMin: Math.max(80, n(settings.score_min || 80)),
       buyStopPct: settings.options_buy_stop_pct,
@@ -4115,7 +4134,9 @@ export class DeltaEngine {
       const momShadow = analyse(ticker, product, c1, c5, c15, btc5, btc15, 'MOMENTUM', {
         minStopPct: n(settings.momentum_sl_min_pct || 0.95),
         rr: n(settings.momentum_rr || 2.0),
-        volumeMin: n(settings.volume_min || 0.75),
+        volumeMin: isDemoTestnetTuning ? 0.45 : n(settings.volume_min || 0.75),
+        normalizedScoreMin: isDemoTestnetTuning ? 70 : 80,
+        relaxedTrend: isDemoTestnetTuning,
         antiChasePct: n(settings.anti_chase_pct || 15),
         rangeAtrMax: n(settings.range_atr_max || 4.0),
         emaDistanceMax: n(settings.ema_distance_max || 3.5),
@@ -4127,7 +4148,9 @@ export class DeltaEngine {
       const scalpShadow = analyse(ticker, product, c1, c5, c15, btc5, btc15, 'SCALPING', {
         minStopPct: n(settings.scalping_sl_min_pct || 0.75),
         rr: n(settings.scalping_rr || 2.0),
-        volumeMin: n(settings.volume_min || 1.25),
+        volumeMin: isDemoTestnetTuning ? 0.65 : n(settings.volume_min || 1.25),
+        normalizedScoreMin: isDemoTestnetTuning ? 70 : 80,
+        relaxedTrend: isDemoTestnetTuning,
         antiChasePct: n(settings.anti_chase_pct || 15),
         rangeAtrMax: n(settings.range_atr_max || 3.0),
         emaDistanceMax: n(settings.ema_distance_max || 2.5),
@@ -4188,7 +4211,9 @@ export class DeltaEngine {
         minStopPct: n(settings.momentum_sl_min_pct || 0.95),
         rr: n(settings.momentum_rr || 2.0),
         normalizedScore: momNormalizedScore,
-        volumeMin: n(settings.volume_min || 0.75),
+        volumeMin: isDemoTestnetTuning ? 0.45 : n(settings.volume_min || 0.75),
+        normalizedScoreMin: isDemoTestnetTuning ? 70 : 80,
+        relaxedTrend: isDemoTestnetTuning,
         antiChasePct: n(settings.anti_chase_pct || 15),
         rangeAtrMax: n(settings.range_atr_max || 4.0),
         emaDistanceMax: n(settings.ema_distance_max || 3.5),
@@ -4201,7 +4226,9 @@ export class DeltaEngine {
         minStopPct: n(settings.scalping_sl_min_pct || 0.75),
         rr: n(settings.scalping_rr || 2.0),
         normalizedScore: scalpNormalizedScore,
-        volumeMin: n(settings.volume_min || 1.25),
+        volumeMin: isDemoTestnetTuning ? 0.65 : n(settings.volume_min || 1.25),
+        normalizedScoreMin: isDemoTestnetTuning ? 70 : 80,
+        relaxedTrend: isDemoTestnetTuning,
         antiChasePct: n(settings.anti_chase_pct || 15),
         rangeAtrMax: n(settings.range_atr_max || 3.0),
         emaDistanceMax: n(settings.ema_distance_max || 2.5),

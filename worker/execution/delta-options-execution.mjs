@@ -378,7 +378,8 @@ export function createDeltaOptionsExecution({
     // Demo mode bypasses only regime-based expiry tightening; configured
     // minimum/maximum DTE from dd_settings remain mandatory.
     const regimeBased = isEnabled(env.OPTIONS_REGIME_STRATEGY_ENABLED) && !demoQualityOverride;
-    const minDays = regimeBased ? (isBuy ? 3 : 1) : number(settings.options_min_days_to_expiry);
+    const minDays = demoQualityOverride ? 1
+      : regimeBased ? (isBuy ? 3 : 1) : number(settings.options_min_days_to_expiry);
     const maxDays = regimeBased ? (isBuy ? 10 : 3) : number(settings.options_max_days_to_expiry);
     if (minDays === null || maxDays === null || minDays < 0.5 || maxDays < minDays ||
         parsed.dte < minDays || parsed.dte > maxDays) {
