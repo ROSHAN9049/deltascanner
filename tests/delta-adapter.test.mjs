@@ -6,7 +6,7 @@ function captureRequest(adapter) {
   let captured = null;
   adapter.request = async (method, path, params, body, auth, options) => {
     captured = { method, path, params, body, auth, options };
-    return [];
+    return { result: [], meta: {} };
   };
   return () => captured;
 }
@@ -97,4 +97,24 @@ test('market-data routing remains separate from the Testnet product catalogue ro
   };
   assert.equal(resolveDeltaRequestBase({ marketData: true }, routes), routes.marketDataBase);
   assert.equal(resolveDeltaRequestBase({ productCatalog: true }, routes), routes.productCatalogBase);
+});
+
+test('optionProducts() paginates the complete Testnet catalogue and rejects malformed pages', async () => {
+  const adapter = new DeltaAdapter();
+  const requests = [];
+  const pages = [
+    { result: [{ id: 1, symbol: 'C-BTC-60000-041226', contract_type: 'call_options' }], meta: { after: 'cursor-1' } },
+    { result: [{ id: 2, symbol: 'P-XAUT-4000-041226', contract_type: 'put_options' }], meta: {} }
+  ];
+  adapter.request = async (...args) => { requests.push(args); return pages.shift(); };
+  const products = await adapter.optionProducts();
+  assert.deepEqual(products.map(row => row.id), [1, 2]);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0][2].after, undefined);
+  assert.equal(requests[1][2].after, 'cursor-1');
+  assert.equal(requests[0][5].productCatalog, true);
+
+  const malformed = new DeltaAdapter();
+  malformed.request = async () => ({ result: null, meta: {} });
+  await assert.rejects(malformed.optionProducts(), /catalogue response is malformed/);
 });
