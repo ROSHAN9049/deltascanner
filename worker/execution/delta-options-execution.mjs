@@ -241,8 +241,11 @@ export function createDeltaOptionsExecution({
     const marketRegime = clean(row.market_regime || details.marketRegime).toUpperCase();
     const demoQualityOverride = isOptionsDemoExecution(env) && manualTestOverride === true;
     const normalizedScore = number(row.score);
-    if (normalizedScore === null || normalizedScore < 80) {
-      throw new Error('Options candidate normalized score is below the mandatory 80 minimum');
+    // Match the explicitly configured Testnet normalized-score floor.
+    // This is still a hard gate; it does not bypass CONFIRMED/analysis-ready,
+    // expiry, liquidity, spread, product, risk, hedge, or E-STOP checks.
+    if (normalizedScore === null || normalizedScore < 70) {
+      throw new Error('Options candidate normalized score is below the mandatory 70 minimum');
     }
     if (!demoQualityOverride) {
       const ivMetricsGate = evaluateIvMetrics(strategy, ivRank, ivPercentile);
