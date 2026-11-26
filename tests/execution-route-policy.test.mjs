@@ -59,12 +59,12 @@ test('Grid allowlist contains liquid crypto majors and metals but excludes stabl
 });
 
 test('Grid symbol parser accepts exactly two distinct allowlisted Testnet symbols and fails closed otherwise', () => {
-  assert.deepEqual(parseDeltaTestnetGridSymbols('PAXGUSD,NVDAXUSD'), ['PAXGUSD', 'NVDAXUSD']);
-  assert.deepEqual(parseDeltaTestnetGridSymbols(' NVDAXUSD, PAXGUSD '), ['NVDAXUSD', 'PAXGUSD']);
+  assert.deepEqual(parseDeltaTestnetGridSymbols('BTCUSD,ETHUSD'), ['BTCUSD', 'ETHUSD']);
+  assert.deepEqual(parseDeltaTestnetGridSymbols(' ETHUSD, BTCUSD '), ['ETHUSD', 'BTCUSD']);
   assert.deepEqual(parseDeltaTestnetGridSymbols(''), []);
   assert.throws(() => parseDeltaTestnetGridSymbols('SLVONUSD,NVDAXUSD'), /outside the Delta Testnet allowlist/);
-  assert.throws(() => parseDeltaTestnetGridSymbols('PAXGUSD,PAXGUSD'), /distinct symbols/);
-  assert.throws(() => parseDeltaTestnetGridSymbols('PAXGUSD'), /exactly two/);
+  assert.throws(() => parseDeltaTestnetGridSymbols('BTCUSD,BTCUSD'), /distinct symbols/);
+  assert.throws(() => parseDeltaTestnetGridSymbols('BTCUSD'), /exactly two/);
 });
 
 test('Testnet route requires exact allowlisted, live operational and non-reduce-only perpetual product metadata', () => {
@@ -75,7 +75,8 @@ test('Testnet route requires exact allowlisted, live operational and non-reduce-
   };
   assert.equal(isEligibleDeltaTestnetPerpetualProduct(valid), true);
   assert.equal(isEligibleDeltaTestnetPerpetualProduct({ ...valid, symbol: 'SNDKBUSD' }), false);
-  assert.equal(isEligibleDeltaTestnetPerpetualProduct({ ...valid, symbol: 'BTCUSD' }), false);
+  assert.equal(isEligibleDeltaTestnetPerpetualProduct({ ...valid, symbol: 'BTCUSD' }), true);
+  assert.equal(isEligibleDeltaTestnetPerpetualProduct({ ...valid, symbol: 'SNDKBUSD' }), false);
   assert.equal(isEligibleDeltaTestnetPerpetualProduct({ ...valid, symbol: 'ETHUSD', state: 'prelaunch' }), false);
   assert.equal(isEligibleDeltaTestnetPerpetualProduct({ ...valid, symbol: 'SOLUSD', trading_status: 'suspended' }), false);
   assert.equal(isEligibleDeltaTestnetPerpetualProduct({ ...valid, id: null }), false);
