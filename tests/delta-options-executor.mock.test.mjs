@@ -39,7 +39,8 @@ function harness({
       analysisReady: true, ivRank: strategy === 'OPTIONS_BUY' ? 30 : 60,
       ivPercentile: strategy === 'OPTIONS_BUY' ? 10 : 90,
       optionType: 'CALL', strike: contractStrike,
-      delta: strategy === 'OPTIONS_BUY' ? 0.55 : 0.30,
+      delta: strategy === 'OPTIONS_BUY' ? 0.55 : 0.20,
+      gamma: 0.00044, theta: -535, vega: 7.36,
       dte: 57, underlyingSymbol: contractUnderlying + 'USD',
       hedgeSymbol: HEDGE, hedgeStrike: 82000, hedgeDelta: 0.1
     }
@@ -349,6 +350,50 @@ function harness({
   });
   return { executor, apiCalls, storedOrders, optionRows, logs };
 }
+
+
+test('ETH options contracts use the same confirmed Greek and Testnet preview gates', async () => {
+  const { executor } = harness({
+    strategy: 'OPTIONS_BUY',
+    contractSymbol: 'C-ETH-2500-311226',
+    contractUnderlying: 'ETH',
+    contractStrike: 2500
+  });
+  const preview = await executor.previewOptionsOrder({
+    symbol: 'C-ETH-2500-311226', strategy: 'OPTIONS_BUY', qty: 1
+  });
+  assert.equal(preview.symbol, 'C-ETH-2500-311226');
+  assert.equal(preview.strategy, 'OPTIONS_BUY');
+});
+
+test('Options entries with less than two full days to expiry are blocked', async () => {
+  const { executor } = harness({
+    strategy: 'OPTIONS_BUY',
+    contractSymbol: 'C-BTC-80000-051126'
+  });
+  await assert.rejects(
+    executor.previewOptionsOrder({
+      symbol: 'C-BTC-80000-051126', strategy: 'OPTIONS_BUY', qty: 1
+    }),
+    /at least 2 full days to expiry/
+  );
+});
+
+test('missing or invalid Greeks block BTC and ETH option candidates', async () => {
+  const { executor } = harness({
+    strategy: 'OPTIONS_BUY',
+    contractSymbol: 'C-ETH-2500-311226',
+    contractUnderlying: 'ETH',
+    contractStrike: 2500,
+    candidatePatch: { details: { gamma: null } }
+  });
+  await assert.rejects(
+    executor.previewOptionsOrder({
+      symbol: 'C-ETH-2500-311226', strategy: 'OPTIONS_BUY', qty: 1
+    }),
+    /Delta, Gamma, Theta and Vega must all be present/
+  );
+});
 
 test('Demo BUY limit entry with no fill is canceled and never leaves a resting order', async () => {
   const { executor, apiCalls, optionRows } = harness({
