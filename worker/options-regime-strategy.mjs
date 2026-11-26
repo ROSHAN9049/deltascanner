@@ -240,34 +240,104 @@ export function evaluateIvMetrics(strategy, ivRank, ivPercentile) {
   };
 }
 
+export function normalizeOptionGreeks(ticker = {}) {
+  const details = ticker?.details && typeof ticker.details === 'object' ? ticker.details : {};
+  const nested = ticker?.greeks || details?.greeks || details?.optionGreeks || {};
+  return {
+    delta: finite(ticker.delta ?? details.delta ?? nested.delta),
+    gamma: finite(ticker.gamma ?? details.gamma ?? nested.gamma),
+    theta: finite(ticker.theta ?? details.theta ?? nested.theta),
+    vega: finite(ticker.vega ?? details.vega ?? nested.vega)
+  };
+}
+
+export function evaluateOptionGreeks(strategy, rawGreeks = {}) {
+  const normalized = String(strategy || '').trim().toUpperCase();
+  const greeks = normalizeOptionGreeks(rawGreeks);
+  if (!['OPTIONS_BUY', 'OPTIONS_SELL'].includes(normalized)) {
+    return { allowed: false, reason: 'Unsupported Options strategy for Greek validation', greeks };
+  }
+  if (Object.values(greeks).some(value => value === null)) {
+    return { allowed: false, reason: 'Delta, Gamma, Theta and Vega must all be present and finite; entry blocked', greeks };
+  }
+  const absDelta = Math.abs(greeks.delta);
+  const deltaBand = normalized === 'OPTIONS_BUY' ? [0.45, 0.65] : [0.10, 0.20];
+  if (absDelta < deltaBand[0] || absDelta > deltaBand[1]) {
+    return {
+      allowed: false,
+      reason: normalized + ' requires absolute Delta between ' + deltaBand[0].toFixed(2) + ' and ' + deltaBand[1].toFixed(2),
+      greeks
+    };
+  }
+  if (!(greeks.gamma > 0)) {
+    return { allowed: false, reason: 'Gamma must be finite and positive; entry blocked', greeks };
+  }
+  if (!(greeks.theta < 0)) {
+    return { allowed: false, reason: 'Theta must be finite and negative; entry blocked', greeks };
+  }
+  if (!(greeks.vega >= 0)) {
+    return { allowed: false, reason: 'Vega must be finite and non-negative; entry blocked', greeks };
+  }
+  return { allowed: true, reason: null, greeks };
+}
+
 export function evaluateOptionsExit({
-  strategy, entryPremium, currentPremium, peakPremium = null, dte = null,
-  openedAt = null, now = Date.now()
+  strategy, entryPremium, currentPremium, peakPremium = null,
+  troughPremium = null, dte = null, openedAt = null, now = Date.now()
 } = {}) {
   const entry = finite(entryPremium);
   const current = finite(currentPremium);
-  const peak = finite(peakPremium) ?? current;
   if (!(entry > 0) || !(current > 0)) {
     return { exit: false, reason: 'QUOTE_OR_ENTRY_PREMIUM_UNAVAILABLE' };
   }
   const normalized = String(strategy || '').trim().toUpperCase();
   if (normalized === 'OPTIONS_BUY') {
-    const armedBreakeven = peak >= entry * 1.3;
-    if (current >= entry * 1.5) return { exit: true, reason: 'TAKE_PROFIT_50_PERCENT', peakPremium: Math.max(peak, current) };
-    if (current <= entry * 0.7) return { exit: true, reason: 'STOP_LOSS_30_PERCENT', peakPremium: Math.max(peak, current) };
-    if (armedBreakeven && current <= entry) return { exit: true, reason: 'TRAIL_TO_BREAKEVEN', peakPremium: Math.max(peak, current) };
+    const peak = Math.max(entry, finite(peakPremium) ?? current, current);
+    const trailArmed = peak >= entry * 1.3;
+    const trailingStopPremium = trailArmed ? peak * 0.8 : null;
+    if (current >= entry * 1.5) return {
+      exit: true, reason: 'TAKE_PROFIT_50_PERCENT',
+      peakPremium: peak, trailingStopPremium
+    };
+    if (current <= entry * 0.7) return {
+      exit: true, reason: 'STOP_LOSS_30_PERCENT',
+      peakPremium: peak, trailingStopPremium
+    };
+    if (trailArmed && current <= trailingStopPremium) return {
+      exit: true, reason: 'TRAILING_STOP_20_PERCENT_FROM_PEAK',
+      peakPremium: peak, trailingStopPremium
+    };
     const opened = Date.parse(openedAt || '');
     if (Number.isFinite(opened) && now - opened >= 5 * 24 * 60 * 60 * 1000) {
-      return { exit: true, reason: 'MAX_HOLD_5_DAYS', peakPremium: Math.max(peak, current) };
+      return { exit: true, reason: 'MAX_HOLD_5_DAYS', peakPremium: peak, trailingStopPremium };
     }
-    return { exit: false, reason: null, peakPremium: Math.max(peak, current), breakevenTrailArmed: armedBreakeven };
+    return {
+      exit: false, reason: null, peakPremium: peak,
+      trailingStopPremium, breakevenTrailArmed: trailArmed
+    };
   }
   if (normalized === 'OPTIONS_SELL') {
     const days = finite(dte);
-    if (days !== null && days <= 0.5) return { exit: true, reason: 'TIME_EXIT_DTE_0_5_DAYS' };
-    if (current <= entry * 0.5) return { exit: true, reason: 'TAKE_PROFIT_50_PERCENT_DECAY' };
-    if (current >= entry * 2) return { exit: true, reason: 'STOP_LOSS_2X_PREMIUM' };
-    return { exit: false, reason: null };
+    const trough = Math.min(entry, finite(troughPremium) ?? current, current);
+    const trailArmed = trough <= entry * 0.7;
+    const trailingStopPremium = trailArmed ? trough * 1.15 : null;
+    if (days !== null && days <= 0.5) return {
+      exit: true, reason: 'TIME_EXIT_DTE_0_5_DAYS', troughPremium: trough, trailingStopPremium
+    };
+    if (current <= entry * 0.5) return {
+      exit: true, reason: 'TAKE_PROFIT_50_PERCENT_DECAY', troughPremium: trough, trailingStopPremium
+    };
+    if (current >= entry * 2) return {
+      exit: true, reason: 'STOP_LOSS_2X_PREMIUM', troughPremium: trough, trailingStopPremium
+    };
+    if (trailArmed && current >= trailingStopPremium) return {
+      exit: true, reason: 'TRAILING_STOP_15_PERCENT_FROM_TROUGH',
+      troughPremium: trough, trailingStopPremium
+    };
+    return {
+      exit: false, reason: null, troughPremium: trough,
+      trailingStopPremium, trailingStopArmed: trailArmed
+    };
   }
   return { exit: false, reason: 'UNSUPPORTED_OPTIONS_STRATEGY' };
 }
