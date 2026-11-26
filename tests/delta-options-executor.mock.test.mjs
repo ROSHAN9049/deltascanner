@@ -39,7 +39,8 @@ function harness({
       analysisReady: true, ivRank: strategy === 'OPTIONS_BUY' ? 30 : 60,
       ivPercentile: strategy === 'OPTIONS_BUY' ? 10 : 90,
       optionType: 'CALL', strike: contractStrike,
-      delta: strategy === 'OPTIONS_BUY' ? 0.55 : 0.30,
+      delta: strategy === 'OPTIONS_BUY' ? 0.55 : 0.20,
+      gamma: 0.00044, theta: -535, vega: 7.36,
       dte: 57, underlyingSymbol: contractUnderlying + 'USD',
       hedgeSymbol: HEDGE, hedgeStrike: 82000, hedgeDelta: 0.1
     }
@@ -350,6 +351,50 @@ function harness({
   return { executor, apiCalls, storedOrders, optionRows, logs };
 }
 
+
+test('ETH options contracts use the same confirmed Greek and Testnet preview gates', async () => {
+  const { executor } = harness({
+    strategy: 'OPTIONS_BUY',
+    contractSymbol: 'C-ETH-2500-311226',
+    contractUnderlying: 'ETH',
+    contractStrike: 2500
+  });
+  const preview = await executor.previewOptionsOrder({
+    symbol: 'C-ETH-2500-311226', strategy: 'OPTIONS_BUY', qty: 1
+  });
+  assert.equal(preview.symbol, 'C-ETH-2500-311226');
+  assert.equal(preview.strategy, 'OPTIONS_BUY');
+});
+
+test('Options entries with less than two full days to expiry are blocked', async () => {
+  const { executor } = harness({
+    strategy: 'OPTIONS_BUY',
+    contractSymbol: 'C-BTC-80000-051126'
+  });
+  await assert.rejects(
+    executor.previewOptionsOrder({
+      symbol: 'C-BTC-80000-051126', strategy: 'OPTIONS_BUY', qty: 1
+    }),
+    /at least 2 full days to expiry/
+  );
+});
+
+test('missing or invalid Greeks block BTC and ETH option candidates', async () => {
+  const { executor } = harness({
+    strategy: 'OPTIONS_BUY',
+    contractSymbol: 'C-ETH-2500-311226',
+    contractUnderlying: 'ETH',
+    contractStrike: 2500,
+    candidatePatch: { details: { gamma: null } }
+  });
+  await assert.rejects(
+    executor.previewOptionsOrder({
+      symbol: 'C-ETH-2500-311226', strategy: 'OPTIONS_BUY', qty: 1
+    }),
+    /Delta, Gamma, Theta and Vega must all be present/
+  );
+});
+
 test('Demo BUY limit entry with no fill is canceled and never leaves a resting order', async () => {
   const { executor, apiCalls, optionRows } = harness({
     strategy: 'OPTIONS_BUY',
@@ -557,12 +602,13 @@ test('manual Testnet override keeps Delta and expiry qualification mandatory', a
     deltaCase.executor.previewOptionsOrder({
       symbol: SHORT, strategy: 'OPTIONS_BUY', qty: 1, manualTestOverride: true
     }),
-    /hard 0.05–0.95 validity band/
+    /OPTIONS_BUY requires absolute Delta between 0.45 and 0.65/
   );
   const configuredDeltaCase = harness({
     strategy: 'OPTIONS_BUY',
     manualOverrideEnabled: true,
-    candidatePatch: { stage: 'SETUP', score: 95, details: { analysisReady: false, delta: 0.80 } }
+    candidatePatch: { stage: 'SETUP', score: 95, details: { analysisReady: false, delta: 0.64 } },
+    settingsPatch: { options_buy_min_delta: 0.45, options_buy_max_delta: 0.63 }
   });
   await assert.rejects(
     configuredDeltaCase.executor.previewOptionsOrder({

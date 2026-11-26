@@ -1336,6 +1336,64 @@ export function createDeltaExecutor({
         !['OPEN', 'PENDING'].includes(state)) {
       throw new Error(stopType + ' protection could not be verified as active, reduce-only and exact-quantity');
     }
+
+    // A successful POST acknowledgement is not proof that a child order is
+    // active. Persist the authenticated GET /v2/orders/{id} result so the
+    // ledger cannot continue to show an unverified reservation after REST
+    // verification has succeeded.
+    const orderRows = await database.select(
+      'dd_orders',
+      'client_order_id=eq.' + encodeURIComponent(clientOrderId) + '&select=raw&limit=1'
+    );
+    if (!Array.isArray(orderRows) || orderRows.length !== 1) {
+      throw new Error(stopType + ' was active on Delta Testnet but its verification could not be persisted');
+    }
+    const verifiedAt = new Date(now()).toISOString();
+    await database.update(
+      'dd_orders',
+      'client_order_id=eq.' + encodeURIComponent(clientOrderId),
+      {
+        state,
+        unfilled_size: numberOrNull(verified?.unfilled_size) ?? qty,
+        updated_at: verifiedAt,
+        raw: {
+          ...(orderRows[0].raw && typeof orderRows[0].raw === 'object' ? orderRows[0].raw : {}),
+          accepted: true,
+          reservation: false,
+          testnet_order_id: orderId,
+          exchange_state: state,
+          reduce_only: verified.reduce_only === true,
+          protection_verified_by_rest: true,
+          protection_verified_at: verifiedAt,
+          verified_order_snapshot: {
+            id: verified.id ?? orderId,
+            state,
+            size: numberOrNull(verified.size),
+            unfilled_size: numberOrNull(verified.unfilled_size),
+            reduce_only: verified.reduce_only === true,
+            stop_order_type: verified.stop_order_type ?? null,
+            stop_price: numberOrNull(verified.stop_price),
+            bracket_stop_trigger_method: verified.stop_trigger_method ?? null
+          }
+        }
+      }
+    );
+    // PostgREST can return an empty UPDATE representation when the row is not
+    // visible to the current policy. Read the row back before declaring the
+    // exchange-side child order verified; a silent zero-row update is unsafe.
+    const persistedRows = await database.select(
+      'dd_orders',
+      'client_order_id=eq.' + encodeURIComponent(clientOrderId) + '&select=state,raw&limit=1'
+    );
+    const persisted = Array.isArray(persistedRows) && persistedRows.length === 1
+      ? persistedRows[0] : null;
+    if (!persisted || persisted.raw?.protection_verified_by_rest !== true ||
+        Number(persisted.raw?.verified_order_snapshot?.id) !== Number(orderId) ||
+        persisted.raw?.reduce_only !== true ||
+        String(persisted.raw?.exchange_state || '').toUpperCase() !== state ||
+        String(persisted.state || '').toUpperCase() !== state) {
+      throw new Error(stopType + ' exchange verification snapshot failed its database read-back check');
+    }
     return verified;
   }
 
@@ -1392,8 +1450,8 @@ export function createDeltaExecutor({
       const direction = stringOrEmpty(side).toUpperCase();
       const quantity = numberOrNull(qty);
       const entry = numberOrNull(entryPrice);
-      const stop = numberOrNull(slPrice);
-      const target = numberOrNull(tpPrice);
+      let stop = numberOrNull(slPrice);
+      let target = numberOrNull(tpPrice);
       if (!['BUY', 'SELL'].includes(direction)) throw new Error('side must be BUY or SELL');
       if (!Number.isSafeInteger(quantity) || quantity <= 0) throw new Error('qty must be a positive whole number of contracts');
       if (!(entry > 0 && Number.isFinite(entry))) throw new Error('Invalid entry price (must be finite and > 0)');
@@ -1421,14 +1479,36 @@ export function createDeltaExecutor({
       }
 
       const liveMarkPrice = await getFreshMarkPrice(normalizedSymbol);
-      const bracketContainsLiveMark = direction === 'BUY'
-        ? stop < liveMarkPrice && liveMarkPrice < target
-        : target < liveMarkPrice && liveMarkPrice < stop;
       const referenceDriftPct = Math.abs(liveMarkPrice - entry) / entry * 100;
       const maxMismatchPct = Math.max(0.1, Math.min(10,
         numberOrNull(env.DELTA_MAX_LIVE_DEMO_PRICE_MISMATCH_PCT) ?? 1.5));
-      if (!bracketContainsLiveMark || referenceDriftPct > slDistancePct + 1e-9 ||
-          referenceDriftPct > maxMismatchPct + 1e-9) {
+
+      // Re-anchor both protective levels to the just-fetched Testnet mark,
+      // preserving the signal's stop and reward percentages. The entry is
+      // still blocked when the signal is too stale (max mismatch guard).
+      const targetDistancePct = Math.abs(target - entry) / entry * 100;
+      stop = direction === 'BUY'
+        ? liveMarkPrice * (1 - slDistancePct / 100)
+        : liveMarkPrice * (1 + slDistancePct / 100);
+      target = direction === 'BUY'
+        ? liveMarkPrice * (1 + targetDistancePct / 100)
+        : liveMarkPrice * (1 - targetDistancePct / 100);
+      const bracketTickSize = numberOrNull(product?.tick_size);
+      if (!(bracketTickSize > 0)) throw new Error('Verified Testnet product tick_size is unavailable; bracket prices cannot be safely rounded');
+      stop = Number((direction === 'BUY'
+        ? Math.floor(stop / bracketTickSize + 1e-10) * bracketTickSize
+        : Math.ceil(stop / bracketTickSize - 1e-10) * bracketTickSize).toPrecision(12));
+      target = Number((direction === 'BUY'
+        ? Math.ceil(target / bracketTickSize - 1e-10) * bracketTickSize
+        : Math.floor(target / bracketTickSize + 1e-10) * bracketTickSize).toPrecision(12));
+      const roundedSlDistancePct = Math.abs(liveMarkPrice - stop) / liveMarkPrice * 100;
+      if (!(roundedSlDistancePct + 1e-9 >= minSlDistancePct)) {
+        throw new Error('Fresh-mark SL distance falls below the required minimum after tick rounding');
+      }
+      const bracketContainsLiveMark = direction === 'BUY'
+        ? stop < liveMarkPrice && liveMarkPrice < target
+        : target < liveMarkPrice && liveMarkPrice < stop;
+      if (!bracketContainsLiveMark || referenceDriftPct > maxMismatchPct + 1e-9) {
         await logExecutor('WARN', '[Executor] Entry blocked: Testnet mark is outside the validated risk envelope', {
           environment: 'testnet', symbol: normalizedSymbol, side: direction,
           referenceEntryPrice: entry, liveMarkPrice, referenceDriftPct, slDistancePct,

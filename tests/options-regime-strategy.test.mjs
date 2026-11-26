@@ -7,6 +7,8 @@ import {
   normalizeIvPercentile,
   evaluateIvRank,
   evaluateIvMetrics,
+  normalizeOptionGreeks,
+  evaluateOptionGreeks,
   evaluateOptionsExit
 } from '../worker/options-regime-strategy.mjs';
 
@@ -71,14 +73,14 @@ test('IV Rank blocks BUY at 40+, SELL at 50 or lower, and all missing values', (
   assert.equal(normalizeIvRank({ quotes: { ask_iv: '0.25' } }), null);
 });
 
-test('BUY exit logic enforces TP, SL and breakeven trail after +1R', () => {
+test('BUY exit logic enforces TP, SL and a 20% trail from peak after +30%', () => {
   assert.equal(evaluateOptionsExit({ strategy: 'OPTIONS_BUY', entryPremium: 100, currentPremium: 150 }).reason,
     'TAKE_PROFIT_50_PERCENT');
   assert.equal(evaluateOptionsExit({ strategy: 'OPTIONS_BUY', entryPremium: 100, currentPremium: 70 }).reason,
     'STOP_LOSS_30_PERCENT');
   assert.equal(evaluateOptionsExit({
     strategy: 'OPTIONS_BUY', entryPremium: 100, currentPremium: 100, peakPremium: 130
-  }).reason, 'TRAIL_TO_BREAKEVEN');
+  }).reason, 'TRAILING_STOP_20_PERCENT_FROM_PEAK');
 });
 
 test('SELL exit logic enforces 50% decay, 2x premium stop and 0.5 DTE exit', () => {
@@ -103,6 +105,45 @@ test('IV Rank and daily IV Percentile must both pass strategy thresholds', () =>
     'IV Percentile unavailable or insufficient daily history; entry blocked');
   assert.equal(normalizeIvPercentile({ details: { ivPercentile: '18.5' } }), 18.5);
   assert.equal(normalizeIvPercentile({ iv_percentile: 101 }), null);
+});
+
+test('Greeks gate enforces BUY and SELL Delta bands and finite directional Gamma, Theta and Vega', () => {
+  const buy = { delta: 0.55, gamma: 0.00044, theta: -535, vega: 7.36 };
+  const sell = { delta: -0.15, gamma: 0.00044, theta: -535, vega: 7.36 };
+  assert.equal(evaluateOptionGreeks('OPTIONS_BUY', buy).allowed, true);
+  assert.equal(evaluateOptionGreeks('OPTIONS_SELL', sell).allowed, true);
+  assert.equal(evaluateOptionGreeks('OPTIONS_BUY', { ...buy, delta: 0.4 }).allowed, false);
+  assert.equal(evaluateOptionGreeks('OPTIONS_SELL', { ...sell, delta: -0.25 }).allowed, false);
+  assert.equal(evaluateOptionGreeks('OPTIONS_BUY', { ...buy, gamma: 0 }).allowed, false);
+  assert.equal(evaluateOptionGreeks('OPTIONS_BUY', { ...buy, theta: 0 }).allowed, false);
+  assert.equal(evaluateOptionGreeks('OPTIONS_BUY', { ...buy, vega: null }).allowed, false);
+  assert.deepEqual(normalizeOptionGreeks({ details: { greeks: buy } }), buy);
+});
+
+test('BUY trail follows 20% below premium peak after activation', () => {
+  const armed = evaluateOptionsExit({
+    strategy: 'OPTIONS_BUY', entryPremium: 100, currentPremium: 140, peakPremium: 140
+  });
+  assert.equal(armed.exit, false);
+  assert.equal(armed.trailingStopPremium, 112);
+  const exit = evaluateOptionsExit({
+    strategy: 'OPTIONS_BUY', entryPremium: 100, currentPremium: 112, peakPremium: 140
+  });
+  assert.equal(exit.exit, true);
+  assert.equal(exit.reason, 'TRAILING_STOP_20_PERCENT_FROM_PEAK');
+});
+
+test('SELL trail persists premium trough and exits on a 15% rebound after 30% decay', () => {
+  const armed = evaluateOptionsExit({
+    strategy: 'OPTIONS_SELL', entryPremium: 100, currentPremium: 65, troughPremium: 65
+  });
+  assert.equal(armed.exit, false);
+  assert.equal(armed.trailingStopPremium, 74.75);
+  const exit = evaluateOptionsExit({
+    strategy: 'OPTIONS_SELL', entryPremium: 100, currentPremium: 75, troughPremium: 65
+  });
+  assert.equal(exit.exit, true);
+  assert.equal(exit.reason, 'TRAILING_STOP_15_PERCENT_FROM_TROUGH');
 });
 
 test('regime results expose both timeframe measurements for UNKNOWN diagnosis', () => {
