@@ -1336,6 +1336,48 @@ export function createDeltaExecutor({
         !['OPEN', 'PENDING'].includes(state)) {
       throw new Error(stopType + ' protection could not be verified as active, reduce-only and exact-quantity');
     }
+
+    // A successful POST acknowledgement is not proof that a child order is
+    // active. Persist the authenticated GET /v2/orders/{id} result so the
+    // ledger cannot continue to show an unverified reservation after REST
+    // verification has succeeded.
+    const orderRows = await database.select(
+      'dd_orders',
+      'client_order_id=eq.' + encodeURIComponent(clientOrderId) + '&select=raw&limit=1'
+    );
+    if (!Array.isArray(orderRows) || orderRows.length !== 1) {
+      throw new Error(stopType + ' was active on Delta Testnet but its verification could not be persisted');
+    }
+    const verifiedAt = new Date(now()).toISOString();
+    await database.update(
+      'dd_orders',
+      'client_order_id=eq.' + encodeURIComponent(clientOrderId),
+      {
+        state,
+        unfilled_size: numberOrNull(verified?.unfilled_size) ?? qty,
+        updated_at: verifiedAt,
+        raw: {
+          ...(orderRows[0].raw && typeof orderRows[0].raw === 'object' ? orderRows[0].raw : {}),
+          accepted: true,
+          reservation: false,
+          testnet_order_id: orderId,
+          exchange_state: state,
+          reduce_only: verified.reduce_only === true,
+          protection_verified_by_rest: true,
+          protection_verified_at: verifiedAt,
+          verified_order_snapshot: {
+            id: verified.id ?? orderId,
+            state,
+            size: numberOrNull(verified.size),
+            unfilled_size: numberOrNull(verified.unfilled_size),
+            reduce_only: verified.reduce_only === true,
+            stop_order_type: verified.stop_order_type ?? null,
+            stop_price: numberOrNull(verified.stop_price),
+            bracket_stop_trigger_method: verified.stop_trigger_method ?? null
+          }
+        }
+      }
+    );
     return verified;
   }
 
