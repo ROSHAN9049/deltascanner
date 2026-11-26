@@ -287,29 +287,26 @@ test('confirmed IOC fill with missing average price is emergency-closed before a
   assert.ok(runtime.logs.some(row => row.message.includes('Emergency close verified flat')));
 });
 
-test('bracket entry blocks a Testnet mark drift larger than the signal stop distance', async () => {
+test('bracket entry re-anchors SL/TP to a fresh Testnet mark within the configured mismatch cap', async () => {
   const runtime = fakeRuntime({ markPrice: 102.5 });
   const executor = createDeltaExecutor({
     env: { ...demoEnv(), DELTA_MAX_LIVE_DEMO_PRICE_MISMATCH_PCT: '3.0' },
     fetchImpl: runtime.fetchImpl, database: runtime.database
   });
-  await assert.rejects(
-    executor.placeBracketOrder('XAUTUSD', 'BUY', 1, 100, 98.5, 103),
-    /risk envelope/
+  await executor.placeBracketOrder('XAUTUSD', 'BUY', 1, 100, 98.5, 103);
+  const posts = runtime.httpCalls.filter(call =>
+    new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST'
   );
-  assert.equal(
-    runtime.httpCalls.some(call => new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST'),
-    false,
-    'a mark drift larger than the SL risk distance must not submit an order'
-  );
-  const blocked = runtime.logs.find(row =>
+  assert.equal(posts.length, 3, 'IOC entry followed by separate reduce-only SL and TP');
+  assert.equal(posts[1].body.stop_order_type, 'stop_loss_order');
+  assert.equal(posts[1].body.stop_price, '100.9');
+  assert.equal(posts[1].body.reduce_only, true);
+  assert.equal(posts[2].body.stop_order_type, 'take_profit_order');
+  assert.equal(posts[2].body.stop_price, '105.6');
+  assert.equal(posts[2].body.reduce_only, true);
+  assert.equal(runtime.logs.some(row =>
     row.message === '[Executor] Entry blocked: Testnet mark is outside the validated risk envelope'
-  );
-  assert.equal(blocked?.data?.reason, 'ENTRY_MARK_RISK_ENVELOPE_MISMATCH');
-  assert.equal(blocked?.data?.stopLossPrice, 98.5);
-  assert.equal(blocked?.data?.executionBlocked, true);
-  assert.equal(blocked?.data?.referenceEntryPrice, 100);
-  assert.equal(blocked?.data?.liveMarkPrice, 102.5);
+  ), false);
 });
 
 test('large production/Testnet price divergence remains blocked before order submission', async () => {
