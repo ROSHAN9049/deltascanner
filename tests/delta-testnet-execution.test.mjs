@@ -47,6 +47,7 @@ function fakeRuntime({
   const updates = [];
   const persistedPositions = [];
   let hasPostedOrder = false;
+  let emergencyClosePosted = false;
   let latestOrder = null;
   let nextOrderId = 123;
   const ordersById = new Map();
@@ -109,7 +110,7 @@ function fakeRuntime({
       return response({ success: true, result: { symbol: parsed.pathname.split('/').pop(), mark_price: String(markPrice) } });
     }
     if (parsed.pathname === '/v2/positions/margined') {
-      const rows = hasPostedOrder && positionsAfterFill !== null ? positionsAfterFill : positions;
+      const rows = emergencyClosePosted ? [] : (hasPostedOrder && positionsAfterFill !== null ? positionsAfterFill : positions);
       return response({ success: true, result: rows });
     }
     if (parsed.pathname === '/v2/fills') return response({ success: true, result: fills, meta: {} });
@@ -133,6 +134,7 @@ function fakeRuntime({
       const clientOrderId = JSON.parse(init.body).client_order_id;
       const requestBody = JSON.parse(init.body);
       const isProtection = Boolean(requestBody.stop_order_type);
+      if (requestBody.reduce_only === true && !isProtection) emergencyClosePosted = true;
       const order = {
         id: nextOrderId++, product_id: requestBody.product_id,
         size: requestBody.size, side: requestBody.side,
@@ -238,6 +240,32 @@ test('entry is IOC limit followed by separately verified reduce-only SL and TP',
   assert.equal(posts[2].body.reduce_only, true);
   assert.match(entry.init.headers.signature, /^[0-9a-f]{64}$/);
   assert.equal(entry.init.headers.timestamp, '1770000000');
+});
+
+test('confirmed IOC fill with missing average price is emergency-closed before any protection attempt', async () => {
+  const runtime = fakeRuntime({
+    orderAverageFillPrice: null,
+    positionsAfterFill: [{
+      product_id: 181689, product_symbol: 'XAUTUSD', size: 1,
+      entry_price: '60000', mark_price: '60000', unrealized_pnl: '0'
+    }]
+  });
+  const executor = createDeltaExecutor({
+    env: demoEnv(), fetchImpl: runtime.fetchImpl, database: runtime.database
+  });
+  await assert.rejects(
+    executor.placeBracketOrder('XAUTUSD', 'BUY', 1, 60000, 59000, 62000, {
+      strategy: 'MOMENTUM', clientOrderId: 'DDM-XAUTUSD-MISSING-AVG'
+    }),
+    /emergency-closed/
+  );
+  const posts = runtime.httpCalls.filter(call =>
+    new URL(call.url).pathname === '/v2/orders' && call.init.method === 'POST'
+  );
+  assert.equal(posts.length, 2, 'entry followed by reduce-only emergency close; no SL/TP posts');
+  assert.equal(posts[1].body.reduce_only, true);
+  assert.equal(posts[1].body.stop_order_type, undefined);
+  assert.ok(runtime.logs.some(row => row.message.includes('Emergency close verified flat')));
 });
 
 test('bracket entry blocks a Testnet mark drift larger than the signal stop distance', async () => {

@@ -1480,38 +1480,58 @@ export function createDeltaExecutor({
         signalGeneratedAt: options?.signalGeneratedAt ?? null
       });
       let latestOrder = entryOrder;
-      if (numberOrNull(latestOrder?.unfilled_size) === null && numberOrNull(latestOrder?.id) > 0) {
-        latestOrder = await getOrderById(latestOrder.id);
-      }
-      let unfilled = numberOrNull(latestOrder?.unfilled_size);
-      if (unfilled === null || unfilled < 0 || unfilled > quantity) {
-        throw new Error('IOC fill quantity is ambiguous; refusing to place protection or submit a second entry');
-      }
-      const filledQty = quantity - unfilled;
-      const orderId = numberOrNull(latestOrder?.id);
-      if (orderId > 0 && unfilled > 0 &&
-          !['CANCELLED', 'CANCELED', 'CLOSED', 'FILLED', 'REJECTED', 'FAILED', 'EXPIRED'].includes(stringOrEmpty(latestOrder?.state).toUpperCase())) {
-        latestOrder = await cancelOrderById(orderId);
+      let unfilled;
+      let confirmedFillQty;
+      let averageFillPrice;
+      try {
+        if (numberOrNull(latestOrder?.unfilled_size) === null && numberOrNull(latestOrder?.id) > 0) {
+          latestOrder = await getOrderById(latestOrder.id);
+        }
         unfilled = numberOrNull(latestOrder?.unfilled_size);
         if (unfilled === null || unfilled < 0 || unfilled > quantity) {
-          throw new Error('IOC remainder cancellation left fill quantity ambiguous; manual reconciliation required');
+          throw new Error('IOC fill quantity is ambiguous; exchange position must be flattened before execution can continue');
         }
-      }
-      const confirmedFillQty = quantity - unfilled;
-      if (confirmedFillQty <= 0) {
-        await logExecutor('WARN', '[Executor] IOC entry produced zero fill; no SL/TP orders submitted', {
-          environment: 'testnet', symbol: normalizedSymbol, requestedQty: quantity,
-          unfilledSize: unfilled, orderId: latestOrder?.id ?? null,
-          state: latestOrder?.state ?? null, executionBlocked: true
-        });
-        throw new Error('IOC entry was not filled; no position or protective orders created');
-      }
-      if (confirmedFillQty !== filledQty) {
-        throw new Error('IOC fill quantity changed during remainder cancellation; reconciliation required before protection');
-      }
-      const averageFillPrice = numberOrNull(latestOrder?.average_fill_price);
-      if (!(averageFillPrice > 0)) {
-        throw new Error('IOC fill is confirmed but average_fill_price is missing; protective placement blocked for reconciliation');
+        const filledQty = quantity - unfilled;
+        const orderId = numberOrNull(latestOrder?.id);
+        if (orderId > 0 && unfilled > 0 &&
+            !['CANCELLED', 'CANCELED', 'CLOSED', 'FILLED', 'REJECTED', 'FAILED', 'EXPIRED'].includes(stringOrEmpty(latestOrder?.state).toUpperCase())) {
+          latestOrder = await cancelOrderById(orderId);
+          unfilled = numberOrNull(latestOrder?.unfilled_size);
+          if (unfilled === null || unfilled < 0 || unfilled > quantity) {
+            throw new Error('IOC remainder cancellation left fill quantity ambiguous; emergency flatten required');
+          }
+        }
+        confirmedFillQty = quantity - unfilled;
+        if (confirmedFillQty <= 0) {
+          throw new Error('IOC entry was not filled; no position or protective orders created');
+        }
+        if (confirmedFillQty !== filledQty) {
+          throw new Error('IOC fill quantity changed during remainder cancellation; emergency flatten required');
+        }
+        averageFillPrice = numberOrNull(latestOrder?.average_fill_price);
+        if (!(averageFillPrice > 0)) {
+          throw new Error('IOC fill is confirmed but average_fill_price is missing; emergency flatten required');
+        }
+      } catch (entryConfirmationError) {
+        // Any error after an IOC submission can leave an exchange-side fill that
+        // the local order acknowledgement cannot describe. Re-read the exchange
+        // position and flatten its actual quantity before returning a failure.
+        try {
+          await emergencyCloseFilledEntry(product, normalizedSymbol, direction, quantity,
+            entryClientOrderId, strategy);
+        } catch (closeError) {
+          await logExecutor('ERROR', '[Executor] CRITICAL: IOC fill confirmation failed and emergency close is not verified; exposure requires immediate operator intervention', {
+            environment: 'testnet', symbol: normalizedSymbol, requestedQty: quantity,
+            entryOrderId: latestOrder?.id ?? null,
+            entryConfirmationError: String(entryConfirmationError?.message || entryConfirmationError).slice(0, 220),
+            emergencyCloseError: String(closeError?.message || closeError).slice(0, 220),
+            executionBlocked: true, positionStatus: 'UNVERIFIED'
+          });
+          throw new Error('CRITICAL: IOC fill confirmation failed and emergency close could not be verified: ' +
+            String(closeError?.message || closeError));
+        }
+        throw new Error('IOC fill confirmation failed; exchange position was emergency-closed: ' +
+          String(entryConfirmationError?.message || entryConfirmationError));
       }
 
       const slClientId = buildClientOrderId(entryClientOrderId + '-SL', prefix, normalizedSymbol);
