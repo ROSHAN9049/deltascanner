@@ -74,7 +74,6 @@ test('Testnet route requires exact allowlisted, live operational and non-reduce-
     only_reduce_only_orders_allowed: false
   };
   assert.equal(isEligibleDeltaTestnetPerpetualProduct(valid), true);
-  assert.equal(isEligibleDeltaTestnetPerpetualProduct({ ...valid, symbol: 'SNDKBUSD' }), false);
   assert.equal(isEligibleDeltaTestnetPerpetualProduct({ ...valid, symbol: 'BTCUSD' }), true);
   assert.equal(isEligibleDeltaTestnetPerpetualProduct({ ...valid, symbol: 'SNDKBUSD' }), false);
   assert.equal(isEligibleDeltaTestnetPerpetualProduct({ ...valid, symbol: 'ETHUSD', state: 'prelaunch' }), false);
