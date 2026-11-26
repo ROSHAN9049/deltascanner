@@ -1434,8 +1434,8 @@ export function createDeltaExecutor({
       const direction = stringOrEmpty(side).toUpperCase();
       const quantity = numberOrNull(qty);
       const entry = numberOrNull(entryPrice);
-      const stop = numberOrNull(slPrice);
-      const target = numberOrNull(tpPrice);
+      let stop = numberOrNull(slPrice);
+      let target = numberOrNull(tpPrice);
       if (!['BUY', 'SELL'].includes(direction)) throw new Error('side must be BUY or SELL');
       if (!Number.isSafeInteger(quantity) || quantity <= 0) throw new Error('qty must be a positive whole number of contracts');
       if (!(entry > 0 && Number.isFinite(entry))) throw new Error('Invalid entry price (must be finite and > 0)');
@@ -1463,14 +1463,32 @@ export function createDeltaExecutor({
       }
 
       const liveMarkPrice = await getFreshMarkPrice(normalizedSymbol);
-      const bracketContainsLiveMark = direction === 'BUY'
-        ? stop < liveMarkPrice && liveMarkPrice < target
-        : target < liveMarkPrice && liveMarkPrice < stop;
       const referenceDriftPct = Math.abs(liveMarkPrice - entry) / entry * 100;
       const maxMismatchPct = Math.max(0.1, Math.min(10,
         numberOrNull(env.DELTA_MAX_LIVE_DEMO_PRICE_MISMATCH_PCT) ?? 1.5));
-      if (!bracketContainsLiveMark || referenceDriftPct > slDistancePct + 1e-9 ||
-          referenceDriftPct > maxMismatchPct + 1e-9) {
+
+      // Re-anchor both protective levels to the just-fetched Testnet mark,
+      // preserving the signal's stop and reward percentages. The entry is
+      // still blocked when the signal is too stale (max mismatch guard).
+      const targetDistancePct = Math.abs(target - entry) / entry * 100;
+      stop = direction === 'BUY'
+        ? liveMarkPrice * (1 - slDistancePct / 100)
+        : liveMarkPrice * (1 + slDistancePct / 100);
+      target = direction === 'BUY'
+        ? liveMarkPrice * (1 + targetDistancePct / 100)
+        : liveMarkPrice * (1 - targetDistancePct / 100);
+      const tickSize = numberOrNull(product?.tick_size);
+      if (!(tickSize > 0)) throw new Error('Verified Testnet product tick_size is unavailable; bracket prices cannot be safely rounded');
+      stop = Number((direction === 'BUY'
+        ? Math.floor(stop / tickSize + 1e-10) * tickSize
+        : Math.ceil(stop / tickSize - 1e-10) * tickSize).toPrecision(12));
+      target = Number((direction === 'BUY'
+        ? Math.ceil(target / tickSize - 1e-10) * tickSize
+        : Math.floor(target / tickSize + 1e-10) * tickSize).toPrecision(12));
+      const bracketContainsLiveMark = direction === 'BUY'
+        ? stop < liveMarkPrice && liveMarkPrice < target
+        : target < liveMarkPrice && liveMarkPrice < stop;
+      if (!bracketContainsLiveMark || referenceDriftPct > maxMismatchPct + 1e-9) {
         await logExecutor('WARN', '[Executor] Entry blocked: Testnet mark is outside the validated risk envelope', {
           environment: 'testnet', symbol: normalizedSymbol, side: direction,
           referenceEntryPrice: entry, liveMarkPrice, referenceDriftPct, slDistancePct,
