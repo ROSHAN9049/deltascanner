@@ -313,7 +313,7 @@ export function evaluateOptionsExit({
     }
     return {
       exit: false, reason: null, peakPremium: peak,
-      trailingStopPremium, breakevenTrailArmed: trailArmed
+      trailingStopPremium, trailingStopArmed: trailArmed
     };
   }
   if (normalized === 'OPTIONS_SELL') {
