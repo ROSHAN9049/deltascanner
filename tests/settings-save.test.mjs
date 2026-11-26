@@ -202,7 +202,7 @@ test('settings endpoint persists four allowlisted dynamic Grid configs and their
     assert.equal(res.payload.persisted.grid_max_positions, 2);
     assert.deepEqual(
       Object.keys(res.payload.persisted.grid_symbol_configs).sort(),
-      ['BTCUSD', 'PAXGUSD', 'ETHUSD', 'XAUTUSD']
+      ['BTCUSD', 'ETHUSD', 'PAXGUSD', 'XAUTUSD']
     );
     assert.equal(res.payload.persisted.grid_symbol_configs.BTCUSD.lowerPrice, null);
     assert.equal(res.payload.persisted.grid_symbol_configs.BTCUSD.atr_snapshot_status, 'PENDING');
