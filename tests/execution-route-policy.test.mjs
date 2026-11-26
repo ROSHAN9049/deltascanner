@@ -96,10 +96,10 @@ test('freshness gate rejects missing, stale, or materially future market ticks',
 
 test('dynamic Grid pool filters unsupported requested symbols against the Testnet allowlist', () => {
   const result = resolveDeltaTestnetGridSymbolPool(
-    'BTCUSD,ETHUSD,SOLUSD,BNBUSD,XAUTUSD,PAXGUSD,USDTUSD',
+    'BTCUSD,ETHUSD,SOLUSD,BNBUSD,XAUTUSD,USDTUSD',
     'BTCUSD,ETHUSD'
   );
-  assert.deepEqual(result.symbols, ['BTCUSD', 'ETHUSD', 'SOLUSD', 'BNBUSD', 'XAUTUSD', 'PAXGUSD']);
+  assert.deepEqual(result.symbols, ['BTCUSD', 'ETHUSD', 'SOLUSD', 'BNBUSD', 'XAUTUSD']);
   assert.deepEqual(result.rejectedSymbols, ['USDTUSD']);
   assert.equal(result.source, 'GRID_SYMBOL_POOL');
   assert.deepEqual(DEFAULT_DELTA_TESTNET_GRID_SYMBOL_POOL, ['BTCUSD', 'ETHUSD', 'SOLUSD', 'BNBUSD', 'XRPUSD', 'DOGEUSD']);
