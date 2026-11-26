@@ -1,23 +1,29 @@
 export const DIRECT_DELTA_EXECUTION_MODE = 'testnet';
 export const DELTA_TESTNET_MARKET_TICK_MAX_AGE_MS = 180_000;
 
+// Deliberately bounded crypto/metal universe. Dynamic discovery may rank
+// only these instruments, and each candidate still needs exact LIVE,
+// operational Delta Testnet perpetual metadata before it can enter the pool.
+// Equity/stock tokens and pegged stablecoins are excluded from Grid.
 export const DELTA_TESTNET_FUTURES_ALLOWLIST = Object.freeze([
-  'DOGSUSD',
-  'USOONUSD',
-  // Keep public scanning enabled, but quarantine Testnet execution until
-  // its mark price is reconciled with the production signal price basis.
-  'SPYXUSD',
-  'QQQXUSD',
+  'BTCUSD',
+  'ETHUSD',
+  'SOLUSD',
+  'BNBUSD',
+  'XRPUSD',
+  'DOGEUSD',
+  'LINKUSD',
+  'LTCUSD',
+  'AVAXUSD',
+  'ADAUSD',
   'XAUTUSD',
-  'PAXGUSD',
-  'NVDAXUSD',
-  '1000SHIBUSD'
+  'PAXGUSD'
 ]);
 
 const allowedSymbols = new Set(DELTA_TESTNET_FUTURES_ALLOWLIST);
 
 export const DEFAULT_DELTA_TESTNET_GRID_SYMBOL_POOL = Object.freeze([
-  'PAXGUSD', 'NVDAXUSD', 'SPYXUSD', 'XAUTUSD'
+  'BTCUSD', 'ETHUSD', 'SOLUSD', 'BNBUSD', 'XRPUSD', 'DOGEUSD'
 ]);
 
 export function resolveDeltaTestnetGridSymbolPool(poolValue, legacyValue) {

@@ -45,18 +45,18 @@ test('Testnet Grid normalizes a prior-rung stop to the 1.50% floor so symmetric 
   assert.ok(result.rewardRiskRatio >= 1);
 });
 
-test('Testnet Grid chooses the nearest multi-rung TP that clears 1:1 after the hard stop floor and costs for PAXG and NVDAX', () => {
+test('Testnet Grid chooses the nearest multi-rung TP that clears 1:1 after the hard stop floor and costs for PAXG and BTC', () => {
   const fixtures = [
     {
       symbol: 'PAXGUSD', lower: 3813.50072376, upper: 4007.34000948,
       atr: 77.53571428571425, levelIndex: 4, expectedTargetIndex: 8
     },
     {
-      symbol: 'NVDAXUSD', lower: 150.007940647, upper: 178.281154933,
+      symbol: 'BTCUSD', lower: 150.007940647, upper: 178.281154933,
       atr: 11.309285714285718, levelIndex: 4, expectedTargetIndex: 6
     },
     {
-      symbol: 'NVDAXUSD', lower: 150.007940647, upper: 178.281154933,
+      symbol: 'BTCUSD', lower: 150.007940647, upper: 178.281154933,
       atr: 11.309285714285718, levelIndex: 5, expectedTargetIndex: 7
     }
   ];
@@ -266,7 +266,7 @@ test('Grid preserves reservation and emits CRITICAL when exchange cancellation c
   const logs = [];
   const state = {
     status: 'ENTRY_PENDING',
-    pendingEntries: [{ symbol: 'NVDAXUSD', exchangeOrderId: '654', clientOrderId: 'DDG-NVDAXUSD-X' }],
+    pendingEntries: [{ symbol: 'BTCUSD', exchangeOrderId: '654', clientOrderId: 'DDG-BTCUSD-X' }],
     positions: [], events: []
   };
   const calls = [];
@@ -280,8 +280,8 @@ test('Grid preserves reservation and emits CRITICAL when exchange cancellation c
     async log(level, message, data) { logs.push({ level, message, data }); }
   };
   const result = await cancelUnverifiedGridEntry({
-    executor, database, state, symbol: 'NVDAXUSD', orderId: 654,
-    clientOrderId: 'DDG-NVDAXUSD-X', expectedStop: 180, expectedTarget: 190,
+    executor, database, state, symbol: 'BTCUSD', orderId: 654,
+    clientOrderId: 'DDG-BTCUSD-X', expectedStop: 180, expectedTarget: 190,
     raw: { reservation: true, stop_price: 180, tp_price: 190 },
     now: () => Date.parse('2026-11-06T07:00:00Z')
   });
@@ -310,16 +310,16 @@ test('Grid accepts a read-after-timeout only when Delta confirms the order is CA
 test('Grid protection failure halts both configured symbols immediately in the same multi-symbol cycle', () => {
   const states = {
     PAXGUSD: { status: 'ENTRY_PENDING', pendingEntries: [{ symbol: 'PAXGUSD' }], events: [] },
-    NVDAXUSD: { status: 'HALTED', pausedReason: 'GRID_BRACKET_CANCEL_UNCONFIRMED', events: [] }
+    BTCUSD: { status: 'HALTED', pausedReason: 'GRID_BRACKET_CANCEL_UNCONFIRMED', events: [] }
   };
   const halted = applyGlobalGridProtectionHalt(
-    states, ['PAXGUSD', 'NVDAXUSD'], 'GRID_BRACKET_CANCEL_UNCONFIRMED',
+    states, ['PAXGUSD', 'BTCUSD'], 'GRID_BRACKET_CANCEL_UNCONFIRMED',
     '2026-11-06T08:20:00.000Z'
   );
   assert.equal(halted.PAXGUSD.status, 'HALTED');
   assert.equal(halted.PAXGUSD.pausedReason, 'GRID_BRACKET_CANCEL_UNCONFIRMED');
-  assert.equal(halted.NVDAXUSD.status, 'HALTED');
-  assert.equal(halted.NVDAXUSD.pausedReason, 'GRID_BRACKET_CANCEL_UNCONFIRMED');
+  assert.equal(halted.BTCUSD.status, 'HALTED');
+  assert.equal(halted.BTCUSD.pausedReason, 'GRID_BRACKET_CANCEL_UNCONFIRMED');
   assert.equal(halted.PAXGUSD.pendingEntries.length, 1);
 });
 
@@ -375,13 +375,13 @@ test('Trailing Grid market shift cancels pending Grid entries and verifies all G
     { id: 1, strategy: 'GRID', role: 'ENTRY', symbol: 'PAXGUSD',
       client_order_id: 'DDG-PAXGUSD-A', state: 'OPEN',
       raw: { testnet_order_id: 101, reservation: true } },
-    { id: 2, strategy: 'GRID', role: 'ENTRY', symbol: 'NVDAXUSD',
-      client_order_id: 'DDG-NVDAXUSD-B', state: 'OPEN',
+    { id: 2, strategy: 'GRID', role: 'ENTRY', symbol: 'BTCUSD',
+      client_order_id: 'DDG-BTCUSD-B', state: 'OPEN',
       raw: { testnet_order_id: 202, reservation: true } }
   ];
   let positions = [
     { symbol: 'PAXGUSD', side: 'BUY', qty: 2, entry_price: 4000, client_order_id: 'DDG-PAXGUSD-A' },
-    { symbol: 'NVDAXUSD', side: 'BUY', qty: 3, entry_price: 180, client_order_id: 'DDG-NVDAXUSD-B' }
+    { symbol: 'BTCUSD', side: 'BUY', qty: 3, entry_price: 180, client_order_id: 'DDG-BTCUSD-B' }
   ];
   const executor = {
     async getOrderById(id) {
@@ -406,12 +406,12 @@ test('Trailing Grid market shift cancels pending Grid entries and verifies all G
   const database = {
     async select(table, query) {
       calls.push(['select', table, query]);
-      const symbol = query.includes('PAXGUSD') ? 'PAXGUSD' : 'NVDAXUSD';
+      const symbol = query.includes('PAXGUSD') ? 'PAXGUSD' : 'BTCUSD';
       return [{
         id: 'db-' + symbol, symbol, strategy: 'GRID',
         qty: symbol === 'PAXGUSD' ? 2 : 3, side: 'BUY',
         entry_price: symbol === 'PAXGUSD' ? 4000 : 180,
-        client_order_id: symbol === 'PAXGUSD' ? 'DDG-PAXGUSD-A' : 'DDG-NVDAXUSD-B'
+        client_order_id: symbol === 'PAXGUSD' ? 'DDG-PAXGUSD-A' : 'DDG-BTCUSD-B'
       }];
     },
     async update(table, query, patch) { updates.push({ table, query, patch }); },
@@ -422,19 +422,19 @@ test('Trailing Grid market shift cancels pending Grid entries and verifies all G
     settings: {
       grid_symbol_configs: {
         PAXGUSD: { lowerPrice: 4000, upperPrice: 4200, levelsCount: 10 },
-        NVDAXUSD: { lowerPrice: 175, upperPrice: 190, levelsCount: 10 }
+        BTCUSD: { lowerPrice: 175, upperPrice: 190, levelsCount: 10 }
       },
       gridGlobalTrailingShiftTimestamps: [],
       grid_min_range_pct: 2, grid_max_range_pct: 50
     },
     symbol: 'PAXGUSD',
-    configuredSymbols: ['PAXGUSD', 'NVDAXUSD'],
+    configuredSymbols: ['PAXGUSD', 'BTCUSD'],
     currentConfig: { lowerPrice: 4000, upperPrice: 4200, levelsCount: 10, breakoutExitPct: 1.2 },
     markPrice: 4250.4,
     direction: 'UP',
     dbOpenGridRows: [
       { symbol: 'PAXGUSD', strategy: 'GRID' },
-      { symbol: 'NVDAXUSD', strategy: 'GRID' }
+      { symbol: 'BTCUSD', strategy: 'GRID' }
     ],
     gridOrders: orders,
     now: () => Date.parse('2026-11-07T06:00:00.000Z')
@@ -442,7 +442,7 @@ test('Trailing Grid market shift cancels pending Grid entries and verifies all G
   assert.equal(result.ok, true);
   assert.deepEqual(calls.filter(row => row[0] === 'cancelOrder').map(row => row[1]), [101, 202]);
   assert.deepEqual(calls.filter(row => row[0] === 'closeMarket').map(row => row.slice(1)), [
-    ['PAXGUSD', 2], ['NVDAXUSD', 3]
+    ['PAXGUSD', 2], ['BTCUSD', 3]
   ]);
   assert.equal(positions.length, 0);
   const settingsUpdate = updates.find(row => row.table === 'dd_settings');
@@ -471,7 +471,7 @@ test('Trailing Grid halts before a fourth shift in the rolling hour', async () =
       '2026-11-07T05:20:00.000Z',
       '2026-11-07T05:40:00.000Z'
     ] },
-    symbol: 'PAXGUSD', configuredSymbols: ['PAXGUSD', 'NVDAXUSD'],
+    symbol: 'PAXGUSD', configuredSymbols: ['PAXGUSD', 'BTCUSD'],
     currentConfig: { lowerPrice: 100, upperPrice: 120, breakoutExitPct: 1.2 },
     markPrice: 122, direction: 'UP',
     now: () => now
@@ -502,7 +502,7 @@ test('Trailing Grid refuses to close exchange exposure without a matching Grid-o
     },
     database: {
       async select(table, query) {
-        if (query.includes('NVDAXUSD')) return [];
+        if (query.includes('BTCUSD')) return [];
         return [{
           id: 'db-paxg', symbol: 'PAXGUSD', strategy: 'SCALPING',
           qty: 2, side: 'BUY', entry_price: 4000, client_order_id: 'SCALP-ENTRY-1'
@@ -513,7 +513,7 @@ test('Trailing Grid refuses to close exchange exposure without a matching Grid-o
     },
     state: { status: 'ACTIVE', positions: [], pendingEntries: [], events: [] },
     settings: {},
-    symbol: 'PAXGUSD', configuredSymbols: ['PAXGUSD', 'NVDAXUSD'],
+    symbol: 'PAXGUSD', configuredSymbols: ['PAXGUSD', 'BTCUSD'],
     currentConfig: { lowerPrice: 100, upperPrice: 120, breakoutExitPct: 1.2 },
     markPrice: 122, direction: 'UP',
     now: () => Date.parse('2026-11-07T06:00:00.000Z')
@@ -538,7 +538,7 @@ test('Trailing shift on the active symbol ignores a separately paused PAXGUSD Fu
       lowerPrice: 4023.41985362, upperPrice: 4186.4787822,
       levelsCount: 10, paused: true
     },
-    NVDAXUSD: {
+    BTCUSD: {
       lowerPrice: 171.845378743, upperPrice: 193.109664457,
       levelsCount: 10, paused: false
     }
@@ -551,7 +551,7 @@ test('Trailing shift on the active symbol ignores a separately paused PAXGUSD Fu
     database: {
       async select(table, query) {
         queries.push({ table, query });
-        assert.match(query, /NVDAXUSD/);
+        assert.match(query, /BTCUSD/);
         assert.doesNotMatch(query, /PAXGUSD/);
         return [];
       },
@@ -565,11 +565,11 @@ test('Trailing shift on the active symbol ignores a separately paused PAXGUSD Fu
       grid_min_range_pct: 2,
       grid_max_range_pct: 20
     },
-    symbol: 'NVDAXUSD',
-    configuredSymbols: ['NVDAXUSD'],
+    symbol: 'BTCUSD',
+    configuredSymbols: ['BTCUSD'],
     currentConfig: {
-      lowerPrice: configs.NVDAXUSD.lowerPrice,
-      upperPrice: configs.NVDAXUSD.upperPrice,
+      lowerPrice: configs.BTCUSD.lowerPrice,
+      upperPrice: configs.BTCUSD.upperPrice,
       levelsCount: 10,
       breakoutExitPct: 1.2
     },
@@ -585,7 +585,7 @@ test('Trailing shift on the active symbol ignores a separately paused PAXGUSD Fu
   const savedConfigs = updates[0].patch.grid_symbol_configs;
   assert.equal(savedConfigs.PAXGUSD.paused, true);
   assert.equal(savedConfigs.PAXGUSD.lowerPrice, configs.PAXGUSD.lowerPrice);
-  assert.ok(savedConfigs.NVDAXUSD.lowerPrice < configs.NVDAXUSD.lowerPrice);
+  assert.ok(savedConfigs.BTCUSD.lowerPrice < configs.BTCUSD.lowerPrice);
   assert.equal(paxgPosition.qty, 61);
   assert.equal(paxgPosition.side, 'SELL');
   assert.equal(queries.length, 1);
@@ -611,11 +611,11 @@ test('Trailing Grid shifts retain the 10% shift but clamp width to configured AT
 test('global 1.2% Grid range break halts every configured symbol', () => {
   const states = {
     PAXGUSD: { status: 'ACTIVE', positions: [{ symbol: 'PAXGUSD', qty: 1 }] },
-    NVDAXUSD: { status: 'ACTIVE', positions: [{ symbol: 'NVDAXUSD', qty: 1 }] }
+    BTCUSD: { status: 'ACTIVE', positions: [{ symbol: 'BTCUSD', qty: 1 }] }
   };
-  const halted = applyGlobalGridProtectionHalt(states, ['PAXGUSD', 'NVDAXUSD'], 'GRID_RANGE_BREAK', '2026-11-10T00:00:00.000Z');
+  const halted = applyGlobalGridProtectionHalt(states, ['PAXGUSD', 'BTCUSD'], 'GRID_RANGE_BREAK', '2026-11-10T00:00:00.000Z');
   assert.equal(halted.PAXGUSD.status, 'HALTED');
-  assert.equal(halted.NVDAXUSD.status, 'HALTED');
+  assert.equal(halted.BTCUSD.status, 'HALTED');
   assert.equal(halted.PAXGUSD.pausedReason, 'GRID_RANGE_BREAK');
 });
 
@@ -719,7 +719,7 @@ function makeGridPnlRecoveryFixture({ exchangePositions = [], dbOpenGridRows = [
     continuous_mode: true,
     max_leverage: 3,
     grid_state: state,
-    gridSymbols: ['PAXGUSD', 'NVDAXUSD'],
+    gridSymbols: ['PAXGUSD', 'BTCUSD'],
     // Multi-symbol manager propagates a per-symbol P&L pause through this field.
     gridGlobalPauseReason: 'GRID_PNL_UNVERIFIED'
   };
@@ -772,8 +772,8 @@ test('Grid P&L recovery remains blocked when an exchange position is still open'
 test('Grid P&L recovery remains blocked when an active Grid order or reservation remains', async () => {
   const fixture = makeGridPnlRecoveryFixture({
     gridOrders: [{
-      id: 'grid-entry-1', symbol: 'NVDAXUSD', strategy: 'GRID',
-      role: 'ENTRY', state: 'OPEN', client_order_id: 'DDG-NVDAXUSD-OPEN'
+      id: 'grid-entry-1', symbol: 'BTCUSD', strategy: 'GRID',
+      role: 'ENTRY', state: 'OPEN', client_order_id: 'DDG-BTCUSD-OPEN'
     }]
   });
   const result = await manageDeltaTestnetGrid(fixture.input);
@@ -821,7 +821,7 @@ test('multi-symbol manager accepts one active symbol after the other is paused i
     async select(table, query) {
       if (table === 'dd_delta_positions' && query.startsWith('strategy=eq.GRID&status=in.')) return [];
       if (table === 'dd_delta_positions' && query.startsWith('strategy=eq.GRID&status=eq.OPEN')) return [];
-      if (table === 'dd_delta_positions' && query.startsWith('symbol=eq.NVDAXUSD')) return [];
+      if (table === 'dd_delta_positions' && query.startsWith('symbol=eq.BTCUSD')) return [];
       if (table === 'dd_trades' || table === 'dd_orders') return [];
       return [];
     },
@@ -831,7 +831,7 @@ test('multi-symbol manager accepts one active symbol after the other is paused i
   };
   const executor = { async getOpenPositions() { return []; } };
   const nvdaxState = {
-    version: 2, executionMode: 'DELTA_TESTNET', symbol: 'NVDAXUSD',
+    version: 2, executionMode: 'DELTA_TESTNET', symbol: 'BTCUSD',
     status: 'PAUSED', pausedReason: null, positions: [], pendingEntries: [],
     trades: [], events: [], realizedPnl: 0, dayPnl: 0,
     strategyStartEquity: 50000, dayStartEquity: 50000,
@@ -850,24 +850,24 @@ test('multi-symbol manager accepts one active symbol after the other is paused i
         version: 3, executionMode: 'DELTA_TESTNET',
         symbolStates: {
           PAXGUSD: { status: 'HALTED', pausedReason: 'GRID_TRAILING_SHIFT_UNCONFIRMED', positions: [], pendingEntries: [] },
-          NVDAXUSD: nvdaxState
+          BTCUSD: nvdaxState
         }
       },
       grid_symbol_configs: {
         PAXGUSD: { paused: true, lowerPrice: 4023, upperPrice: 4186, levelsCount: 10 },
-        NVDAXUSD: { paused: false, lowerPrice: 171, upperPrice: 193, levelsCount: 10, atr_14d: 2, atr_pct: 1.1, atr_snapshot_status: 'READY' }
+        BTCUSD: { paused: false, lowerPrice: 171, upperPrice: 193, levelsCount: 10, atr_14d: 2, atr_pct: 1.1, atr_snapshot_status: 'READY' }
       },
       gridTrailingEnvironmentEnabled: true,
       grid_trailing_enabled: true
     },
     account: { privateApiAvailable: true, equity: 50000, available: 1000 },
-    symbols: ['NVDAXUSD'],
-    tickers: { NVDAXUSD: { mark_price: 180, turnover_usd: 500000, quotes: { best_bid: 179.99, best_ask: 180.01 } } },
-    products: { NVDAXUSD: { contract_value: 1, tick_size: 0.01, taker_commission_rate: 0.0005 } },
+    symbols: ['BTCUSD'],
+    tickers: { BTCUSD: { mark_price: 180, turnover_usd: 500000, quotes: { best_bid: 179.99, best_ask: 180.01 } } },
+    products: { BTCUSD: { contract_value: 1, tick_size: 0.01, taker_commission_rate: 0.0005 } },
     candlesBySymbol: {
-      NVDAXUSD: Array.from({ length: 60 }, (_, i) => { const close = 180 + Math.sin(i * 0.8) * 0.8; return { open: close, high: close + 0.25, low: close - 0.25, close }; })
+      BTCUSD: Array.from({ length: 60 }, (_, i) => { const close = 180 + Math.sin(i * 0.8) * 0.8; return { open: close, high: close + 0.25, low: close - 0.25, close }; })
     },
-    freshnessBySymbol: { NVDAXUSD: true },
+    freshnessBySymbol: { BTCUSD: true },
     database,
     executor,
     now: () => now
@@ -875,14 +875,14 @@ test('multi-symbol manager accepts one active symbol after the other is paused i
   assert.equal(result.safety.blocked, true);
   assert.equal(result.safety.reason, 'AUTO_TRADE_DISABLED');
   assert.equal(result.safety.symbols?.length ?? 0, 1);
-  assert.equal(result.safety.symbols[0].symbol, 'NVDAXUSD');
-  assert.deepEqual(Object.keys(result.state.symbolSummaries), ['NVDAXUSD']);
+  assert.equal(result.safety.symbols[0].symbol, 'BTCUSD');
+  assert.deepEqual(Object.keys(result.state.symbolSummaries), ['BTCUSD']);
   assert.ok(updates.length > 0);
 });
 
 
 function makeDynamicGridPoolFixture({
-  symbols = ['PAXGUSD', 'NVDAXUSD', 'XAUTUSD'],
+  symbols = ['PAXGUSD', 'BTCUSD', 'XAUTUSD'],
   exchangePositions = [],
   databasePositions = [],
   previousGridState = {},
@@ -985,12 +985,12 @@ test('Dynamic Grid skips Futures-owned PAXG and continues with the best two elig
       client_order_id: 'SCALP-PAXGUSD-OPEN'
     }],
     tickerOverrides: {
-      NVDAXUSD: { turnover_usd: 1000000, quotes: { best_bid: 104.99, best_ask: 105.02 } },
+      BTCUSD: { turnover_usd: 1000000, quotes: { best_bid: 104.99, best_ask: 105.02 } },
       XAUTUSD: { turnover_usd: 2000000, quotes: { best_bid: 104.99, best_ask: 105.005 } }
     }
   });
   const result = await manageDeltaTestnetMultiGrid(fixture.input);
-  assert.deepEqual(result.activeSymbols, ['XAUTUSD', 'NVDAXUSD']);
+  assert.deepEqual(result.activeSymbols, ['XAUTUSD', 'BTCUSD']);
   assert.ok(result.skippedSymbols.includes('PAXGUSD'));
   assert.equal(result.symbolStatuses.PAXGUSD.status, 'SKIPPED');
   assert.equal(result.symbolStatuses.PAXGUSD.blockingPosition.id, 119);
@@ -1004,7 +1004,7 @@ test('Dynamic Grid skips Futures-owned PAXG and continues with the best two elig
 
 test('Dynamic Grid automatically re-admits PAXG after the Futures position closes', async () => {
   const first = makeDynamicGridPoolFixture({
-    symbols: ['PAXGUSD', 'NVDAXUSD'],
+    symbols: ['PAXGUSD', 'BTCUSD'],
     exchangePositions: [{
       id: 119, symbol: 'PAXGUSD', side: 'SELL', qty: 61, entry_price: 4089.23,
       client_order_id: 'SCALP-PAXGUSD-OPEN'
@@ -1019,12 +1019,12 @@ test('Dynamic Grid automatically re-admits PAXG after the Futures position close
   const skipped = await manageDeltaTestnetMultiGrid(first.input);
   assert.equal(skipped.symbolStatuses.PAXGUSD.status, 'SKIPPED');
   const second = makeDynamicGridPoolFixture({
-    symbols: ['PAXGUSD', 'NVDAXUSD'],
+    symbols: ['PAXGUSD', 'BTCUSD'],
     previousGridState: skipped.state,
     maxConcurrentSymbols: 1,
     tickerOverrides: {
       PAXGUSD: { turnover_usd: 2000000 },
-      NVDAXUSD: { turnover_usd: 1000000 }
+      BTCUSD: { turnover_usd: 1000000 }
     }
   });
   const resumed = await manageDeltaTestnetMultiGrid(second.input);
@@ -1039,7 +1039,7 @@ test('Dynamic Grid automatically re-admits PAXG after the Futures position close
 });
 
 test('Dynamic Grid waits without halting when every pool symbol is owned by Futures', async () => {
-  const symbols = ['PAXGUSD', 'NVDAXUSD'];
+  const symbols = ['PAXGUSD', 'BTCUSD'];
   const exchangePositions = symbols.map((symbol, index) => ({
     id: 119 + index, symbol, side: 'SELL', qty: 1, entry_price: 100,
     client_order_id: 'SCALP-' + symbol,

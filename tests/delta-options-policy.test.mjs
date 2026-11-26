@@ -82,6 +82,30 @@ test('bounds the scan chain, balances CALL/PUT contracts and filters DTE/moneyne
   assert.ok(selected.every(x => x.dte >= 2 && x.dte <= 14));
 });
 
+test('retains a broader balanced 36-contract CALL/PUT scan when liquidity permits', () => {
+  const rows = [];
+  for (let i = 0; i < 24; i += 1) {
+    const strike = 90000 + i * 100;
+    for (const [type, delta] of [['C', 0.55], ['P', -0.55]]) {
+      rows.push({
+        symbol: type + '-BTC-' + strike + '-051126',
+        mark_price: 100,
+        quotes: { best_bid: 99, best_ask: 101 },
+        greeks: { delta },
+        open_interest: 1000 - i,
+        volume: 100
+      });
+    }
+  }
+  const selected = selectOptionContractsForScan({
+    rows, underlying: 'BTC', spotPrice: 90000, now: NOW,
+    minDays: 2, maxDays: 14, maxContracts: 36, maxMoneynessPct: 20
+  });
+  assert.equal(selected.length, 36);
+  assert.equal(selected.filter(row => row.symbol.startsWith('C-')).length, 18);
+  assert.equal(selected.filter(row => row.symbol.startsWith('P-')).length, 18);
+});
+
 test('sizes long options to whole premium plus fee allowance', () => {
   const sized = calculateLongOptionSizing({
     equity: 10000,
