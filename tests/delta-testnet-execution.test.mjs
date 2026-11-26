@@ -257,6 +257,15 @@ test('entry is IOC limit followed by separately verified reduce-only SL and TP',
   assert.equal(posts[2].body.stop_order_type, 'take_profit_order');
   assert.equal(posts[2].body.stop_price, '62000');
   assert.equal(posts[2].body.reduce_only, true);
+  const ledgerRows = await runtime.database.select('dd_orders', 'order_type=eq.delta_testnet_order');
+  const verifiedChildren = ledgerRows.filter(row => row.role === 'PROTECTION');
+  assert.equal(verifiedChildren.length, 2);
+  for (const child of verifiedChildren) {
+    assert.equal(child.raw.protection_verified_by_rest, true);
+    assert.equal(child.raw.reduce_only, true);
+    assert.equal(child.raw.verified_order_snapshot.id, child.raw.testnet_order_id);
+    assert.equal(child.raw.exchange_state, 'PENDING');
+  }
   assert.match(entry.init.headers.signature, /^[0-9a-f]{64}$/);
   assert.equal(entry.init.headers.timestamp, '1770000000');
 });
