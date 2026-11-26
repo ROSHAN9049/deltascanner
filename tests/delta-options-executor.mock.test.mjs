@@ -11,7 +11,7 @@ function harness({
   strategy = 'OPTIONS_SELL', manualOverrideEnabled = false, candidatePatch = {}, settingsPatch = {},
   closedOptionPositions = [], openOptionPositions = [], bracketEcho = true, bracketChildren = true,
   noPositionForReduceOnly = false, getRecentCloseDetails = null,
-  liveQuoteMismatchPct = 0
+  liveQuoteMismatchPct = 0, contractSymbol = SHORT, contractUnderlying = 'BTC', contractStrike = 80000
 } = {}) {
   const env = {
     DELTA_EXECUTION_MODE: 'testnet',
@@ -24,13 +24,13 @@ function harness({
     DELTA_DEMO_API_SECRET: 'demo-test-secret'
   };
   const products = [
-    { id: 101, symbol: SHORT, contract_type: 'call_options', state: 'live',
+    { id: 101, symbol: contractSymbol, contract_type: 'call_options', state: 'live',
       contract_value: 0.001, tick_size: 0.01, taker_commission_rate: 0.001 },
     { id: 102, symbol: HEDGE, contract_type: 'call_options', state: 'live',
       contract_value: 0.001, tick_size: 0.01, taker_commission_rate: 0.001 }
   ];
   const candidate = {
-    symbol: SHORT, strategy, score: 95, stage: 'CONFIRMED',
+    symbol: contractSymbol, strategy, score: 95, stage: 'CONFIRMED',
     cached_at: new Date(NOW).toISOString(),
     market_regime: strategy === 'OPTIONS_BUY' ? 'TRENDING' : 'SIDEWAYS',
     iv_rank: strategy === 'OPTIONS_BUY' ? 30 : 60,
@@ -38,9 +38,9 @@ function harness({
     details: {
       analysisReady: true, ivRank: strategy === 'OPTIONS_BUY' ? 30 : 60,
       ivPercentile: strategy === 'OPTIONS_BUY' ? 10 : 90,
-      optionType: 'CALL', strike: 80000,
+      optionType: 'CALL', strike: contractStrike,
       delta: strategy === 'OPTIONS_BUY' ? 0.55 : 0.30,
-      dte: 57, underlyingSymbol: 'BTCUSD',
+      dte: 57, underlyingSymbol: contractUnderlying + 'USD',
       hedgeSymbol: HEDGE, hedgeStrike: 82000, hedgeDelta: 0.1
     }
   };
@@ -402,6 +402,24 @@ test('Demo entry is reduced-only unwound if neither parent nor exchange child or
   assert.equal(orderCalls[1].body.reduce_only, true);
   assert.equal(optionRows[0].status, 'CLOSED');
   assert.ok(apiCalls.some(call => call.method === 'GET' && call.path === '/v2/positions/margined'));
+});
+
+test('XAUT options are accepted only when the exact gold contract exists in the Testnet product catalogue', async () => {
+  const symbol = 'C-XAUT-4000-311226';
+  const { executor, apiCalls } = harness({
+    strategy: 'OPTIONS_BUY',
+    contractSymbol: symbol,
+    contractUnderlying: 'XAUT',
+    contractStrike: 4000
+  });
+  const preview = await executor.previewOptionsOrder({
+    symbol, strategy: 'OPTIONS_BUY', qty: 1
+  });
+  assert.equal(preview.symbol, symbol);
+  assert.equal(preview.contractId, 101);
+  assert.ok(apiCalls.some(call => call.method === 'GET' && call.path === '/v2/products'));
+  assert.equal(apiCalls.some(call => call.method === 'POST' && call.path === '/v2/orders'), false,
+    'preview must not submit an exchange order');
 });
 
 test('mock Delta Testnet API executes a long BTC call as a single limit BUY', async () => {
