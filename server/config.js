@@ -52,10 +52,21 @@ const requested = String(process.env.DELTA_ENVIRONMENT || 'SIGNAL_ONLY').toUpper
 const environment = requested === 'TESTNET' ? 'TESTNET' : 'SIGNAL_ONLY';
 const signalOnly = environment === 'SIGNAL_ONLY';
 
-const gridPoolResolution = resolveDeltaTestnetGridSymbolPool(
-  process.env.GRID_SYMBOL_POOL,
-  process.env.GRID_SYMBOLS
-);
+let gridPoolResolution;
+try {
+  gridPoolResolution = resolveDeltaTestnetGridSymbolPool(
+    process.env.GRID_SYMBOL_POOL,
+    process.env.GRID_SYMBOLS
+  );
+} catch (error) {
+  // A stale legacy GRID_SYMBOLS value must not prevent the API from booting.
+  // Keep explicit GRID_SYMBOL_POOL errors strict; only fall back when the
+  // deprecated two-symbol override is invalid. The fallback is still bounded
+  // by the verified Delta India Testnet allowlist and product metadata checks.
+  if (String(process.env.GRID_SYMBOL_POOL || '').trim()) throw error;
+  console.warn('[Config] Ignoring invalid legacy GRID_SYMBOLS; using the verified default Grid pool:', error?.message || error);
+  gridPoolResolution = resolveDeltaTestnetGridSymbolPool('', '');
+}
 const gridSymbols = gridPoolResolution.symbols;
 const gridMaxConcurrentSymbols = parseGridMaxConcurrentSymbols(
   process.env.GRID_MAX_CONCURRENT_SYMBOLS,
