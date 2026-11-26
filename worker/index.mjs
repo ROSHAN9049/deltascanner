@@ -185,7 +185,16 @@ async function verifyDeltaTestnetPrivateApi(reason = 'startup') {
         retryMs: DELTA_TESTNET_PRIVATE_API_RETRY_MS
       }).catch(() => {});
       if (message.includes('ip_not_whitelisted_for_api_key')) {
-        console.error('[DeltaScanner] Railway outbound public IP:', await getOutboundIp());
+        const outboundIp = await getOutboundIp();
+        console.error('[DeltaScanner] Hostless Worker outbound public IP (add to the Delta TESTNET API key IP allowlist):', outboundIp);
+        await log('ERROR', 'Delta Testnet API key IP allowlist mismatch; worker outbound IP must be allowlisted before authenticated account and position reads can recover', {
+          reason,
+          outboundIp,
+          keyEnvName: 'DELTA_TESTNET_API_KEY',
+          errorCode: 'ip_not_whitelisted_for_api_key',
+          executionLocked: true,
+          strategySwitchesChanged: false
+        }).catch(() => {});
       }
       return false;
     } finally {
