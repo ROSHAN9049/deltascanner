@@ -2160,7 +2160,7 @@ export class DeltaEngine {
         }
         qualified.push({
           symbol, productId: Number(product.id), product, screen,
-          verifiedAt: iso(), turnover: n(ticker.turnover_usd || ticker.turnover)
+          verifiedAt: iso(), turnover: n(screen.turnover24hUsd)
         });
       } catch (error) {
         rejected.push({ symbol, reason: String(error?.message || error).slice(0, 160) });
@@ -2896,7 +2896,9 @@ export class DeltaEngine {
           // before a candidate can become CONFIRMED or reach the execution route.
           minDays: 0,
           maxDays: settings.options_max_days_to_expiry,
-          maxContracts: 24,
+          // Retain a broader but bounded, balanced CALL/PUT chain per supported
+          // underlying so more liquid opportunities reach strategy-quality gates.
+          maxContracts: 36,
           maxMoneynessPct: 20
         });
 
