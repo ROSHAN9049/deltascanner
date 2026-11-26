@@ -91,6 +91,11 @@ function fakeRuntime({
         const row = persistedPositions.find(item => String(item.id) === decodeURIComponent(idMatch?.[1] || ''));
         if (row) Object.assign(row, patch);
       }
+      if (table === 'dd_orders') {
+        const clientMatch = query.match(/client_order_id=eq\.([^&]+)/);
+        const row = persistedOrders.find(item => item.client_order_id === decodeURIComponent(clientMatch?.[1] || ''));
+        if (row) Object.assign(row, patch);
+      }
       return [];
     },
     async insert(table, row) {
