@@ -1282,6 +1282,8 @@ export function createDeltaOptionsExecution({
       realized_pnl_verified: false, opened_at: new Date(now()).toISOString(), updated_at: new Date(now()).toISOString(),
       raw: {
         environment: 'DELTA_DEMO',
+        underlying: product.parsed.underlying,
+        greeks: candidate.greeks,
         iv_rank: candidate.ivRank,
         iv_percentile: candidate.ivPercentile,
         regime: candidate.marketRegime,
@@ -1387,6 +1389,8 @@ export function createDeltaOptionsExecution({
       realized_pnl_verified: false, opened_at: new Date(now()).toISOString(), updated_at: new Date(now()).toISOString(),
       raw: {
         environment: 'DELTA_DEMO',
+        underlying: product.parsed.underlying,
+        greeks: candidate.greeks,
         iv_rank: candidate.ivRank,
         iv_percentile: candidate.ivPercentile,
         regime: candidate.marketRegime,
@@ -2012,15 +2016,30 @@ export function createDeltaOptionsExecution({
         const isBuy = normalizeOptionsExitStatus(position.strategy) === 'OPTIONS_BUY';
         const currentPremium = isBuy ? bid : ask;
         const dte = (Number(position.expiry_ms) - now()) / 86_400_000;
+        const positionRaw = parseDetails(position.raw);
+        const previousTrough = number(positionRaw.premiumTrough) ?? number(position.entry_premium);
         const decision = evaluateOptionsExit({
           strategy: position.strategy, entryPremium: position.entry_premium,
-          currentPremium, peakPremium: position.peak_premium, dte,
+          currentPremium, peakPremium: position.peak_premium,
+          troughPremium: previousTrough, dte,
           openedAt: position.opened_at, now: now()
         });
+        const nextPeak = Math.max(Number(position.peak_premium) || 0, currentPremium);
+        const nextTrough = Math.min(previousTrough ?? currentPremium, currentPremium);
         await database.update('dd_option_positions', 'position_key=eq.' + encodeURIComponent(position.position_key) + '&status=eq.OPEN', {
           current_premium: currentPremium,
-          peak_premium: Math.max(Number(position.peak_premium) || 0, currentPremium),
-          dte, updated_at: new Date(now()).toISOString()
+          peak_premium: nextPeak,
+          dte,
+          raw: {
+            ...positionRaw,
+            premiumPeak: nextPeak,
+            premiumTrough: nextTrough,
+            trailingStopPremium: decision.trailingStopPremium ?? null,
+            trailingStopArmed: isBuy
+              ? decision.breakevenTrailArmed === true
+              : decision.trailingStopArmed === true
+          },
+          updated_at: new Date(now()).toISOString()
         });
         if (!decision.exit) continue;
         const result = isBuy
