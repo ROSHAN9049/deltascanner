@@ -1,5 +1,8 @@
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+export const DELTA_INDIA_OPTIONS_UNDERLYINGS = Object.freeze(['BTC', 'ETH', 'XAUT']);
+const OPTION_SETTLEMENT_HOUR_UTC = Object.freeze({ BTC: 12, ETH: 12, XAUT: 16 });
+
 function finitePositive(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
@@ -97,10 +100,11 @@ export function parseDeltaOptionSymbol(symbol, underlying, now = Date.now()) {
   const year = 2000 + Number(match[4].slice(4, 6));
   if (!(strike > 0) || day < 1 || day > 31 || month < 1 || month > 12) return null;
 
-  // Delta India's current Options guide lists BTC and ETH European contracts.
-  // Reject other underlyings until an India-specific settlement rule is verified.
-  const settlementHour = ['BTC', 'ETH'].includes(asset) ? 12 : null;
-  if (settlementHour === null) return null;
+  // Use the India venue's underlying-specific settlement clock. XAUT gold
+  // options settle four hours later than BTC/ETH; exact Testnet product
+  // presence is still mandatory before any execution route is enabled.
+  const settlementHour = OPTION_SETTLEMENT_HOUR_UTC[asset];
+  if (settlementHour === undefined) return null;
   const expiryMs = Date.UTC(year, month - 1, day, settlementHour);
   const expiry = new Date(expiryMs);
   if (expiry.getUTCFullYear() !== year ||
