@@ -51,6 +51,7 @@ function fakeRuntime({
   let latestOrder = null;
   let nextOrderId = 123;
   const ordersById = new Map();
+  const persistedOrders = [...orders];
 
   const database = {
     async select(table, query) {
@@ -72,7 +73,14 @@ function fakeRuntime({
           ];
         }
       }
-      if (table === 'dd_orders') return orders;
+      if (table === 'dd_orders') {
+        const clientMatch = query.match(/client_order_id=eq\\.([^&]+)/);
+        if (clientMatch) {
+          const clientOrderId = decodeURIComponent(clientMatch[1]);
+          return persistedOrders.filter(row => row.client_order_id === clientOrderId).map(row => ({ ...row, raw: { ...(row.raw || {}) } }));
+        }
+        return persistedOrders;
+      }
       return [];
     },
     async log(level, message, data = {}) { logs.push({ level, message, data }); },
@@ -91,7 +99,13 @@ function fakeRuntime({
       }
       return [];
     },
-    async upsert() {}
+    async upsert(table, row, conflict) {
+      if (table === 'dd_orders') {
+        const index = persistedOrders.findIndex(item => item[conflict] === row[conflict]);
+        if (index >= 0) persistedOrders[index] = { ...persistedOrders[index], ...row };
+        else persistedOrders.push({ ...row });
+      }
+    }
   };
 
   const fetchImpl = async (url, init = {}) => {
