@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { parseDeltaOptionSymbol } from './delta-options-policy.mjs';
+import { DELTA_INDIA_OPTIONS_UNDERLYINGS, parseDeltaOptionSymbol } from './delta-options-policy.mjs';
 import { evaluateIvMetrics, evaluateOptionsExit } from '../options-regime-strategy.mjs';
 import { executeDefinedRiskSellExit } from '../options-exit-sequence.mjs';
 import {
@@ -137,8 +137,8 @@ export function createDeltaOptionsExecution({
   async function resolveProduct(symbol) {
     const normalized = clean(symbol).toUpperCase();
     const parsed = parseDeltaOptionSymbol(normalized, undefined, now());
-    if (!parsed || !['BTC','ETH'].includes(parsed.underlying)) {
-      throw new Error('Options contract is invalid, expired or outside the verified BTC/ETH Testnet universe: ' + normalized);
+    if (!parsed || !DELTA_INDIA_OPTIONS_UNDERLYINGS.includes(parsed.underlying)) {
+      throw new Error('Options contract is invalid, expired or outside the supported Delta India Testnet universe: ' + normalized);
     }
     const expectedType = parsed.optionType === 'CALL' ? 'call_options' : 'put_options';
     const matches = (await getProducts()).filter(row =>

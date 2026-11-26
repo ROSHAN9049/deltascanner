@@ -203,27 +203,34 @@ export class DeltaAdapter {
   async optionProducts() {
     const all = [];
     let after = '';
-    let previousAfter = '';
+    const seenCursors = new Set();
     for (let page = 0; page < 20; page++) {
       const response = await this.request(
         'GET',
         '/v2/products',
-        { contract_types: 'call_options,put_options', states: 'live', page_size: 100, after },
+        { contract_types: 'call_options,put_options', states: 'live', page_size: 100, after: after || undefined },
         null,
         false,
         { withMeta: true, productCatalog: true }
       );
-      const rows = Array.isArray(response?.result) ? response.result : [];
-      all.push(...rows);
-      const nextAfter = String(response?.meta?.after || '');
-      if (!nextAfter || nextAfter === previousAfter || nextAfter === after || !rows.length) break;
-      previousAfter = after;
+      if (!Array.isArray(response?.result) || !response?.meta || typeof response.meta !== 'object') {
+        throw new Error('Delta Testnet Options product catalogue response is malformed; execution product map cleared');
+      }
+      all.push(...response.result);
+      const nextAfter = String(response.meta.after || '');
+      if (!nextAfter) {
+        return all.filter(row => {
+          const contractType = String(row?.contract_type || '').toLowerCase();
+          return contractType === 'call_options' || contractType === 'put_options';
+        });
+      }
+      if (seenCursors.has(nextAfter) || nextAfter === after) {
+        throw new Error('Delta Testnet Options product catalogue pagination cursor repeated');
+      }
+      seenCursors.add(nextAfter);
       after = nextAfter;
     }
-    return all.filter(row => {
-      const contractType = String(row?.contract_type || '').toLowerCase();
-      return contractType === 'call_options' || contractType === 'put_options';
-    });
+    throw new Error('Delta Testnet Options product catalogue exceeded the page limit; execution product map cleared');
   }
   tickers() { return this.request('GET', '/v2/tickers', { contract_types: 'perpetual_futures' }, null, false, { marketData: true }); }
   optionTickers(underlying) {
