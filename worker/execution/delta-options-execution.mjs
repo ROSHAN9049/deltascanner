@@ -2035,9 +2035,7 @@ export function createDeltaOptionsExecution({
             premiumPeak: nextPeak,
             premiumTrough: nextTrough,
             trailingStopPremium: decision.trailingStopPremium ?? null,
-            trailingStopArmed: isBuy
-              ? decision.breakevenTrailArmed === true
-              : decision.trailingStopArmed === true
+            trailingStopArmed: decision.trailingStopArmed === true
           },
           updated_at: new Date(now()).toISOString()
         });
