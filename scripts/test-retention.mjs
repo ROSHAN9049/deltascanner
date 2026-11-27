@@ -133,6 +133,7 @@ try {
     const signalDeleteCalls = deleteCalls.filter(call => /DELETE FROM public\.dd_signals/i.test(call.sql));
     const logDeleteCalls = deleteCalls.filter(call => /DELETE FROM public\.dd_engine_logs/i.test(call.sql));
     const ivHistoryDeleteCalls = deleteCalls.filter(call => /DELETE FROM public\.dd_iv_history/i.test(call.sql));
+    const optionCacheDeleteCalls = deleteCalls.filter(call => /DELETE FROM public\.dd_option_cache/i.test(call.sql));
     assert.equal(signalDeleteCalls.length, 2, '5001 signal rows must be deleted in two bounded batches');
     assert.equal(logDeleteCalls.length, 2, '5005 engine log rows must be deleted in two bounded batches');
     assert.equal(ivHistoryDeleteCalls.length, 2, '5002 IV history rows must be deleted in two bounded batches');
