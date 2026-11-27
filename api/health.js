@@ -12,7 +12,10 @@ let previousCpuUsage = process.cpuUsage();
 let previousCpuAt = process.hrtime.bigint();
 
 export default async function handler(req, res) {
-  res.setHeader('Cache-Control', 'no-store, no-cache, max-age=0, must-revalidate');
+  // Health is observability-only (never an execution authorization input). A
+  // short private cache prevents dashboard polling from multiplying identical
+  // Supabase log/lease/settings reads while keeping worker status near-real-time.
+  res.setHeader('Cache-Control', 'private, max-age=5, stale-while-revalidate=5');
   const optionsGate = getOptionsExecutionGate(process.env);
   const optionsExecutionGate = {
     deltaExecutionMode: optionsGate.mode,
