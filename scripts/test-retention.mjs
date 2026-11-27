@@ -135,6 +135,7 @@ try {
     assert.equal(signalDeleteCalls.length, 2, '5001 signal rows must be deleted in two bounded batches');
     assert.equal(logDeleteCalls.length, 2, '5005 engine log rows must be deleted in two bounded batches');
     assert.equal(ivHistoryDeleteCalls.length, 2, '5002 IV history rows must be deleted in two bounded batches');
+    assert.equal(optionCacheDeleteCalls.length, 2, '5003 option-cache rows must be deleted in two bounded batches');
     for (const call of deleteCalls) {
       const expectedDays = /DELETE FROM public\.dd_iv_history/i.test(call.sql) ? 20 : /DELETE FROM public\\.dd_option_cache/i.test(call.sql) ? 3 : 7;
       assert.deepEqual(call.params, [expectedDays, 5000]);
