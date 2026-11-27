@@ -128,6 +128,13 @@ export const upsertMany = (table, rows, conflict) => {
 export const update = (table, query, row) => call(table + '?' + query, { method: 'PATCH', headers: { Prefer: 'return=minimal' }, body: JSON.stringify(row) });
 export const remove = (table, query) => call(table + '?' + query, { method: 'DELETE', headers: { Prefer: 'return=minimal' } });
 export const rpc = (name, args) => call('rpc/' + name, { method: 'POST', headers: { Prefer: 'return=representation' }, body: JSON.stringify(args || {}) });
+// Persist only actionable diagnostics. INFO/DEBUG remain in process stdout but
+// are not written to Supabase, reducing log-ingestion and database egress usage.
 export async function log(level, message, data) {
-  try { await insert('dd_engine_logs', { level, message, data: data || null }); } catch {}
+  const normalized = String(level || '').trim().toUpperCase();
+  const threshold = String(process.env.LOG_LEVEL || 'warn').trim().toLowerCase();
+  const minimumSeverity = threshold === 'error' ? 40 : 30;
+  const severity = ({ DEBUG: 10, INFO: 20, NOTICE: 25, WARN: 30, WARNING: 30, ERROR: 40, FATAL: 50 })[normalized] ?? 40;
+  if (severity < minimumSeverity) return;
+  try { await insert('dd_engine_logs', { level: normalized || 'ERROR', message, data: data || null }); } catch {}
 }
