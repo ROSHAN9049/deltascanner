@@ -66,6 +66,7 @@ try {
           }
           if (/DELETE FROM public\.dd_engine_logs/i.test(sql)) return { rows: [] };
           if (/DELETE FROM public\.dd_iv_history/i.test(sql)) return { rows: [] };
+          if (/DELETE FROM public\.dd_option_cache/i.test(sql)) return { rows: [] };
           throw new Error('Unexpected SQL in env-fallback test');
         }
       });
@@ -137,7 +138,7 @@ try {
     assert.equal(ivHistoryDeleteCalls.length, 2, '5002 IV history rows must be deleted in two bounded batches');
     assert.equal(optionCacheDeleteCalls.length, 2, '5003 option-cache rows must be deleted in two bounded batches');
     for (const call of deleteCalls) {
-      const expectedDays = /DELETE FROM public\\.dd_iv_history/i.test(call.sql) ? 20 : /DELETE FROM public\\.dd_option_cache/i.test(call.sql) ? 3 : 7;
+      const expectedDays = /DELETE FROM public\.dd_iv_history/i.test(call.sql) ? 20 : /DELETE FROM public\.dd_option_cache/i.test(call.sql) ? 3 : 7;
       assert.deepEqual(call.params, [expectedDays, 5000]);
     }
     assert.ok(logDeleteCalls.every(call => /created_at < NOW\(\)/i.test(call.sql)));
@@ -235,7 +236,7 @@ try {
   });
 
   await run('retention defaults to 2 days and logs durable health summaries', async () => {
-    assert.match(engineSource, /envInteger\('RETENTION_DAYS', 1, 1, 3650\)/);
+    assert.match(engineSource, /envInteger\('RETENTION_DAYS', 2, 1, 3650\)/);
     const engine = new DeltaEngine();
     const logs = [];
     engine.maintenanceLog = async (level, message, data = {}) => logs.push({ level, message, data });
@@ -245,6 +246,7 @@ try {
         if (/WITH batch AS/i.test(sql) && /DELETE FROM public\.dd_signals/i.test(sql)) return { rows: [] };
         if (/DELETE FROM public\.dd_engine_logs/i.test(sql)) return { rows: [] };
         if (/DELETE FROM public\.dd_iv_history/i.test(sql)) return { rows: [] };
+        if (/DELETE FROM public\.dd_option_cache/i.test(sql)) return { rows: [] };
         throw new Error('Unexpected SQL in retention health summary test');
       }
     });
