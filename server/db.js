@@ -134,6 +134,11 @@ export const rpc = (name, args) => call('rpc/' + name, { method: 'POST', headers
 export async function log(level, message, data) {
   const normalized = String(level || '').trim().toUpperCase();
   const severity = ({ DEBUG: 10, INFO: 20, NOTICE: 25, WARN: 30, WARNING: 30, ERROR: 40, FATAL: 50 })[normalized] ?? 40;
-  if (severity < 40) return;
+  // Worker heartbeat is safety-critical dashboard telemetry, not general diagnostic noise.
+  // Persist this single INFO event so the dashboard can verify execution mode and freshness;
+  // all other INFO/WARN messages remain stdout-only for Free-tier ingestion control.
+  const isWorkerHeartbeat = normalized === 'INFO' &&
+    String(message || '').startsWith('Worker heartbeat scan ');
+  if (severity < 40 && !isWorkerHeartbeat) return;
   try { await insert('dd_engine_logs', { level: normalized || 'ERROR', message, data: data || null }); } catch {}
 }
