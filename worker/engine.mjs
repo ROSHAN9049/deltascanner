@@ -175,7 +175,7 @@ function safeMaintenanceError(error) {
 }
 
 const RETENTION_ENABLED = envBoolean('RETENTION_ENABLED', true);
-const RETENTION_DAYS = envInteger('RETENTION_DAYS', 1, 1, 3650);
+const RETENTION_DAYS = envInteger('RETENTION_DAYS', 2, 1, 3650);
 const RETENTION_BATCH_SIZE = envInteger('RETENTION_BATCH_SIZE', 5000, 1, 5000);
 const DEDUP_ENABLED = envBoolean('DEDUP_ENABLED', true);
 // Bound persistent analytics history for a symbol/strategy across all stage/side transitions.
@@ -190,7 +190,7 @@ const RETENTION_OLD_ROWS_TRIGGER = envInteger('RETENTION_OLD_ROWS_TRIGGER', 5000
 const SIGNAL_HISTORY_PAUSE_DB_MB = envInteger('SIGNAL_HISTORY_PAUSE_DB_MB', 370, 300, 380);
 const SIGNAL_HISTORY_RESUME_DB_MB = Math.max(280, SIGNAL_HISTORY_PAUSE_DB_MB - 20);
 const MAINTENANCE_START_DELAY_MS = 5 * 60 * 1000;
-const RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const RETENTION_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const DISK_MONITOR_INTERVAL_MS = 30 * 60 * 1000;
 const MB_BYTES = 1024 * 1024;
 const SIGNAL_RETENTION_DELETE_SQL = `
@@ -219,7 +219,8 @@ const ENGINE_LOG_RETENTION_DELETE_SQL = `
   WHERE target.id = batch.id
   RETURNING target.id
 `;
-const IV_HISTORY_RETENTION_DAYS = 30;
+const IV_HISTORY_RETENTION_DAYS = 20;
+const OPTION_CACHE_RETENTION_DAYS = 3;
 const IV_HISTORY_RETENTION_DELETE_SQL = `
   WITH batch AS (
     SELECT id
@@ -232,6 +233,19 @@ const IV_HISTORY_RETENTION_DELETE_SQL = `
   USING batch
   WHERE target.id = batch.id
   RETURNING target.id
+`;
+const OPTION_CACHE_RETENTION_DELETE_SQL = `
+  WITH batch AS (
+    SELECT ctid
+    FROM public.dd_option_cache
+    WHERE cached_at < NOW() - ($1::int * INTERVAL '1 day')
+    ORDER BY cached_at ASC
+    LIMIT $2::int
+  )
+  DELETE FROM public.dd_option_cache AS target
+  USING batch
+  WHERE target.ctid = batch.ctid
+  RETURNING target.cache_key
 `;
 
 export function duplicatePositionBlocker(openPositions, symbol, requestedSide = null) {
@@ -455,7 +469,7 @@ export class DeltaEngine {
   }
 
   async loadSettings() {
-    const rows = await db.select('dd_settings', 'id=eq.1&select=*');
+    const rows = await db.select('dd_settings', 'id=eq.1&select=id,enabled,auto_trade,emergency_stop,continuous_mode,max_open_positions,risk_pct,max_leverage,momentum_sl_min_pct,scalping_sl_min_pct,momentum_rr,scalping_rr,tp1_r,tp1_pct,max_hold_minutes,trail_r,score_min,options_enabled,options_buy_enabled,options_sell_enabled,options_buy_min_delta,options_buy_max_delta,options_sell_min_delta,options_sell_max_delta,options_min_oi,options_min_volume,options_max_spread_pct,options_min_days_to_expiry,options_max_days_to_expiry,options_buy_stop_pct,options_buy_tp1_pct,options_buy_tp_pct,options_max_risk_pct,options_max_open_positions,options_sell_defined_risk_only,options_execution_enabled,options_updated_at,last_tick_at,updated_at,grid_enabled,grid_symbol,grid_upper_price,grid_lower_price,grid_levels_count,grid_max_positions,grid_risk_per_trade_pct,grid_daily_loss_pct,grid_max_drawdown_pct,grid_momentum_pause_pct,grid_reduce_after_losses,grid_state,max_momentum_positions,max_scalping_positions,max_grid_positions,max_options_positions,grid_symbol_configs,grid_trailing_enabled,adaptive_volatility_shadow_enabled,options_iv_rank_buy_max,options_iv_rank_sell_min,options_daily_loss_limit_pct,exit_lifecycle_deploy_boundary_utc');
     return rows && rows[0] ? rows[0] : {};
   }
 
@@ -608,7 +622,7 @@ export class DeltaEngine {
     try {
       const previous = await db.select(
         'dd_api_derived_position_snapshots',
-        'is_current=eq.true&select=*&limit=5000'
+        'is_current=eq.true&select=id,deployment_id,position_key,symbol,quantity,side,ltp,raw_pnl,is_open,raw_api_data,observed_at,last_observed_at,is_current&limit=5000'
       );
       const plan = buildApiDerivedTrackingPlan({
         previousObservations: previous || [],
@@ -3308,13 +3322,13 @@ export class DeltaEngine {
     const runStartedAt = iso();
     this.retentionInFlightDays = requestedDays;
     this.retentionInFlight = this.performSignalRetention(requestedDays, reason);
-    let result = { success: false, effectiveDays: requestedDays, totalDeleted: 0, totalEngineLogsDeleted: 0, totalIvHistoryDeleted: 0 };
+    let result = { success: false, effectiveDays: requestedDays, totalDeleted: 0, totalEngineLogsDeleted: 0, totalIvHistoryDeleted: 0, totalOptionCacheDeleted: 0 };
     let effectiveDays = requestedDays;
     try {
       result = await this.retentionInFlight;
       effectiveDays = result?.effectiveDays ?? requestedDays;
     } catch (error) {
-      result = { success: false, effectiveDays, totalDeleted: 0, totalEngineLogsDeleted: 0, totalIvHistoryDeleted: 0 };
+      result = { success: false, effectiveDays, totalDeleted: 0, totalEngineLogsDeleted: 0, totalIvHistoryDeleted: 0, totalOptionCacheDeleted: 0 };
       await this.maintenanceLog('WARN', '[Retention] Task failed; worker continues: ' + safeMaintenanceError(error), { reason });
     } finally {
       this.retentionInFlight = null;
@@ -3330,6 +3344,9 @@ export class DeltaEngine {
     const ivHistoryRowsDeleted = Number.isSafeInteger(result?.totalIvHistoryDeleted) && result.totalIvHistoryDeleted >= 0
       ? result.totalIvHistoryDeleted
       : 0;
+    const optionCacheRowsDeleted = Number.isSafeInteger(result?.totalOptionCacheDeleted) && result.totalOptionCacheDeleted >= 0
+      ? result.totalOptionCacheDeleted
+      : 0;
     await this.maintenanceLog(result?.success === true ? 'INFO' : 'WARN', '[Retention] Run summary', {
       status: result?.success === true ? 'SUCCESS' : 'FAILURE',
       runStartedAt,
@@ -3337,7 +3354,9 @@ export class DeltaEngine {
       rowsDeleted,
       engineLogRowsDeleted,
       ivHistoryRowsDeleted,
+      optionCacheRowsDeleted,
       ivHistoryRetentionDays: IV_HISTORY_RETENTION_DAYS,
+      optionCacheRetentionDays: OPTION_CACHE_RETENTION_DAYS,
       configDays: RETENTION_DAYS,
       effectiveDays,
       reason
@@ -3355,13 +3374,14 @@ export class DeltaEngine {
     let totalDeleted = 0;
     let totalEngineLogsDeleted = 0;
     let totalIvHistoryDeleted = 0;
+    let totalOptionCacheDeleted = 0;
     let effectiveDays = requestedDays;
 
     try {
       const pool = await this.getMaintenancePool();
       if (!pool) {
         await this.maintenanceLog('WARN', '[Retention] Retention disabled (no DATABASE_URL)', { reason });
-        return { success: false, effectiveDays, totalDeleted, totalEngineLogsDeleted, totalIvHistoryDeleted };
+        return { success: false, effectiveDays, totalDeleted, totalEngineLogsDeleted, totalIvHistoryDeleted, totalOptionCacheDeleted };
       }
 
       const countResult = await pool.query('SELECT COUNT(*)::text AS signal_rows FROM public.dd_signals');
@@ -3420,12 +3440,20 @@ export class DeltaEngine {
         await sleep(100);
       }
 
-      return { success: true, effectiveDays, totalDeleted, totalEngineLogsDeleted, totalIvHistoryDeleted };
+      while (true) {
+        const cacheResult = await pool.query(OPTION_CACHE_RETENTION_DELETE_SQL, [OPTION_CACHE_RETENTION_DAYS, RETENTION_BATCH_SIZE]);
+        const deleted = Array.isArray(cacheResult.rows) ? cacheResult.rows.length : 0;
+        totalOptionCacheDeleted += deleted;
+        if (deleted === 0 || deleted < RETENTION_BATCH_SIZE) break;
+        await sleep(100);
+      }
+
+      return { success: true, effectiveDays, totalDeleted, totalEngineLogsDeleted, totalIvHistoryDeleted, totalOptionCacheDeleted };
     } catch (error) {
       await this.maintenanceLog('WARN',
         '[Retention] Task failed; worker continues: ' + safeMaintenanceError(error),
         { reason, totalDeleted, totalEngineLogsDeleted, totalIvHistoryDeleted, retentionDays: effectiveDays });
-      return { success: false, effectiveDays, totalDeleted, totalEngineLogsDeleted, totalIvHistoryDeleted };
+      return { success: false, effectiveDays, totalDeleted, totalEngineLogsDeleted, totalIvHistoryDeleted, totalOptionCacheDeleted };
     }
   }
 
@@ -4862,10 +4890,10 @@ export class DeltaEngine {
         // Re-read all account/risk inputs after the close. Any missing or
         // malformed response aborts; no stale pre-close snapshot is reused.
         const [freshSettingsRows, freshPositions, freshAccount, freshTrades] = await Promise.all([
-          db.select('dd_settings', 'id=eq.1&select=*'),
+          db.select('dd_settings', 'id=eq.1&select=id,enabled,auto_trade,emergency_stop,continuous_mode,max_open_positions,risk_pct,max_leverage,momentum_sl_min_pct,scalping_sl_min_pct,momentum_rr,scalping_rr,tp1_r,tp1_pct,max_hold_minutes,trail_r,score_min,options_enabled,options_buy_enabled,options_sell_enabled,options_buy_min_delta,options_buy_max_delta,options_sell_min_delta,options_sell_max_delta,options_min_oi,options_min_volume,options_max_spread_pct,options_min_days_to_expiry,options_max_days_to_expiry,options_buy_stop_pct,options_buy_tp1_pct,options_buy_tp_pct,options_max_risk_pct,options_max_open_positions,options_sell_defined_risk_only,options_execution_enabled,options_updated_at,last_tick_at,updated_at,grid_enabled,grid_symbol,grid_upper_price,grid_lower_price,grid_levels_count,grid_max_positions,grid_risk_per_trade_pct,grid_daily_loss_pct,grid_max_drawdown_pct,grid_momentum_pause_pct,grid_reduce_after_losses,grid_state,max_momentum_positions,max_scalping_positions,max_grid_positions,max_options_positions,grid_symbol_configs,grid_trailing_enabled,adaptive_volatility_shadow_enabled,options_iv_rank_buy_max,options_iv_rank_sell_min,options_daily_loss_limit_pct,exit_lifecycle_deploy_boundary_utc'),
           deltaExecutor.getOpenPositions(),
           deltaExecutor.getAccountSnapshot(),
-          db.select('dd_trades', 'order=closed_at.desc&limit=500')
+          db.select('dd_trades', 'select=symbol,closed_at,net_pnl,strategy&order=closed_at.desc&limit=500')
         ]);
         if (!Array.isArray(freshSettingsRows) || freshSettingsRows.length !== 1 ||
             !Array.isArray(freshPositions) || !Array.isArray(freshTrades) ||

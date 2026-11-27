@@ -66,6 +66,7 @@ try {
           }
           if (/DELETE FROM public\.dd_engine_logs/i.test(sql)) return { rows: [] };
           if (/DELETE FROM public\.dd_iv_history/i.test(sql)) return { rows: [] };
+          if (/DELETE FROM public\.dd_option_cache/i.test(sql)) return { rows: [] };
           throw new Error('Unexpected SQL in env-fallback test');
         }
       });
@@ -87,6 +88,7 @@ try {
     let signalBatchNumber = 0;
     let engineLogBatchNumber = 0;
     let ivHistoryBatchNumber = 0;
+    let optionCacheBatchNumber = 0;
     engine.maintenanceLog = async (level, message, data = {}) => logs.push({ level, message, data });
     engine.getMaintenancePool = async () => ({
       query: async (sql, params = []) => {
@@ -112,6 +114,10 @@ try {
             rows: Array.from({ length: ivHistoryBatchNumber === 1 ? 5000 : 2 }, (_, index) => ({ id: index + 1 }))
           };
         }
+        if (/DELETE FROM public\.dd_option_cache/i.test(sql)) {
+          optionCacheBatchNumber += 1;
+          return { rows: Array.from({ length: optionCacheBatchNumber === 1 ? 5000 : 3 }, (_, index) => ({ cache_key: String(index) })) };
+        }
         throw new Error('Unexpected SQL in retention test');
       }
     });
@@ -122,15 +128,18 @@ try {
     assert.equal(result.totalDeleted, 5001);
     assert.equal(result.totalEngineLogsDeleted, 5005);
     assert.equal(result.totalIvHistoryDeleted, 5002);
+    assert.equal(result.totalOptionCacheDeleted, 5003);
     const deleteCalls = calls.filter(call => /DELETE FROM/i.test(call.sql));
     const signalDeleteCalls = deleteCalls.filter(call => /DELETE FROM public\.dd_signals/i.test(call.sql));
     const logDeleteCalls = deleteCalls.filter(call => /DELETE FROM public\.dd_engine_logs/i.test(call.sql));
     const ivHistoryDeleteCalls = deleteCalls.filter(call => /DELETE FROM public\.dd_iv_history/i.test(call.sql));
+    const optionCacheDeleteCalls = deleteCalls.filter(call => /DELETE FROM public\.dd_option_cache/i.test(call.sql));
     assert.equal(signalDeleteCalls.length, 2, '5001 signal rows must be deleted in two bounded batches');
     assert.equal(logDeleteCalls.length, 2, '5005 engine log rows must be deleted in two bounded batches');
     assert.equal(ivHistoryDeleteCalls.length, 2, '5002 IV history rows must be deleted in two bounded batches');
+    assert.equal(optionCacheDeleteCalls.length, 2, '5003 option-cache rows must be deleted in two bounded batches');
     for (const call of deleteCalls) {
-      const expectedDays = /DELETE FROM public\.dd_iv_history/i.test(call.sql) ? 30 : 7;
+      const expectedDays = /DELETE FROM public\.dd_iv_history/i.test(call.sql) ? 20 : /DELETE FROM public\.dd_option_cache/i.test(call.sql) ? 3 : 7;
       assert.deepEqual(call.params, [expectedDays, 5000]);
     }
     assert.ok(logDeleteCalls.every(call => /created_at < NOW\(\)/i.test(call.sql)));
@@ -227,8 +236,8 @@ try {
     assert.ok(logs.some(log => /resuming dd_signals history writes/.test(log.message)));
   });
 
-  await run('retention defaults to 1 day and logs durable health summaries', async () => {
-    assert.match(engineSource, /envInteger\('RETENTION_DAYS', 1, 1, 3650\)/);
+  await run('retention defaults to 2 days and logs durable health summaries', async () => {
+    assert.match(engineSource, /envInteger\('RETENTION_DAYS', 2, 1, 3650\)/);
     const engine = new DeltaEngine();
     const logs = [];
     engine.maintenanceLog = async (level, message, data = {}) => logs.push({ level, message, data });
@@ -238,6 +247,7 @@ try {
         if (/WITH batch AS/i.test(sql) && /DELETE FROM public\.dd_signals/i.test(sql)) return { rows: [] };
         if (/DELETE FROM public\.dd_engine_logs/i.test(sql)) return { rows: [] };
         if (/DELETE FROM public\.dd_iv_history/i.test(sql)) return { rows: [] };
+        if (/DELETE FROM public\.dd_option_cache/i.test(sql)) return { rows: [] };
         throw new Error('Unexpected SQL in retention health summary test');
       }
     });
