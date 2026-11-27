@@ -6695,7 +6695,7 @@ export class DeltaEngine {
         } finally {
           if (this.activeScanPromise === cycle) this.activeScanPromise = null;
         }
-        if (this.running) await sleep(15000);
+        if (this.running) await sleep(30000);
       }
     } finally {
       this.running = false;
