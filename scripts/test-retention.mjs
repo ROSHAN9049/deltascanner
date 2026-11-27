@@ -87,6 +87,7 @@ try {
     let signalBatchNumber = 0;
     let engineLogBatchNumber = 0;
     let ivHistoryBatchNumber = 0;
+    let optionCacheBatchNumber = 0;
     engine.maintenanceLog = async (level, message, data = {}) => logs.push({ level, message, data });
     engine.getMaintenancePool = async () => ({
       query: async (sql, params = []) => {
@@ -112,6 +113,10 @@ try {
             rows: Array.from({ length: ivHistoryBatchNumber === 1 ? 5000 : 2 }, (_, index) => ({ id: index + 1 }))
           };
         }
+        if (/DELETE FROM public\.dd_option_cache/i.test(sql)) {
+          optionCacheBatchNumber += 1;
+          return { rows: Array.from({ length: optionCacheBatchNumber === 1 ? 5000 : 3 }, (_, index) => ({ cache_key: String(index) })) };
+        }
         throw new Error('Unexpected SQL in retention test');
       }
     });
@@ -122,6 +127,7 @@ try {
     assert.equal(result.totalDeleted, 5001);
     assert.equal(result.totalEngineLogsDeleted, 5005);
     assert.equal(result.totalIvHistoryDeleted, 5002);
+    assert.equal(result.totalOptionCacheDeleted, 5003);
     const deleteCalls = calls.filter(call => /DELETE FROM/i.test(call.sql));
     const signalDeleteCalls = deleteCalls.filter(call => /DELETE FROM public\.dd_signals/i.test(call.sql));
     const logDeleteCalls = deleteCalls.filter(call => /DELETE FROM public\.dd_engine_logs/i.test(call.sql));
@@ -227,7 +233,7 @@ try {
     assert.ok(logs.some(log => /resuming dd_signals history writes/.test(log.message)));
   });
 
-  await run('retention defaults to 1 day and logs durable health summaries', async () => {
+  await run('retention defaults to 2 days and logs durable health summaries', async () => {
     assert.match(engineSource, /envInteger\('RETENTION_DAYS', 1, 1, 3650\)/);
     const engine = new DeltaEngine();
     const logs = [];
