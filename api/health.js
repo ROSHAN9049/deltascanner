@@ -10,12 +10,20 @@ import { summarizeOptionsAutoTriggerHealth } from '../src/options-auto-trigger-h
 
 let previousCpuUsage = process.cpuUsage();
 let previousCpuAt = process.hrtime.bigint();
+let cachedHealthResponse = null;
+let cachedHealthAt = 0;
+const HEALTH_CACHE_TTL_MS = 5000;
 
 export default async function handler(req, res) {
   // Health is observability-only (never an execution authorization input). A
   // short private cache prevents dashboard polling from multiplying identical
   // Supabase log/lease/settings reads while keeping worker status near-real-time.
   res.setHeader('Cache-Control', 'private, max-age=5, stale-while-revalidate=5');
+  // Cache the computed response in-process as well: HTTP cache headers alone do
+  // not prevent this server handler from repeating Supabase reads on every poll.
+  if (req.method === 'GET' && cachedHealthResponse && Date.now() - cachedHealthAt < HEALTH_CACHE_TTL_MS) {
+    return res.status(200).json({ ...cachedHealthResponse, healthCacheHit: true });
+  }
   const optionsGate = getOptionsExecutionGate(process.env);
   const optionsExecutionGate = {
     deltaExecutionMode: optionsGate.mode,
@@ -100,7 +108,7 @@ export default async function handler(req, res) {
     // prove the exchange API is reachable.
     const exchangeHealthy = exchangeProbeResult?.healthy === true;
 
-    return res.status(200).json({
+    const healthResponse = {
       success: true,
       environment: CONFIG.environment,
       optionsExecutionGate,
@@ -133,8 +141,12 @@ export default async function handler(req, res) {
       leaseRemainingMs: workerLeaseActive ? leaseExpiresMs - nowMs : 0,
       retention,
       now: new Date().toISOString(),
-      source: 'supabase-worker-heartbeat'
-    });
+      source: 'supabase-worker-heartbeat',
+      healthCacheHit: false
+    };
+    cachedHealthResponse = healthResponse;
+    cachedHealthAt = Date.now();
+    return res.status(200).json(healthResponse);
   } catch (e) {
     return res.status(503).json({
       success: false,
