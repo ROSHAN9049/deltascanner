@@ -4709,6 +4709,13 @@ export class DeltaEngine {
     if (CONFIG.environment !== 'TESTNET' ||
         CONFIG.deltaExecutionMode !== 'testnet' ||
         CONFIG.directDeltaExecutionEnabled !== true) {
+      if (settings?.guarded_auto_enabled === true) {
+        await this.guardedAuto.forceAutoTradeOff('LIVE_OR_WRONG_EXECUTION_PROFILE_DETECTED').catch(error =>
+          this.log('FATAL', '[GuardedAuto] Could not persist auto_trade=false after wrong-host detection', {
+            reason: String(error?.message || error).slice(0, 240), orderRoutingAttempted: false
+          }).catch(() => {})
+        );
+      }
       await this.log('WARN', 'Order entry blocked: only direct Delta Testnet execution is supported; scanner remains scan-only.', {
         executionMode: CONFIG.deltaExecutionMode,
         symbol: signal?.symbol ?? null,
