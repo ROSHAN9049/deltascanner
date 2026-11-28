@@ -11,8 +11,11 @@ update public.dd_settings
 set guarded_auto_enabled = false,
     momentum_enabled = false,
     scalping_enabled = false,
-    guarded_estop_active = coalesce(guarded_estop_active, false),
+    guarded_estop_active = emergency_stop,
     auto_trade = false,
+    options_enabled = false,
+    options_execution_enabled = false,
+    grid_enabled = false,
     max_open_positions = 1
 where id = 1;
 
