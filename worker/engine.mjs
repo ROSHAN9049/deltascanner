@@ -37,6 +37,7 @@ import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from '
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
 import { buildApiDerivedTrackingPlan, strategyForDerivedTrade } from './tradetron-derived-trades.mjs';
 import { deltaExecutor } from './execution/delta-executor.mjs';
+import { createGuardedAuto } from './execution/guarded-auto.mjs';
 import { closeTrackedPosition, parseEnrolledPositionIds, resolveExitLifecycleBoundary, runAutomaticPositionExitCycle } from './execution/exit-lifecycle.mjs';
 import { projectCanonicalDeltaBrackets } from './execution/delta-position-projection.mjs';
 import { resolveBracketChildOrderIds } from './execution/bracket-child-order-ids.mjs';
@@ -279,6 +280,7 @@ const cleanPrice = v => {
 export class DeltaEngine {
   constructor() {
     this.adapter = new DeltaAdapter();
+    this.guardedAuto = createGuardedAuto({ database: db, executor: deltaExecutor, env: process.env, log: (level, message, details) => this.log(level, message, details) });
     this.tradetron = new TradetronBridge();
     this.tradetronDeveloperApi = new TradetronDeveloperApi();
     this.lastTradetronDeveloperSyncAt = 0;
@@ -4655,6 +4657,23 @@ export class DeltaEngine {
     }
 
     const normalizedStrategy = String(strategy || '').trim().toUpperCase();
+    if (['MOMENTUM', 'SCALPING'].includes(normalizedStrategy)) {
+      try {
+        await this.guardedAuto.assertEntryAllowed({
+          strategy: normalizedStrategy,
+          symbol: signal?.symbol,
+          stage: signal?.stage,
+          restBase: process.env.DELTA_TESTNET_REST_BASE
+        });
+      } catch (error) {
+        await this.log('INFO', '[GuardedAuto] Futures entry skipped by centralized guard', {
+          strategy: normalizedStrategy, symbol: signal?.symbol || null,
+          stage: signal?.stage || null, reason: String(error?.message || error),
+          orderRoutingAttempted: false
+        }).catch(() => {});
+        return false;
+      }
+    }
     if (normalizedStrategy === 'OPTIONS_BUY' || normalizedStrategy === 'OPTIONS_SELL') {
       const optionsMode = getOptionsExecutionMode(process.env);
       if (optionsMode !== 'demo') {
@@ -4971,7 +4990,15 @@ export class DeltaEngine {
       );
       if (Array.isArray(priorTestnetOrders) && priorTestnetOrders.length) return false;
       try {
-        const order = await this.executeSignal(signal, strategy, gate.size.qty, entryCid);
+        const productMetadata = await deltaExecutor.getProductMetadata(signal.symbol);
+        const minimumQty = deltaExecutor.getMinimumOrderSize(productMetadata);
+        if (!Number.isSafeInteger(minimumQty) || minimumQty < 1) {
+          await this.log('WARN', '[GuardedAuto] Exchange minimum contract size is unknown; entry skipped', {
+            symbol: signal.symbol, strategy, orderRoutingAttempted: false
+          }).catch(() => {});
+          return false;
+        }
+        const order = await this.executeSignal(signal, strategy, minimumQty, entryCid);
         const orderId = String(order?.id ?? order?.order_id ?? entryCid);
 
         // Keep missing unfilled_size unknown (null), rather than falsely treating it as zero.
