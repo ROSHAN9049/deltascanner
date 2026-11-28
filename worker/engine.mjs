@@ -4629,11 +4629,22 @@ export class DeltaEngine {
         }
         return order;
       } catch (error) {
-        await this.guardedAuto.release({
-          clientOrderId: reservation.clientOrderId,
-          state: 'FAILED',
-          metadata: { reason: String(error?.message || error).slice(0, 240) }
-        }).catch(() => {});
+        const status = Number(error?.status);
+        const definitelyNotSubmitted = error?.orderRoutingAttempted === false ||
+          (Number.isInteger(status) && status >= 400 && status < 500 && status !== 408 && status !== 429);
+        if (definitelyNotSubmitted) {
+          await this.guardedAuto.release({
+            clientOrderId: reservation.clientOrderId,
+            state: 'FAILED',
+            metadata: { reason: String(error?.message || error).slice(0, 240) }
+          }).catch(() => {});
+        } else {
+          await this.log('ERROR', '[GuardedAuto] Ambiguous entry outcome; global reservation retained', {
+            strategy, symbol: signal.symbol, clientOrderId,
+            reason: String(error?.message || error).slice(0, 240),
+            reservationRetained: true, doNotBlindlyRetry: true
+          }).catch(() => {});
+        }
         if (isPrivateApiConnectivityError(error)) {
           this.privateExecutionAvailable = false;
           await this.log('WARN', 'Private Delta Testnet API unavailable. Continuing in SCAN-ONLY mode.', {

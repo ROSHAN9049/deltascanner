@@ -168,6 +168,7 @@ export default async function handler(req, res) {
       } else if (body.emergencyStop === false && current.emergency_stop === true) {
         // Consumed atomically with the state transition at the bottom.
         patch.emergency_stop_release_token_hash = null;
+        patch.guarded_estop_active = false;
       }
     }
     if (body.continuousMode !== undefined) patch.continuous_mode = !!body.continuousMode;
