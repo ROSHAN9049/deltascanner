@@ -34,18 +34,42 @@ export function assertKnownMargin({ available, observedAt, now = Date.now(), max
   return value;
 }
 
+export function buildGuardedEntryBracketFields(stopLossPrice, takeProfitPrice) {
+  const sl = Number(stopLossPrice), tp = Number(takeProfitPrice);
+  if (!(Number.isFinite(sl) && sl > 0 && Number.isFinite(tp) && tp > 0) || sl === tp) {
+    throw new Error('GUARDED_ATTACHED_SL_TP_INVALID');
+  }
+  return Object.freeze({
+    bracket_stop_loss_price: String(sl),
+    bracket_take_profit_price: String(tp),
+    bracket_stop_trigger_method: 'mark_price'
+  });
+}
+
 export function assertAttachedBracket(order, stopLossPrice, takeProfitPrice) {
   const sl = Number(order?.bracket_stop_loss_price);
   const tp = Number(order?.bracket_take_profit_price);
-  // Delta's CreateOrder response may return bracket_order=false even when
-  // bracket trigger prices are attached to the entry order. Verify both
-  // exchange-returned trigger prices, not that auxiliary boolean flag.
+  // Delta documents bracket trigger fields on the entry order. The separate
+  // bracket_order response flag may be false while those fields are attached.
   if (!Number.isFinite(sl) || !Number.isFinite(tp) ||
       Math.abs(sl - Number(stopLossPrice)) > 1e-8 ||
       Math.abs(tp - Number(takeProfitPrice)) > 1e-8) {
     throw new Error('GUARDED_ATTACHED_SL_TP_NOT_VERIFIED');
   }
   return true;
+}
+
+export async function verifyAttachedBracketOrEmergencyClose({
+  order, stopLossPrice, takeProfitPrice, emergencyClose
+} = {}) {
+  try {
+    assertAttachedBracket(order, stopLossPrice, takeProfitPrice);
+    return true;
+  } catch (error) {
+    if (typeof emergencyClose !== 'function') throw error;
+    await emergencyClose();
+    throw error;
+  }
 }
 
 const text = value => String(value ?? '').trim();

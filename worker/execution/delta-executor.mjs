@@ -5,7 +5,7 @@ import * as defaultDb from '../../server/db.js';
 import { indiaDateKey } from '../../src/date-utils.js';
 import { isAllowedDeltaTestnetFutureSymbol, isAllowedGuardedAutoFutureSymbol, isEligibleDeltaTestnetPerpetualProduct, isMarketTickFresh } from './execution-route-policy.mjs';
 import { createDeltaOptionsExecution } from './delta-options-execution.mjs';
-import { assertExactMinimumQuantity, assertKnownMargin, assertAttachedBracket, resolveExchangeMinimumOrderSize } from './guarded-auto.mjs';
+import { assertExactMinimumQuantity, assertKnownMargin, verifyAttachedBracketOrEmergencyClose, buildGuardedEntryBracketFields, resolveExchangeMinimumOrderSize } from './guarded-auto.mjs';
 import { DELTA_INDIA_TESTNET_REST_BASE } from '../options-execution-lock.mjs';
 
 export const DELTA_TESTNET_REST_BASE = 'https://cdn-ind.testnet.deltaex.org';
@@ -1584,11 +1584,7 @@ export function createDeltaExecutor({
         product_id: product.id, size: quantity, side: direction.toLowerCase(),
         order_type: 'limit_order', limit_price: String(limitPrice),
         time_in_force: 'ioc', reduce_only: false, client_order_id: entryClientOrderId,
-        ...(guardedAuto ? {
-          bracket_stop_loss_price: String(stop),
-          bracket_take_profit_price: String(target),
-          bracket_stop_trigger_method: 'mark_price'
-        } : {})
+        ...(guardedAuto ? buildGuardedEntryBracketFields(stop, target) : {})
       };
       await logExecutor('INFO', guardedAuto ? '[GuardedAuto] Submitting IOC entry with exchange-attached SL/TP bracket' : '[Executor] Submitting IOC entry before separate protective orders', {
         environment: 'testnet', symbol: normalizedSymbol, side: direction,
@@ -1664,7 +1660,14 @@ export function createDeltaExecutor({
       try {
         if (guardedAuto) {
           const bracketOrder = await getOrderById(Number(latestOrder?.id));
-          assertAttachedBracket(bracketOrder, stop, target);
+          await verifyAttachedBracketOrEmergencyClose({
+            order: bracketOrder,
+            stopLossPrice: stop,
+            takeProfitPrice: target,
+            emergencyClose: () => emergencyCloseFilledEntry(
+              product, normalizedSymbol, direction, confirmedFillQty, entryClientOrderId, strategy
+            )
+          });
           slOrder = { id: bracketOrder.id, attached: true };
           tpOrder = { id: bracketOrder.id, attached: true };
         } else {
