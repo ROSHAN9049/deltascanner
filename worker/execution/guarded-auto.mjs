@@ -201,5 +201,5 @@ export function createGuardedAuto({
     return finalState;
   }
 
-  return Object.freeze({ assertEntryAllowed, reserve, release, forceAutoTradeOff, emergencyStop });
+  return Object.freeze({ isEnabled, assertEntryAllowed, reserve, release, forceAutoTradeOff, emergencyStop });
 }
