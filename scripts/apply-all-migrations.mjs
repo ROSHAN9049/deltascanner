@@ -33,7 +33,8 @@ const MIGRATIONS = [
   'db/migrations/20261121000100_position_fk_indexes.sql',
   'db/migrations/20261121000200_iv_history_observed_at_idx.sql',
   'db/migrations/20261124000100_options_paper_trades.sql',
-  'db/migrations/20261124000200_options_paper_spread_columns.sql'
+  'db/migrations/20261124000200_options_paper_spread_columns.sql',
+  'db/migrations/20261128000100_guarded_auto.sql'
 ];
 
 // These are the four "already exists" SQLSTATEs explicitly approved for skipping.
@@ -67,7 +68,8 @@ const EXPECTED_TABLES = [
   'dd_tradetron_developer_notifications',
   'dd_tradetron_developer_notification_sync_state',
   'dd_tradetron_developer_pnl_history',
-  'dd_shadow_signals'
+  'dd_shadow_signals',
+  'dd_guarded_auto_reservations'
 ];
 
 function sanitizeError(error) {

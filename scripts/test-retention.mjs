@@ -139,7 +139,7 @@ try {
     assert.equal(ivHistoryDeleteCalls.length, 2, '5002 IV history rows must be deleted in two bounded batches');
     assert.equal(optionCacheDeleteCalls.length, 2, '5003 option-cache rows must be deleted in two bounded batches');
     for (const call of deleteCalls) {
-      const expectedDays = /DELETE FROM public\.dd_iv_history/i.test(call.sql) ? 20 : /DELETE FROM public\.dd_option_cache/i.test(call.sql) ? 3 : 7;
+      const expectedDays = /DELETE FROM public\.dd_iv_history/i.test(call.sql) ? 30 : /DELETE FROM public\.dd_option_cache/i.test(call.sql) ? 3 : 7;
       assert.deepEqual(call.params, [expectedDays, 5000]);
     }
     assert.ok(logDeleteCalls.every(call => /created_at < NOW\(\)/i.test(call.sql)));
@@ -171,11 +171,11 @@ try {
     const diskSummary = logs.find(log => log.message.startsWith('[Disk] DB:'));
     assert.equal(diskSummary?.data?.pauseAtMb, 370);
     assert.equal(diskSummary?.data?.resumeAtMb, 350);
-    assert.ok(logs.some(log => /\[Disk\] DB: 436\.0 MB, signals: 510000 rows, expired_1d: 60000/.test(log.message)));
+    assert.ok(logs.some(log => /\[Disk\] DB: 436\.0 MB, signals: 510000 rows, expired_\d+d: 60000/.test(log.message)));
     assert.ok(logs.some(log => /pausing new dd_signals history writes/.test(log.message)));
     assert.equal(engine.signalHistoryWritesPaused, true);
     assert.ok(logs.some(log => /WARNING: signal row count 510000 exceeds 250000/.test(log.message)));
-    assert.ok(logs.some(log => /CRITICAL: signal row count 510000 exceeds 500000; requesting configured 1-day retention/.test(log.message)));
+    assert.ok(logs.some(log => /CRITICAL: signal row count 510000 exceeds 500000; requesting configured \d+-day retention/.test(log.message)));
     assert.deepEqual(retentionRequest, { reason: 'row-count-critical' });
   });
 
@@ -211,7 +211,7 @@ try {
     engine.runSignalRetention = async options => { retentionRequest = options; };
 
     await engine.checkDiskHealth();
-    assert.ok(logs.some(log => /older than configured 1-day window exceeds 50000; requesting configured retention/.test(log.message)));
+    assert.ok(logs.some(log => /older than configured \d+-day window exceeds 50000; requesting configured retention/.test(log.message)));
     assert.deepEqual(retentionRequest, { reason: 'retention-window-backlog' });
   });
 

@@ -37,6 +37,7 @@ import { classifyTradetronSignalFailure, sanitizeTradetronFailureDetail } from '
 import { gateBTCRegime } from '../src/indicators/risk-gates.mjs';
 import { buildApiDerivedTrackingPlan, strategyForDerivedTrade } from './tradetron-derived-trades.mjs';
 import { deltaExecutor } from './execution/delta-executor.mjs';
+import { createGuardedAuto } from './execution/guarded-auto.mjs';
 import { closeTrackedPosition, parseEnrolledPositionIds, resolveExitLifecycleBoundary, runAutomaticPositionExitCycle } from './execution/exit-lifecycle.mjs';
 import { projectCanonicalDeltaBrackets } from './execution/delta-position-projection.mjs';
 import { resolveBracketChildOrderIds } from './execution/bracket-child-order-ids.mjs';
@@ -219,7 +220,7 @@ const ENGINE_LOG_RETENTION_DELETE_SQL = `
   WHERE target.id = batch.id
   RETURNING target.id
 `;
-const IV_HISTORY_RETENTION_DAYS = 20;
+const IV_HISTORY_RETENTION_DAYS = 30;
 const OPTION_CACHE_RETENTION_DAYS = 3;
 const IV_HISTORY_RETENTION_DELETE_SQL = `
   WITH batch AS (
@@ -279,6 +280,10 @@ const cleanPrice = v => {
 export class DeltaEngine {
   constructor() {
     this.adapter = new DeltaAdapter();
+    this.guardedAuto = createGuardedAuto({ database: db, executor: deltaExecutor, env: process.env, log: (level, message, details) => this.log(level, message, details) });
+    console.log('[GuardedAuto] module loaded; strategies=MOMENTUM,SCALPING; symbols=XAUTUSD,PAXGUSD; globalPositionCap=1; signalStage=CONFIRMED_ONLY');
+    this.guardedEstopInFlight = null;
+    this.guardedEstopCompleted = false;
     this.tradetron = new TradetronBridge();
     this.tradetronDeveloperApi = new TradetronDeveloperApi();
     this.lastTradetronDeveloperSyncAt = 0;
@@ -469,8 +474,32 @@ export class DeltaEngine {
   }
 
   async loadSettings() {
-    const rows = await db.select('dd_settings', 'id=eq.1&select=id,enabled,auto_trade,emergency_stop,continuous_mode,max_open_positions,risk_pct,max_leverage,momentum_sl_min_pct,scalping_sl_min_pct,momentum_rr,scalping_rr,tp1_r,tp1_pct,max_hold_minutes,trail_r,score_min,options_enabled,options_buy_enabled,options_sell_enabled,options_buy_min_delta,options_buy_max_delta,options_sell_min_delta,options_sell_max_delta,options_min_oi,options_min_volume,options_max_spread_pct,options_min_days_to_expiry,options_max_days_to_expiry,options_buy_stop_pct,options_buy_tp1_pct,options_buy_tp_pct,options_max_risk_pct,options_max_open_positions,options_sell_defined_risk_only,options_execution_enabled,options_updated_at,last_tick_at,updated_at,grid_enabled,grid_symbol,grid_upper_price,grid_lower_price,grid_levels_count,grid_max_positions,grid_risk_per_trade_pct,grid_daily_loss_pct,grid_max_drawdown_pct,grid_momentum_pause_pct,grid_reduce_after_losses,grid_state,max_momentum_positions,max_scalping_positions,max_grid_positions,max_options_positions,grid_symbol_configs,grid_trailing_enabled,adaptive_volatility_shadow_enabled,options_iv_rank_buy_max,options_iv_rank_sell_min,options_daily_loss_limit_pct,exit_lifecycle_deploy_boundary_utc');
-    return rows && rows[0] ? rows[0] : {};
+    const rows = await db.select('dd_settings', 'id=eq.1&select=id,enabled,auto_trade,emergency_stop,guarded_auto_enabled,momentum_enabled,scalping_enabled,guarded_estop_active,continuous_mode,max_open_positions,risk_pct,max_leverage,momentum_sl_min_pct,scalping_sl_min_pct,momentum_rr,scalping_rr,tp1_r,tp1_pct,max_hold_minutes,trail_r,score_min,options_enabled,options_buy_enabled,options_sell_enabled,options_buy_min_delta,options_buy_max_delta,options_sell_min_delta,options_sell_max_delta,options_min_oi,options_min_volume,options_max_spread_pct,options_min_days_to_expiry,options_max_days_to_expiry,options_buy_stop_pct,options_buy_tp1_pct,options_buy_tp_pct,options_max_risk_pct,options_max_open_positions,options_sell_defined_risk_only,options_execution_enabled,options_updated_at,last_tick_at,updated_at,grid_enabled,grid_symbol,grid_upper_price,grid_lower_price,grid_levels_count,grid_max_positions,grid_risk_per_trade_pct,grid_daily_loss_pct,grid_max_drawdown_pct,grid_momentum_pause_pct,grid_reduce_after_losses,grid_state,max_momentum_positions,max_scalping_positions,max_grid_positions,max_options_positions,grid_symbol_configs,grid_trailing_enabled,adaptive_volatility_shadow_enabled,options_iv_rank_buy_max,options_iv_rank_sell_min,options_daily_loss_limit_pct,exit_lifecycle_deploy_boundary_utc,guarded_auto_enabled,momentum_enabled,scalping_enabled,guarded_estop_active');
+    const settings = rows && rows[0] ? rows[0] : {};
+    const estopActive = settings.emergency_stop === true || settings.guarded_estop_active === true;
+    if (!estopActive) {
+      this.guardedEstopCompleted = false;
+      return settings;
+    }
+    if (!this.guardedEstopCompleted && !this.guardedEstopInFlight) {
+      this.guardedEstopInFlight = (async () => {
+        try {
+          const finalState = await this.guardedAuto.emergencyStop({ reason: 'DATABASE_ESTOP_REQUEST' });
+          this.guardedEstopCompleted = finalState.complete === true;
+          await this.log(this.guardedEstopCompleted ? 'ERROR' : 'FATAL',
+            '[GuardedAuto] Worker E-STOP lifecycle result', finalState).catch(() => {});
+        } catch (error) {
+          await this.log('FATAL', '[GuardedAuto] Worker E-STOP reconciliation failed; entries remain disabled', {
+            reason: String(error?.message || error).slice(0, 300),
+            workerCredentialsAvailable: this.privateExecutionAvailable === true
+          }).catch(() => {});
+        } finally {
+          this.guardedEstopInFlight = null;
+        }
+      })();
+    }
+    if (this.guardedEstopInFlight) await this.guardedEstopInFlight;
+    return settings;
   }
 
   async updateEngineState(patch) {
@@ -2615,7 +2644,7 @@ export class DeltaEngine {
     }
   }
 
-  async riskGate(signal, strategy, account, settings, openPositions, trades, suppliedPositionCap = null) {
+  async riskGate(signal, strategy, account, settings, openPositions, trades, suppliedPositionCap = null, guardedAutoEnabled = false) {
     const reasons = [...(signal.blocked || [])];
     const continuous = settings.continuous_mode !== false;
 
@@ -2654,8 +2683,9 @@ export class DeltaEngine {
     }
     const duplicateBlocker = duplicatePositionBlocker(openPositions, signal.symbol, signal.side);
     if (duplicateBlocker) reasons.push(duplicateBlocker);
-    const strategyPositionCap = suppliedPositionCap ||
-      await this.getStrategyPositionCapAssessment(strategy, settings);
+    const strategyPositionCap = guardedAutoEnabled
+      ? { status: 'PASS', reason: null, guardedGlobalCap: 1 }
+      : suppliedPositionCap || await this.getStrategyPositionCapAssessment(strategy, settings);
     if (strategyPositionCap.status !== 'PASS') {
       reasons.push(strategyPositionCap.reason);
     }
@@ -2694,8 +2724,14 @@ export class DeltaEngine {
       } else if (!(Number.isFinite(target) && target > 0)) {
         reasons.push('Invalid TP price (must be finite and > 0)');
       } else {
-        size = this.positionSizing(signal, account, settings);
-        if (!size) reasons.push('Margin / minimum contract size');
+        if (guardedAutoEnabled) {
+          // Guarded Auto does not use risk-budget sizing. The executor replaces
+          // this sentinel with the verified exchange minimum contract quantity.
+          size = { qty: 1, notional: null, risk: null, marginEstimate: null, sizingMode: 'EXCHANGE_MINIMUM_ONLY' };
+        } else {
+          size = this.positionSizing(signal, account, settings);
+          if (!size) reasons.push('Margin / minimum contract size');
+        }
         if (n(signal.feeRiskRatio) > n(signal.costGateRatio)) reasons.push('Fee + spread exceeds 1R cost budget');
       }
     }
@@ -4601,20 +4637,48 @@ export class DeltaEngine {
     return null;
   }
 
-  async executeSignal(signal, strategy, qty, clientOrderId) {
+  async executeSignal(signal, strategy, qty, clientOrderId, guardedAutoEnabled = false) {
     assertDirectDeltaExecutionMode(CONFIG.deltaExecutionMode,
       CONFIG.directDeltaExecutionEnabled === true && CONFIG.environment === 'TESTNET');
     if (CONFIG.deltaExecutionMode === 'testnet') {
       if (!canExecuteDeltaTestnetOrders(CONFIG.deltaExecutionMode, this.privateExecutionAvailable)) {
         throw new Error('Delta Testnet private API unavailable; order execution is hard-locked in SCAN-ONLY mode');
       }
+      const reservation = guardedAutoEnabled ? await this.guardedAuto.reserve({
+        strategy, symbol: signal.symbol, stage: signal.stage, clientOrderId
+      }) : null;
       try {
-        return await deltaExecutor.placeBracketOrder(
+        const order = await deltaExecutor.placeBracketOrder(
           signal.symbol, signal.side, qty, signal.price, signal.sl, signal.tp,
-          { strategy, clientOrderId, expectedProductId: signal.productId,
+          { strategy, clientOrderId, expectedProductId: signal.productId, guardedAuto: guardedAutoEnabled,
             signalGeneratedAt: signal.created_at || signal.generated_at || signal.timestamp || null }
         );
+        if (guardedAutoEnabled && !(Number(order?.filled_size) > 0)) {
+          await this.guardedAuto.release({
+            clientOrderId: reservation.clientOrderId,
+            state: 'RELEASED',
+            exchangeOrderId: order?.id ?? null,
+            metadata: { reason: 'IOC_NOT_FILLED' }
+          });
+        }
+        return order;
       } catch (error) {
+        const status = Number(error?.status);
+        const definitelyNotSubmitted = error?.orderRoutingAttempted === false ||
+          (Number.isInteger(status) && status >= 400 && status < 500 && status !== 408 && status !== 429);
+        if (guardedAutoEnabled && definitelyNotSubmitted) {
+          await this.guardedAuto.release({
+            clientOrderId: reservation.clientOrderId,
+            state: 'FAILED',
+            metadata: { reason: String(error?.message || error).slice(0, 240) }
+          }).catch(() => {});
+        } else if (guardedAutoEnabled) {
+          await this.log('ERROR', '[GuardedAuto] Ambiguous entry outcome; global reservation retained', {
+            strategy, symbol: signal.symbol, clientOrderId,
+            reason: String(error?.message || error).slice(0, 240),
+            reservationRetained: true, doNotBlindlyRetry: true
+          }).catch(() => {});
+        }
         if (isPrivateApiConnectivityError(error)) {
           this.privateExecutionAvailable = false;
           await this.log('WARN', 'Private Delta Testnet API unavailable. Continuing in SCAN-ONLY mode.', {
@@ -4645,6 +4709,13 @@ export class DeltaEngine {
     if (CONFIG.environment !== 'TESTNET' ||
         CONFIG.deltaExecutionMode !== 'testnet' ||
         CONFIG.directDeltaExecutionEnabled !== true) {
+      if (settings?.guarded_auto_enabled === true) {
+        await this.guardedAuto.forceAutoTradeOff('LIVE_OR_WRONG_EXECUTION_PROFILE_DETECTED').catch(error =>
+          this.log('FATAL', '[GuardedAuto] Could not persist auto_trade=false after wrong-host detection', {
+            reason: String(error?.message || error).slice(0, 240), orderRoutingAttempted: false
+          }).catch(() => {})
+        );
+      }
       await this.log('WARN', 'Order entry blocked: only direct Delta Testnet execution is supported; scanner remains scan-only.', {
         executionMode: CONFIG.deltaExecutionMode,
         symbol: signal?.symbol ?? null,
@@ -4655,6 +4726,30 @@ export class DeltaEngine {
     }
 
     const normalizedStrategy = String(strategy || '').trim().toUpperCase();
+    const guardedAutoEnabled = settings?.guarded_auto_enabled === true;
+    if (guardedAutoEnabled && !['MOMENTUM', 'SCALPING'].includes(normalizedStrategy)) {
+      await this.log('WARN', '[GuardedAuto] Non-guarded strategy dispatch rejected while Guarded Auto is active', {
+        strategy: normalizedStrategy, symbol: signal?.symbol || null, orderRoutingAttempted: false
+      }).catch(() => {});
+      return false;
+    }
+    if (guardedAutoEnabled && ['MOMENTUM', 'SCALPING'].includes(normalizedStrategy)) {
+      try {
+        await this.guardedAuto.assertEntryAllowed({
+          strategy: normalizedStrategy,
+          symbol: signal?.symbol,
+          stage: signal?.stage,
+          restBase: process.env.DELTA_TESTNET_REST_BASE
+        });
+      } catch (error) {
+        await this.log('INFO', '[GuardedAuto] Futures entry skipped by centralized guard', {
+          strategy: normalizedStrategy, symbol: signal?.symbol || null,
+          stage: signal?.stage || null, reason: String(error?.message || error),
+          orderRoutingAttempted: false
+        }).catch(() => {});
+        return false;
+      }
+    }
     if (normalizedStrategy === 'OPTIONS_BUY' || normalizedStrategy === 'OPTIONS_SELL') {
       const optionsMode = getOptionsExecutionMode(process.env);
       if (optionsMode !== 'demo') {
@@ -4948,8 +5043,8 @@ export class DeltaEngine {
         return false;
       }
     }
-    const gate = await this.riskGate(signal, strategy, riskAccount, riskSettings, riskOpenPositions, riskTrades);
-    if (gate.reasons.length || !gate.size) return false;
+    const gate = await this.riskGate(signal, strategy, riskAccount, riskSettings, riskOpenPositions, riskTrades, null, guardedAutoEnabled);
+    if (gate.reasons.length || (!gate.size && !guardedAutoEnabled)) return false;
 
     // Testnet is a separate, hardcoded Demo-only execution route. The existing
     // Tradetron branch below remains unchanged for DELTA_EXECUTION_MODE=disabled.
@@ -4971,7 +5066,19 @@ export class DeltaEngine {
       );
       if (Array.isArray(priorTestnetOrders) && priorTestnetOrders.length) return false;
       try {
-        const order = await this.executeSignal(signal, strategy, gate.size.qty, entryCid);
+        let executionQty = guardedAutoEnabled ? null : gate.size?.qty ?? null;
+        if (guardedAutoEnabled) {
+          const productMetadata = await deltaExecutor.getProductMetadata(signal.symbol);
+          const minimumQty = deltaExecutor.getMinimumOrderSize(productMetadata);
+          if (!Number.isSafeInteger(minimumQty) || minimumQty < 1) {
+            await this.log('WARN', '[GuardedAuto] Exchange minimum contract size is unknown; entry skipped', {
+              symbol: signal.symbol, strategy, orderRoutingAttempted: false
+            }).catch(() => {});
+            return false;
+          }
+          executionQty = minimumQty;
+        }
+        const order = await this.executeSignal(signal, strategy, executionQty, entryCid, guardedAutoEnabled);
         const orderId = String(order?.id ?? order?.order_id ?? entryCid);
 
         // Keep missing unfilled_size unknown (null), rather than falsely treating it as zero.
@@ -4994,7 +5101,7 @@ export class DeltaEngine {
             symbol: signal.symbol,
             side: signal.side === 'BUY' ? 'buy' : 'sell',
             order_type: 'delta_testnet_order',
-            size: gate.size.qty,
+            size: executionQty,
             unfilled_size: unfilledSize,
             state: apiState,
             client_order_id: entryCid,
@@ -5022,7 +5129,7 @@ export class DeltaEngine {
             symbol: signal.symbol,
             strategy,
             side: signal.side,
-            qty: gate.size.qty,
+            qty: executionQty,
             clientOrderId: entryCid,
             orderId,
             error: String(persistError?.message || persistError)
@@ -5035,7 +5142,7 @@ export class DeltaEngine {
           symbol: signal.symbol,
           strategy,
           side: signal.side,
-          qty: gate.size.qty,
+          qty: executionQty,
           orderType,
           entry: signal.price,
           sl: signal.sl,
@@ -5066,7 +5173,7 @@ export class DeltaEngine {
               symbol: signal.symbol,
               side: signal.side === 'BUY' ? 'buy' : 'sell',
               order_type: 'delta_testnet_preflight_rejection',
-              size: gate.size.qty,
+              size: executionQty,
               state: 'REJECTED',
               client_order_id: entryCid,
               role: 'ENTRY',
@@ -5239,7 +5346,7 @@ export class DeltaEngine {
           symbol, reason: requestedReason, executionBlockedForNewPositions: true
         });
       }
-      return await closeTrackedPosition({
+      const closeResult = await closeTrackedPosition({
         database: db,
         executor: deltaExecutor,
         position: trackedPosition,
@@ -5253,6 +5360,17 @@ export class DeltaEngine {
         now: () => Date.now(),
         log: (level, message, details) => this.log(level, message, details)
       });
+      if (closeResult?.positionClosed === true &&
+          closeResult?.order?.exchange_position_flat === true &&
+          String(trackedPosition.client_order_id || '').trim()) {
+        await this.guardedAuto.release({
+          clientOrderId: String(trackedPosition.client_order_id),
+          state: 'RELEASED',
+          exchangeOrderId: closeResult?.order?.id ?? null,
+          metadata: { reason: 'EXCHANGE_CONFIRMED_POSITION_FLAT', symbol }
+        });
+      }
+      return closeResult;
     } catch (error) {
       // closeTrackedPosition writes a durable marker before the exchange call
       // and logs the failure. Leave the row OPEN; reconciliation retries it.
@@ -6557,7 +6675,16 @@ export class DeltaEngine {
       ).length,
       gridEntrySafety: this.lastGridEntrySafety || null,
       gridTestnetDiagnostics: this.lastGridTestnetDiagnostics || null,
-      optionsTestnetDiagnostics: this.lastOptionsTestnetDiagnostics || null
+      optionsTestnetDiagnostics: this.lastOptionsTestnetDiagnostics || null,
+      guardedAuto: {
+        enabled: settings.guarded_auto_enabled === true,
+        momentumEnabled: settings.momentum_enabled === true,
+        scalpingEnabled: settings.scalping_enabled === true,
+        emergencyStop: settings.guarded_estop_active === true || settings.emergency_stop === true,
+        globalPositionCap: 1,
+        allowedSymbols: ['XAUTUSD', 'PAXGUSD'],
+        signalStage: 'CONFIRMED_ONLY'
+      }
     });
   }
   async recordMemoryUsage(reason = 'periodic') {

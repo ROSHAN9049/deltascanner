@@ -3,13 +3,14 @@ import crypto from 'node:crypto';
 import { accountEquity, accountAvailable, accountAvailableVerified } from './delta-wallet-balance.mjs';
 import * as defaultDb from '../../server/db.js';
 import { indiaDateKey } from '../../src/date-utils.js';
-import { isAllowedDeltaTestnetFutureSymbol, isEligibleDeltaTestnetPerpetualProduct, isMarketTickFresh } from './execution-route-policy.mjs';
+import { isAllowedDeltaTestnetFutureSymbol, isAllowedGuardedAutoFutureSymbol, isEligibleDeltaTestnetPerpetualProduct, isMarketTickFresh } from './execution-route-policy.mjs';
 import { createDeltaOptionsExecution } from './delta-options-execution.mjs';
+import { assertExactMinimumQuantity, assertKnownMargin, verifyAttachedBracketOrEmergencyClose, buildGuardedEntryBracketFields, resolveExchangeMinimumOrderSize } from './guarded-auto.mjs';
 import { DELTA_INDIA_TESTNET_REST_BASE } from '../options-execution-lock.mjs';
 
 export const DELTA_TESTNET_REST_BASE = 'https://cdn-ind.testnet.deltaex.org';
 export const DELTA_TESTNET_PRIVATE_WS_URL = 'wss://socket-ind.testnet.deltaex.org';
-export const MAX_DELTA_TESTNET_OPEN_POSITIONS = 20;
+export const MAX_DELTA_TESTNET_OPEN_POSITIONS = 1;
 export const DELTA_TESTNET_DAILY_LOSS_LIMIT = 0.05;
 export const DELTA_ENTRY_ORDER_LOOKUP_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 
@@ -367,6 +368,10 @@ export function createDeltaExecutor({
       throw new Error('Delta Testnet perpetual product is not available: ' + normalized);
     }
     return { ...product, id };
+  }
+
+  function getMinimumOrderSize(product) {
+    return resolveExchangeMinimumOrderSize(product);
   }
 
   async function getOpenPositions() {
@@ -871,10 +876,12 @@ export function createDeltaExecutor({
     const wallet = await getWalletSnapshot();
     const equity = accountEquity(wallet);
     if (!(equity > 0)) throw new Error('Delta Testnet account equity is unavailable; entries fail closed');
+    const verifiedAvailableMargin = accountAvailableVerified(wallet);
+    assertKnownMargin({ available: verifiedAvailableMargin, observedAt: now(), now: now() });
     return { equity, available: accountAvailable(wallet, equity), availableVerified: accountAvailableVerified(wallet), raw: wallet };
   }
 
-  async function assertSafety(symbol, operation = 'ENTRY') {
+  async function assertSafety(symbol, operation = 'ENTRY', strategy = null) {
     assertConfigured();
     // E-STOP is an entry inhibit, not an exit inhibit. Explicit EXIT
     // operations reduce exposure and must remain available during E-STOP.
@@ -883,17 +890,25 @@ export function createDeltaExecutor({
       throw new Error('Delta Testnet entries require the explicit DELTA_ENVIRONMENT=TESTNET profile');
     }
     const normalizedSymbol = stringOrEmpty(symbol).toUpperCase();
-    if (!isAllowedDeltaTestnetFutureSymbol(normalizedSymbol)) {
-      throw new Error('Delta Testnet futures symbol is outside the fixed nine-product allowlist: ' + normalizedSymbol);
-    }
     const settingsRows = await database.select(
       'dd_settings',
-      'id=eq.1&select=id,enabled,emergency_stop,auto_trade,last_tick_at,max_open_positions'
+      'id=eq.1&select=id,enabled,emergency_stop,auto_trade,last_tick_at,max_open_positions,guarded_auto_enabled,momentum_enabled,scalping_enabled,guarded_estop_active'
     );
     if (!Array.isArray(settingsRows) || !settingsRows.length) {
       throw new Error('Entry settings are unavailable; Delta Testnet execution is blocked');
     }
     const entrySettings = settingsRows[0];
+    const guardedMode = entrySettings.guarded_auto_enabled === true;
+    if (guardedMode ? !isAllowedGuardedAutoFutureSymbol(normalizedSymbol) : !isAllowedDeltaTestnetFutureSymbol(normalizedSymbol)) {
+      throw new Error('Delta Testnet futures symbol is outside the active execution allowlist: ' + normalizedSymbol);
+    }
+    if (guardedMode && entrySettings.guarded_estop_active !== false) throw new Error('Guarded Auto E-STOP is active or unknown');
+    if (guardedMode) {
+      const guardedStrategy = stringOrEmpty(strategy).toUpperCase();
+      if (!['MOMENTUM', 'SCALPING'].includes(guardedStrategy)) throw new Error('Guarded Auto only permits Momentum and Scalping entry paths');
+      if (guardedStrategy === 'MOMENTUM' && entrySettings.momentum_enabled !== true) throw new Error('Momentum is disabled in Guarded Auto');
+      if (guardedStrategy === 'SCALPING' && entrySettings.scalping_enabled !== true) throw new Error('Scalping is disabled in Guarded Auto');
+    }
     if (entrySettings.enabled !== true) {
       throw new Error('Trading engine is disabled; Delta Testnet entry blocked');
     }
@@ -947,6 +962,10 @@ export function createDeltaExecutor({
 
     const equity = accountEquity(wallet);
     if (!(equity > 0)) throw new Error('Delta Testnet account equity is unavailable; entries fail closed');
+    if (guardedMode) {
+      const marginObservedAt = now();
+      assertKnownMargin({ available: accountAvailableVerified(wallet), observedAt: marginObservedAt, now: marginObservedAt });
+    }
     const realizedPnl = (Array.isArray(closedToday) ? closedToday : []).reduce((sum, row) => {
       const value = numberOrNull(row?.realized_pnl);
       if (value === null) throw new Error('Daily realized P&L is incomplete; new entries are halted');
@@ -963,6 +982,7 @@ export function createDeltaExecutor({
     if (dailyPnl <= -(equity * DELTA_TESTNET_DAILY_LOSS_LIMIT)) {
       throw new Error('Daily P&L stop reached (' + dailyPnl.toFixed(2) + ' USD); new entries halted');
     }
+    return { guardedAutoEnabled: guardedMode };
   }
 
   function buildClientOrderId(value, prefix, symbol) {
@@ -1399,9 +1419,35 @@ export function createDeltaExecutor({
 
   async function emergencyCloseFilledEntry(product, symbol, entrySide, filledQty, entryClientOrderId, strategy) {
     await assertSafety(symbol, 'EXIT');
+    const cancelSymbolOrdersAndVerify = async () => {
+      const orders = await getOpenOrders();
+      for (const order of orders) {
+        const orderSymbol = stringOrEmpty(order?.product_symbol || order?.symbol).toUpperCase();
+        if (orderSymbol !== symbol) continue;
+        const id = numberOrNull(order?.id);
+        if (!Number.isSafeInteger(id) || id <= 0) {
+          throw new Error('Emergency close cannot verify/cancel an orphan order without an exchange order id');
+        }
+        await cancelOrderById(id);
+      }
+      const remaining = await getOpenOrders();
+      if (remaining.some(order =>
+        stringOrEmpty(order?.product_symbol || order?.symbol).toUpperCase() === symbol
+      )) {
+        throw new Error('Emergency close could not cancel every remaining bracket/entry order for ' + symbol);
+      }
+    };
     const positions = await getOpenPositions();
     const position = positions.find(row => row.symbol === symbol && row.qty > 0);
     if (!position) {
+      await cancelSymbolOrdersAndVerify();
+      if (typeof database.releaseGuardedAutoEntry === 'function') {
+        await database.releaseGuardedAutoEntry({
+          clientOrderId: entryClientOrderId,
+          state: 'RELEASED',
+          metadata: { reason: 'EMERGENCY_CLOSE_CONFIRMED_ALREADY_FLAT' }
+        });
+      }
       await logExecutor('WARN', '[Executor] Emergency close not required; REST position snapshot is already flat', {
         environment: 'testnet', symbol, filledQty, entryClientOrderId
       });
@@ -1437,6 +1483,14 @@ export function createDeltaExecutor({
     if (remaining) {
       throw new Error('CRITICAL: emergency close left residual exposure; position requires immediate reconciliation');
     }
+    await cancelSymbolOrdersAndVerify();
+    if (typeof database.releaseGuardedAutoEntry === 'function') {
+      await database.releaseGuardedAutoEntry({
+        clientOrderId: entryClientOrderId,
+        state: 'RELEASED',
+        metadata: { reason: 'EMERGENCY_CLOSE_CONFIRMED_FLAT', closeClientOrderId: clientOrderId, symbolOrdersClear: true }
+      });
+    }
     await logExecutor('ERROR', '[Executor] Emergency close verified flat on Delta Testnet', {
       environment: 'testnet', symbol, closedQty: closeQty, clientOrderId,
       positionStatus: 'FLAT', executionBlocked: true
@@ -1446,6 +1500,8 @@ export function createDeltaExecutor({
 
   async function placeBracketOrder(symbol, side, qty, entryPrice, slPrice, tpPrice, options = {}) {
     return withSymbolLock(symbol, async () => {
+      let orderSubmissionAttempted = false;
+      try {
       const normalizedSymbol = stringOrEmpty(symbol).toUpperCase();
       const direction = stringOrEmpty(side).toUpperCase();
       const quantity = numberOrNull(qty);
@@ -1471,8 +1527,14 @@ export function createDeltaExecutor({
         });
         throw new Error('SL distance too tight (' + slDistancePct.toFixed(2) + '%), minimum required ' + minSlDistancePct.toFixed(2) + '%');
       }
-      await assertSafety(normalizedSymbol, 'ENTRY');
+      const safety = await assertSafety(normalizedSymbol, 'ENTRY', options?.strategy);
       const product = await resolveProduct(normalizedSymbol);
+      const guardedAuto = safety?.guardedAutoEnabled === true;
+      if (guardedAuto) {
+        if (!isAllowedGuardedAutoFutureSymbol(normalizedSymbol)) throw new Error('Guarded Auto rejects futures products outside XAUTUSD/PAXGUSD');
+        const minimumQty = getMinimumOrderSize(product);
+        assertExactMinimumQuantity(quantity, minimumQty);
+      }
       const expectedProductId = numberOrNull(options?.expectedProductId);
       if (expectedProductId !== null && expectedProductId !== product.id) {
         throw new Error('Delta Testnet product ID changed since signal generation; entry blocked');
@@ -1543,18 +1605,29 @@ export function createDeltaExecutor({
       const strategy = strategyValue(options?.strategy);
       const prefix = strategy === 'MOMENTUM' ? 'DDM' : strategy === 'SCALPING' ? 'DDS' : 'DDG';
       const entryClientOrderId = buildClientOrderId(options?.clientOrderId, prefix, normalizedSymbol);
+      if (guardedAuto) {
+        const reservations = await database.select(
+          'dd_guarded_auto_reservations',
+          'client_order_id=eq.' + encodeURIComponent(entryClientOrderId) + '&state=eq.ACTIVE&select=id&limit=1'
+        );
+        if (!Array.isArray(reservations) || reservations.length !== 1) {
+          throw new Error('Guarded Auto global reservation is missing; direct entry route blocked');
+        }
+      }
       const entryBody = {
         product_id: product.id, size: quantity, side: direction.toLowerCase(),
         order_type: 'limit_order', limit_price: String(limitPrice),
-        time_in_force: 'ioc', reduce_only: false, client_order_id: entryClientOrderId
+        time_in_force: 'ioc', reduce_only: false, client_order_id: entryClientOrderId,
+        ...(guardedAuto ? buildGuardedEntryBracketFields(stop, target) : {})
       };
-      await logExecutor('INFO', '[Executor] Submitting IOC entry before separate protective orders', {
+      await logExecutor('INFO', guardedAuto ? '[GuardedAuto] Submitting IOC entry with exchange-attached SL/TP bracket' : '[Executor] Submitting IOC entry before separate protective orders', {
         environment: 'testnet', symbol: normalizedSymbol, side: direction,
         requestedQty: quantity, referenceEntryPrice: entry, markPrice: liveMarkPrice,
         limitPrice, tickSize, timeInForce: 'ioc', clientOrderId: entryClientOrderId,
         stopLossPrice: stop, takeProfitPrice: target
       });
 
+      orderSubmissionAttempted = true;
       let entryOrder = await submitOrder(product, entryBody, {
         strategy, role: 'ENTRY', referenceEntryPrice: limitPrice,
         signalGeneratedAt: options?.signalGeneratedAt ?? null
@@ -1619,12 +1692,26 @@ export function createDeltaExecutor({
       let slOrder = null;
       let tpOrder = null;
       try {
-        slOrder = await placeProtectionOrder(product, normalizedSymbol,
-          direction === 'BUY' ? 'SELL' : 'BUY', confirmedFillQty, stop,
-          'stop_loss_order', slClientId, strategy);
-        tpOrder = await placeProtectionOrder(product, normalizedSymbol,
-          direction === 'BUY' ? 'SELL' : 'BUY', confirmedFillQty, target,
-          'take_profit_order', tpClientId, strategy);
+        if (guardedAuto) {
+          const bracketOrder = await getOrderById(Number(latestOrder?.id));
+          await verifyAttachedBracketOrEmergencyClose({
+            order: bracketOrder,
+            stopLossPrice: stop,
+            takeProfitPrice: target,
+            emergencyClose: () => emergencyCloseFilledEntry(
+              product, normalizedSymbol, direction, confirmedFillQty, entryClientOrderId, strategy
+            )
+          });
+          slOrder = { id: bracketOrder.id, attached: true };
+          tpOrder = { id: bracketOrder.id, attached: true };
+        } else {
+          slOrder = await placeProtectionOrder(product, normalizedSymbol,
+            direction === 'BUY' ? 'SELL' : 'BUY', confirmedFillQty, stop,
+            'stop_loss_order', slClientId, strategy);
+          tpOrder = await placeProtectionOrder(product, normalizedSymbol,
+            direction === 'BUY' ? 'SELL' : 'BUY', confirmedFillQty, target,
+            'take_profit_order', tpClientId, strategy);
+        }
       } catch (protectionError) {
         if (slOrder?.id) {
           try { await cancelOrderById(slOrder.id); }
@@ -1668,7 +1755,7 @@ export function createDeltaExecutor({
         strategy
       });
 
-      await logExecutor('INFO', '[Executor] Entry fill protected by separately verified reduce-only SL and TP orders', {
+      await logExecutor('INFO', guardedAuto ? '[GuardedAuto] Entry fill protected by Delta exchange-attached SL/TP bracket' : '[Executor] Entry fill protected by separately verified reduce-only SL and TP orders', {
         environment: 'testnet', symbol: normalizedSymbol, side: direction,
         requestedQty: quantity, filledQty: confirmedFillQty, unfilledQty: unfilled,
         averageFillPrice, entryOrderId: latestOrder?.id ?? null,
@@ -1683,6 +1770,12 @@ export function createDeltaExecutor({
         stop_loss_order_id: slOrder.id,
         take_profit_order_id: tpOrder.id
       };
+      } catch (error) {
+        if (!orderSubmissionAttempted && error && typeof error === 'object') {
+          error.orderRoutingAttempted = false;
+        }
+        throw error;
+      }
     });
   }
 
@@ -1899,6 +1992,19 @@ export function createDeltaExecutor({
           }
           await cancelOrderById(orderId);
         }
+        if (typeof database.releaseGuardedAutoEntry === 'function') {
+          const reservations = await database.select(
+            'dd_guarded_auto_reservations',
+            'symbol=eq.' + encodeURIComponent(normalizedSymbol) + '&state=eq.ACTIVE&select=client_order_id&limit=1'
+          );
+          if (Array.isArray(reservations) && reservations[0]?.client_order_id) {
+            await database.releaseGuardedAutoEntry({
+              clientOrderId: reservations[0].client_order_id,
+              state: 'RELEASED',
+              metadata: { reason: 'EXCHANGE_POSITION_CONFIRMED_FLAT', positionId }
+            });
+          }
+        }
       } else {
         await logExecutor('WARN', '[Executor] Close accepted but exchange position is not confirmed flat after polling; protection retained', {
           environment: 'testnet', symbol: normalizedSymbol, positionId,
@@ -1957,6 +2063,7 @@ export function createDeltaExecutor({
     getAccountSnapshot,
     getRecentCloseDetails,
     getProductMetadata: resolveProduct,
+    getMinimumOrderSize,
     assertConfigured
   });
 }

@@ -242,3 +242,22 @@ test('rolling IV history and canonical Options P&L migration is private and link
   assert.ok(deltaMigrationRunner.indexOf('20261110000200_options_iv_history_and_canonical_pnl.sql') >
     deltaMigrationRunner.indexOf('20261110000100_regime_options_iv_and_loss_settings.sql'));
 });
+
+
+test('Guarded Auto migration is registered, globally serialized, and defaults to OFF', () => {
+  const migration = readFileSync(
+    fileURLToPath(new URL('../db/migrations/20261128000100_guarded_auto.sql', import.meta.url)),
+    'utf8'
+  );
+  assert.match(migration, /^begin;/i);
+  assert.match(migration, /create unique index[^;]+where state = 'ACTIVE'/i);
+  assert.match(migration, /pg_advisory_xact_lock/i);
+  assert.match(migration, /reserve_guarded_auto_entry/i);
+  assert.match(migration, /release_guarded_auto_entry/i);
+  assert.match(migration, /auto_trade = false/i);
+  assert.match(migration, /guarded_auto_enabled = false/i);
+  assert.match(migration, /enable row level security/i);
+  assert.match(migration, /grant all on public\.dd_guarded_auto_reservations to service_role/i);
+  assert.ok(deltaMigrationRunner.indexOf('20261128000100_guarded_auto.sql') >
+    deltaMigrationRunner.indexOf('20261124000200_options_paper_spread_columns.sql'));
+});
