@@ -144,3 +144,22 @@ test('post-fill bracket verification failure invokes emergency close and remains
   }), /GUARDED_ATTACHED_SL_TP_NOT_VERIFIED/);
   assert.equal(emergencyCloseCalled, true);
 });
+
+test('engine disabled or auto_trade OFF blocks guarded entry before reservation', async () => {
+  for (const settings of [{ enabled: false }, { auto_trade: false }]) {
+    const { auto } = fixtures({ settings });
+    await assert.rejects(auto.assertEntryAllowed({
+      strategy: 'MOMENTUM', symbol: 'XAUTUSD', stage: 'CONFIRMED'
+    }), /GUARDED_AUTO_DISABLED_OR_ESTOP_ACTIVE/);
+  }
+});
+
+test('invalid pre-attach SL/TP prevents entry submission entirely', async () => {
+  let postCalls = 0;
+  const submit = async payload => { postCalls += 1; return payload; };
+  await assert.rejects(async () => {
+    const bracketFields = buildGuardedEntryBracketFields(0, 110);
+    return submit({ product_id: 123, size: 1, ...bracketFields });
+  }, /GUARDED_ATTACHED_SL_TP_INVALID/);
+  assert.equal(postCalls, 0);
+});
