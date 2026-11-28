@@ -130,6 +130,7 @@ export default async function handler(req, res) {
         patch.options_enabled = false;
         patch.options_execution_enabled = false;
       } else {
+        patch.auto_trade = false;
         patch.momentum_enabled = false;
         patch.scalping_enabled = false;
       }
@@ -142,7 +143,13 @@ export default async function handler(req, res) {
       }
       patch[column] = body[inputKey];
     }
-    if (body.enabled !== undefined) patch.enabled = !!body.enabled;
+    if (body.enabled !== undefined) {
+      patch.enabled = !!body.enabled;
+      if (body.enabled === false) patch.auto_trade = false;
+    }
+    if (body.autoTrade === true && !(body.guardedAutoEnabled === true || current.guarded_auto_enabled === true)) {
+      return res.status(409).json({ success: false, error: 'Auto Trade can only be enabled inside Guarded Auto.' });
+    }
     if (body.autoTrade !== undefined) patch.auto_trade = !!body.autoTrade;
     if (body.emergencyStop !== undefined) {
       patch.emergency_stop = !!body.emergencyStop;
