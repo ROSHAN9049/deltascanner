@@ -369,7 +369,14 @@ export function createDeltaExecutor({
     return { ...product, id };
   }
 
-  function getMinimumOrderSize(product) {\n    const raw = numberOrNull(product?.minimum_order_size ?? product?.min_order_size ?? product?.product_specs?.minimum_order_size);\n    // Delta order sizes are integer contracts; when the product catalogue omits\n    // an explicit minimum field, one contract is the smallest representable size.\n    const minimum = raw === null ? 1 : raw;\n    if (!Number.isSafeInteger(minimum) || minimum < 1) throw new Error('Exchange minimum contract size is unknown or invalid');\n    return minimum;\n  }\n\n  async function getOpenPositions() {
+  function getMinimumOrderSize(product) {
+    const raw = numberOrNull(product?.minimum_order_size ?? product?.min_order_size ?? product?.product_specs?.minimum_order_size);
+    const minimum = raw === null ? 1 : raw;
+    if (!Number.isSafeInteger(minimum) || minimum < 1) throw new Error('Exchange minimum contract size is unknown or invalid');
+    return minimum;
+  }
+
+  async function getOpenPositions() {
     const response = await request('GET', '/v2/positions/margined', { contract_types: 'perpetual_futures' });
     if (!Array.isArray(response?.result)) {
       throw new Error('Delta Testnet positions response is malformed; refusing to treat it as an empty account');
@@ -871,6 +878,8 @@ export function createDeltaExecutor({
     const wallet = await getWalletSnapshot();
     const equity = accountEquity(wallet);
     if (!(equity > 0)) throw new Error('Delta Testnet account equity is unavailable; entries fail closed');
+    const verifiedAvailableMargin = accountAvailableVerified(wallet);
+    if (!(verifiedAvailableMargin > 0)) throw new Error('Delta Testnet available margin is UNKNOWN, stale or zero; entries fail closed');
     return { equity, available: accountAvailable(wallet, equity), availableVerified: accountAvailableVerified(wallet), raw: wallet };
   }
 
@@ -883,17 +892,19 @@ export function createDeltaExecutor({
       throw new Error('Delta Testnet entries require the explicit DELTA_ENVIRONMENT=TESTNET profile');
     }
     const normalizedSymbol = stringOrEmpty(symbol).toUpperCase();
-    if (!isAllowedDeltaTestnetFutureSymbol(normalizedSymbol)) {
-      throw new Error('Delta Testnet futures symbol is outside the fixed nine-product allowlist: ' + normalizedSymbol);
-    }
     const settingsRows = await database.select(
       'dd_settings',
-      'id=eq.1&select=id,enabled,emergency_stop,auto_trade,last_tick_at,max_open_positions'
+      'id=eq.1&select=id,enabled,emergency_stop,auto_trade,last_tick_at,max_open_positions,guarded_auto_enabled,momentum_enabled,scalping_enabled,guarded_estop_active'
     );
     if (!Array.isArray(settingsRows) || !settingsRows.length) {
       throw new Error('Entry settings are unavailable; Delta Testnet execution is blocked');
     }
     const entrySettings = settingsRows[0];
+    const guardedMode = entrySettings.guarded_auto_enabled === true;
+    if (guardedMode ? !isAllowedGuardedAutoFutureSymbol(normalizedSymbol) : !isAllowedDeltaTestnetFutureSymbol(normalizedSymbol)) {
+      throw new Error('Delta Testnet futures symbol is outside the active execution allowlist: ' + normalizedSymbol);
+    }
+    if (guardedMode && entrySettings.guarded_estop_active !== false) throw new Error('Guarded Auto E-STOP is active or unknown');
     if (entrySettings.enabled !== true) {
       throw new Error('Trading engine is disabled; Delta Testnet entry blocked');
     }
@@ -1473,6 +1484,12 @@ export function createDeltaExecutor({
       }
       await assertSafety(normalizedSymbol, 'ENTRY');
       const product = await resolveProduct(normalizedSymbol);
+      const guardedAuto = options?.guardedAuto === true;
+      if (guardedAuto) {
+        if (!isAllowedGuardedAutoFutureSymbol(normalizedSymbol)) throw new Error('Guarded Auto rejects futures products outside XAUTUSD/PAXGUSD');
+        const minimumQty = getMinimumOrderSize(product);
+        if (quantity !== minimumQty) throw new Error('Guarded Auto quantity must equal exchange minimum (' + minimumQty + '); larger or smaller quantities are rejected');
+      }
       const expectedProductId = numberOrNull(options?.expectedProductId);
       if (expectedProductId !== null && expectedProductId !== product.id) {
         throw new Error('Delta Testnet product ID changed since signal generation; entry blocked');
@@ -1546,7 +1563,12 @@ export function createDeltaExecutor({
       const entryBody = {
         product_id: product.id, size: quantity, side: direction.toLowerCase(),
         order_type: 'limit_order', limit_price: String(limitPrice),
-        time_in_force: 'ioc', reduce_only: false, client_order_id: entryClientOrderId
+        time_in_force: 'ioc', reduce_only: false, client_order_id: entryClientOrderId,
+        ...(guardedAuto ? {
+          bracket_stop_loss_price: String(stop),
+          bracket_take_profit_price: String(target),
+          bracket_stop_trigger_method: 'mark_price'
+        } : {})
       };
       await logExecutor('INFO', guardedAuto ? '[GuardedAuto] Submitting IOC entry with exchange-attached SL/TP bracket' : '[Executor] Submitting IOC entry before separate protective orders', {
         environment: 'testnet', symbol: normalizedSymbol, side: direction,
@@ -1970,6 +1992,7 @@ export function createDeltaExecutor({
     getAccountSnapshot,
     getRecentCloseDetails,
     getProductMetadata: resolveProduct,
+    getMinimumOrderSize,
     assertConfigured
   });
 }
