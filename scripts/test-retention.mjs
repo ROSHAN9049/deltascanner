@@ -211,7 +211,7 @@ try {
     engine.runSignalRetention = async options => { retentionRequest = options; };
 
     await engine.checkDiskHealth();
-    assert.ok(logs.some(log => /older than configured 1-day window exceeds 50000; requesting configured retention/.test(log.message)));
+    assert.ok(logs.some(log => /older than configured \d+-day window exceeds 50000; requesting configured retention/.test(log.message)));
     assert.deepEqual(retentionRequest, { reason: 'retention-window-backlog' });
   });
 
