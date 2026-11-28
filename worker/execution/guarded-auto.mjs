@@ -1,4 +1,4 @@
-import { DELTA_TESTNET_REST_BASE } from './delta-executor.mjs';
+const DELTA_TESTNET_REST_BASE = 'https://cdn-ind.testnet.deltaex.org';
 
 export const GUARDED_AUTO_SYMBOLS = Object.freeze(['XAUTUSD', 'PAXGUSD']);
 export const GUARDED_AUTO_STRATEGIES = Object.freeze(['MOMENTUM', 'SCALPING']);
