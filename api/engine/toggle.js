@@ -129,6 +129,14 @@ export default async function handler(req, res) {
     if (body.autoTrade !== undefined) patch.auto_trade = !!body.autoTrade;
     if (body.emergencyStop !== undefined) {
       patch.emergency_stop = !!body.emergencyStop;
+      if (body.emergencyStop === true) {
+        patch.enabled = false;
+        patch.auto_trade = false;
+        patch.guarded_auto_enabled = false;
+        patch.momentum_enabled = false;
+        patch.scalping_enabled = false;
+        patch.guarded_estop_active = true;
+      }
       if (body.emergencyStop === true && current.emergency_stop !== true) {
         patch.emergency_stop_activated_at = new Date().toISOString();
         patch.emergency_stop_release_token_hash = null;
@@ -495,6 +503,7 @@ export default async function handler(req, res) {
       persisted,
       previous: current,
       auditLogPersisted,
+      ...(guardedEstopResult ? { guardedEstop: guardedEstopResult } : {}),
       ...(auditWarning ? { warning: auditWarning } : {})
     });
   } catch (e) {
