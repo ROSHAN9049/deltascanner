@@ -47,7 +47,7 @@ create or replace function public.reserve_guarded_auto_entry(
   p_metadata jsonb default '{}'::jsonb
 ) returns boolean
 language plpgsql
-security definer
+security invoker
 set search_path = public, pg_temp
 as $$
 declare
