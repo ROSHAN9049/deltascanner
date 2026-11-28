@@ -66,6 +66,11 @@ export function createGuardedAuto({
     return rows[0];
   }
 
+  async function isEnabled() {
+    const row = await settings();
+    return row.guarded_auto_enabled === true;
+  }
+
   async function assertEntryAllowed({ strategy, symbol, stage, restBase } = {}) {
     const normalizedStrategy = upper(strategy);
     const normalizedSymbol = upper(symbol);

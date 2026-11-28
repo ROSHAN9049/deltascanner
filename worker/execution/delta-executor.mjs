@@ -962,7 +962,10 @@ export function createDeltaExecutor({
 
     const equity = accountEquity(wallet);
     if (!(equity > 0)) throw new Error('Delta Testnet account equity is unavailable; entries fail closed');
-    assertKnownMargin({ available: accountAvailableVerified(wallet), observedAt: now(), now: now() });
+    if (guardedMode) {
+      const marginObservedAt = now();
+      assertKnownMargin({ available: accountAvailableVerified(wallet), observedAt: marginObservedAt, now: marginObservedAt });
+    }
     const realizedPnl = (Array.isArray(closedToday) ? closedToday : []).reduce((sum, row) => {
       const value = numberOrNull(row?.realized_pnl);
       if (value === null) throw new Error('Daily realized P&L is incomplete; new entries are halted');

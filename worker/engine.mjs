@@ -4630,23 +4630,23 @@ export class DeltaEngine {
     return null;
   }
 
-  async executeSignal(signal, strategy, qty, clientOrderId) {
+  async executeSignal(signal, strategy, qty, clientOrderId, guardedAutoEnabled = false) {
     assertDirectDeltaExecutionMode(CONFIG.deltaExecutionMode,
       CONFIG.directDeltaExecutionEnabled === true && CONFIG.environment === 'TESTNET');
     if (CONFIG.deltaExecutionMode === 'testnet') {
       if (!canExecuteDeltaTestnetOrders(CONFIG.deltaExecutionMode, this.privateExecutionAvailable)) {
         throw new Error('Delta Testnet private API unavailable; order execution is hard-locked in SCAN-ONLY mode');
       }
-      const reservation = await this.guardedAuto.reserve({
+      const reservation = guardedAutoEnabled ? await this.guardedAuto.reserve({
         strategy, symbol: signal.symbol, stage: signal.stage, clientOrderId
-      });
+      }) : null;
       try {
         const order = await deltaExecutor.placeBracketOrder(
           signal.symbol, signal.side, qty, signal.price, signal.sl, signal.tp,
-          { strategy, clientOrderId, expectedProductId: signal.productId, guardedAuto: true,
+          { strategy, clientOrderId, expectedProductId: signal.productId, guardedAuto: guardedAutoEnabled,
             signalGeneratedAt: signal.created_at || signal.generated_at || signal.timestamp || null }
         );
-        if (!(Number(order?.filled_size) > 0)) {
+        if (guardedAutoEnabled && !(Number(order?.filled_size) > 0)) {
           await this.guardedAuto.release({
             clientOrderId: reservation.clientOrderId,
             state: 'RELEASED',
@@ -4659,13 +4659,13 @@ export class DeltaEngine {
         const status = Number(error?.status);
         const definitelyNotSubmitted = error?.orderRoutingAttempted === false ||
           (Number.isInteger(status) && status >= 400 && status < 500 && status !== 408 && status !== 429);
-        if (definitelyNotSubmitted) {
+        if (guardedAutoEnabled && definitelyNotSubmitted) {
           await this.guardedAuto.release({
             clientOrderId: reservation.clientOrderId,
             state: 'FAILED',
             metadata: { reason: String(error?.message || error).slice(0, 240) }
           }).catch(() => {});
-        } else {
+        } else if (guardedAutoEnabled) {
           await this.log('ERROR', '[GuardedAuto] Ambiguous entry outcome; global reservation retained', {
             strategy, symbol: signal.symbol, clientOrderId,
             reason: String(error?.message || error).slice(0, 240),
@@ -4712,7 +4712,8 @@ export class DeltaEngine {
     }
 
     const normalizedStrategy = String(strategy || '').trim().toUpperCase();
-    if (['MOMENTUM', 'SCALPING'].includes(normalizedStrategy)) {
+    const guardedAutoEnabled = settings?.guarded_auto_enabled === true;
+    if (guardedAutoEnabled && ['MOMENTUM', 'SCALPING'].includes(normalizedStrategy)) {
       try {
         await this.guardedAuto.assertEntryAllowed({
           strategy: normalizedStrategy,
@@ -5045,15 +5046,19 @@ export class DeltaEngine {
       );
       if (Array.isArray(priorTestnetOrders) && priorTestnetOrders.length) return false;
       try {
-        const productMetadata = await deltaExecutor.getProductMetadata(signal.symbol);
-        const minimumQty = deltaExecutor.getMinimumOrderSize(productMetadata);
-        if (!Number.isSafeInteger(minimumQty) || minimumQty < 1) {
-          await this.log('WARN', '[GuardedAuto] Exchange minimum contract size is unknown; entry skipped', {
-            symbol: signal.symbol, strategy, orderRoutingAttempted: false
-          }).catch(() => {});
-          return false;
+        let executionQty = gate.size.qty;
+        if (guardedAutoEnabled) {
+          const productMetadata = await deltaExecutor.getProductMetadata(signal.symbol);
+          const minimumQty = deltaExecutor.getMinimumOrderSize(productMetadata);
+          if (!Number.isSafeInteger(minimumQty) || minimumQty < 1) {
+            await this.log('WARN', '[GuardedAuto] Exchange minimum contract size is unknown; entry skipped', {
+              symbol: signal.symbol, strategy, orderRoutingAttempted: false
+            }).catch(() => {});
+            return false;
+          }
+          executionQty = minimumQty;
         }
-        const order = await this.executeSignal(signal, strategy, minimumQty, entryCid);
+        const order = await this.executeSignal(signal, strategy, executionQty, entryCid, guardedAutoEnabled);
         const orderId = String(order?.id ?? order?.order_id ?? entryCid);
 
         // Keep missing unfilled_size unknown (null), rather than falsely treating it as zero.
