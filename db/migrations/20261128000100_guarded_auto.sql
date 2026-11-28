@@ -96,7 +96,7 @@ create or replace function public.release_guarded_auto_entry(
   p_metadata jsonb default '{}'::jsonb
 ) returns boolean
 language plpgsql
-security definer
+security invoker
 set search_path = public, pg_temp
 as $$
 begin
