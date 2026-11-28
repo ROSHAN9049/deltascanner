@@ -1419,9 +1419,28 @@ export function createDeltaExecutor({
 
   async function emergencyCloseFilledEntry(product, symbol, entrySide, filledQty, entryClientOrderId, strategy) {
     await assertSafety(symbol, 'EXIT');
+    const cancelSymbolOrdersAndVerify = async () => {
+      const orders = await getOpenOrders();
+      for (const order of orders) {
+        const orderSymbol = stringOrEmpty(order?.product_symbol || order?.symbol).toUpperCase();
+        if (orderSymbol !== symbol) continue;
+        const id = numberOrNull(order?.id);
+        if (!Number.isSafeInteger(id) || id <= 0) {
+          throw new Error('Emergency close cannot verify/cancel an orphan order without an exchange order id');
+        }
+        await cancelOrderById(id);
+      }
+      const remaining = await getOpenOrders();
+      if (remaining.some(order =>
+        stringOrEmpty(order?.product_symbol || order?.symbol).toUpperCase() === symbol
+      )) {
+        throw new Error('Emergency close could not cancel every remaining bracket/entry order for ' + symbol);
+      }
+    };
     const positions = await getOpenPositions();
     const position = positions.find(row => row.symbol === symbol && row.qty > 0);
     if (!position) {
+      await cancelSymbolOrdersAndVerify();
       if (typeof database.releaseGuardedAutoEntry === 'function') {
         await database.releaseGuardedAutoEntry({
           clientOrderId: entryClientOrderId,
@@ -1464,11 +1483,12 @@ export function createDeltaExecutor({
     if (remaining) {
       throw new Error('CRITICAL: emergency close left residual exposure; position requires immediate reconciliation');
     }
+    await cancelSymbolOrdersAndVerify();
     if (typeof database.releaseGuardedAutoEntry === 'function') {
       await database.releaseGuardedAutoEntry({
         clientOrderId: entryClientOrderId,
         state: 'RELEASED',
-        metadata: { reason: 'EMERGENCY_CLOSE_CONFIRMED_FLAT', closeClientOrderId: clientOrderId }
+        metadata: { reason: 'EMERGENCY_CLOSE_CONFIRMED_FLAT', closeClientOrderId: clientOrderId, symbolOrdersClear: true }
       });
     }
     await logExecutor('ERROR', '[Executor] Emergency close verified flat on Delta Testnet', {
