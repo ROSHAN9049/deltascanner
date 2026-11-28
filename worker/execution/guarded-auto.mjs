@@ -2,6 +2,10 @@ const DELTA_TESTNET_REST_BASE = 'https://cdn-ind.testnet.deltaex.org';
 
 export const GUARDED_AUTO_SYMBOLS = Object.freeze(['XAUTUSD', 'PAXGUSD']);
 export const GUARDED_AUTO_STRATEGIES = Object.freeze(['MOMENTUM', 'SCALPING']);
+export const GUARDED_AUTO_ORDER_TYPES = Object.freeze({
+  MOMENTUM: 'IOC_LIMIT_WITH_ATTACHED_BRACKET',
+  SCALPING: 'IOC_LIMIT_WITH_ATTACHED_BRACKET'
+});
 
 export function assertExactMinimumQuantity(quantity, minimum) {
   const qty = Number(quantity), min = Number(minimum);
