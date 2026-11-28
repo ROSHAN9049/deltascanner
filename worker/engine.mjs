@@ -2644,7 +2644,7 @@ export class DeltaEngine {
     }
   }
 
-  async riskGate(signal, strategy, account, settings, openPositions, trades, suppliedPositionCap = null) {
+  async riskGate(signal, strategy, account, settings, openPositions, trades, suppliedPositionCap = null, guardedAutoEnabled = false) {
     const reasons = [...(signal.blocked || [])];
     const continuous = settings.continuous_mode !== false;
 
@@ -2683,8 +2683,9 @@ export class DeltaEngine {
     }
     const duplicateBlocker = duplicatePositionBlocker(openPositions, signal.symbol, signal.side);
     if (duplicateBlocker) reasons.push(duplicateBlocker);
-    const strategyPositionCap = suppliedPositionCap ||
-      await this.getStrategyPositionCapAssessment(strategy, settings);
+    const strategyPositionCap = guardedAutoEnabled
+      ? { status: 'PASS', reason: null, guardedGlobalCap: 1 }
+      : suppliedPositionCap || await this.getStrategyPositionCapAssessment(strategy, settings);
     if (strategyPositionCap.status !== 'PASS') {
       reasons.push(strategyPositionCap.reason);
     }
@@ -2723,8 +2724,14 @@ export class DeltaEngine {
       } else if (!(Number.isFinite(target) && target > 0)) {
         reasons.push('Invalid TP price (must be finite and > 0)');
       } else {
-        size = this.positionSizing(signal, account, settings);
-        if (!size) reasons.push('Margin / minimum contract size');
+        if (guardedAutoEnabled) {
+          // Guarded Auto does not use risk-budget sizing. The executor replaces
+          // this sentinel with the verified exchange minimum contract quantity.
+          size = { qty: 1, notional: null, risk: null, marginEstimate: null, sizingMode: 'EXCHANGE_MINIMUM_ONLY' };
+        } else {
+          size = this.positionSizing(signal, account, settings);
+          if (!size) reasons.push('Margin / minimum contract size');
+        }
         if (n(signal.feeRiskRatio) > n(signal.costGateRatio)) reasons.push('Fee + spread exceeds 1R cost budget');
       }
     }
@@ -5023,8 +5030,8 @@ export class DeltaEngine {
         return false;
       }
     }
-    const gate = await this.riskGate(signal, strategy, riskAccount, riskSettings, riskOpenPositions, riskTrades);
-    if (gate.reasons.length || !gate.size) return false;
+    const gate = await this.riskGate(signal, strategy, riskAccount, riskSettings, riskOpenPositions, riskTrades, null, guardedAutoEnabled);
+    if (gate.reasons.length || (!gate.size && !guardedAutoEnabled)) return false;
 
     // Testnet is a separate, hardcoded Demo-only execution route. The existing
     // Tradetron branch below remains unchanged for DELTA_EXECUTION_MODE=disabled.
