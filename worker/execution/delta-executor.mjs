@@ -1466,6 +1466,8 @@ export function createDeltaExecutor({
 
   async function placeBracketOrder(symbol, side, qty, entryPrice, slPrice, tpPrice, options = {}) {
     return withSymbolLock(symbol, async () => {
+      let orderSubmissionAttempted = false;
+      try {
       const normalizedSymbol = stringOrEmpty(symbol).toUpperCase();
       const direction = stringOrEmpty(side).toUpperCase();
       const quantity = numberOrNull(qty);
@@ -1595,6 +1597,7 @@ export function createDeltaExecutor({
         stopLossPrice: stop, takeProfitPrice: target
       });
 
+      orderSubmissionAttempted = true;
       let entryOrder = await submitOrder(product, entryBody, {
         strategy, role: 'ENTRY', referenceEntryPrice: limitPrice,
         signalGeneratedAt: options?.signalGeneratedAt ?? null
@@ -1730,6 +1733,12 @@ export function createDeltaExecutor({
         stop_loss_order_id: slOrder.id,
         take_profit_order_id: tpOrder.id
       };
+      } catch (error) {
+        if (!orderSubmissionAttempted && error && typeof error === 'object') {
+          error.orderRoutingAttempted = false;
+        }
+        throw error;
+      }
     });
   }
 

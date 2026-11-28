@@ -37,7 +37,10 @@ export function assertKnownMargin({ available, observedAt, now = Date.now(), max
 export function assertAttachedBracket(order, stopLossPrice, takeProfitPrice) {
   const sl = Number(order?.bracket_stop_loss_price);
   const tp = Number(order?.bracket_take_profit_price);
-  if (order?.bracket_order !== true || !Number.isFinite(sl) || !Number.isFinite(tp) ||
+  // Delta's CreateOrder response may return bracket_order=false even when
+  // bracket trigger prices are attached to the entry order. Verify both
+  // exchange-returned trigger prices, not that auxiliary boolean flag.
+  if (!Number.isFinite(sl) || !Number.isFinite(tp) ||
       Math.abs(sl - Number(stopLossPrice)) > 1e-8 ||
       Math.abs(tp - Number(takeProfitPrice)) > 1e-8) {
     throw new Error('GUARDED_ATTACHED_SL_TP_NOT_VERIFIED');
