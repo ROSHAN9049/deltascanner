@@ -281,6 +281,7 @@ export class DeltaEngine {
   constructor() {
     this.adapter = new DeltaAdapter();
     this.guardedAuto = createGuardedAuto({ database: db, executor: deltaExecutor, env: process.env, log: (level, message, details) => this.log(level, message, details) });
+    console.log('[GuardedAuto] module loaded; strategies=MOMENTUM,SCALPING; symbols=XAUTUSD,PAXGUSD; globalPositionCap=1; signalStage=CONFIRMED_ONLY');
     this.guardedEstopInFlight = null;
     this.guardedEstopCompleted = false;
     this.tradetron = new TradetronBridge();
@@ -6638,7 +6639,16 @@ export class DeltaEngine {
       ).length,
       gridEntrySafety: this.lastGridEntrySafety || null,
       gridTestnetDiagnostics: this.lastGridTestnetDiagnostics || null,
-      optionsTestnetDiagnostics: this.lastOptionsTestnetDiagnostics || null
+      optionsTestnetDiagnostics: this.lastOptionsTestnetDiagnostics || null,
+      guardedAuto: {
+        enabled: settings.guarded_auto_enabled === true,
+        momentumEnabled: settings.momentum_enabled === true,
+        scalpingEnabled: settings.scalping_enabled === true,
+        emergencyStop: settings.guarded_estop_active === true || settings.emergency_stop === true,
+        globalPositionCap: 1,
+        allowedSymbols: ['XAUTUSD', 'PAXGUSD'],
+        signalStage: 'CONFIRMED_ONLY'
+      }
     });
   }
   async recordMemoryUsage(reason = 'periodic') {
