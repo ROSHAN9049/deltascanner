@@ -171,7 +171,7 @@ try {
     const diskSummary = logs.find(log => log.message.startsWith('[Disk] DB:'));
     assert.equal(diskSummary?.data?.pauseAtMb, 370);
     assert.equal(diskSummary?.data?.resumeAtMb, 350);
-    assert.ok(logs.some(log => /\[Disk\] DB: 436\.0 MB, signals: 510000 rows, expired_\\d+d: 60000/.test(log.message)));
+    assert.ok(logs.some(log => /\[Disk\] DB: 436\.0 MB, signals: 510000 rows, expired_\d+d: 60000/.test(log.message)));
     assert.ok(logs.some(log => /pausing new dd_signals history writes/.test(log.message)));
     assert.equal(engine.signalHistoryWritesPaused, true);
     assert.ok(logs.some(log => /WARNING: signal row count 510000 exceeds 250000/.test(log.message)));
