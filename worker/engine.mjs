@@ -4610,13 +4610,30 @@ export class DeltaEngine {
       if (!canExecuteDeltaTestnetOrders(CONFIG.deltaExecutionMode, this.privateExecutionAvailable)) {
         throw new Error('Delta Testnet private API unavailable; order execution is hard-locked in SCAN-ONLY mode');
       }
+      const reservation = await this.guardedAuto.reserve({
+        strategy, symbol: signal.symbol, stage: signal.stage, clientOrderId
+      });
       try {
-        return await deltaExecutor.placeBracketOrder(
+        const order = await deltaExecutor.placeBracketOrder(
           signal.symbol, signal.side, qty, signal.price, signal.sl, signal.tp,
-          { strategy, clientOrderId, expectedProductId: signal.productId,
+          { strategy, clientOrderId, expectedProductId: signal.productId, guardedAuto: true,
             signalGeneratedAt: signal.created_at || signal.generated_at || signal.timestamp || null }
         );
+        if (!(Number(order?.filled_size) > 0)) {
+          await this.guardedAuto.release({
+            clientOrderId: reservation.clientOrderId,
+            state: 'RELEASED',
+            exchangeOrderId: order?.id ?? null,
+            metadata: { reason: 'IOC_NOT_FILLED' }
+          });
+        }
+        return order;
       } catch (error) {
+        await this.guardedAuto.release({
+          clientOrderId: reservation.clientOrderId,
+          state: 'FAILED',
+          metadata: { reason: String(error?.message || error).slice(0, 240) }
+        }).catch(() => {});
         if (isPrivateApiConnectivityError(error)) {
           this.privateExecutionAvailable = false;
           await this.log('WARN', 'Private Delta Testnet API unavailable. Continuing in SCAN-ONLY mode.', {
