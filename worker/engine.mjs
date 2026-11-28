@@ -4720,6 +4720,12 @@ export class DeltaEngine {
 
     const normalizedStrategy = String(strategy || '').trim().toUpperCase();
     const guardedAutoEnabled = settings?.guarded_auto_enabled === true;
+    if (guardedAutoEnabled && !['MOMENTUM', 'SCALPING'].includes(normalizedStrategy)) {
+      await this.log('WARN', '[GuardedAuto] Non-guarded strategy dispatch rejected while Guarded Auto is active', {
+        strategy: normalizedStrategy, symbol: signal?.symbol || null, orderRoutingAttempted: false
+      }).catch(() => {});
+      return false;
+    }
     if (guardedAutoEnabled && ['MOMENTUM', 'SCALPING'].includes(normalizedStrategy)) {
       try {
         await this.guardedAuto.assertEntryAllowed({
@@ -5053,7 +5059,7 @@ export class DeltaEngine {
       );
       if (Array.isArray(priorTestnetOrders) && priorTestnetOrders.length) return false;
       try {
-        let executionQty = gate.size.qty;
+        let executionQty = guardedAutoEnabled ? null : gate.size?.qty ?? null;
         if (guardedAutoEnabled) {
           const productMetadata = await deltaExecutor.getProductMetadata(signal.symbol);
           const minimumQty = deltaExecutor.getMinimumOrderSize(productMetadata);
@@ -5088,7 +5094,7 @@ export class DeltaEngine {
             symbol: signal.symbol,
             side: signal.side === 'BUY' ? 'buy' : 'sell',
             order_type: 'delta_testnet_order',
-            size: gate.size.qty,
+            size: executionQty,
             unfilled_size: unfilledSize,
             state: apiState,
             client_order_id: entryCid,

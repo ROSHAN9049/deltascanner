@@ -82,7 +82,7 @@ test('openTrade reversal path closes, polls flat, and refreshes settings/account
   const closeIndex = source.indexOf("reason: 'REVERSAL'");
   const freshAccountIndex = source.indexOf('deltaExecutor.getAccountSnapshot()', closeIndex);
   const freshPositionIndex = source.indexOf('deltaExecutor.getOpenPositions()', closeIndex);
-  const riskGateIndex = source.indexOf('this.riskGate(signal, strategy, riskAccount, riskSettings, riskOpenPositions, riskTrades)');
+  const riskGateIndex = source.indexOf('this.riskGate(signal, strategy, riskAccount, riskSettings, riskOpenPositions, riskTrades, null, guardedAutoEnabled)');
   assert.ok(closeIndex >= 0);
   assert.ok(freshAccountIndex > closeIndex);
   assert.ok(freshPositionIndex > closeIndex);

@@ -81,7 +81,7 @@ test('missing and stale margin are rejected', () => {
 });
 
 test('missing attached SL/TP causes fail-closed bracket verification', () => {
-  assert.throws(() => assertAttachedBracket({ id: 1, bracket_order: false }, 95, 110), /GUARDED_ATTACHED_SL_TP_NOT_VERIFIED/);
+  assert.equal(assertAttachedBracket({ id: 1, bracket_order: false, bracket_stop_loss_price: '95', bracket_take_profit_price: '110' }, 95, 110), true);
   assert.throws(() => assertAttachedBracket({ id: 1, bracket_order: true, bracket_stop_loss_price: '95' }, 95, 110), /GUARDED_ATTACHED_SL_TP_NOT_VERIFIED/);
   assert.equal(assertAttachedBracket({
     id: 1, bracket_order: true,
@@ -121,4 +121,24 @@ test('E-STOP disables entries, cancels orders, closes positions and reconciles f
   assert.equal(result.reconciledFlat, true);
   assert.equal(result.reconciledOrdersClear, true);
   assert.equal(result.complete, true);
+});
+
+test('guarded entry payload pre-attaches both SL and TP before POST', () => {
+  assert.deepEqual(buildGuardedEntryBracketFields(95, 110), {
+    bracket_stop_loss_price: '95',
+    bracket_take_profit_price: '110',
+    bracket_stop_trigger_method: 'mark_price'
+  });
+  assert.throws(() => buildGuardedEntryBracketFields(0, 110), /GUARDED_ATTACHED_SL_TP_INVALID/);
+});
+
+test('post-fill bracket verification failure invokes emergency close and remains a failure', async () => {
+  let emergencyCloseCalled = false;
+  await assert.rejects(verifyAttachedBracketOrEmergencyClose({
+    order: { id: 1, bracket_stop_loss_price: '95', bracket_take_profit_price: null },
+    stopLossPrice: 95,
+    takeProfitPrice: 110,
+    emergencyClose: async () => { emergencyCloseCalled = true; }
+  }), /GUARDED_ATTACHED_SL_TP_NOT_VERIFIED/);
+  assert.equal(emergencyCloseCalled, true);
 });
