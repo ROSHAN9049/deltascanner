@@ -125,6 +125,31 @@ export default async function handler(req, res) {
       patch.grid_trailing_enabled = body.gridTrailingEnabled;
     }
 
+    if (body.guardedAutoEnabled !== undefined) {
+      if (typeof body.guardedAutoEnabled !== 'boolean') return res.status(400).json({ success: false, error: 'guardedAutoEnabled must be boolean.' });
+      if (body.guardedAutoEnabled && (
+        CONFIG.environment !== 'TESTNET' || CONFIG.deltaExecutionMode !== 'testnet' ||
+        CONFIG.directDeltaExecutionEnabled !== true
+      )) return res.status(409).json({ success: false, error: 'Guarded Auto can only be enabled in the explicit Delta TESTNET profile.' });
+      patch.guarded_auto_enabled = body.guardedAutoEnabled;
+      if (body.guardedAutoEnabled) {
+        patch.max_open_positions = 1;
+        patch.grid_enabled = false;
+        patch.options_enabled = false;
+        patch.options_execution_enabled = false;
+      } else {
+        patch.momentum_enabled = false;
+        patch.scalping_enabled = false;
+      }
+    }
+    for (const [inputKey, column] of [['momentumEnabled', 'momentum_enabled'], ['scalpingEnabled', 'scalping_enabled']]) {
+      if (body[inputKey] === undefined) continue;
+      if (typeof body[inputKey] !== 'boolean') return res.status(400).json({ success: false, error: inputKey + ' must be boolean.' });
+      if (body[inputKey] && !(body.guardedAutoEnabled === true || current.guarded_auto_enabled === true)) {
+        return res.status(409).json({ success: false, error: inputKey + ' requires Guarded Auto to be enabled first.' });
+      }
+      patch[column] = body[inputKey];
+    }
     if (body.enabled !== undefined) patch.enabled = !!body.enabled;
     if (body.autoTrade !== undefined) patch.auto_trade = !!body.autoTrade;
     if (body.emergencyStop !== undefined) {
@@ -169,6 +194,7 @@ export default async function handler(req, res) {
     if (body.scalpingRr !== undefined) patch.scalping_rr = Math.max(1, Math.min(5, Number(body.scalpingRr)));
     if (body.tp1Pct !== undefined) patch.tp1_pct = Math.max(1, Math.min(99, Number(body.tp1Pct)));
     if (body.maxHoldMinutes !== undefined) patch.max_hold_minutes = Math.max(1, Math.min(1440, Math.round(Number(body.maxHoldMinutes))));
+    if (body.optionsEnabled === true && (current.guarded_auto_enabled === true || body.guardedAutoEnabled === true)) return res.status(409).json({ success: false, error: 'Options are excluded from Guarded Auto.' });
     if (body.optionsEnabled !== undefined) patch.options_enabled = !!body.optionsEnabled;
     if (body.optionsBuyEnabled !== undefined) patch.options_buy_enabled = !!body.optionsBuyEnabled;
     if (body.optionsSellEnabled !== undefined) patch.options_sell_enabled = !!body.optionsSellEnabled;
@@ -407,6 +433,7 @@ export default async function handler(req, res) {
         return res.status(400).json({ success: false, error: 'Grid upper price must be greater than lower price.' });
       }
       if (body.gridEnabled === true) {
+        if (current.guarded_auto_enabled === true || body.guardedAutoEnabled === true) return res.status(409).json({ success: false, error: 'Futures Grid is excluded from Guarded Auto.' });
         if (CONFIG.gridExecutionAllowed !== true || CONFIG.directDeltaExecutionEnabled !== true ||
             CONFIG.deltaExecutionMode !== 'testnet' || CONFIG.environment !== 'TESTNET') {
           return res.status(409).json({ success: false, error: 'Grid Testnet execution is locked. Set GRID_EXECUTION_ALLOWED=true only in the Delta TESTNET profile and verify the worker/API environment.' });
