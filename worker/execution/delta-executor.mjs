@@ -1934,6 +1934,19 @@ export function createDeltaExecutor({
           }
           await cancelOrderById(orderId);
         }
+        if (typeof database.releaseGuardedAutoEntry === 'function') {
+          const reservations = await database.select(
+            'dd_guarded_auto_reservations',
+            'symbol=eq.' + encodeURIComponent(normalizedSymbol) + '&state=eq.ACTIVE&select=client_order_id&limit=1'
+          );
+          if (Array.isArray(reservations) && reservations[0]?.client_order_id) {
+            await database.releaseGuardedAutoEntry({
+              clientOrderId: reservations[0].client_order_id,
+              state: 'RELEASED',
+              metadata: { reason: 'EXCHANGE_POSITION_CONFIRMED_FLAT', positionId }
+            });
+          }
+        }
       } else {
         await logExecutor('WARN', '[Executor] Close accepted but exchange position is not confirmed flat after polling; protection retained', {
           environment: 'testnet', symbol: normalizedSymbol, positionId,
