@@ -1422,6 +1422,13 @@ export function createDeltaExecutor({
     const positions = await getOpenPositions();
     const position = positions.find(row => row.symbol === symbol && row.qty > 0);
     if (!position) {
+      if (typeof database.releaseGuardedAutoEntry === 'function') {
+        await database.releaseGuardedAutoEntry({
+          clientOrderId: entryClientOrderId,
+          state: 'RELEASED',
+          metadata: { reason: 'EMERGENCY_CLOSE_CONFIRMED_ALREADY_FLAT' }
+        });
+      }
       await logExecutor('WARN', '[Executor] Emergency close not required; REST position snapshot is already flat', {
         environment: 'testnet', symbol, filledQty, entryClientOrderId
       });
@@ -1456,6 +1463,13 @@ export function createDeltaExecutor({
     }
     if (remaining) {
       throw new Error('CRITICAL: emergency close left residual exposure; position requires immediate reconciliation');
+    }
+    if (typeof database.releaseGuardedAutoEntry === 'function') {
+      await database.releaseGuardedAutoEntry({
+        clientOrderId: entryClientOrderId,
+        state: 'RELEASED',
+        metadata: { reason: 'EMERGENCY_CLOSE_CONFIRMED_FLAT', closeClientOrderId: clientOrderId }
+      });
     }
     await logExecutor('ERROR', '[Executor] Emergency close verified flat on Delta Testnet', {
       environment: 'testnet', symbol, closedQty: closeQty, clientOrderId,
