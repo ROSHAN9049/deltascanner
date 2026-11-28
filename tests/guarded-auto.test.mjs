@@ -84,7 +84,7 @@ test('missing attached SL/TP causes fail-closed bracket verification', () => {
 });
 
 test('LIVE host/profile forces auto_trade off and rejects entry', async () => {
-  const { auto, state } = fixtures();
+  const { state } = fixtures();
   const liveAuto = createGuardedAuto({
     database: { ...fixtures().db, update: async (_t, _q, patch) => Object.assign(state, patch), log: async () => {} },
     executor: fixtures().exchange,
