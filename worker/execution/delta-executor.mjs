@@ -3,13 +3,13 @@ import crypto from 'node:crypto';
 import { accountEquity, accountAvailable, accountAvailableVerified } from './delta-wallet-balance.mjs';
 import * as defaultDb from '../../server/db.js';
 import { indiaDateKey } from '../../src/date-utils.js';
-import { isAllowedDeltaTestnetFutureSymbol, isEligibleDeltaTestnetPerpetualProduct, isMarketTickFresh } from './execution-route-policy.mjs';
+import { isAllowedDeltaTestnetFutureSymbol, isAllowedGuardedAutoFutureSymbol, isEligibleDeltaTestnetPerpetualProduct, isMarketTickFresh } from './execution-route-policy.mjs';
 import { createDeltaOptionsExecution } from './delta-options-execution.mjs';
 import { DELTA_INDIA_TESTNET_REST_BASE } from '../options-execution-lock.mjs';
 
 export const DELTA_TESTNET_REST_BASE = 'https://cdn-ind.testnet.deltaex.org';
 export const DELTA_TESTNET_PRIVATE_WS_URL = 'wss://socket-ind.testnet.deltaex.org';
-export const MAX_DELTA_TESTNET_OPEN_POSITIONS = 20;
+export const MAX_DELTA_TESTNET_OPEN_POSITIONS = 1;
 export const DELTA_TESTNET_DAILY_LOSS_LIMIT = 0.05;
 export const DELTA_ENTRY_ORDER_LOOKUP_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 
@@ -369,7 +369,7 @@ export function createDeltaExecutor({
     return { ...product, id };
   }
 
-  async function getOpenPositions() {
+  function getMinimumOrderSize(product) {\n    const raw = numberOrNull(product?.minimum_order_size ?? product?.min_order_size ?? product?.product_specs?.minimum_order_size);\n    // Delta order sizes are integer contracts; when the product catalogue omits\n    // an explicit minimum field, one contract is the smallest representable size.\n    const minimum = raw === null ? 1 : raw;\n    if (!Number.isSafeInteger(minimum) || minimum < 1) throw new Error('Exchange minimum contract size is unknown or invalid');\n    return minimum;\n  }\n\n  async function getOpenPositions() {
     const response = await request('GET', '/v2/positions/margined', { contract_types: 'perpetual_futures' });
     if (!Array.isArray(response?.result)) {
       throw new Error('Delta Testnet positions response is malformed; refusing to treat it as an empty account');
@@ -1548,7 +1548,7 @@ export function createDeltaExecutor({
         order_type: 'limit_order', limit_price: String(limitPrice),
         time_in_force: 'ioc', reduce_only: false, client_order_id: entryClientOrderId
       };
-      await logExecutor('INFO', '[Executor] Submitting IOC entry before separate protective orders', {
+      await logExecutor('INFO', guardedAuto ? '[GuardedAuto] Submitting IOC entry with exchange-attached SL/TP bracket' : '[Executor] Submitting IOC entry before separate protective orders', {
         environment: 'testnet', symbol: normalizedSymbol, side: direction,
         requestedQty: quantity, referenceEntryPrice: entry, markPrice: liveMarkPrice,
         limitPrice, tickSize, timeInForce: 'ioc', clientOrderId: entryClientOrderId,
@@ -1619,12 +1619,25 @@ export function createDeltaExecutor({
       let slOrder = null;
       let tpOrder = null;
       try {
-        slOrder = await placeProtectionOrder(product, normalizedSymbol,
-          direction === 'BUY' ? 'SELL' : 'BUY', confirmedFillQty, stop,
-          'stop_loss_order', slClientId, strategy);
-        tpOrder = await placeProtectionOrder(product, normalizedSymbol,
-          direction === 'BUY' ? 'SELL' : 'BUY', confirmedFillQty, target,
-          'take_profit_order', tpClientId, strategy);
+        if (guardedAuto) {
+          const bracketOrder = await getOrderById(Number(latestOrder?.id));
+          const bracketSl = numberOrNull(bracketOrder?.bracket_stop_loss_price);
+          const bracketTp = numberOrNull(bracketOrder?.bracket_take_profit_price);
+          if (bracketOrder?.bracket_order !== true ||
+              bracketSl === null || Math.abs(bracketSl - stop) > 1e-8 ||
+              bracketTp === null || Math.abs(bracketTp - target) > 1e-8) {
+            throw new Error('Delta Testnet did not verify both exchange-attached SL/TP bracket prices');
+          }
+          slOrder = { id: bracketOrder.id, attached: true };
+          tpOrder = { id: bracketOrder.id, attached: true };
+        } else {
+          slOrder = await placeProtectionOrder(product, normalizedSymbol,
+            direction === 'BUY' ? 'SELL' : 'BUY', confirmedFillQty, stop,
+            'stop_loss_order', slClientId, strategy);
+          tpOrder = await placeProtectionOrder(product, normalizedSymbol,
+            direction === 'BUY' ? 'SELL' : 'BUY', confirmedFillQty, target,
+            'take_profit_order', tpClientId, strategy);
+        }
       } catch (protectionError) {
         if (slOrder?.id) {
           try { await cancelOrderById(slOrder.id); }
@@ -1668,7 +1681,7 @@ export function createDeltaExecutor({
         strategy
       });
 
-      await logExecutor('INFO', '[Executor] Entry fill protected by separately verified reduce-only SL and TP orders', {
+      await logExecutor('INFO', guardedAuto ? '[GuardedAuto] Entry fill protected by Delta exchange-attached SL/TP bracket' : '[Executor] Entry fill protected by separately verified reduce-only SL and TP orders', {
         environment: 'testnet', symbol: normalizedSymbol, side: direction,
         requestedQty: quantity, filledQty: confirmedFillQty, unfilledQty: unfilled,
         averageFillPrice, entryOrderId: latestOrder?.id ?? null,
