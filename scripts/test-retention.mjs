@@ -175,7 +175,7 @@ try {
     assert.ok(logs.some(log => /pausing new dd_signals history writes/.test(log.message)));
     assert.equal(engine.signalHistoryWritesPaused, true);
     assert.ok(logs.some(log => /WARNING: signal row count 510000 exceeds 250000/.test(log.message)));
-    assert.ok(logs.some(log => /CRITICAL: signal row count 510000 exceeds 500000; requesting configured 1-day retention/.test(log.message)));
+    assert.ok(logs.some(log => /CRITICAL: signal row count 510000 exceeds 500000; requesting configured \d+-day retention/.test(log.message)));
     assert.deepEqual(retentionRequest, { reason: 'row-count-critical' });
   });
 

@@ -5346,7 +5346,7 @@ export class DeltaEngine {
           symbol, reason: requestedReason, executionBlockedForNewPositions: true
         });
       }
-      return await closeTrackedPosition({
+      const closeResult = await closeTrackedPosition({
         database: db,
         executor: deltaExecutor,
         position: trackedPosition,
@@ -5360,6 +5360,17 @@ export class DeltaEngine {
         now: () => Date.now(),
         log: (level, message, details) => this.log(level, message, details)
       });
+      if (closeResult?.positionClosed === true &&
+          closeResult?.order?.exchange_position_flat === true &&
+          String(trackedPosition.client_order_id || '').trim()) {
+        await this.guardedAuto.release({
+          clientOrderId: String(trackedPosition.client_order_id),
+          state: 'RELEASED',
+          exchangeOrderId: closeResult?.order?.id ?? null,
+          metadata: { reason: 'EXCHANGE_CONFIRMED_POSITION_FLAT', symbol }
+        });
+      }
+      return closeResult;
     } catch (error) {
       // closeTrackedPosition writes a durable marker before the exchange call
       // and logs the failure. Leave the row OPEN; reconciliation retries it.

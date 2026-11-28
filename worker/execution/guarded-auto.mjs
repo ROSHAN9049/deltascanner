@@ -230,6 +230,27 @@ export function createGuardedAuto({
     }
     const reconciledFlat = Array.isArray(remainingPositions) && remainingPositions.length === 0;
     const reconciledOrdersClear = Array.isArray(remainingOrders) && remainingOrders.length === 0;
+    if (Array.isArray(remainingPositions) && remainingPositions.length === 0 &&
+        Array.isArray(remainingOrders) && remainingOrders.length === 0) {
+      try {
+        const activeReservations = await database.select(
+          'dd_guarded_auto_reservations',
+          'state=eq.ACTIVE&select=client_order_id&limit=10'
+        );
+        for (const row of Array.isArray(activeReservations) ? activeReservations : []) {
+          if (text(row?.client_order_id)) {
+            await release({
+              clientOrderId: row.client_order_id,
+              state: 'RELEASED',
+              metadata: { reason: 'ESTOP_EXCHANGE_RECONCILED_FLAT' }
+            });
+          }
+        }
+      } catch (error) {
+        results.errors.push({ phase: 'release-reservation', reason: text(error?.message || error) });
+      }
+    }
+
     const finalState = {
       reason, activatedAt, cancelledOrderIds: results.cancelledOrderIds,
       closeOrderIds: results.closeOrderIds, errors: results.errors,
