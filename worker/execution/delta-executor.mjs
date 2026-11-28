@@ -5,6 +5,7 @@ import * as defaultDb from '../../server/db.js';
 import { indiaDateKey } from '../../src/date-utils.js';
 import { isAllowedDeltaTestnetFutureSymbol, isAllowedGuardedAutoFutureSymbol, isEligibleDeltaTestnetPerpetualProduct, isMarketTickFresh } from './execution-route-policy.mjs';
 import { createDeltaOptionsExecution } from './delta-options-execution.mjs';
+import { assertExactMinimumQuantity, assertKnownMargin, assertAttachedBracket } from './guarded-auto.mjs';
 import { DELTA_INDIA_TESTNET_REST_BASE } from '../options-execution-lock.mjs';
 
 export const DELTA_TESTNET_REST_BASE = 'https://cdn-ind.testnet.deltaex.org';
@@ -879,7 +880,7 @@ export function createDeltaExecutor({
     const equity = accountEquity(wallet);
     if (!(equity > 0)) throw new Error('Delta Testnet account equity is unavailable; entries fail closed');
     const verifiedAvailableMargin = accountAvailableVerified(wallet);
-    if (!(verifiedAvailableMargin > 0)) throw new Error('Delta Testnet available margin is UNKNOWN, stale or zero; entries fail closed');
+    assertKnownMargin({ available: verifiedAvailableMargin, observedAt: now(), now: now() });
     return { equity, available: accountAvailable(wallet, equity), availableVerified: accountAvailableVerified(wallet), raw: wallet };
   }
 
@@ -1488,7 +1489,7 @@ export function createDeltaExecutor({
       if (guardedAuto) {
         if (!isAllowedGuardedAutoFutureSymbol(normalizedSymbol)) throw new Error('Guarded Auto rejects futures products outside XAUTUSD/PAXGUSD');
         const minimumQty = getMinimumOrderSize(product);
-        if (quantity !== minimumQty) throw new Error('Guarded Auto quantity must equal exchange minimum (' + minimumQty + '); larger or smaller quantities are rejected');
+        assertExactMinimumQuantity(quantity, minimumQty);
       }
       const expectedProductId = numberOrNull(options?.expectedProductId);
       if (expectedProductId !== null && expectedProductId !== product.id) {
@@ -1643,13 +1644,7 @@ export function createDeltaExecutor({
       try {
         if (guardedAuto) {
           const bracketOrder = await getOrderById(Number(latestOrder?.id));
-          const bracketSl = numberOrNull(bracketOrder?.bracket_stop_loss_price);
-          const bracketTp = numberOrNull(bracketOrder?.bracket_take_profit_price);
-          if (bracketOrder?.bracket_order !== true ||
-              bracketSl === null || Math.abs(bracketSl - stop) > 1e-8 ||
-              bracketTp === null || Math.abs(bracketTp - target) > 1e-8) {
-            throw new Error('Delta Testnet did not verify both exchange-attached SL/TP bracket prices');
-          }
+          assertAttachedBracket(bracketOrder, stop, target);
           slOrder = { id: bracketOrder.id, attached: true };
           tpOrder = { id: bracketOrder.id, attached: true };
         } else {

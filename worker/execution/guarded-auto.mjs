@@ -3,6 +3,35 @@ const DELTA_TESTNET_REST_BASE = 'https://cdn-ind.testnet.deltaex.org';
 export const GUARDED_AUTO_SYMBOLS = Object.freeze(['XAUTUSD', 'PAXGUSD']);
 export const GUARDED_AUTO_STRATEGIES = Object.freeze(['MOMENTUM', 'SCALPING']);
 
+export function assertExactMinimumQuantity(quantity, minimum) {
+  const qty = Number(quantity), min = Number(minimum);
+  if (!Number.isSafeInteger(min) || min < 1 || !Number.isSafeInteger(qty) || qty !== min) {
+    throw new Error('GUARDED_QUANTITY_MUST_EQUAL_EXCHANGE_MINIMUM');
+  }
+  return qty;
+}
+
+export function assertKnownMargin({ available, observedAt, now = Date.now(), maxAgeMs = 30_000 } = {}) {
+  const value = Number(available);
+  const age = now - Number(observedAt);
+  if (!(Number.isFinite(value) && value > 0) ||
+      !Number.isFinite(age) || age < -5_000 || age > maxAgeMs) {
+    throw new Error('GUARDED_MARGIN_UNKNOWN_OR_STALE');
+  }
+  return value;
+}
+
+export function assertAttachedBracket(order, stopLossPrice, takeProfitPrice) {
+  const sl = Number(order?.bracket_stop_loss_price);
+  const tp = Number(order?.bracket_take_profit_price);
+  if (order?.bracket_order !== true || !Number.isFinite(sl) || !Number.isFinite(tp) ||
+      Math.abs(sl - Number(stopLossPrice)) > 1e-8 ||
+      Math.abs(tp - Number(takeProfitPrice)) > 1e-8) {
+    throw new Error('GUARDED_ATTACHED_SL_TP_NOT_VERIFIED');
+  }
+  return true;
+}
+
 const text = value => String(value ?? '').trim();
 const upper = value => text(value).toUpperCase();
 
