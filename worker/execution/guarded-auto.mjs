@@ -126,6 +126,8 @@ export function createGuardedAuto({
     await database.update('dd_settings', 'id=eq.1', {
       auto_trade: false,
       guarded_auto_enabled: false,
+      momentum_enabled: false,
+      scalping_enabled: false,
       updated_at: new Date(now()).toISOString()
     });
     await log('ERROR', '[GuardedAuto] Entries hard-disabled', {
@@ -149,8 +151,14 @@ export function createGuardedAuto({
       updated_at: activatedAt
     });
     const results = { cancelledOrderIds: [], closeOrderIds: [], errors: [] };
-    const orders = await executor.getOpenOrders();
-    for (const order of orders) {
+    let orders = null;
+    try {
+      orders = await executor.getOpenOrders();
+      if (!Array.isArray(orders)) throw new Error('OPEN_ORDERS_SNAPSHOT_INVALID');
+    } catch (error) {
+      results.errors.push({ phase: 'list-orders', reason: text(error?.message || error) });
+    }
+    for (const order of orders || []) {
       const id = Number(order?.id);
       if (!Number.isSafeInteger(id) || id <= 0) {
         results.errors.push({ phase: 'cancel', reason: 'OPEN_ORDER_ID_UNKNOWN' });
@@ -164,8 +172,14 @@ export function createGuardedAuto({
       }
     }
 
-    const positions = await executor.getOpenPositions();
-    for (const position of positions) {
+    let positions = null;
+    try {
+      positions = await executor.getOpenPositions();
+      if (!Array.isArray(positions)) throw new Error('OPEN_POSITIONS_SNAPSHOT_INVALID');
+    } catch (error) {
+      results.errors.push({ phase: 'list-positions', reason: text(error?.message || error) });
+    }
+    for (const position of positions || []) {
       try {
         const result = await executor.closePosition(position.symbol, position.qty, {
           positionId: text(position.order_id) || 'GUARDED-ESTOP-' + position.symbol + '-' + position.product_id,
@@ -181,21 +195,26 @@ export function createGuardedAuto({
     }
 
     // Re-read exchange state after all mutations; never infer flatness from acknowledgements.
-    const [remainingPositions, remainingOrders] = await Promise.all([
-      executor.getOpenPositions(),
-      executor.getOpenOrders()
-    ]);
-    const reconciledFlat = remainingPositions.length === 0;
-    const reconciledOrdersClear = remainingOrders.length === 0;
+    let remainingPositions = null;
+    let remainingOrders = null;
+    try {
+      const snapshot = await Promise.all([executor.getOpenPositions(), executor.getOpenOrders()]);
+      if (!Array.isArray(snapshot[0]) || !Array.isArray(snapshot[1])) throw new Error('FINAL_EXCHANGE_SNAPSHOT_INVALID');
+      [remainingPositions, remainingOrders] = snapshot;
+    } catch (error) {
+      results.errors.push({ phase: 'reconcile', reason: text(error?.message || error) });
+    }
+    const reconciledFlat = Array.isArray(remainingPositions) && remainingPositions.length === 0;
+    const reconciledOrdersClear = Array.isArray(remainingOrders) && remainingOrders.length === 0;
     const finalState = {
       reason, activatedAt, cancelledOrderIds: results.cancelledOrderIds,
       closeOrderIds: results.closeOrderIds, errors: results.errors,
-      remainingPositions: remainingPositions.map(p => ({ symbol: p.symbol, qty: p.qty, side: p.side })),
-      remainingOrders: remainingOrders.map(o => ({ id: o.id ?? null, symbol: o.product_symbol || o.symbol || null, state: o.state || null })),
+      remainingPositions: (remainingPositions || []).map(p => ({ symbol: p.symbol, qty: p.qty, side: p.side })),
+      remainingOrders: (remainingOrders || []).map(o => ({ id: o.id ?? null, symbol: o.product_symbol || o.symbol || null, state: o.state || null })),
       reconciledFlat, reconciledOrdersClear,
       complete: reconciledFlat && reconciledOrdersClear && results.errors.length === 0
     };
-    await log(finalState.complete ? 'ERROR' : 'FATAL', '[GuardedAuto] E-STOP exchange reconciliation complete', finalState);
+    await log(finalState.complete ? 'INFO' : 'FATAL', '[GuardedAuto] E-STOP exchange reconciliation complete', finalState);
     if (!finalState.complete) {
       const error = new Error('GUARDED_ESTOP_RECONCILIATION_INCOMPLETE');
       error.details = finalState;
