@@ -884,7 +884,7 @@ export function createDeltaExecutor({
     return { equity, available: accountAvailable(wallet, equity), availableVerified: accountAvailableVerified(wallet), raw: wallet };
   }
 
-  async function assertSafety(symbol, operation = 'ENTRY') {
+  async function assertSafety(symbol, operation = 'ENTRY', strategy = null) {
     assertConfigured();
     // E-STOP is an entry inhibit, not an exit inhibit. Explicit EXIT
     // operations reduce exposure and must remain available during E-STOP.
@@ -906,6 +906,12 @@ export function createDeltaExecutor({
       throw new Error('Delta Testnet futures symbol is outside the active execution allowlist: ' + normalizedSymbol);
     }
     if (guardedMode && entrySettings.guarded_estop_active !== false) throw new Error('Guarded Auto E-STOP is active or unknown');
+    if (guardedMode) {
+      const guardedStrategy = stringOrEmpty(strategy).toUpperCase();
+      if (!['MOMENTUM', 'SCALPING'].includes(guardedStrategy)) throw new Error('Guarded Auto only permits Momentum and Scalping entry paths');
+      if (guardedStrategy === 'MOMENTUM' && entrySettings.momentum_enabled !== true) throw new Error('Momentum is disabled in Guarded Auto');
+      if (guardedStrategy === 'SCALPING' && entrySettings.scalping_enabled !== true) throw new Error('Scalping is disabled in Guarded Auto');
+    }
     if (entrySettings.enabled !== true) {
       throw new Error('Trading engine is disabled; Delta Testnet entry blocked');
     }
@@ -976,6 +982,7 @@ export function createDeltaExecutor({
     if (dailyPnl <= -(equity * DELTA_TESTNET_DAILY_LOSS_LIMIT)) {
       throw new Error('Daily P&L stop reached (' + dailyPnl.toFixed(2) + ' USD); new entries halted');
     }
+    return { guardedAutoEnabled: guardedMode };
   }
 
   function buildClientOrderId(value, prefix, symbol) {
@@ -1484,9 +1491,9 @@ export function createDeltaExecutor({
         });
         throw new Error('SL distance too tight (' + slDistancePct.toFixed(2) + '%), minimum required ' + minSlDistancePct.toFixed(2) + '%');
       }
-      await assertSafety(normalizedSymbol, 'ENTRY');
+      const safety = await assertSafety(normalizedSymbol, 'ENTRY', options?.strategy);
       const product = await resolveProduct(normalizedSymbol);
-      const guardedAuto = options?.guardedAuto === true;
+      const guardedAuto = safety?.guardedAutoEnabled === true;
       if (guardedAuto) {
         if (!isAllowedGuardedAutoFutureSymbol(normalizedSymbol)) throw new Error('Guarded Auto rejects futures products outside XAUTUSD/PAXGUSD');
         const minimumQty = getMinimumOrderSize(product);
@@ -1562,6 +1569,15 @@ export function createDeltaExecutor({
       const strategy = strategyValue(options?.strategy);
       const prefix = strategy === 'MOMENTUM' ? 'DDM' : strategy === 'SCALPING' ? 'DDS' : 'DDG';
       const entryClientOrderId = buildClientOrderId(options?.clientOrderId, prefix, normalizedSymbol);
+      if (guardedAuto) {
+        const reservations = await database.select(
+          'dd_guarded_auto_reservations',
+          'client_order_id=eq.' + encodeURIComponent(entryClientOrderId) + '&state=eq.ACTIVE&select=id&limit=1'
+        );
+        if (!Array.isArray(reservations) || reservations.length !== 1) {
+          throw new Error('Guarded Auto global reservation is missing; direct entry route blocked');
+        }
+      }
       const entryBody = {
         product_id: product.id, size: quantity, side: direction.toLowerCase(),
         order_type: 'limit_order', limit_price: String(limitPrice),
