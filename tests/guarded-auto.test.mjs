@@ -5,6 +5,8 @@ import {
   assertExactMinimumQuantity,
   assertKnownMargin,
   assertAttachedBracket,
+  buildGuardedEntryBracketFields,
+  verifyAttachedBracketOrEmergencyClose,
   resolveExchangeMinimumOrderSize
 } from '../worker/execution/guarded-auto.mjs';
 
