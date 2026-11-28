@@ -129,6 +129,37 @@ export const update = (table, query, row) => call(table + '?' + query, { method:
 export const remove = (table, query) => call(table + '?' + query, { method: 'DELETE', headers: { Prefer: 'return=minimal' } });
 export const rpc = (name, args) => call('rpc/' + name, { method: 'POST', headers: { Prefer: 'return=representation' }, body: JSON.stringify(args || {}) });
 
+// Atomic global slot reservation. The database function serializes competing
+// strategies and enforces the single ACTIVE row with a partial unique index.
+export async function reserveGuardedAutoEntry({ strategy, symbol, clientOrderId, metadata = {} } = {}) {
+  if (!['MOMENTUM', 'SCALPING'].includes(String(strategy || '').toUpperCase()) ||
+      !['XAUTUSD', 'PAXGUSD'].includes(String(symbol || '').toUpperCase()) ||
+      !String(clientOrderId || '').trim()) {
+    throw new Error('Invalid Guarded Auto reservation request');
+  }
+  const result = await rpc('reserve_guarded_auto_entry', {
+    p_strategy: String(strategy).toUpperCase(),
+    p_symbol: String(symbol).toUpperCase(),
+    p_client_order_id: String(clientOrderId),
+    p_metadata: metadata && typeof metadata === 'object' ? metadata : {}
+  });
+  if (result === true || (Array.isArray(result) && result[0] === true) ||
+      (result && typeof result === 'object' && result.reserve_guarded_auto_entry === true)) return true;
+  return false;
+}
+
+export async function releaseGuardedAutoEntry({ clientOrderId, state = 'RELEASED', exchangeOrderId = null, metadata = {} } = {}) {
+  if (!String(clientOrderId || '').trim()) return false;
+  const result = await rpc('release_guarded_auto_entry', {
+    p_client_order_id: String(clientOrderId),
+    p_state: String(state).toUpperCase(),
+    p_exchange_order_id: exchangeOrderId === null ? null : String(exchangeOrderId),
+    p_metadata: metadata && typeof metadata === 'object' ? metadata : {}
+  });
+  return result === true || (Array.isArray(result) && result[0] === true) ||
+    (result && typeof result === 'object' && result.release_guarded_auto_entry === true);
+}
+
 // Database diagnostic persistence is hard-limited to ERROR/FATAL. LOG_LEVEL cannot
 // lower this threshold; INFO/WARN remain stdout-only to protect Free-tier ingestion.
 export async function log(level, message, data) {
