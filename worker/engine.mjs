@@ -281,6 +281,8 @@ export class DeltaEngine {
   constructor() {
     this.adapter = new DeltaAdapter();
     this.guardedAuto = createGuardedAuto({ database: db, executor: deltaExecutor, env: process.env, log: (level, message, details) => this.log(level, message, details) });
+    this.guardedEstopInFlight = null;
+    this.guardedEstopCompleted = false;
     this.tradetron = new TradetronBridge();
     this.tradetronDeveloperApi = new TradetronDeveloperApi();
     this.lastTradetronDeveloperSyncAt = 0;
@@ -471,8 +473,32 @@ export class DeltaEngine {
   }
 
   async loadSettings() {
-    const rows = await db.select('dd_settings', 'id=eq.1&select=id,enabled,auto_trade,emergency_stop,continuous_mode,max_open_positions,risk_pct,max_leverage,momentum_sl_min_pct,scalping_sl_min_pct,momentum_rr,scalping_rr,tp1_r,tp1_pct,max_hold_minutes,trail_r,score_min,options_enabled,options_buy_enabled,options_sell_enabled,options_buy_min_delta,options_buy_max_delta,options_sell_min_delta,options_sell_max_delta,options_min_oi,options_min_volume,options_max_spread_pct,options_min_days_to_expiry,options_max_days_to_expiry,options_buy_stop_pct,options_buy_tp1_pct,options_buy_tp_pct,options_max_risk_pct,options_max_open_positions,options_sell_defined_risk_only,options_execution_enabled,options_updated_at,last_tick_at,updated_at,grid_enabled,grid_symbol,grid_upper_price,grid_lower_price,grid_levels_count,grid_max_positions,grid_risk_per_trade_pct,grid_daily_loss_pct,grid_max_drawdown_pct,grid_momentum_pause_pct,grid_reduce_after_losses,grid_state,max_momentum_positions,max_scalping_positions,max_grid_positions,max_options_positions,grid_symbol_configs,grid_trailing_enabled,adaptive_volatility_shadow_enabled,options_iv_rank_buy_max,options_iv_rank_sell_min,options_daily_loss_limit_pct,exit_lifecycle_deploy_boundary_utc');
-    return rows && rows[0] ? rows[0] : {};
+    const rows = await db.select('dd_settings', 'id=eq.1&select=id,enabled,auto_trade,emergency_stop,continuous_mode,max_open_positions,risk_pct,max_leverage,momentum_sl_min_pct,scalping_sl_min_pct,momentum_rr,scalping_rr,tp1_r,tp1_pct,max_hold_minutes,trail_r,score_min,options_enabled,options_buy_enabled,options_sell_enabled,options_buy_min_delta,options_buy_max_delta,options_sell_min_delta,options_sell_max_delta,options_min_oi,options_min_volume,options_max_spread_pct,options_min_days_to_expiry,options_max_days_to_expiry,options_buy_stop_pct,options_buy_tp1_pct,options_buy_tp_pct,options_max_risk_pct,options_max_open_positions,options_sell_defined_risk_only,options_execution_enabled,options_updated_at,last_tick_at,updated_at,grid_enabled,grid_symbol,grid_upper_price,grid_lower_price,grid_levels_count,grid_max_positions,grid_risk_per_trade_pct,grid_daily_loss_pct,grid_max_drawdown_pct,grid_momentum_pause_pct,grid_reduce_after_losses,grid_state,max_momentum_positions,max_scalping_positions,max_grid_positions,max_options_positions,grid_symbol_configs,grid_trailing_enabled,adaptive_volatility_shadow_enabled,options_iv_rank_buy_max,options_iv_rank_sell_min,options_daily_loss_limit_pct,exit_lifecycle_deploy_boundary_utc,guarded_auto_enabled,momentum_enabled,scalping_enabled,guarded_estop_active');
+    const settings = rows && rows[0] ? rows[0] : {};
+    const estopActive = settings.emergency_stop === true || settings.guarded_estop_active === true;
+    if (!estopActive) {
+      this.guardedEstopCompleted = false;
+      return settings;
+    }
+    if (!this.guardedEstopCompleted && !this.guardedEstopInFlight) {
+      this.guardedEstopInFlight = (async () => {
+        try {
+          const finalState = await this.guardedAuto.emergencyStop({ reason: 'DATABASE_ESTOP_REQUEST' });
+          this.guardedEstopCompleted = finalState.complete === true;
+          await this.log(this.guardedEstopCompleted ? 'ERROR' : 'FATAL',
+            '[GuardedAuto] Worker E-STOP lifecycle result', finalState).catch(() => {});
+        } catch (error) {
+          await this.log('FATAL', '[GuardedAuto] Worker E-STOP reconciliation failed; entries remain disabled', {
+            reason: String(error?.message || error).slice(0, 300),
+            workerCredentialsAvailable: this.privateExecutionAvailable === true
+          }).catch(() => {});
+        } finally {
+          this.guardedEstopInFlight = null;
+        }
+      })();
+    }
+    if (this.guardedEstopInFlight) await this.guardedEstopInFlight;
+    return settings;
   }
 
   async updateEngineState(patch) {

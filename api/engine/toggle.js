@@ -5,9 +5,6 @@ import { buildSettingsAuditEntry } from '../../server/settings-audit.js';
 import { createEmergencyStopReleaseChallenge, hashEmergencyStopReleaseToken, matchesEmergencyStopReleaseToken, verifyEmergencyStopReleaseChallenge } from '../../server/estop-release-confirmation.js';
 import { GRID_RISK_PER_TRADE_CHOICES, GRID_DAILY_LOSS_CHOICES, GRID_MOMENTUM_PAUSE_CHOICES } from '../../shared/grid-settings.js';
 import { isAllowedDeltaTestnetFutureSymbol } from '../../worker/execution/execution-route-policy.mjs';
-import * as db from '../../server/db.js';
-import { deltaExecutor } from '../../worker/execution/delta-executor.mjs';
-import { createGuardedAuto } from '../../worker/execution/guarded-auto.mjs';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ success: false, error: 'POST only' });
@@ -20,11 +17,6 @@ export default async function handler(req, res) {
     let body = req.body || {};
     if (typeof body === 'string') body = JSON.parse(body);
     const current = (await select('dd_settings', 'id=eq.1&select=*'))?.[0] || {};
-    const guardedAuto = createGuardedAuto({ database: db, executor: deltaExecutor, env: process.env });
-    let guardedEstopResult = null;
-    if (body.emergencyStop === true && current.emergency_stop !== true) {
-      guardedEstopResult = await guardedAuto.emergencyStop({ reason: 'DASHBOARD_ESTOP' });
-    }
     let releaseTokenHash = null;
     let releaseActivationAt = null;
 
@@ -531,7 +523,7 @@ export default async function handler(req, res) {
       persisted,
       previous: current,
       auditLogPersisted,
-      ...(guardedEstopResult ? { guardedEstop: guardedEstopResult } : {}),
+      ...(body.emergencyStop === true ? { guardedEstopRequested: true, guardedEstopExecutor: 'worker' } : {}),
       ...(auditWarning ? { warning: auditWarning } : {})
     });
   } catch (e) {
