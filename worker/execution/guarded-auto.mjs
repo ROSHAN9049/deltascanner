@@ -7,6 +7,15 @@ export const GUARDED_AUTO_ORDER_TYPES = Object.freeze({
   SCALPING: 'IOC_LIMIT_WITH_ATTACHED_BRACKET'
 });
 
+export function resolveExchangeMinimumOrderSize(product) {
+  const raw = product?.minimum_order_size ?? product?.min_order_size ?? product?.product_specs?.minimum_order_size;
+  const minimum = raw === undefined || raw === null || raw === '' ? null : Number(raw);
+  if (!Number.isSafeInteger(minimum) || minimum < 1) {
+    throw new Error('GUARDED_EXCHANGE_MINIMUM_SIZE_UNKNOWN');
+  }
+  return minimum;
+}
+
 export function assertExactMinimumQuantity(quantity, minimum) {
   const qty = Number(quantity), min = Number(minimum);
   if (!Number.isSafeInteger(min) || min < 1 || !Number.isSafeInteger(qty) || qty !== min) {

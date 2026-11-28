@@ -4,7 +4,8 @@ import {
   createGuardedAuto,
   assertExactMinimumQuantity,
   assertKnownMargin,
-  assertAttachedBracket
+  assertAttachedBracket,
+  resolveExchangeMinimumOrderSize
 } from '../worker/execution/guarded-auto.mjs';
 
 function fixtures(overrides = {}) {
@@ -60,6 +61,11 @@ test('two concurrent Momentum/Scalping entries yield exactly one global reservat
   const results = await Promise.allSettled(inputs.map(input => auto.reserve(input)));
   assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
   assert.equal(results.filter(result => result.status === 'rejected').length, 1);
+});
+
+test('unknown exchange minimum is rejected instead of guessed', () => {
+  assert.throws(() => resolveExchangeMinimumOrderSize({ id: 9001, tick_size: '0.1' }), /GUARDED_EXCHANGE_MINIMUM_SIZE_UNKNOWN/);
+  assert.equal(resolveExchangeMinimumOrderSize({ minimum_order_size: 1 }), 1);
 });
 
 test('quantity above or below exchange minimum is rejected', () => {

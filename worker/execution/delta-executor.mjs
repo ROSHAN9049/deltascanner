@@ -5,7 +5,7 @@ import * as defaultDb from '../../server/db.js';
 import { indiaDateKey } from '../../src/date-utils.js';
 import { isAllowedDeltaTestnetFutureSymbol, isAllowedGuardedAutoFutureSymbol, isEligibleDeltaTestnetPerpetualProduct, isMarketTickFresh } from './execution-route-policy.mjs';
 import { createDeltaOptionsExecution } from './delta-options-execution.mjs';
-import { assertExactMinimumQuantity, assertKnownMargin, assertAttachedBracket } from './guarded-auto.mjs';
+import { assertExactMinimumQuantity, assertKnownMargin, assertAttachedBracket, resolveExchangeMinimumOrderSize } from './guarded-auto.mjs';
 import { DELTA_INDIA_TESTNET_REST_BASE } from '../options-execution-lock.mjs';
 
 export const DELTA_TESTNET_REST_BASE = 'https://cdn-ind.testnet.deltaex.org';
@@ -371,10 +371,7 @@ export function createDeltaExecutor({
   }
 
   function getMinimumOrderSize(product) {
-    const raw = numberOrNull(product?.minimum_order_size ?? product?.min_order_size ?? product?.product_specs?.minimum_order_size);
-    const minimum = raw === null ? 1 : raw;
-    if (!Number.isSafeInteger(minimum) || minimum < 1) throw new Error('Exchange minimum contract size is unknown or invalid');
-    return minimum;
+    return resolveExchangeMinimumOrderSize(product);
   }
 
   async function getOpenPositions() {
