@@ -22,6 +22,14 @@ export const DELTA_TESTNET_FUTURES_ALLOWLIST = Object.freeze([
 
 const allowedSymbols = new Set(DELTA_TESTNET_FUTURES_ALLOWLIST);
 
+// Guarded Auto deliberately has a narrower universe than the legacy Testnet
+// scanner. Other existing read-only/signal routes are not widened by this set.
+export const GUARDED_AUTO_FUTURES_ALLOWLIST = Object.freeze(['XAUTUSD', 'PAXGUSD']);
+const guardedAutoSymbols = new Set(GUARDED_AUTO_FUTURES_ALLOWLIST);
+export function isAllowedGuardedAutoFutureSymbol(symbol) {
+  return guardedAutoSymbols.has(normalizeDeltaSymbol(symbol));
+}
+
 export const DEFAULT_DELTA_TESTNET_GRID_SYMBOL_POOL = Object.freeze([
   'BTCUSD', 'ETHUSD', 'SOLUSD', 'BNBUSD', 'XRPUSD', 'DOGEUSD'
 ]);
