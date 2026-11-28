@@ -18,17 +18,28 @@ function fixtures(overrides = {}) {
     last_tick_at: new Date(1_700_000_000_000).toISOString()
   };
   Object.assign(state, overrides.settings || {});
-  let activeReservation = false;
+  let activeReservation = null;
   const db = {
-    async select() { return [state]; },
+    async select(table) {
+      if (table === 'dd_settings') return [state];
+      if (table === 'dd_guarded_auto_reservations') {
+        return activeReservation ? [{ client_order_id: activeReservation }] : [];
+      }
+      return [];
+    },
     async update(_table, _query, patch) { Object.assign(state, patch); return [state]; },
     async log() {},
-    async reserveGuardedAutoEntry() {
+    async reserveGuardedAutoEntry({ clientOrderId }) {
       if (activeReservation) return false;
-      activeReservation = true;
+      activeReservation = clientOrderId;
       return true;
     },
-    async releaseGuardedAutoEntry() { activeReservation = false; return true; }
+    async releaseGuardedAutoEntry({ clientOrderId }) {
+      if (activeReservation !== clientOrderId) return false;
+      activeReservation = null;
+      return true;
+    },
+    get activeReservation() { return activeReservation; }
   };
   const exchange = {
     orders: [{ id: 11, symbol: 'XAUTUSD' }],
@@ -112,14 +123,24 @@ test('SETUP is never eligible for order dispatch', async () => {
   }), /GUARDED_REQUIRES_CONFIRMED_SIGNAL/);
 });
 
-test('E-STOP disables entries, cancels orders, closes positions and reconciles flat', async () => {
-  const { auto, state, exchange } = fixtures();
+test('E-STOP disables entries, cancels orders, closes positions, releases slot and reconciles flat', async () => {
+  const { auto, state, exchange, db } = fixtures({
+    settings: {
+      enabled: true, auto_trade: true, emergency_stop: false,
+      guarded_auto_enabled: true, guarded_estop_active: false,
+      momentum_enabled: true, last_tick_at: new Date(1_700_000_000_000).toISOString()
+    }
+  });
+  await auto.reserve({
+    strategy: 'MOMENTUM', symbol: 'XAUTUSD', stage: 'CONFIRMED', clientOrderId: 'estop-slot'
+  });
   const result = await auto.emergencyStop({ reason: 'TEST' });
   assert.equal(state.auto_trade, false);
   assert.equal(state.enabled, false);
   assert.equal(state.guarded_estop_active, true);
   assert.equal(exchange.orders.length, 0);
   assert.equal(exchange.positions.length, 0);
+  assert.equal(db.activeReservation, null);
   assert.equal(result.reconciledFlat, true);
   assert.equal(result.reconciledOrdersClear, true);
   assert.equal(result.complete, true);
